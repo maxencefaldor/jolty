@@ -1,16 +1,17 @@
 # Copyright 2026 Maxence Faldor
-"""The MCP server: jolty's commands as tools, for any agent harness.
+"""MCP server exposing jolty commands as tools for agent harnesses.
 
-Every tool derives from a request model of [`jolty.service`][jolty.service], so its
-arguments, defaults and descriptions match the ``jolty`` command line exactly. Each tool
-answers with the text the command line prints, with the result as structured content,
-and with the images it drew. Offline guide pages and example scripts are served as MCP
-resources and through ``read_docs`` from the same single loader in ``jolty.service``.
-The server's instructions derive programmatically in ``jolty.service`` so every public
-device, real part, analysis, measure and offline resource URI stays in sync.
+Every tool derives from a request model in [`jolty.service`][jolty.service], keeping
+arguments, defaults, and descriptions synchronized with the ``jolty`` CLI. Each tool
+returns the formatted CLI text, structured JSON output, and any generated images.
+Offline guide pages and example scripts are served both as MCP resources and through
+``read_docs`` from the shared loader in ``jolty.service``. Server instructions are
+assembled programmatically in ``jolty.service`` so every public device, real part,
+analysis, measure, and offline resource URI stays up to date.
 
-Scripts run in a process of their own, outside the server, so nothing a script prints
-can reach the protocol stream. Serve with ``jolty-mcp`` or ``python -m jolty.mcp``.
+Scripts execute in a separate subprocess outside the server so script stdout cannot
+corrupt the protocol stream. Start the server with ``jolty-mcp`` or
+``python -m jolty.mcp``.
 """
 
 __lazy_modules__ = ["base64", "importlib.metadata"]
@@ -67,7 +68,7 @@ def __getattr__(name: str) -> str:
 
 
 READS_FILES: Final = ToolAnnotations(read_only_hint=True, open_world_hint=False)
-"""A check reads a circuit file and changes nothing."""
+"""Tool annotations for read-only commands that inspect files without modification."""
 
 WRITES_FILES: Final = ToolAnnotations(
     read_only_hint=False,
@@ -75,7 +76,7 @@ WRITES_FILES: Final = ToolAnnotations(
     idempotent_hint=True,
     open_world_hint=False,
 )
-"""A plot or schematic writes an image beside the file it reads, the same each time."""
+"""Tool annotations for idempotent commands that write images next to input files."""
 
 RUNS_CODE: Final = ToolAnnotations(
     read_only_hint=False,
@@ -83,7 +84,7 @@ RUNS_CODE: Final = ToolAnnotations(
     idempotent_hint=False,
     open_world_hint=True,
 )
-"""A command runs any Python with the user's permissions, so harnesses should ask."""
+"""Tool annotations for commands that execute user Python scripts locally."""
 
 
 def tool_from[Request: BaseModel, Result: service.CommandResult](
@@ -93,12 +94,12 @@ def tool_from[Request: BaseModel, Result: service.CommandResult](
     result_type: type[Result],
     settings: Settings,
 ) -> Callable[..., Awaitable[CallToolResult]]:
-    """An async tool whose parameters are exactly the fields of `request_type`.
+    """Builds an async MCP tool whose keyword parameters match `request_type` fields.
 
-    Each parameter's default is a copy of the request field's ``FieldInfo``, so the
-    tool's schema carries the request model's descriptions, defaults and constraints.
-    The tool answers with the result's text, and with the result itself as structured
-    content, validated against `result_type`.
+    Each parameter default copies the corresponding request field ``FieldInfo`` so the
+    tool schema preserves descriptions, defaults, and constraints. Calling the tool
+    returns formatted result text, generated images, and structured output validated
+    against `result_type`.
     """
     parameters = [
         inspect.Parameter(
@@ -130,7 +131,7 @@ def tool_from[Request: BaseModel, Result: service.CommandResult](
             content=content, structured_content=result.model_dump(mode="json")
         )
 
-    tool.__signature__ = inspect.Signature(  # ty: ignore[missing-attribute] - inspect reads it; functions declare none
+    tool.__signature__ = inspect.Signature(  # ty: ignore[missing-attribute] - dynamic
         parameters, return_annotation=Annotated[CallToolResult, result_type]
     )
     tool.__name__ = name
@@ -194,7 +195,7 @@ def _register_resources(server: MCPServer) -> None:
 
 
 def create_server(settings: Settings) -> MCPServer:
-    """The jolty MCP server, with all its tools and offline documentation resources."""
+    """Creates the jolty MCP server with all tools and offline doc resources."""
     server = MCPServer(
         "jolty", version=version("jolty"), instructions=build_instructions()
     )

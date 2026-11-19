@@ -22,22 +22,22 @@ _NO_EXTRA_FILES: Final[Mapping[str, str]] = MappingProxyType({})
 
 @dataclass(frozen=True, slots=True)
 class Executed[Value]:
-    """What one external simulator run on a deck left, and how long it took."""
+    """Captured output, exit code, runtime, and payload of one simulator run."""
 
     printed: str
-    """Its standard output, then its standard error."""
+    """Combined standard output followed by standard error from the simulator."""
     code: int
-    """Its exit status."""
+    """Process exit status code."""
     seconds: float
-    """Its time from start to exit, by the wall clock, writing the deck left out."""
+    """Wall-clock simulator runtime in seconds, excluding deck writing."""
     values: Value | None
-    """The file of values the deck wrote, or None if it wrote none."""
+    """Parsed values output written by the deck, or None if no file was produced."""
 
 
 def thermal_option_temperature(
     temperature: float, simulator_thermal_voltage_per_kelvin: float
 ) -> float:
-    """Celsius temperature where a simulator's thermal voltage matches jolty's."""
+    """Computes Celsius temperature matching jolty thermal voltage at `temperature`."""
     thermal_voltage = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
     return thermal_voltage / simulator_thermal_voltage_per_kelvin - ZERO_CELSIUS
 

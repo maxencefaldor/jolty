@@ -1,18 +1,17 @@
 # Copyright 2026 Maxence Faldor
-"""SPICE libraries read into components.
+"""SPICE library loader translating subcircuits, models, and parameters into components.
 
-Each subcircuit becomes a component, and each of its elements a jolty device or a placed
-component. A subcircuit's pins become its ports, in order, and a subcircuit that reaches
-SPICE's global ground, node ``0``, gains a ground port named ``ground``. Each instance
-records the file and the line of the statement that placed it.
+Each subcircuit becomes a component, and each element inside it becomes a jolty device
+or nested component placement. Subcircuit pins become ports in order, and any
+subcircuit referencing SPICE global ground (node ``0``) gains a ground port named
+``ground``. Each instance records the source file and line number of its statement.
 
-A file read from disk includes others as ngspice does: ``.include`` the whole of a
-file, ``.lib`` a section of one, which only ``.lib`` and ``.endl`` around it define; its
-``.option scale`` scales its MOSFETs' sizes. A subcircuit's ``.if`` blocks hold the
-statements of the branch its parameters choose. Its statistical functions, ``agauss``
-and the others, take their nominal values, or draws of a Monte Carlo
-[`Sample`][jolty.spice.Sample] for each placement, and ``temper`` is the
-temperature the library reads at.
+Files loaded from disk resolve ``.include`` and ``.lib`` directives relative to the
+including file, matching ngspice, and apply ``.option scale`` to MOSFET dimensions.
+Conditional ``.if`` blocks select statements according to subcircuit parameters.
+Statistical functions such as ``agauss`` evaluate at nominal values by default or draw
+from a Monte Carlo [`Sample`][jolty.spice.Sample] per placement, while ``temper``
+reflects the library temperature.
 """
 
 import math
@@ -126,12 +125,12 @@ __all__ = [
 ]
 
 _MAX_CACHED_SCOPES: Final = 8
-"""How many `(sample, temperature)` global scopes a `Library` caches at once."""
+"""Maximum number of `(sample, temperature)` global scopes cached by a `Library`."""
 
 _ELEMENTS: Final[Mapping[str, ElementTranslator]] = MappingProxyType(
     {**PASSIVE_ELEMENTS, **ACTIVE_ELEMENTS}
 )
-"""How each element, by its letter, becomes devices or a placed component."""
+"""Mapping from lowercase SPICE element letters to element translator callables."""
 
 type _BuiltState = tuple[
     float,
@@ -143,10 +142,10 @@ type _BuiltState = tuple[
 
 
 def _devices(placed: Component, prefix: str) -> dict[str, dict[str, float]]:
-    """The numbers of every device `placed` places, within the components it places too.
+    """Collects numeric parameter dictionaries for every device inside `placed`.
 
-    They come by the device's path, `prefix` then its path within `placed`, then by the
-    number's path.
+    Keys are hierarchical device paths formed by prepending `prefix` to each path
+    inside `placed`, mapping to numeric parameter dictionaries.
     """
     child_map = {child.name: child for child in placed.children}
     found: dict[str, dict[str, float]] = {}
@@ -161,9 +160,9 @@ def _devices(placed: Component, prefix: str) -> dict[str, dict[str, float]]:
 
 
 class Library:
-    r"""The subcircuits, models and parameters of SPICE files.
+    r"""Collection of SPICE subcircuits, model cards, parameters, and functions.
 
-    Each subcircuit is ready to place as a component.
+    Each parsed subcircuit can be instantiated as a jolty component.
 
     Examples:
         >>> library = Library()
@@ -180,9 +179,10 @@ class Library:
         temperature: float = _core.REFERENCE_TEMPERATURE,
         compatibility: Compatibility | None = None,
     ) -> None:
-        """An empty library, which reads ``temper`` at `temperature`, in kelvins.
+        """Initializes an empty library evaluating ``temper`` at `temperature` (K).
 
-        It reads its files as ngspice does in `compatibility`, its own unless given.
+        File parsing follows ngspice `compatibility` mode when provided, or standard
+        ngspice mode by default.
         """
         self._subcircuits: dict[str, Subcircuit] = {}
         self._models: dict[str, ModelCard] = {}
@@ -200,33 +200,28 @@ class Library:
         self.temperature = temperature
         self.compatibility = compatibility
         self.options: dict[str, float] = {}
-        """The options its files set, such as ``scale``, by case-folded name."""
+        """Library `.option` values keyed by case-folded name (such as ``scale``)."""
         self.functions: dict[str, Function] = {}
-        """The user's functions its files define with ``.func``, by case-folded name,
-        which its expressions call as SPICE's own."""
+        """Library `.func` definitions keyed by case-folded function name."""
         self.initial_conditions: dict[str, float] = {}
-        """The voltage, in volts, its files' ``.ic`` statements give each node, by name
-        as they write it: where a plan's transient starts from, its
-        `initial_conditions`."""
+        """Top-level ``.ic`` node voltages in volts keyed by written node name."""
         self.nodesets: dict[str, float] = {}
-        """The voltage, in volts, its files' ``.nodeset`` statements give each node, by
-        name as they write it: where a plan's operating points start from, its options'
-        `nodesets`."""
+        """Top-level ``.nodeset`` node voltages in volts keyed by written node name."""
         self.periodic_steady_states: list[PeriodicSteadyStateCard] = []
-        """The ``.pss`` periodic steady-state analyses its files define, in order."""
+        """Parsed ``.pss`` periodic steady-state statements in source order."""
         self._uses: list[Use] | None = None
 
     @property
     def subcircuits(self) -> tuple[str, ...]:
-        """The names of the subcircuits, in the order they are defined."""
+        """Subcircuit names defined in the library in definition order."""
         with self._cache_lock:
             return tuple(subcircuit.name for subcircuit in self._subcircuits.values())
 
     @property
     def models(self) -> tuple[str, ...]:
-        """The names of the models defined outside subcircuits, in order.
+        """Global model names defined outside subcircuits in definition order.
 
-        A binned model is named once, without its bins' numbers.
+        Binned models appear once under their base name without numeric bin suffixes.
         """
         with self._cache_lock:
             cards = tuple(self._models.values())
@@ -282,7 +277,7 @@ class Library:
             else:
                 self._global(statement, directive)
         if opened is not None:
-            message = "the subcircuit never ends"
+            message = "unterminated .subckt block (missing .ends)"
             raise opened.fail(message)
 
     def _clear_built_locked(self) -> None:
@@ -377,28 +372,26 @@ class Library:
             raise statement.fail(message)
 
     def component(self, name: str, /, **parameters: float) -> Component:
-        """The subcircuit `name` as a component, its statistical functions nominal.
+        """Builds subcircuit `name` as a component with nominal statistical values.
 
-        The `parameters` given replace its parameters' defaults.
+        Keyword `parameters` override the subcircuit's default parameter values.
 
         Raises:
-            SpiceError: When no subcircuit is named `name`, or it holds what jolty
-                cannot read.
+            SpiceError: When `name` is undefined or contains unsupported SPICE syntax.
         """
         return self._placed(name, Drawing(None, ""), parameters).component
 
     def drawn(
         self, name: str, sample: Sample, path: str, /, **parameters: float
     ) -> Component:
-        """The subcircuit `name` as a component placed at `path`, in `sample`.
+        """Builds subcircuit `name` as a component placed at `path` under `sample`.
 
-        Its statistical functions draw from the sample for the placement at `path`, a
-        path of the circuit it is placed in, such as ``X1``; the library's own draw for
-        the path ``""``. The `parameters` given replace its parameters' defaults.
+        Statistical functions inside `name` draw from `sample` for `path` (such as
+        ``X1``), while global library parameters draw for path ``""``. Keyword
+        `parameters` override the subcircuit's default parameter values.
 
         Raises:
-            SpiceError: When no subcircuit is named `name`, or it holds what jolty
-                cannot read.
+            SpiceError: When `name` is undefined or contains unsupported SPICE syntax.
         """
         return self._placed(name, Drawing(sample, path), parameters).component
 
@@ -422,30 +415,26 @@ class Library:
         connections: Mapping[str, str] | None = None,
         **parameters: float,
     ) -> dict[str, float]:
-        """The initial node voltages of the subcircuit `name`, in volts, by net path.
+        """Returns initial node voltages in volts for subcircuit `name` by net path.
 
-        It gathers every ``.ic`` statement inside `name` and inside the subcircuits it
-        instantiates, remapping subcircuit pins onto the nets they connect to and
-        prefixing internal nets with the instance hierarchy. When `path` is empty,
-        `name` is treated as the top circuit and top-level ``.ic`` statements
-        (`self.initial_conditions`) are merged on top, with outer declarations
-        overriding inner ones. When `path` is non-empty, internal nets are prefixed by
-        ``f"{path}/"`` and optional `connections` map pins of `name` to external nets
-        (``"0"`` or `GROUND` maps to ground).
+        Gathers every ``.ic`` statement inside `name` and nested subcircuits, remapping
+        subcircuit pins onto connected nets and prefixing internal nets with instance
+        hierarchy. When `path` is empty, `name` acts as the top circuit and top-level
+        `self.initial_conditions` override inner entries. When `path` is non-empty,
+        internal nets receive the ``f"{path}/"`` prefix and `connections` maps pins to
+        external nets (``"0"`` or `GROUND` maps to ground).
 
-        When `operating_point` is True (the default), device ``IC=`` parameters are
-        omitted, matching SPICE when a transient solves its operating point. When
-        `operating_point` is False (SPICE's ``UIC``), capacitor ``IC=`` voltages are
-        solved alongside ``.ic`` into node voltages, and any non-zero inductor ``IC=``
-        current is refused because `Transient.initial_conditions` accepts net voltages
-        alone (inspect inductor currents via
-        [`initial_currents_of`][jolty.spice.Library.initial_currents_of]).
+        When `operating_point` is True, device ``IC=`` parameters are omitted, matching
+        SPICE transients that solve an operating point. When `operating_point` is False
+        (SPICE ``UIC``), capacitor ``IC=`` voltages are solved alongside ``.ic``, while
+        nonzero inductor ``IC=`` currents raise an error because
+        `Transient.initial_conditions` accepts net voltages alone (use
+        [`initial_currents_of`][jolty.spice.Library.initial_currents_of] for currents).
 
         Raises:
-            SpiceError: When no subcircuit is named `name`, `connections` names an
-                unknown pin, an initial condition contradicts ground or another
-                initial condition, or `operating_point` is False with a non-zero
-                inductor initial current.
+            SpiceError: When `name` is undefined, `connections` names an unknown pin,
+                initial conditions conflict, or `operating_point` is False with a
+                nonzero inductor initial current.
         """
         subcircuit, built = self._subcircuit_built(name, parameters)
         mapping, prefix, entries = collect_node_voltages(
@@ -482,17 +471,16 @@ class Library:
         connections: Mapping[str, str] | None = None,
         **parameters: float,
     ) -> dict[str, float]:
-        """The nodeset voltages of the subcircuit `name`, in volts, by net path.
+        """Returns nodeset voltages in volts for subcircuit `name` by net path.
 
-        It gathers every ``.nodeset`` statement inside `name` and inside the
-        subcircuits it instantiates, remapping pins and prefixing internal nets as
-        [`initial_conditions_of`][jolty.spice.Library.initial_conditions_of] does.
-        When `path` is empty, top-level ``.nodeset`` statements (`self.nodesets`) are
-        merged on top.
+        Gathers every ``.nodeset`` statement inside `name` and nested subcircuits,
+        remapping pins and prefixing internal nets identically to
+        [`initial_conditions_of`][jolty.spice.Library.initial_conditions_of]. When
+        `path` is empty, top-level `self.nodesets` override inner declarations.
 
         Raises:
-            SpiceError: When no subcircuit is named `name`, `connections` names an
-                unknown pin, or a nodeset assigns a non-zero voltage to ground.
+            SpiceError: When `name` is undefined, `connections` names an unknown pin,
+                or a nodeset assigns a nonzero voltage to ground.
         """
         subcircuit, built = self._subcircuit_built(name, parameters)
         _, _, entries = collect_node_voltages(
@@ -508,17 +496,15 @@ class Library:
     def initial_currents_of(
         self, name: str, path: str = "", /, **parameters: float
     ) -> dict[str, float]:
-        """The initial inductor currents (`IC=`) of the subcircuit `name`, in amperes.
+        """Returns initial inductor currents (`IC=`) in amperes for subcircuit `name`.
 
-        Each key is the engine unknown name of the inductor branch current, such as
-        ``L1:current``, ``X1/L1:current``, or ``K1:current1`` for a coupled inductor
-        winding, prefixed with ``f"{path}/"`` when `path` is non-empty. Currents are
-        scaled by each inductor's parallel multiplier `M` and enclosing subcircuit
-        multipliers.
+        Keys are engine unknown names such as ``L1:current``, ``X1/L1:current``, or
+        ``K1:current1`` for coupled windings, prefixed with ``f"{path}/"`` when `path`
+        is non-empty. Currents include each inductor's parallel multiplier `M` and
+        enclosing subcircuit multipliers.
 
         Raises:
-            SpiceError: When no subcircuit is named `name`, or it holds what jolty
-                cannot read.
+            SpiceError: When `name` is undefined or contains unsupported SPICE syntax.
         """
         built = self._placed(name, Drawing(None, ""), parameters)
         prefix = f"{path}{ir.SEPARATOR}" if path else ""
@@ -527,28 +513,23 @@ class Library:
     def random_variables(
         self, name: str, path: str, /, **parameters: float
     ) -> tuple[ir.RandomVariable, ...]:
-        """The random variables of the subcircuit `name` placed at `path`.
+        """Extracts placement random variables and parameter sensitivities for `name`.
 
-        Each is a call of a statistical function that the placement's definitions make,
-        within those it places too, and that moves its devices: its instance is the
-        placement whose definitions make the call, such as `path` or ``X1/Xinner``, and
-        its name the definition's name and the call's place among those it makes, such
-        as ``vth0#0``, as a [`Sample`][jolty.spice.Sample] keys its draws; its mean is
-        its nominal value, which [`component`][jolty.spice.Library.component] places,
-        and its standard deviation as
-        [`standard_deviation`][jolty.spice.standard_deviation] takes it. Each number of
-        the devices' parameters that it moves has its derivative with respect to it, by
-        the device's path in the circuit the subcircuit is placed in: a central
-        difference of the reading, the cube root of the machine epsilon times its
-        standard deviation either way, exact to rounding where the number is a
-        polynomial of degree two or less in it, as every open kit writes it. A call
-        whose standard deviation is 0, or that moves no device, is none; a call of the
-        library's own parameters, which every placement shares, is no placement's. The
-        `parameters` given replace the subcircuit's defaults, as `component` takes them.
+        Inspects every statistical call made inside subcircuit `name` placed at `path`
+        (and nested placements) that changes at least one device parameter. Each entry
+        records its placement path, call identifier (such as ``vth0#0``), nominal mean,
+        and standard deviation from
+        [`standard_deviation`][jolty.spice.standard_deviation].
+
+        Parameter derivatives are computed by central difference with step
+        ``eps^(1/3) * sigma``, exact up to rounding for quadratic polynomials used by
+        open PDKs. Calls with zero standard deviation, calls with no device effect, and
+        shared global library parameters are excluded. Keyword `parameters` override
+        subcircuit defaults.
 
         Raises:
-            SpiceError: When no subcircuit is named `name`, it holds what jolty cannot
-                read, or a call moves which devices or numbers it places.
+            SpiceError: When `name` is undefined, contains unsupported syntax, or a
+                statistical perturbation alters the set of emitted devices or keys.
         """
         given = {key.casefold(): value for key, value in parameters.items()}
 
@@ -606,15 +587,12 @@ class Library:
         return tuple(found)
 
     def survey(self, name: str, /, **parameters: float) -> tuple[Use, ...]:
-        """Each element the subcircuit `name` holds, within those it places too.
+        """Reports every element and translation diagnostic inside subcircuit `name`.
 
-        Elements are read as [`component`][jolty.spice.Library.component] reads them,
-        with the `parameters` given, and each element states the model it needs and,
-        where jolty cannot translate it, why. A placed subcircuit needs no model of its
-        own: it states the parameters its placement gives it, and a problem of its
-        placement, such as a parameter its subcircuit lacks; a problem of the
-        subcircuit's own definitions, such as a parameter it cannot evaluate, is stated
-        as a use of no element.
+        Translates elements as [`component`][jolty.spice.Library.component] does with
+        `parameters`, recording each element's required model and any translation error.
+        Subcircuit placements report their passed parameters and placement errors.
+        Subcircuit-level definition errors appear as a `Use` with an empty element path.
         """
         uses: list[Use] = []
         try:
@@ -624,10 +602,10 @@ class Library:
         return tuple(uses)
 
     def survey_model(self, name: str) -> Use:
-        """The use of the model `name`, or of its first bin, by a bare element.
+        """Reports translation compatibility for model `name` (or its first bin).
 
-        The element gives no parameters of its own, and the use is stated as
-        [`survey`][jolty.spice.Library.survey] states an element's.
+        Evaluates the model against an empty instance parameter map and formats any
+        diagnostic identically to [`survey`][jolty.spice.Library.survey].
 
         Raises:
             SpiceError: When no model is named `name`.
@@ -710,19 +688,18 @@ class Library:
             self._clear_built_locked()
 
     def values(self, sample: Sample | None = None) -> dict[str, float]:
-        """The values of the parameters defined outside subcircuits, by name.
+        """Returns evaluated global library parameters keyed by case-folded name.
 
-        Their names are case-folded, ``temper`` among them. Their statistical functions
-        draw in `sample`, at the path ``""``, or take their nominal values without one.
+        Includes ``temper`` alongside parsed `.param` values. Statistical functions
+        draw from `sample` at path ``""``, or use nominal values when `sample` is None.
 
         Raises:
-            SpiceError: When parameters read one another in a cycle, or an expression is
-                wrong.
+            SpiceError: When parameters form a dependency cycle or fail evaluation.
         """
         return dict(self._scope(sample))
 
     def _plan(self) -> GlobalPlan:
-        """Cached partition of global parameters for `(self.temperature, functions)`."""
+        """Returns the cached `GlobalPlan` for `(self.temperature, self.functions)`."""
         with self._cache_lock:
             cached = self._global_plan
             temperature = self.temperature
@@ -753,7 +730,7 @@ class Library:
             return plan
 
     def _scope(self, sample: Sample | None) -> Mapping[str, float]:
-        """Cached global parameter scope for `(sample, self.temperature)`.
+        """Returns the cached global parameter scope for `(sample, self.temperature)`.
 
         Deterministic parameters are evaluated once inside `GlobalPlan`; per-sample
         evaluation computes only the stochastic subset and its transitive dependents.
@@ -777,11 +754,10 @@ class Library:
         return values
 
     def _values(self, drawing: Drawing) -> dict[str, float]:
-        """The values of the parameters defined outside subcircuits, drawn by `drawing`.
+        """Evaluates global library parameters using statistical draws from `drawing`.
 
         Raises:
-            SpiceError: When parameters read one another in a cycle, or an expression is
-                wrong.
+            SpiceError: When parameters form a dependency cycle or fail evaluation.
         """
         return evaluate_stochastic(self._plan(), drawing)
 
@@ -795,11 +771,11 @@ class Library:
         *,
         uses: list[Use] | None = None,
     ) -> Built:
-        """The built `subcircuit` with the `given` parameters, in `scope`.
+        """Builds `subcircuit` with `given` parameter overrides under `scope`.
 
-        Statistical functions draw as `drawing` specifies. A multiplier `m` given to a
-        subcircuit that has no parameter of that name multiplies every element it
-        holds, as [`MULTIPLIED`][jolty.spice.library.MULTIPLIED] says.
+        Statistical functions sample via `drawing`. A multiplier `m` supplied to a
+        subcircuit without a formal `m` parameter scales eligible inner elements per
+        [`MULTIPLIED`][jolty.spice.library.MULTIPLIED].
         """
         key = check_cycle(subcircuit, instantiating)
         surveying = uses is not None
@@ -897,12 +873,12 @@ class Library:
         return built
 
     def known_models(self, local: Mapping[str, ModelCard]) -> dict[str, ModelCard]:
-        """All models visible inside a subcircuit, local shadowing global."""
+        """Returns all models visible inside a subcircuit, with `local` shadowing."""
         with self._cache_lock:
             return {**self._models, **local}
 
     def model(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
-        """The model `name`, defined in a subcircuit's body or globally."""
+        """Looks up model `name` in `local` scope first, then global library models."""
         key = name.casefold()
         return local.get(key) or self._models.get(key)
 
@@ -926,7 +902,7 @@ class Library:
             return (self._bins or built).get(base, ())
 
     def card(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
-        """The model `name`, or its first bin, defined locally or globally."""
+        """Looks up model `name` or its first bin in `local` then global scope."""
         found = self.model(name, local)
         if found is not None:
             return found
@@ -939,7 +915,7 @@ class Library:
 
     @property
     def surveying(self) -> bool:
-        """Whether a [`survey`][jolty.spice.Library.survey] is being made."""
+        """Flag indicating whether [`survey`][jolty.spice.Library.survey] is active."""
         return self._uses is not None
 
     def use(self, use: Use) -> None:
@@ -956,13 +932,12 @@ class Library:
         *,
         functions: Mapping[str, Function] = NO_FUNCTIONS,
     ) -> ModelCard | None:
-        """The bin of the model `name` an `instance` takes, as ngspice selects it.
+        """Selects the binned MOSFET card for `name` matching `instance` dimensions.
 
-        A bin is a MOSFET's card named `name` then a dot and a whole number whose
-        ``LMIN`` to ``LMAX`` holds the instance's length and ``WMIN`` to ``WMAX`` its
-        width, divided among its [`fingers`][jolty.spice.Library.fingers], both given
-        on its element, a bound counted in; the last defined is taken first, in a
-        subcircuit's body, then globally.
+        Searches cards named ``<name>.<n>`` whose ``LMIN``..``LMAX`` and
+        ``WMIN``..``WMAX`` ranges contain `l` and ``w / fingers(instance)`` inclusive
+        of boundaries. Checks local definitions in reverse definition order first,
+        then global definitions in reverse order.
         """
         if "l" not in instance or "w" not in instance:
             return None
@@ -985,13 +960,12 @@ class Library:
         return None
 
     def fingers(self, instance: Mapping[str, float]) -> float:
-        """What a MOSFET's width is divided by where its bin is selected.
+        """Returns the width divisor applied when selecting a MOSFET bin.
 
-        As ngspice's ``INPgetModBin`` selects a bin (``inpgmod.c``, lines 268 to
-        302), that is the instance's fingers, ``nf``, where it gives them and the
-        library's option ``wnflag``, or else HSPICE's compatibility, asks for it; and
-        1 otherwise. An instance's own ``wnflag``, which ngspice reads there too, only
-        BSIM4's version 4.8 takes, which jolty does not model.
+        Matches ngspice ``INPgetModBin`` (``inpgmod.c``, lines 268 to 302): divides
+        width by ``nf`` when `instance` provides ``nf`` and either ``.option wnflag``
+        or HSPICE compatibility (`hsa`) is enabled, and returns 1 otherwise.
+        Instance-level ``wnflag`` applies only to unmodeled BSIM4.8.
         """
         if "nf" not in instance:
             return 1.0
@@ -999,7 +973,7 @@ class Library:
         return instance["nf"] if self.options.get("wnflag", hspice) else 1.0
 
     def subcircuit(self, name: str) -> Subcircuit | None:
-        """The subcircuit `name`."""
+        """Looks up subcircuit definition `name` by case-folded name."""
         return self._subcircuits.get(name.casefold())
 
     def place(  # noqa: PLR0913 - subcircuit placement state and optional survey list
@@ -1012,15 +986,15 @@ class Library:
         *,
         uses: list[Use] | None = None,
     ) -> Component:
-        """The component a subcircuit instance with the `given` parameters places.
+        """Builds a child `Component` for a placement of `subcircuit` with `given`.
 
-        Statistical functions draw as `drawing` specifies.
+        Statistical functions sample according to `drawing`.
         """
         return self._build(
             subcircuit, scope, given, drawing, instantiating, uses=uses
         ).component
 
-    def place_built(  # noqa: PLR0913 - subcircuit placement state and optional survey list
+    def place_built(  # noqa: PLR0913 - subcircuit placement state and survey list
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
@@ -1030,15 +1004,15 @@ class Library:
         *,
         uses: list[Use] | None = None,
     ) -> Built:
-        """The built subcircuit (component, nets, initial state) for an instance."""
+        """Builds a child `Built` placement (component, nets, and initial state)."""
         return self._build(subcircuit, scope, given, drawing, instantiating, uses=uses)
 
 
 def load(*paths: Path | str) -> Library:
-    """The library of the SPICE files at `paths`, with the files they include.
+    """Loads SPICE files at `paths` and their transitive includes into a `Library`.
 
     Raises:
-        SpiceError: When a file holds what jolty cannot read.
+        SpiceError: When any file is unreadable or contains unsupported SPICE syntax.
     """
     library = Library()
     for path in map(Path, paths):

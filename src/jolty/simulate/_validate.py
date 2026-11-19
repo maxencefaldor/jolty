@@ -59,7 +59,7 @@ class Catalog:
     overrides: Mapping[str, Mapping[str, float]]
 
     def parameters(self, path: str) -> tuple[str, ...]:
-        """Every real number parameter path written on the device at `path`."""
+        """Returns every real-valued parameter path defined on the device at `path`."""
         instance = self.devices[path]
         return tuple(
             dict.fromkeys(
@@ -127,7 +127,7 @@ def build_catalog(  # noqa: PLR0913 - elaborated circuit topology and metadata
 def _walk_circuit(
     built: ir.Circuit, substituted: Collection[str]
 ) -> tuple[dict[str, ir.Instance], tuple[str, ...]]:
-    """Active device instances (skipping substituted subtrees) and component paths."""
+    """Collects active device instances (skipping substituted subtrees) and paths."""
     prefixes = tuple(f"{path}/" for path in substituted)
     devices: dict[str, ir.Instance] = {}
     components: list[str] = []
@@ -144,7 +144,7 @@ def _is_probe(
     unknowns: Mapping[str, results.Unknown],
     joined: Callable[[str, str], Joined | None],
 ) -> bool:
-    """Whether `path` is a voltage source with both terminals off ground."""
+    """Returns whether `path` is a floating voltage source off ground."""
     positive = joined(path, "positive")
     negative = joined(path, "negative")
     return (
@@ -157,7 +157,7 @@ def _is_probe(
 
 
 def process_problems(plan: Plan, *, has_foundry: bool) -> list[str]:
-    """Reports process corners on `plan` when the circuit holds no foundry devices."""
+    """Reports process corners on `plan` when the circuit has no foundry devices."""
     if has_foundry:
         return []
     problems: list[str] = []
@@ -198,7 +198,7 @@ def plan_condition_problems(
 def nodeset_problems(
     mapping: Mapping[str, Quantity], what: str, catalog: Catalog
 ) -> list[str]:
-    """Every key in `mapping` that is not a circuit voltage net."""
+    """Collects every key in `mapping` that is not a circuit voltage net."""
     valid = frozenset(catalog.voltage_nets)
     problems: list[str] = []
     for net in mapping:
@@ -444,7 +444,7 @@ def _override_pairs(
 
 
 def variant_pairs(variants: Variants) -> list[tuple[str, str | None]]:
-    """Every `(instance, parameter)` pair referenced by `variants`."""
+    """Collects every `(instance, parameter)` pair referenced by `variants`."""
     match variants:
         case MonteCarlo():
             return []
@@ -467,7 +467,7 @@ def variant_pairs(variants: Variants) -> list[tuple[str, str | None]]:
 def _mismatch_variable_pairs(
     variables: Sequence[ir.RandomVariable],
 ) -> list[tuple[str, str | None]]:
-    """Every `(instance, parameter)` derivative target in `variables`."""
+    """Collects every `(instance, parameter)` derivative target in `variables`."""
     return [
         pair for variable in variables for pair in _override_pairs(variable.derivatives)
     ]
@@ -622,7 +622,7 @@ def analyses_problems(
 
 
 def noise_unit_unknown(analysis: Noise, catalog: Catalog) -> bool:
-    """Whether `analysis`'s output or referred input unit cannot be determined."""
+    """Returns whether the output or input-referred noise unit is undetermined."""
     output_known = (
         analysis.output in catalog.unknowns or analysis.output == catalog.ground
     )
@@ -637,7 +637,7 @@ def noise_unit_unknown(analysis: Noise, catalog: Catalog) -> bool:
 def fidelity_scope_problems(
     scopes: Mapping[str, object], component_paths: tuple[str, ...]
 ) -> list[str]:
-    """Every fidelity scope that matches no component instance."""
+    """Collects every fidelity scope that matches no component instance."""
     problems: list[str] = []
     for scope in scopes:
         if any(PurePosixPath(path).full_match(scope) for path in component_paths):
@@ -651,7 +651,7 @@ def fidelity_scope_problems(
 
 
 def trace_problems(traces: Sequence[str], valid_names: tuple[str, ...]) -> list[str]:
-    """Every trace name in `traces` that is neither an unknown nor a logic net."""
+    """Collects every trace in `traces` that is neither an unknown nor a logic net."""
     valid = frozenset(valid_names)
     problems: list[str] = []
     for trace in dict.fromkeys(traces):
@@ -666,7 +666,7 @@ def trace_problems(traces: Sequence[str], valid_names: tuple[str, ...]) -> list[
 def record_problems(
     record: Sequence[str], instances: tuple[str, ...], known: frozenset[str]
 ) -> list[str]:
-    """Every unknown instance path or unmatched wildcard pattern in `record`."""
+    """Collects unknown instance paths and unmatched wildcard patterns in `record`."""
     problems: list[str] = []
     for pattern in record:
         body = pattern.removeprefix("!")
@@ -684,11 +684,10 @@ def record_problems(
 def resolve_record(
     record: tuple[str, ...], instances: tuple[str, ...], known: frozenset[str]
 ) -> frozenset[str]:
-    """The paths of the instances `record` names.
+    """Resolves the set of instance paths selected by `record`.
 
     Raises:
-        PlanError: When the record names instances the circuit does not have, or holds
-            patterns that match none, listing every problem at once.
+        PlanError: Lists every unknown instance path or unmatched wildcard pattern.
     """
     problems = record_problems(record, instances, known)
     if problems:

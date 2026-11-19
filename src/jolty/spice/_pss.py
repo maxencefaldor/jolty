@@ -58,7 +58,7 @@ class PeriodicSteadyStateCard:
     method: IntegrationMethod | None = None
     """Integration method requested, if given."""
     operating_point: bool = True
-    """Whether to find the operating point first (False when ``uic`` is set)."""
+    """Flag indicating whether an operating point runs first (False with ``uic``)."""
     statement: Statement | None = None
     """The source statement with its file and line number."""
 
@@ -127,7 +127,7 @@ class _PssReader:
                 message = f"invalid .pss {label} `{word}`: {error}"
                 raise self.statement.fail(message) from None
         if not math.isfinite(given):
-            message = f"a .pss {label} must be finite, not `{word}`"
+            message = f"a .pss {label} is finite, not `{word}`"
             raise self.statement.fail(message)
         return given
 
@@ -135,7 +135,7 @@ class _PssReader:
         """Evaluates an optional strictly positive floating-point field."""
         value = self._number(key, label)
         if value is not None and not value > 0.0:
-            message = f"a .pss {label} must be positive, not {value!r}"
+            message = f"a .pss {label} is positive, not {value!r}"
             raise self.statement.fail(message)
         return value
 
@@ -143,7 +143,7 @@ class _PssReader:
         """Evaluates an optional non-negative floating-point field."""
         value = self._number(key, label)
         if value is not None and value < 0.0:
-            message = f"a .pss {label} must be at least 0, not {value!r}"
+            message = f"a .pss {label} is at least 0, not {value!r}"
             raise self.statement.fail(message)
         return value
 
@@ -154,7 +154,7 @@ class _PssReader:
             return None
         if not (value > 0.0 and value.is_integer()):
             raw_value = self.raw[key]
-            message = f"a .pss {label} must be a positive integer, not `{raw_value}`"
+            message = f"a .pss {label} is a positive integer, not `{raw_value}`"
             raise self.statement.fail(message)
         return int(value)
 

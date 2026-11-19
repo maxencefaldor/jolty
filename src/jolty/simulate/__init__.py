@@ -1,13 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""Run analyses on a circuit with the Rust engine.
+"""Circuit elaboration, simulation, batching, and differentiation via the Rust engine.
 
-A [`Simulation`][jolty.simulate.Simulation] elaborates a circuit once, its devices at
-one temperature, 27 °C unless given, and runs any number of analyses on it, or a batch
-of runs of them, each at the values of one of its variants, in one call that spreads
-the runs across the engine's threads. A circuit
-[`Elaborated`][jolty.simulate.Elaborated] once is shared by simulations of it at any
-parameters: each makes its devices again from its parameters, and none elaborates the
-circuit anew.
+A [`Simulation`][jolty.simulate.Simulation] elaborates a circuit once at a chosen
+temperature (27 °C by default) and runs single analyses or parallel parameter batches.
+An [`Elaborated`][jolty.simulate.Elaborated] circuit is elaborated once and reused
+across parameter overrides without re-elaborating the topology.
 
 Examples:
     >>> from jolty import Builder, Role, component, devices
@@ -113,38 +110,37 @@ _ = _settings
 
 
 class Simulation:
-    """A circuit elaborated once, ready to run any number of analyses.
+    """Elaborated circuit prepared to run any number of analyses.
 
-    Each result holds the circuit's unknowns, and what the analysis records of its
-    devices and component instances: their names are made only for what a result
-    records, and its devices are made again to be read only once a result records them.
+    Each analysis result contains the circuit unknowns plus any recorded device and
+    component quantities. Recording metadata is constructed lazily only for recorded
+    instances.
 
-    The engine solves no foundry's device, such as a SKY130 transistor, so ngspice runs
-    the analyses of a circuit that holds one, with its kit's models, as
-    [`foundry`][jolty.foundry] describes.
+    Circuits containing foundry PDK devices (such as SKY130 transistors) delegate
+    execution to ngspice with kit models, as documented in
+    [`foundry`][jolty.foundry].
 
-    Each analysis it runs, alone or in a batch, appends a line to the log the settings'
-    ``analysis_log`` names, if any, as it starts ([`Logged`][jolty.simulate.Logged]).
+    Each executed analysis, standalone or batched, appends a start entry to the
+    configured ``analysis_log`` file when enabled ([`Logged`][jolty.simulate.Logged]).
     """
 
     circuit: ir.Circuit
-    """The circuit, in the canonical format."""
+    """Canonical circuit representation."""
 
     unknowns: tuple[results.Unknown, ...]
-    """The node voltages and branch currents the engine solves for, in its order."""
+    """Node voltages and branch currents solved by the engine, in engine order."""
 
     nets: tuple[str, ...]
-    """The logic nets the event scheduler simulates, in its order."""
+    """Logic nets simulated by the event scheduler, in engine order."""
 
     devices: int
-    """The number of devices, with every component instance unfolded."""
+    """Total unfolded device count across all component instances."""
 
     conditions: Conditions
-    """What the circuit is simulated at."""
+    """Temperature, process corner, overrides, and mismatch seed for the simulation."""
 
     foundry: tuple[str, ...]
-    """The paths of the foundry's devices, which ngspice simulates in the engine's
-    place."""
+    """Paths of foundry devices delegated to ngspice instead of the native engine."""
 
     def __init__(  # noqa: PLR0913 - the circuit, and what it runs at
         self,
@@ -156,14 +152,14 @@ class Simulation:
         process: str | None = None,
         mismatch: int | None = None,
     ) -> None:
-        """Elaborates a circuit, or the circuit with a component at its top.
+        """Elaborates a circuit or a circuit rooted at a top component.
 
         Raises:
-            ElaborationError: With every problem the engine finds, each naming the
-                instance and the line of the build script that placed it.
-            DimensionError: When the temperature is not one.
-            ValueError: When a process corner is given for a circuit that holds no
-                foundry's device.
+            ElaborationError: Lists every problem reported by the engine, naming the
+                instance and build-script line.
+            DimensionError: When `temperature` does not carry temperature dimensions.
+            ValueError: When a process corner is supplied for a circuit containing no
+                foundry devices.
         """
         built = (
             circuit_or_top
@@ -208,14 +204,13 @@ class Simulation:
         process: str | None = None,
         mismatch: int | None = None,
     ) -> Simulation:
-        """The circuit `elaborated` holds, its parameters replaced by `overrides`.
+        """Creates a simulation from `elaborated` with parameter `overrides` applied.
 
         Raises:
-            ElaborationError: With every number `overrides` names that the circuit's
-                devices do not write, and every device whose numbers they put out of
-                range.
-            ValueError: When a process corner is given for a circuit that holds no
-                foundry's device.
+            ElaborationError: Lists unknown parameters in `overrides` or devices whose
+                overridden parameters fall out of range.
+            ValueError: When a process corner is supplied for a circuit containing no
+                foundry devices.
         """
         core = elaborated.simulator(overrides)
         replaced = (elaborated.temperature, overrides, elaborated.substituted)
@@ -366,18 +361,18 @@ class Simulation:
             raise PlanError(problems)
 
     def joined(self, instance: str, terminal: str) -> Joined | None:
-        """Where `terminal` of the device, component instance or logic device joins."""
+        """Returns the node and thermal status for `terminal` on `instance`, if any."""
         found = self._core.terminal(instance, terminal)
         return None if found is None else Joined(*found)
 
     def check(self) -> tuple[checks.Diagnostic, ...]:
-        """Every diagnostic the structural checks find, at its rule's default level."""
+        """Runs structural checks and returns all diagnostics at default levels."""
         return checks.diagnostics(self._core.check())
 
     def check_operating_point(
         self, options: Options | None = None
     ) -> tuple[checks.Diagnostic, ...]:
-        """Every diagnostic of the rules at the circuit's operating point.
+        """Runs operating-point rule checks and returns every resulting diagnostic.
 
         Raises:
             SimulationError: When the circuit has no operating point.
@@ -396,7 +391,7 @@ class Simulation:
     def check_results(
         self, solved: Mapping[str, results.AnalysisResult]
     ) -> tuple[checks.Diagnostic, ...]:
-        """Every diagnostic of the rules on the analyses' results `solved`."""
+        """Evaluates result-level rules on `solved` and returns all diagnostics."""
         return _stress.check_results(
             self.circuit, self._substituted, self.conditions, self.joined, solved
         )
@@ -450,12 +445,12 @@ class Simulation:
     def run(
         self, analysis: Analysis, options: Options | None = None
     ) -> results.AnalysisResult:
-        """Runs `analysis` with `options`, or with the engine's defaults.
+        """Runs `analysis` with `options`, or with engine defaults when omitted.
 
         Raises:
-            SimulationError: When the analysis fails, saying why, or the record names
-                an instance the circuit does not have.
-            JoltyError: When the settings are invalid, or their analysis log cannot be
+            SimulationError: When the analysis fails or `record` names a nonexistent
+                instance.
+            JoltyError: When settings are invalid or the analysis log cannot be
                 written.
         """
         chosen = Options() if options is None else options
@@ -540,7 +535,7 @@ class Simulation:
         return planned.result(found)
 
     def varied(self, variants: Variants) -> tuple[str, ...]:
-        """The numbers `variants` vary, as a batch's result names its columns."""
+        """Returns the column labels for parameters varied by `variants`."""
         return _batch.labels(self._variants(variants).parameters)
 
     def run_plan(
@@ -606,7 +601,7 @@ class Simulation:
         )
 
     def _record(self, analysis: Analysis) -> JsonValue:
-        """What `analysis` records, in the engine's format."""
+        """Encodes the resolved instance recording specification for `analysis`."""
         named = tuple(analysis.record or ()) if isinstance(analysis, Recorded) else ()
         if named not in self._records:
             self._records[named] = _validate.resolve_record(
@@ -621,17 +616,17 @@ class Simulation:
         return {"instances": instances}
 
     def _record_problems(self, record: Sequence[str]) -> list[str]:
-        """Every unknown instance path or unmatched wildcard pattern in `record`."""
+        """Collects unknown instance paths and unmatched patterns in `record`."""
         return _validate.record_problems(record, self.instances, self._known)
 
     @functools.cached_property
     def _known(self) -> frozenset[str]:
-        """Every path a record can name."""
+        """Set of all recordable instance paths in the simulation."""
         return frozenset(self.instances)
 
     @functools.cached_property
     def _rated(self) -> tuple[str, ...]:
-        """The paths of the instances rated for a current or a power."""
+        """Paths of instances rated for current or power limits."""
         return tuple(
             path
             for path, instance in _stress.rated_instances(
@@ -642,12 +637,12 @@ class Simulation:
 
     @functools.cached_property
     def transistors(self) -> tuple[str, ...]:
-        """The paths of the devices whose models distinguish regions of operation."""
+        """Paths of devices whose models report operating regions."""
         recording = self._recording(json.dumps("all"), regions=False)
         return tuple(device.path for device in recording.devices if device.regions)
 
     def _recording(self, record: str, *, regions: bool) -> results.Recording:
-        """What the record whose JSON text is `record` keeps, made once each."""
+        """Builds and caches recording metadata for JSON `record` and `regions`."""
         found = self._recordings.get((record, regions))
         if found is not None:
             return found
@@ -660,11 +655,11 @@ class Simulation:
     def _result(
         self, outcome: _core.AnalysisResult, recording: results.Recording
     ) -> results.AnalysisResult:
-        """The result of `outcome`, which recorded what `recording` says."""
+        """Decodes engine `outcome` using `recording` metadata."""
         return _decode.decode_result(self.unknowns, self.nets, outcome, recording)
 
     def _variants(self, variants: Variants) -> _core.Variants:
-        """`variants` as the engine runs them, of the circuit this simulation runs."""
+        """Compiles `variants` into the engine representation for this circuit."""
         problems = _validate.parameter_pair_problems(
             _validate.variant_pairs(variants), self._catalog
         )
@@ -709,7 +704,7 @@ class Simulation:
                     )
 
     def _view(self, core: _core.Simulator) -> Simulation:
-        """The simulation of the same circuit that the engine's `core` runs."""
+        """Wraps an engine `core` view of the same circuit in a `Simulation`."""
         temperature = Quantity(self.conditions.temperature, TEMPERATURE)
         replaced = (temperature, self.conditions.overrides, self._substituted)
         return Simulation._from_core(self.circuit, core, replaced, (None, None))

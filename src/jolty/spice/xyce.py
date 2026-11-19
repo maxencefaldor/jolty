@@ -1,21 +1,18 @@
 # Copyright 2026 Maxence Faldor
-"""Xyce, run on a deck of SPICE lines, and the values it prints, read.
+"""Subprocess runner and CSV output parser for Sandia Xyce SPICE decks.
 
-Xyce, Sandia's simulator, is under the GPL, so jolty runs it as a separate program and
-never links it. [`run`][jolty.spice.xyce.run] runs one analysis of a deck written in
-Xyce's dialect, [`XYCE`][jolty.spice.export.XYCE], with tolerances as tight as jolty's,
-and reads the values Xyce prints, with the times it reports. Each runs at the
-temperature where Xyce's thermal voltage is jolty's,
-[`option_temperature`][jolty.spice.xyce.option_temperature], so the two engines
-differ by their devices rather than their physical constants.
+Xyce is GPL-licensed, so jolty invokes it as an external executable and never links it.
+[`run`][jolty.spice.xyce.run] executes one analysis in Xyce dialect
+([`XYCE`][jolty.spice.export.XYCE]) with tolerances matched to jolty and parses the
+printed CSV vectors and timing lines. Each run uses
+[`option_temperature`][jolty.spice.xyce.option_temperature] to align thermal voltages
+so differences reflect device models rather than physical constants.
 
-A suite adds Xyce as one more simulator through `run`: the circuit written by
-`jolty.spice.export.netlist` in Xyce's dialect, a refusal there meaning Xyce cannot
-run it; the analysis as Xyce's command; ``options=()`` for Xyce's defaults, its own
-best configuration; the voltages compared as `printed`; and a `timeout`. A
-`JoltyError` is a run that failed, with what Xyce printed; a `Result` holds the values,
-the time from the process's start to its exit, and the time Xyce reports for its
-analyses. [`execute`][jolty.spice.xyce.execute] runs a deck written otherwise.
+Benchmark suites integrate Xyce through `run` using decks exported by
+`jolty.spice.export.netlist` (with ``options=()`` for Xyce default tolerances). Failed
+runs raise `JoltyError` containing Xyce output; successful runs return a `Result` with
+vectors, wall time, and reported solver time. [`execute`][jolty.spice.xyce.execute]
+runs arbitrary pre-assembled decks directly.
 """
 
 import csv
@@ -45,20 +42,21 @@ RELATIVE_TOLERANCE: Final = 1e-6
 jolty's tightest."""
 
 ABSOLUTE_TOLERANCE: Final = 1e-12
-"""The absolute tolerance on every unknown of Xyce's Newton iterations, voltages and
-currents alike: its own default at an operating point, ``NONLIN``'s ``ABSTOL``
-(``N_NLS_NLParams.C``, line 444), below jolty's tightest on voltages."""
+"""Absolute tolerance on every unknown in Xyce Newton iterations.
+
+Matches Xyce's default operating-point ``NONLIN`` ``ABSTOL`` (``N_NLS_NLParams.C``,
+line 444), tighter than jolty's voltage tolerance.
+"""
 
 RESIDUAL_TOLERANCE: Final = 1e-9
-"""The tolerance on the norm of the residual of Xyce's Newton iterations, its
-``RHSTOL``, in amperes: the tightest at which every transient of `test_xyce.py`
-converges, measured on `dogwood` with Xyce 7.10.0; at 1e-14, the transformer's and the
-bipolar amplifier's iterations stop on their rounding, and their steps shrink to
-Xyce's least."""
+"""Newton residual norm tolerance (``RHSTOL``) in amperes for Xyce runs.
+
+Tightest setting at which every transient in `test_xyce.py` converges on Xyce 7.10.0;
+at 1e-14, transformer and BJT amplifier steps stall on floating-point rounding.
+"""
 
 STEP_TOLERANCE: Final = 1e-9
-"""The absolute tolerance on every unknown of Xyce's time steps' error: jolty's
-tightest on voltages, as Xyce takes one tolerance for voltages and currents."""
+"""Absolute time-integration error tolerance matching jolty's tightest voltage bound."""
 
 OPTIONS: Final = (
     (
@@ -71,24 +69,22 @@ OPTIONS: Final = (
     ),
     f".options timeint reltol={RELATIVE_TOLERANCE!r} abstol={STEP_TOLERANCE!r}",
 )
-"""Xyce's options, as tight as jolty's tightest: its Newton iterations, at an operating
-point and in a transient, and its time steps' error.
+"""Xyce tolerance options aligned with jolty's tightest Newton and time-step bounds.
 
-Xyce's tolerances are not SPICE's: its Newton iteration stops on a weighted norm of
-its update and of its residual, and its time steps' error is judged on the unknowns,
-not on the charges. These make each as tight as jolty's tightest makes its own.
+Xyce stops Newton iterations on weighted update and residual norms and bounds time-step
+error on unknowns rather than charges; the values above match jolty's tight tolerances.
 """
 
 TIMEOUT: Final = _process.TIMEOUT
-"""The seconds Xyce may run an analysis."""
+"""Default timeout in seconds for a Xyce subprocess."""
 
 _ANALYSIS_SECONDS: Final = re.compile(
     r"Total Simulation Solvers Run Time:\s*(\S+) seconds"
 )
-"""Where Xyce reports the time of its analyses alone."""
+"""Pattern extracting reported solver-only runtime from Xyce stdout."""
 
 _ELAPSED: Final = re.compile(r"Total Elapsed Run Time:\s*(\S+) seconds")
-"""Where Xyce reports the time from its start, parsing included, to its end."""
+"""Pattern extracting reported total elapsed runtime (including parsing) from stdout."""
 
 _PRINTED: Final = {
     ".op": ("dc", ("v(*)", "i(*)")),
@@ -97,17 +93,15 @@ _PRINTED: Final = {
     ".noise": ("noise", ("onoise", "inoise")),
     ".tran": ("tran", ("v(*)", "i(*)")),
 }
-"""For each analysis Xyce runs, what its ``.print`` line prints, and by default which
-values: every node's voltage and every current, or the noise densities."""
+"""Mapping from Xyce analysis command to ``.print`` kind and default output columns."""
 
 _PRECISION: Final = 16
-"""The digits Xyce prints after a value's point, 17 significant ones, so that each
-number reads back as the same double."""
+"""Decimal fractional digits printed (17 significant digits for IEEE-754 doubles)."""
 
 
 @functools.cache
 def version() -> str | None:
-    """Xyce's version, as it states it, or None when it is not installed.
+    """Returns the installed Xyce version banner, or None when Xyce is unavailable.
 
     Examples:
         >>> version() is None or "Xyce" in version()
@@ -120,12 +114,11 @@ def version() -> str | None:
 
 
 def option_temperature(temperature: float) -> float:
-    """Where Xyce's thermal voltage is jolty's at `temperature`, in degrees Celsius.
+    """Computes Celsius temperature matching jolty thermal voltage at `temperature`.
 
-    The temperature is in kelvins. Running Xyce there, and its models' nominal
-    temperature where it is jolty's, compares the devices rather than the physical
-    constants: Xyce keeps SPICE3's, which put its thermal voltage 29 parts in a million
-    below jolty's at the same kelvins.
+    Accepts `temperature` in kelvins. Xyce uses SPICE3 constants whose thermal voltage
+    sits 29 ppm below jolty at equal kelvins, so adjusting simulation and nominal
+    temperatures isolates device-model differences from physical constants.
 
     Examples:
         >>> round(option_temperature(300.15), 3)
@@ -141,27 +134,25 @@ type Values = npt.NDArray[np.complex128]
 
 @dataclass(frozen=True)
 class Result:
-    """The values one Xyce analysis printed, by lowercase name, and its times.
+    """Vectors and timing measurements parsed from one Xyce analysis run.
 
-    Its scale is ``time`` in a transient and ``frequency`` in a small-signal analysis;
-    a voltage is ``v(node)``, a current ``i(device)``, and the noise densities
-    ``onoise`` and ``inoise``, in V²/Hz and in the input's unit squared per hertz.
+    Scale vectors are ``time`` for transients and ``frequency`` for AC analyses. Node
+    voltages use ``v(node)``, branch currents use ``i(device)``, and noise densities
+    use ``onoise`` and ``inoise`` in squared amplitude per hertz.
     """
 
     vectors: dict[str, Values]
     printed: str
-    """What Xyce printed while it ran."""
+    """Combined stdout and stderr printed by Xyce during the run."""
     analysis_seconds: float
-    """Xyce's time for its analyses alone, in seconds, as it reports it."""
+    """Solver-only runtime reported by Xyce, in seconds."""
     elapsed_seconds: float
-    """Xyce's time from its start to its end, parsing included, in seconds, as it
-    reports it."""
+    """Total runtime including parsing reported by Xyce, in seconds."""
     seconds: float
-    """The time from starting Xyce's process to its exit, in seconds, as jolty
-    measures it."""
+    """Wall-clock process runtime measured by jolty, in seconds."""
 
     def real(self, name: str) -> npt.NDArray[np.float64]:
-        """The real part of the vector `name`."""
+        """Returns the real part of the vector `name`."""
         return self.vectors[name].real
 
 
@@ -175,19 +166,17 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
     launch: Sequence[str] | None = None,
     timeout: float | None = TIMEOUT,
 ) -> Result:
-    """Runs one analysis command in Xyce and reads the values it prints.
+    """Runs one Xyce analysis command on `deck` and parses its printed CSV values.
 
-    The `analysis` is Xyce's own command, such as ``.dc V1 0 1 0.1``; Xyce prints the
-    values `printed`, by default every node's voltage and every current, or a noise
-    analysis's densities. `options` replace the tight options. It runs at jolty's
-    `temperature`, in kelvins, its models' nominal temperature at jolty's 27 °C, by
-    the command `launch`, the serial Xyce on the path unless given, such as
-    ``mpirun -np 4 Xyce`` for its parallel build, for at most `timeout` seconds, or as
-    long as it takes if None.
+    `analysis` is a Xyce analysis card such as ``.dc V1 0 1 0.1``. Xyce prints the
+    columns in `printed` (defaulting to all node voltages and branch currents, or noise
+    densities). `options` replaces the default tight tolerances. The run aligns thermal
+    voltage with `temperature` (in kelvins) and nominal 27 °C, invokes `launch`
+    (defaulting to serial ``Xyce``, or e.g. ``mpirun -np 4 Xyce``), and enforces
+    `timeout` seconds unless None.
 
     Raises:
-        JoltyError: When Xyce is not installed, runs out of time, fails, or prints no
-            values.
+        JoltyError: When Xyce is unavailable, times out, fails, or prints no values.
     """
     parts = analysis.split(maxsplit=1)
     if not parts:
@@ -233,12 +222,11 @@ class XyceTimeoutError(JoltyError):
 
 @dataclass(frozen=True, slots=True)
 class Executed(_process.Executed[str]):
-    """What one run of Xyce on a deck left, and how long it took."""
+    """Raw output, exit code, elapsed wall time, and CSV text from one Xyce run."""
 
 
 VALUES: Final = "result.csv"
-"""The file a deck run by [`execute`][jolty.spice.xyce.execute] prints its values to,
-which it reads back."""
+"""CSV filename written by decks executed via [`execute`][jolty.spice.xyce.execute]."""
 
 
 def execute(
@@ -247,22 +235,17 @@ def execute(
     launch: Sequence[str] | None = None,
     timeout: float | None = TIMEOUT,
 ) -> Executed:
-    """Runs Xyce by the command `launch` on the lines `deck`, in a directory of its own.
+    """Runs Xyce via `launch` on `deck` inside a dedicated temporary directory.
 
-    The deck is written to ``circuit.cir`` in a temporary directory, which the run
-    takes as its own, so the file its ``.print`` names, `VALUES`, is read back from
-    there; the run is stopped after `timeout` seconds, or never if None. `launch` is
-    the serial Xyce on the path unless given, such as ``mpirun -np 4 Xyce`` for its
-    parallel build.
-
-    It is the one way jolty runs Xyce, as
-    [`ngspice.execute`][jolty.spice.ngspice.execute] is ngspice's:
-    [`run`][jolty.spice.xyce.run] writes its deck and reads its values around it.
+    Writes `deck` to ``circuit.cir`` in a fresh temporary working directory and reads
+    back `VALUES` written by ``.print``. Enforces `timeout` seconds unless None.
+    Defaults `launch` to serial ``Xyce`` on PATH (supporting wrappers such as
+    ``mpirun -np 4 Xyce``). Serves as the single Xyce process entry point parallel to
+    [`ngspice.execute`][jolty.spice.ngspice.execute].
 
     Raises:
-        JoltyError: When Xyce is not installed and no `launch` is given.
-        XyceTimeoutError: When it runs for more than `timeout` seconds, with what it
-            had printed.
+        JoltyError: When Xyce is unavailable and no `launch` command is supplied.
+        XyceTimeoutError: When the process exceeds `timeout` seconds.
     """
     if launch is None:
         if EXECUTABLE is None:
@@ -282,17 +265,16 @@ def execute(
 
 
 _SCALES: Final = {"time": "time", "freq": "frequency"}
-"""The names of the scales Xyce prints, and jolty's."""
+"""Mapping from Xyce CSV scale column headers to jolty scale names."""
 
 _COMPLEX_PART: Final = re.compile(r"(re|im)\((.*)\)")
 """Pattern matching a case-folded complex CSV column header."""
 
 
 def _read(text: str) -> dict[str, Values]:
-    """The columns of the values Xyce printed as CSV, by lowercase name.
+    """Parses CSV columns printed by Xyce into complex vectors keyed by lowercase name.
 
-    A complex value's real and imaginary parts, ``Re(V(OUT))`` and ``Im(V(OUT))``,
-    make one vector.
+    Combines matching ``Re(...)`` and ``Im(...)`` columns into a single complex vector.
     """
     rows = [row for row in csv.reader(text.splitlines()) if row]
     if len(rows) < 2:  # noqa: PLR2004 - a header and a row of values at least

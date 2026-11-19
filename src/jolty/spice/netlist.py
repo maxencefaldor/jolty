@@ -20,14 +20,14 @@ from jolty.errors import SpiceError
 
 @dataclass(frozen=True, slots=True)
 class Statement:
-    """One statement of a SPICE file, with the file and the line it starts on."""
+    """Logical SPICE statement joined across continuations, with source location."""
 
     file: str
     line: int
     text: str
 
     def fail(self, message: str) -> SpiceError:
-        """An error stating `message` about this statement."""
+        """Builds a `SpiceError` attributing `message` to this statement's location."""
         return SpiceError(f"{self.file}:{self.line}: {message}: `{self.text}`")
 
 
@@ -54,7 +54,7 @@ def _strip_comment(text: str) -> str:
 
 
 def statements(text: str, file: str = "<text>") -> list[Statement]:
-    """The statements of `text`, from the file `file`."""
+    """Splits SPICE source `text` from `file` into logical statements."""
     found: list[Statement] = []
     for number, raw in enumerate(text.splitlines(), start=1):
         printable = (
@@ -89,11 +89,11 @@ _CLOSING: Final = {"(": ")", "{": "}", "'": "'", '"': '"'}
 
 
 def tokens(text: str) -> list[str]:
-    """The tokens of a statement: words, ``=``, and groups kept whole.
+    """Splits a SPICE statement into words, ``=`` delimiters, and grouped expressions.
 
-    A group is in parentheses, braces or quotes; one in parentheses joins a word it
-    follows directly, as in ``POLY(2)``. Commas between tokens separate them, as spaces
-    do.
+    Parenthesized, braced, and quoted groups stay intact; a parenthesized group
+    directly following a word attaches to it (as in ``POLY(2)``). Commas and
+    whitespace act as token separators.
     """
     found: list[str] = []
     current = ""
@@ -131,9 +131,9 @@ def _flush(found: list[str], current: str) -> str:
 
 
 def _group_end(text: str, start: int) -> int:
-    """Where the group opening at `start` ends: after its closing mark.
+    """Returns the exclusive end index of the delimited group starting at `start`.
 
-    A group that never closes ends with `text`.
+    Returns `len(text)` when the opening delimiter has no matching closing delimiter.
     """
     opening = text[start]
     closing = _CLOSING[opening]

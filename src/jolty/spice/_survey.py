@@ -19,26 +19,24 @@ from jolty.spice.models import ModelCard
 from jolty.spice.netlist import Statement, tokens
 
 VERILOG_A: Final = "Verilog-A"
-"""What a survey names the model of an ``N`` element by, before its module's name: a
-model ngspice loads compiled from Verilog-A, through OSDI."""
+"""Survey label prefix for Verilog-A OSDI models referenced by ``N`` elements."""
 
 SIZES: Final = {"l": "length", "w": "width"}
-"""A MOSFET's sizes its bins are selected by, by their SPICE names, and what each is."""
+"""MOSFET bin-selection dimension keys mapped from SPICE names to full names."""
 
 MULTIPLIED: Final = frozenset("rcldjmqx")
-"""The elements, by letter, that a subcircuit's multiplier `m` multiplies, which a
-subcircuit is given where it has no parameter of that name.
+"""Element letters scaled by a subcircuit multiplier `m` when `m` is not a formal
+subcircuit parameter.
 
-ngspice multiplies each of its elements but its V, E, H, A, K, N, O, P, S, T, U, W and Y
-elements and its B sources of a voltage (``inpcom.c``, lines 4240 to 4256): a
-resistor's and an inductor's value divided by it, a capacitor's multiplied, and a
-diode's, a transistor's and a subcircuit instance's copies `m` multiplied. jolty does
-not multiply sources of a current, I, F, G and B elements, yet, and refuses them under a
-multiplier other than 1."""
+Matches ngspice (``inpcom.c``, lines 4240 to 4256): resistors and inductors divide by
+`m`, capacitors multiply by `m`, and diodes, transistors, and subcircuits multiply
+their copy count `m`. Current sources (`I`, `F`, `G`, and `B`) are not multiplied yet
+and fail when `m != 1`.
+"""
 
 UNMULTIPLIED: Final = frozenset("ifg")
-"""The elements, by letter, that ngspice multiplies by a subcircuit's multiplier and
-jolty does not yet: sources of a current, but for B sources, which say so themselves."""
+"""Current-source element letters scaled by ngspice under a subcircuit multiplier and
+rejected by jolty (excluding `B` sources, which check separately)."""
 
 ELEMENT_KINDS: Final = {
     "r": "resistor",
@@ -54,7 +52,7 @@ ELEMENT_KINDS: Final = {
     "k": "mutual inductance",
     "t": "transmission line",
 }
-"""What an element of a letter is when it names no model card."""
+"""Readable element kind names keyed by SPICE letter when no model card applies."""
 
 UNREAD_ELEMENTS: Final = {
     "o": "ngspice's lossy transmission line, LTRA",
@@ -62,10 +60,10 @@ UNREAD_ELEMENTS: Final = {
     "y": "ngspice's lossy transmission line, TXL",
     "p": "ngspice's coupled transmission lines, CPL",
 }
-"""The elements ngspice has and jolty reads not yet, by letter, and what each is."""
+"""Unsupported ngspice transmission-line element letters mapped to descriptions."""
 
 BIN_SUFFIX: Final = re.compile(r"\.\d+$")
-"""A bin's number after its model's name, as in ``nmos_3p3.12``."""
+"""Numeric bin suffix appended to a binned model name, as in ``nmos_3p3.12``."""
 
 _FAMILIES: Final = {
     "nmos": "MOSFET",
@@ -79,7 +77,7 @@ _FAMILIES: Final = {
     "c": "capacitor's model card",
     "l": "inductor's model card",
 }
-"""What a model card of each type models, by its type."""
+"""Device family labels keyed by case-folded SPICE `.model` card type."""
 
 _LEVELS: Final = {
     "MOSFET": {
@@ -98,41 +96,38 @@ _LEVELS: Final = {
         **{int(level): "VBIC" for level in models.VBIC_LEVELS},
     },
 }
-"""ngspice's models of a MOSFET and a bipolar transistor named apart, by their cards'
-levels, of which ngspice reads level 1 by default (``inpdomod.c``)."""
+"""Named ngspice MOSFET and bipolar model families keyed by card level
+(``inpdomod.c``)."""
 
 
 @dataclass(frozen=True, slots=True)
 class Use:
-    """An element of a subcircuit, the model it needs, and why jolty cannot read it."""
+    """Survey record describing one subcircuit element, its model, and any error."""
 
     element: str
-    """Its path within the subcircuit, such as ``X1/Q1``; empty for the subcircuit's
-    own definitions."""
+    """Hierarchical path within the subcircuit (such as ``X1/Q1``), or empty for
+    subcircuit-level diagnostics."""
     model: str
-    """The model it needs, such as ``BSIM4 4.5 (level 54)``, or the element's kind."""
+    """Model description (such as ``BSIM4 4.5 (level 54)``) or element kind."""
     problem: str | None = None
-    """Why jolty cannot translate it, if it cannot."""
+    """Reason translation failed, or None when translation succeeded."""
     undefined: str | None = None
-    """The parameter it reads that has no value, which an instance gives, if that is
-    why it cannot be translated."""
+    """Undefined parameter name required by the element, when applicable."""
     middle: tuple[float, float] | None = None
-    """The length and the width, in meters, at the middle of the first bin of the model
-    it names, if it cannot be translated as no bin holds its size."""
+    """Midpoint `(length, width)` in meters of the first model bin when unbinned."""
     placed: tuple[str, Mapping[str, float]] | None = None
-    """The subcircuit it places and the parameters it gives it, if it places one."""
+    """Subcircuit name and argument dictionary for a subcircuit placement."""
 
 
 class UnbinnedError(SpiceError):
-    """An element names a binned model, none of whose bins holds its size."""
+    """Error raised when a binned model has no bin containing an instance's size."""
 
     def __init__(self, message: str, middle: tuple[float, float]) -> None:
-        """The error `message` states, and its model's first bin's `middle`."""
+        """Initializes an unbinned-model error with `message` and first-bin `middle`."""
         super().__init__(message)
         self.middle = middle
-        """The length and the width, in meters, at the middle of the ranges of the
-        first bin of its model, its width multiplied by its fingers where they divide
-        it."""
+        """Midpoint `(length, width)` in meters of the first model bin, with width
+        multiplied by finger count when width is divided per finger."""
 
 
 def bin_base(key: str) -> str | None:
@@ -158,10 +153,10 @@ def describe_card(
     scope: Mapping[str, float],
     functions: Mapping[str, Function] = NO_FUNCTIONS,
 ) -> str:
-    """The model `card` makes, by its type and level, and its version if it gives one.
+    """Formats a human-readable model description for `card` with level and version.
 
-    A MOSFET, a bipolar transistor and a diode are named with their levels, such as
-    ``BSIM4 4.5 (level 54)``, the level evaluated in `scope` with `functions` inlined.
+    MOSFETs, bipolar transistors, and diodes include their evaluated level (such as
+    ``BSIM4 4.5 (level 54)``) using `scope` and inlined `functions`.
     """
     family = _FAMILIES.get(card.kind, f"`{card.kind}`")
     if family not in {*_LEVELS, "diode"}:
@@ -185,13 +180,12 @@ def needed_model(
     scope: Mapping[str, float],
     functions: Mapping[str, Function],
 ) -> str:
-    """The model the element `statement` needs, as a reader states it.
+    """Identifies the model or element kind required by `statement` for survey output.
 
-    A card's model is named by its type and level, and its version where it gives one,
-    such as ``BSIM4 4.5 (level 54)``; an ``N`` element's is the Verilog-A module its
-    card names; an element of no card is named by its kind, a capacitor of a charge
-    ``Q`` and one whose value reads a voltage so, and a placed subcircuit needs nothing
-    of its own, its elements' models being stated apart.
+    Named model cards format via `describe_card`; ``N`` elements report their
+    Verilog-A module; cardless elements report their element kind (distinguishing
+    charge-based and voltage-dependent capacitors). Subcircuit placements (`X`) return
+    an empty string because their inner elements report individually.
     """
     element_letter = letter(statement)
     if element_letter == "x":

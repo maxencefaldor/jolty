@@ -1,9 +1,9 @@
 # Copyright 2026 Maxence Faldor
-"""IHP's SG13G2 process: its model files, as its open process kit publishes them.
+"""IHP SG13G2 open process design kit model definitions for ngspice.
 
-[`KIT`][jolty.spice.sg13g2.KIT] pins them, as [`kits.read`][jolty.spice.kits.read]
-reads them. Its transistors, resistors and varactors are Verilog-A models, which ngspice
-loads compiled by OpenVAF; its bipolar transistors are VBICs.
+[`KIT`][jolty.spice.sg13g2.KIT] pins the published model files for loading through
+[`kits.read`][jolty.spice.kits.read]. Transistors, resistors, and varactors use
+Verilog-A models compiled by OpenVAF for ngspice, while HBTs use VBIC models.
 """
 
 from pathlib import PurePosixPath
@@ -12,17 +12,16 @@ from typing import Final
 from jolty.spice.kits import Corners, Fetched, Kit
 
 VERSION: Final = "e73adb4045731ddec21634146d536380057f6a26"
-"""The commit of IHP's open process kit whose ngspice models jolty pins, the one whose
-Verilog-A models `tests/test_veriloga.py` compiles."""
+"""Pinned IHP-Open-PDK commit matching `tests/test_veriloga.py`."""
 
 _SOURCES: Final = (
     "https://raw.githubusercontent.com/IHP-GmbH/IHP-Open-PDK/"
     f"{VERSION}/ihp-sg13g2/libs.tech/ngspice/models/"
 )
-"""Where IHP publishes SG13G2's ngspice models."""
+"""Base raw GitHub URL for published SG13G2 ngspice model files."""
 
 DIRECTORY: Final = PurePosixPath("ihp-sg13g2/libs.tech/ngspice/models")
-"""Where open_pdks installs SG13G2's ngspice models."""
+"""Installation path of SG13G2 ngspice models under open_pdks."""
 
 _FILES: Final = {
     "cap_cmomf.lib": "410001def252a236f221442efcea6353874d1614db593db4142ea3b8a499a207",
@@ -138,7 +137,7 @@ they differ, each with its mismatch after it."""
 
 
 def _corner_triplet(prefix: str) -> tuple[str, ...]:
-    """Typical, best-case, and worst-case sections for `prefix`, each with mismatch."""
+    """Returns typical, best-case, and worst-case section names with mismatch."""
     return tuple(
         f"{prefix}_{corner}{mismatch}"
         for corner in ("typ", "bcs", "wcs")
@@ -174,8 +173,8 @@ KIT: Final = Kit(
         (DIRECTORY / "cornerMOSCAP.lib", "moscap_tt_stat"),
     ),
 )
-"""SG13G2's model files: the corners of its low- and high-voltage transistors, of its
-bipolar transistors, resistors and capacitors, typical, best and worst case, of its
-diodes and of its MOS capacitors, each with its mismatch where it has one; and their
-statistical sections, which draw the process's variation. ``sg13g2_bondpad.lib``, its
-bond pad, which no section reads, comes first."""
+"""SG13G2 kit definition covering MOS, HBT, passive, diode, and MOSCAP corners.
+
+Includes standalone ``sg13g2_bondpad.lib`` first, followed by corner sections with
+mismatch variants and statistical process-variation sections.
+"""

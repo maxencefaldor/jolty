@@ -1,13 +1,14 @@
 # Copyright 2026 Maxence Faldor
-r"""Read SPICE libraries, such as a vendor's macromodel of an op-amp, as components.
+r"""SPICE library import, external simulator runners, and open PDK definitions.
 
 [`load`][jolty.spice.load] reads SPICE files into a [`Library`][jolty.spice.Library],
-whose subcircuits each become a component to place: its pins are its ports, in order,
-and a subcircuit that reaches SPICE's global ground, node ``0``, has a ``ground`` port
-too. Elements read as PSpice and ngspice read them, with their parameters, ``POLY``,
-``VALUE`` and ``TABLE`` sources, and switches; whatever jolty does not model is an error
-that names the file and the line, never silently dropped. [`fetch`][jolty.spice.fetch]
-downloads a model file from where its maker publishes it, checked against its digest.
+converting each subcircuit into a placeable component whose ports match its pin list in
+order. Subcircuits referencing SPICE global ground (node ``0``) automatically expose a
+``ground`` port. Elements follow PSpice and ngspice syntax, supporting parameters,
+``POLY``, ``VALUE``, and ``TABLE`` sources, and switches; unsupported constructs raise
+errors with exact file and line numbers rather than being silently ignored.
+[`fetch`][jolty.spice.fetch] downloads published model files and verifies their SHA-256
+digests.
 
 Examples:
     >>> library = Library()

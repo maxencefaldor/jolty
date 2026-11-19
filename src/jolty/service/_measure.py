@@ -92,7 +92,7 @@ class MeasureRequest(FrozenModel):
     analysis: str | None = Field(
         default=None,
         description="Name of the analysis in the results file; optional when the file "
-        "holds a single analysis.",
+        "contains a single analysis.",
     )
     signal: str | None = Field(
         default=None,
@@ -165,8 +165,8 @@ class MeasureRequest(FrozenModel):
     )
     referred: bool = Field(
         default=False,
-        description="Whether noise_density or integrated_noise is referred to the "
-        "input source.",
+        description="Input-referred flag for noise_density or integrated_noise when "
+        "true.",
     )
 
 
@@ -202,19 +202,20 @@ def select_analysis(
     loaded: Mapping[str, results.AnalysisResult],
     analysis: str | None,
 ) -> tuple[str, results.AnalysisResult]:
-    """The named analysis from `loaded`, or the sole analysis when `analysis` is None.
+    """Returns the named analysis from `loaded`, or the sole entry when omitted.
 
     Raises:
         JoltyError: Naming available analyses when selection is missing or ambiguous.
     """
     if analysis is None:
         if not loaded:
-            message = f"{path} holds no analyses"
+            message = f"{path} contains no analyses"
             raise JoltyError(message)
         if len(loaded) > 1:
             available = ", ".join(loaded)
             message = (
-                f"{path} holds {len(loaded)} analyses ({available}); analysis is unset"
+                f"{path} contains {len(loaded)} analyses ({available}); "
+                "analysis is unset"
             )
             raise JoltyError(message)
         sole = next(iter(loaded))
@@ -223,13 +224,13 @@ def select_analysis(
         if loaded:
             available = ", ".join(loaded)
             message = (
-                f"{path} holds no analysis named {analysis!r}; "
+                f"{path} contains no analysis named {analysis!r}; "
                 f"the analyses are {available}"
             )
         else:
             message = (
-                f"{path} holds no analysis named {analysis!r}; "
-                "the file holds no analyses"
+                f"{path} contains no analysis named {analysis!r}; "
+                "the file contains no analyses"
             )
         raise JoltyError(message)
     return analysis, loaded[analysis]
@@ -343,7 +344,7 @@ def _dimension(
 
 
 def _axis_dimension(result: results.AnalysisResult) -> Dimension:
-    """The dimension of a transient's or DC sweep's axis; seconds otherwise."""
+    """Returns the axis dimension of a transient or DC sweep, defaulting to time."""
     if isinstance(result, results.DcSweepResult):
         if result.nature is None:
             return DIMENSIONLESS
@@ -352,7 +353,7 @@ def _axis_dimension(result: results.AnalysisResult) -> Dimension:
 
 
 def _signal_dimension(result: results.AnalysisResult, signal: str) -> Dimension:
-    """The dimension of `signal` in `result.unknowns` (voltage for non-transients)."""
+    """Returns the dimension of `signal` in `result.unknowns`, defaulting to voltage."""
     if not isinstance(result, results.TransientResult):
         return VOLTAGE
     index = results.column(result.unknowns, signal)
@@ -360,7 +361,7 @@ def _signal_dimension(result: results.AnalysisResult, signal: str) -> Dimension:
 
 
 def _available_unknowns(unknowns_list: tuple[Unknown, ...], limit: int) -> str:
-    """The unknown names in `unknowns_list`, capped at `limit`."""
+    """Formats up to `limit` unknown names from `unknowns_list`."""
     if not unknowns_list:
         return "none"
     names = [unknown.name for unknown in unknowns_list]

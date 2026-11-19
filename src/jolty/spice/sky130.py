@@ -1,13 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""SkyWater's SKY130 process: its transistors, which ngspice simulates with its models.
+"""SkyWater SKY130 foundry transistor primitives and ngspice kit configuration.
 
-[`mosfet`][jolty.spice.sky130.mosfet] places a transistor of the process, a foundry's
-device, which the engine checks but does not solve: a plan of a circuit that holds one
-runs in ngspice, with the process design kit's models. jolty pins one release of the
-kit, as open_pdks builds it and ciel publishes it, [`KIT`][jolty.spice.sky130.KIT],
-which [`kits.root`][jolty.spice.kits.root] fetches into the cache the first time, each
-archive checked against its SHA-256 digest, or finds installed where the settings'
-``pdk_root`` says.
+The [`mosfet`][jolty.spice.sky130.mosfet] helper creates a foundry device that the
+native engine checks structurally while delegating simulation to ngspice with SKY130
+models. Constant [`KIT`][jolty.spice.sky130.KIT] pins one open_pdks release published
+by ciel. Calling [`kits.root`][jolty.spice.kits.root] downloads and verifies each
+archive against its SHA-256 digest into the cache or uses a local ``pdk_root``
+installation.
 
 Examples:
     >>> from jolty.units import um
@@ -29,26 +28,22 @@ from jolty.spice.ngspice import Running
 from jolty.units import LENGTH, Quantity
 
 VERSION: Final = "bdc9412b3e468c102d01b7cf6337be06ec6e9c9a"
-"""The commit of open_pdks whose build of SKY130 jolty pins."""
+"""Pinned open_pdks commit hash for the SKY130 release."""
 
 LIBRARY: Final = PurePosixPath("sky130A/libs.tech/ngspice/sky130.lib.spice")
-"""Where the model library ngspice reads lies within the kit's root."""
+"""Relative path of the top-level ngspice model library within the PDK root."""
 
 TYPICAL: Final = "tt"
-"""The typical process corner, which a foundry's devices run at unless another is
-named."""
+"""Default typical process corner when no corner is specified."""
 
 CORNERS: Final = ("tt", "ff", "ss", "sf", "fs", "ll", "hh", "hl", "lh")
-"""The process corners of the model library: typical, then fast and slow, n-channel
-first where they differ, and the corners of its resistors and capacitors, low and high,
-with the transistors at theirs."""
+"""Supported SKY130 process corners (transistor fast/slow and RC low/high corners)."""
 
 MISMATCH: Final = "_mm"
-"""What a corner's name takes after it to name its section that draws each transistor's
-mismatch."""
+"""Section suffix enabling per-transistor statistical mismatch."""
 
 _RELEASES: Final = "https://github.com/fossi-foundation/ciel-releases/releases/download"
-"""Where ciel publishes the releases of the kits it builds."""
+"""Base download URL for ciel prebuilt open PDK release archives."""
 
 KIT: Final = Kit(
     name="sky130",
@@ -80,10 +75,7 @@ KIT: Final = Kit(
     ),
     compatibility="hsa",
 )
-"""The release's archives, each with its digest and the directory it keeps: the model
-library, and the models of the primitive devices it includes; the library's corners,
-each with its mismatch after it; and HSPICE's compatibility, which the library asks
-ngspice for."""
+"""Pinned SKY130 ciel release archives, digests, corner sections, and HSPICE mode."""
 
 
 TRANSISTORS: Final = (
@@ -99,10 +91,11 @@ TRANSISTORS: Final = (
     "nfet_g5v0d16v0",
     "pfet_g5v0d16v0",
 )
-"""The transistors of the process jolty places, by the names of their models without
-the library's prefix: the 1.8 V core transistors, of standard, low or high threshold,
-the native ones of 3.3 V and 5 V, and those of 5 V gates whose drains stand 10.5 V or
-16 V."""
+"""Supported SKY130 MOSFET model suffixes without the ``sky130_fd_pr__`` prefix.
+
+Covers 1.8 V core transistors (standard, low, and high threshold), 3.3 V and 5 V native
+devices, and 5 V gate devices rated for 10.5 V or 16 V drains.
+"""
 
 PREFIX: Final = "sky130_fd_pr__"
 """The prefix of the names of the primitive devices' models."""
@@ -112,8 +105,7 @@ SCALE: Final = 1e-6
 sets ngspice's ``scale`` to a micrometer."""
 
 DIFFUSION: Final = 0.29
-"""The length of the diffusion beside each finger, in micrometers, from which the kit's
-xschem symbols estimate a transistor's diffusion areas and perimeters."""
+"""Diffusion length adjacent to each finger in micrometers for area estimation."""
 
 
 def mosfet(
@@ -124,19 +116,22 @@ def mosfet(
     fingers: int = 1,
     multiplier: int = 1,
 ) -> Device:
-    """The kit's `transistor`, of `width`, all its `fingers` together, and `length`.
+    """Creates a SKY130 `transistor` device with total `width`, `length`, and `fingers`.
 
-    Its terminals are ``drain``, ``gate``, ``source`` and ``bulk``, and `multiplier`
-    transistors stand in parallel. ngspice simulates it with the kit's model, which
-    bins its sizes: a size that no bin of the model holds fails in ngspice.
+    The device exposes ``drain``, ``gate``, ``source``, and ``bulk`` terminals with
+    `multiplier` parallel copies. ngspice simulates the device using binned SKY130
+    models; dimensions outside every model bin fail in ngspice.
 
     Raises:
-        ValueError: When no transistor of the process is named `transistor`, a size is
-            not positive, or the fingers or the multiplier are fewer than one.
-        DimensionError: When a size is not a length.
+        ValueError: When `transistor` is unknown, dimensions are non-positive, or
+            `fingers` or `multiplier` is less than 1.
+        DimensionError: When `width` or `length` does not carry length dimensions.
     """
     if transistor not in TRANSISTORS:
-        message = f"SKY130 has no transistor {transistor!r}: it has {TRANSISTORS}"
+        message = (
+            f"SKY130 has no transistor {transistor!r}; "
+            f"available transistors: {TRANSISTORS}"
+        )
         raise ValueError(message)
     sizes: dict[str, float] = {
         "width": width.to(LENGTH, "a transistor's width"),
@@ -163,15 +158,15 @@ def mosfet(
 
 
 def written(parameters: Mapping[str, JsonValue]) -> str:
-    """The model and the instance parameters a netlist writes for a SKY130 transistor.
+    """Formats the SPICE model name and instance parameters for a SKY130 transistor.
 
-    Its sizes are in micrometers, as the kit's library scales them, and its diffusions'
-    areas and perimeters, and their squares, are estimated from `DIFFUSION`, as the
-    kit's xschem symbols estimate them; the multiplier is the kit's ``mult``, for its
-    mismatch, and ngspice's ``m``.
+    Scales dimensions to micrometers to match the PDK ``scale`` option and estimates
+    drain and source diffusion areas, perimeters, and squares from `DIFFUSION` as in
+    SKY130 xschem symbols. Emits both ``mult`` (for PDK mismatch) and ``m`` (for
+    ngspice multiplicity).
 
     Raises:
-        ValueError: When the parameters are not a SKY130 transistor's.
+        ValueError: When `parameters` are invalid for a SKY130 transistor.
     """
     match parameters:
         case {
@@ -233,17 +228,19 @@ def written(parameters: Mapping[str, JsonValue]) -> str:
 
 
 def running(process: str | None, *, mismatched: bool) -> Running:
-    """How ngspice reads the kit's model library: at the corner `process`.
+    """Builds ngspice library section and compatibility options for SKY130 `process`.
 
-    The corner is the library's typical one unless given, and each transistor draws its
-    mismatch when `mismatched`.
+    Defaults to the typical corner when `process` is None, appending the mismatch
+    section suffix when `mismatched` is true.
 
     Raises:
-        SimulationError: When the library has no such corner.
+        SimulationError: When `process` is not a supported SKY130 corner.
     """
     corner = TYPICAL if process is None else process
     if corner not in CORNERS:
-        message = f"SKY130 has no process corner {corner!r}: it has {CORNERS}"
+        message = (
+            f"SKY130 has no process corner {corner!r}; available corners: {CORNERS}"
+        )
         raise SimulationError(message)
     section = f"{corner}{MISMATCH}" if mismatched else corner
     return {
@@ -253,19 +250,19 @@ def running(process: str | None, *, mismatched: bool) -> Running:
 
 
 def inner(element: str, model: str) -> str:
-    """The name ngspice gives the transistor within the kit's subcircuit `element`.
+    """Returns the internal ngspice MOSFET path inside SKY130 subcircuit `element`.
 
-    The kit's subcircuit names it after its model, so the transistor of ``XM1``, an
-    ``nfet_01v8``, is ``m.xm1.msky130_fd_pr__nfet_01v8``.
+    SKY130 subcircuits name the inner transistor after its model, so ``XM1`` of
+    ``nfet_01v8`` maps to ``m.xm1.msky130_fd_pr__nfet_01v8``.
     """
     return f"m.{element}.m{model}".lower()
 
 
 def _micrometers(size: float) -> float:
-    """`size`, in meters, in micrometers, to twelve significant digits."""
+    """Converts `size` from meters to micrometers with twelve significant digits."""
     return float(f"{size / SCALE:.12g}")
 
 
 def _rounded(value: float) -> str:
-    """`value` to twelve significant digits, as SPICE reads it."""
+    """Formats `value` to twelve significant digits for SPICE netlist output."""
     return repr(float(f"{value:.12g}")) if isinstance(value, float) else str(value)

@@ -24,30 +24,28 @@ _NO_FUNCTIONS: Final[Mapping[str, Function]] = MappingProxyType({})
 
 
 def letter(statement: Statement) -> str:
-    """The letter of an element's statement, which says what kind of element it is."""
+    """Returns the case-folded leading element type letter of `statement`."""
     return statement.text[0].casefold()
 
 
 def keyword(statement: Statement) -> str:
-    """A statement's first word, case-folded, such as ``.param``."""
+    """Returns the case-folded first word of `statement` (such as ``.param``)."""
     return statement.text.split(maxsplit=1)[0].casefold()
 
 
 def expanded(
     path: Path, section: str | None, within: tuple[tuple[Path, str | None], ...]
 ) -> list[Statement]:
-    """The statements of the file at `path`, or of its section `section`, expanded.
+    """Reads and expands SPICE statements from `path`, optionally selecting `section`.
 
-    As ngspice reads them, each ``.include`` is replaced by its file's statements and
-    each ``.lib file section`` by that section's, both outside and inside subcircuits,
-    a file's path read from the directory of the file that names it; a file read whole
-    holds its statements outside its sections, which ``.lib name`` and ``.endl``
-    enclose. `within` lists the files and sections being read already, which include
-    this one.
+    Expands ``.include`` and ``.lib file section`` directives relative to the
+    including file directory, both globally and inside subcircuits. Reading a file
+    without `section` collects statements outside ``.lib name ... .endl`` sections.
+    Active `(path, section)` frames in `within` detect include cycles.
 
     Raises:
-        SpiceError: When the file is missing, has no such section, or files include one
-            another in a cycle.
+        SpiceError: When `path` cannot be read, `section` is missing, or includes form
+            a cycle.
     """
     reading = (path.resolve(), None if section is None else section.casefold())
     if reading in within:
@@ -111,9 +109,8 @@ def expanded_text(
             continue
         words = [word.strip("'\"") for word in tokens(line)]
         directive = words[0].casefold() if words else ""
-        if (
-            subcircuit_depth == 0 and directive == ".lib" and len(words) == 2  # noqa: PLR2004 - `.lib` and a name
-        ):
+        section_header = len(words) == 2  # noqa: PLR2004 - `.lib` and a name
+        if subcircuit_depth == 0 and directive == ".lib" and section_header:
             if opened is not None:
                 message = f"a section opens within section `{opened}`"
                 raise statement.fail(message)
@@ -134,10 +131,10 @@ def _included(
     directory: Path,
     within: tuple[tuple[Path, str | None], ...],
 ) -> list[Statement]:
-    """`statement` in `directory`, of `words`, or what it includes, expanded.
+    """Expands `statement` if it is a `.include`/`.lib` directive, else returns it.
 
     Raises:
-        SpiceError: When it includes a file amiss.
+        SpiceError: When an include directive has invalid argument count.
     """
     if not words:
         return [statement]
@@ -153,7 +150,7 @@ def _included(
 
 
 def unconditional(body: Sequence[Statement]) -> list[Statement]:
-    """The statements of `body` outside its ``.if`` blocks."""
+    """Returns all statements in `body` outside ``.if`` conditional blocks."""
     depth = 0
     found: list[Statement] = []
     for statement in body:
@@ -169,7 +166,7 @@ def unconditional(body: Sequence[Statement]) -> list[Statement]:
 
 @dataclass(slots=True)
 class _Block:
-    """An ``.if`` block being read: whether its branch is chosen, whether one was."""
+    """State of an active ``.if`` block tracking current and prior branch selection."""
 
     chosen: bool
     taken: bool
@@ -180,10 +177,10 @@ def chosen(
     scope: Mapping[str, float],
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> list[Statement]:
-    """The statements of `body` its ``.if`` blocks choose, with `scope`'s values.
+    """Selects statements from `body` by evaluating ``.if`` blocks in `scope`.
 
     Raises:
-        SpiceError: When a branch or an end opens no block, or a block never ends.
+        SpiceError: When conditional directives are unmatched or unterminated.
     """
     blocks: list[_Block] = []
     found: list[Statement] = []
@@ -213,7 +210,7 @@ def chosen(
             case _ if within:
                 found.append(statement)
     if blocks:
-        message = "an `.if` block never ends"
+        message = "unterminated .if block (missing .endif)"
         raise body[-1].fail(message)
     return found
 
@@ -223,7 +220,7 @@ def _condition(
     scope: Mapping[str, float],
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> bool:
-    """Whether the condition of an ``.if`` or ``.elseif`` statement holds in `scope`."""
+    """Returns whether an ``.if`` or ``.elseif`` condition evaluates nonzero."""
     parts = statement.text.split(maxsplit=1)
     condition = parts[1] if len(parts) > 1 else ""
     return evaluate(inlined(parse(condition), functions), scope) != 0

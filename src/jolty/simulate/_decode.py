@@ -43,10 +43,10 @@ from jolty.units import (
 
 
 def kelvins(temperature: Quantity | None) -> float:
-    """`temperature` in kelvins; 27 °C when it is None.
+    """Converts `temperature` to kelvins, defaulting to 27 °C when None.
 
     Raises:
-        DimensionError: When the temperature is not one.
+        DimensionError: When `temperature` does not carry temperature dimensions.
     """
     if temperature is None:
         return _core.REFERENCE_TEMPERATURE
@@ -55,10 +55,10 @@ def kelvins(temperature: Quantity | None) -> float:
 
 @functools.cache
 def pool(count: int | None = None) -> _core.Pool:
-    """A pool of `count` threads for the engine, or of one per processor with None.
+    """Returns a cached engine thread pool of `count` threads, or one per CPU core.
 
-    Each is made once per process, so analyses run at once from several Python threads
-    share its threads rather than each starting its own.
+    Pools are cached once per process so concurrent Python threads share worker
+    threads instead of spawning duplicate pools.
 
     Raises:
         ValueError: When `count` is not positive.
@@ -70,15 +70,15 @@ def pool(count: int | None = None) -> _core.Pool:
 
 
 _CHOSEN: Final = contextvars.ContextVar[_core.Pool | None]("pool", default=None)
-"""The pool a block of code chose with `threads`, if any."""
+"""Thread pool bound to the current execution context by `threads`, if any."""
 
 
 @contextlib.contextmanager
 def threads(count: int | None) -> Generator[None]:
     """Runs the engine on `count` threads within the block, or on one per processor.
 
-    Outside any such block, the engine runs on the settings' ``threads``. No result
-    depends on how many threads run it.
+    Outside any `threads` context, the engine uses the configured ``threads`` setting.
+    Numerical results are independent of thread count.
 
     Raises:
         ValueError: When `count` is not positive.
@@ -92,45 +92,46 @@ def threads(count: int | None) -> Generator[None]:
 
 @functools.cache
 def _settings() -> Settings:
-    """The settings, read once per process.
+    """Loads and caches process-wide settings.
 
     Raises:
-        JoltyError: When the settings are invalid.
+        JoltyError: When settings validation fails.
     """
     return Settings.load()
 
 
 def engine_pool() -> _core.Pool:
-    """The pool the engine runs on here: the one `threads` chose, or the settings'.
+    """Returns the active engine thread pool from context or configured settings.
 
     Raises:
-        JoltyError: When the settings are invalid.
+        JoltyError: When settings validation fails.
     """
     return _CHOSEN.get() or pool(_settings().threads)
 
 
 class Logged(ir.FrozenModel):
-    """An analysis a simulation ran, as a line of the settings' ``analysis_log``.
+    """Log record appended to ``analysis_log`` when an analysis starts.
 
-    Every analysis a simulation runs, alone or in a batch, whatever runs it, the
-    command line, the MCP server or a script, appends one, as it starts.
+    Every single or batched analysis appends one record upon starting, whether
+    invoked from the CLI, MCP server, or Python API.
     """
 
     analysis: str = Field(
-        description="Its kind, by the name of its class, such as Transient."
+        description="Analysis class name, such as Transient or OperatingPoint."
     )
     runs: int = Field(
         ge=1,
-        description="The runs it runs on: 1 alone, and a batch's runs in a batch.",
+        description="Number of runs started: 1 for a standalone analysis or the "
+        "batch size for a batch.",
     )
-    time: float = Field(description="When it started, in seconds since the epoch.")
+    time: float = Field(description="Start timestamp in seconds since the Unix epoch.")
 
 
 def log_analyses(analyses: Iterable[Analysis], runs: int) -> None:
-    """Appends each of `analyses`, starting on `runs` runs, to the settings' log.
+    """Appends start records for `analyses` across `runs` to the configured log.
 
     Raises:
-        JoltyError: When the settings are invalid, or the log cannot be written.
+        JoltyError: When settings are invalid or the log file cannot be written.
     """
     log = _settings().analysis_log
     if log is None or runs == 0:
@@ -150,7 +151,7 @@ def log_analyses(analyses: Iterable[Analysis], runs: int) -> None:
 
 
 def substitutes_json(substitutes: Mapping[str, Device] | None) -> str:
-    """The models of `substitutes` as the engine reads them, by path, in JSON."""
+    """Serializes `substitutes` device models keyed by instance path as JSON."""
     encoded = {
         path: {"model": device.model, "parameters": device.parameters}
         for path, device in (substitutes or {}).items()
@@ -160,11 +161,11 @@ def substitutes_json(substitutes: Mapping[str, Device] | None) -> str:
 
 @contextlib.contextmanager
 def elaborating() -> Generator[None]:
-    """Raises the engine's elaboration error as an `ElaborationError` of its problems.
+    """Translates engine elaboration failures into `ElaborationError` with locations.
 
     Raises:
-        ElaborationError: With every problem the engine finds, each naming the instance
-            and the line of the build script that placed it.
+        ElaborationError: Lists every problem reported by the engine, naming the
+            instance and build-script line.
     """
     try:
         yield
@@ -174,7 +175,7 @@ def elaborating() -> Generator[None]:
 
 
 def source_dimension(built: ir.Circuit, path: str) -> Dimension | None:
-    """The dimension of the value of the independent source at `path`, if any."""
+    """Returns the physical dimension of the independent source at `path`, if any."""
     match built.find(path):
         case ir.Instance(of=ir.DeviceOf(model="current_source")):
             return CURRENT
@@ -184,19 +185,19 @@ def source_dimension(built: ir.Circuit, path: str) -> Dimension | None:
 
 
 def swept_dimension(built: ir.Circuit, sweep: DcSweep) -> Dimension:
-    """The dimension of the value of the source `sweep` sweeps in `built`."""
+    """Returns the physical dimension of the quantity swept by `sweep` in `built`."""
     if sweep.parameter is not None:
         return sweep.values[0].dimension if sweep.values else DIMENSIONLESS
     if (dimension := source_dimension(built, sweep.source)) is not None:
         return dimension
     if not sweep.values:
         return VOLTAGE
-    # Not an independent source: the engine reports it, whatever the values.
+    # Not an independent source: the engine reports it regardless of values.
     return sweep.values[0].dimension
 
 
 def sweep_nature(built: ir.Circuit, sweep: DcSweep) -> results.Nature | None:
-    """Whether `sweep`'s values are voltages or currents; None for a parameter's."""
+    """Returns whether `sweep` varies a voltage or current, or None for parameters."""
     if sweep.parameter is not None:
         return None
     source = source_dimension(built, sweep.source)
@@ -208,7 +209,7 @@ def sweep_nature(built: ir.Circuit, sweep: DcSweep) -> results.Nature | None:
 def toleranced_payload(
     built: ir.Circuit, substituted: Collection[str]
 ) -> list[JsonValue]:
-    """The circuit's toleranced numbers, omitting substituted component subtrees."""
+    """Extracts toleranced parameter payloads, skipping substituted subtrees."""
     prefixes = tuple(f"{inside}/" for inside in substituted)
     return variation.payload(
         parameter
@@ -235,7 +236,7 @@ def encode_analysis(
 
 
 def points_of(analysis: Analysis) -> int:
-    """How many points a batch traces `analysis` along."""
+    """Returns the number of traced points for `analysis` in a batch."""
     match analysis:
         case DcSweep(values=values):
             return len(values)
@@ -293,7 +294,7 @@ def build_recording(
 def recorded(
     outcome: _core.RecordedValues, recording: results.Recording
 ) -> results.RecordedValues:
-    """What the devices `recording` names did in `outcome`, as a result's fields."""
+    """Extracts recorded device arrays from `outcome` paired with `recording`."""
     return {
         "recording": recording,
         "currents": outcome["currents"],
@@ -305,7 +306,7 @@ def recorded(
 
 
 def statistics(outcome: _core.Statistics) -> results.Statistics:
-    """How the transient of `outcome` went: work, profile and charge leak included."""
+    """Decodes transient integration statistics, profile, and charge-leak data."""
     profile = outcome["profile"]
     leak = outcome["charge_leak"]
     return results.Statistics(
@@ -547,7 +548,7 @@ def analysis_shape(
     unknowns: tuple[results.Unknown, ...],
     analysis: Analysis,
 ) -> results.AnalysisResult:
-    """A zero-point result carrying the shape and metadata of `analysis`."""
+    """Builds a zero-point result carrying the shape and metadata of `analysis`."""
     width = len(unknowns)
     point = results.OperatingPointResult(unknowns, np.zeros(width), "")
     empty, rows = np.empty(0), np.empty((0, width))
@@ -586,7 +587,7 @@ def _linear_shape(
     analysis: Sensitivity | Mismatch | Stability | Noise | PoleZero | TransferFunction,
     point: results.OperatingPointResult,
 ) -> results.AnalysisResult:
-    """A zero-point result for a small-signal, sensitivity, or mismatch analysis."""
+    """Builds a zero-point result for a linear, sensitivity, or mismatch analysis."""
     roots = np.empty(0, dtype=np.complex128)
     match analysis:
         case Sensitivity() | Mismatch():

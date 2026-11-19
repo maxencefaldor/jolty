@@ -42,26 +42,26 @@ from jolty.spice.netlist import Statement, tokens
 from jolty.units import celsius
 
 _CARDS: Final = frozenset({"res", "cap", "ind", *models.GEOMETRIC})
-"""The types of the model cards of a resistor, capacitor or inductor jolty reads:
-PSpice's ``RES``, ``CAP`` and ``IND``, and SPICE3's ``R`` and ``C``."""
+"""Supported passive model-card types: PSpice ``RES``, ``CAP``, ``IND`` and SPICE3
+``R``, ``C``."""
 
 TRANSMISSION_LINE: Final = {
     "z0": "characteristic_impedance",
     "zo": "characteristic_impedance",
     "td": "delay",
 }
-"""A T element's parameters, by the SPICE names ngspice's ``tra.c`` (lines 13 to 16)
-gives them, each parameter's own name first."""
+"""SPICE transmission-line parameter names from ngspice ``tra.c`` (lines 13 to 16),
+canonical name first."""
 
 _LINE_KEYWORDS: Final = frozenset(
     {*TRANSMISSION_LINE, "f", "nl", "ic", "v1", "i1", "v2", "i2"}
 )
-"""What a T element gives: its parameters, the frequency at which it is a normalized
-length, and initial conditions, as ``tra.c`` (lines 13 to 22) names them."""
+"""Allowed transmission-line keywords (``tra.c``, lines 13 to 22): impedance, delay,
+normalized length, frequency, and initial conditions."""
 
 _QUARTER_WAVE_AT_GHZ: Final = (0.25, 1e9)
-"""A T element's normalized length and frequency where it gives neither, as ngspice's
-``trasetup.c`` (lines 94 to 99) sets them: a quarter wavelength at 1 GHz."""
+"""Default transmission-line `(normalized_length, frequency)` pair (0.25 at 1 GHz)
+matching ngspice ``trasetup.c`` (lines 94 to 99)."""
 
 _TRANSMISSION_LINE_TERMINALS: Final = (
     "positive1",
@@ -88,21 +88,18 @@ def _passive_value_words(
 
 
 def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
-    """The translation of a resistor, capacitor or inductor.
+    """Builds a translator for passive elements (`resistor`, `capacitor`, `inductor`).
 
-    Its model card, of PSpice's type `kind`, scales its value by the parameter of its
-    letter, and gives its temperature coefficients and nominal temperature; SPICE3's
-    card of a resistor or a capacitor, of the type of its letter, gives its value from
-    its geometry where the element gives none, as
-    [`geometric`][jolty.spice.models.geometric] says, from the element's width ``W``
-    and length ``L``, which ngspice's ``scale`` scales (``resparam.c``, lines 59 and
-    63; ``capparam.c``, lines 50 and 54). The element's own coefficients, ``TC=tc1,tc2``
-    or each by name, override the card's. Only a resistor has an exponential
-    coefficient, ``TCE``, and only a resistor and a capacitor voltage coefficients,
-    ``VC1`` and ``VC2``, and a ``SCALE`` that multiplies their value. Its copies in
-    parallel, its ``M`` times its subcircuit's multiplier, divide a resistor's and an
-    inductor's value and multiply a capacitor's, and a resistor's flicker noise is
-    theirs, ``m · KF · (|I| / m)^AF``, as ngspice adds it (``resnoise.c``, line 109).
+    PSpice model cards (`kind`) scale the element value and supply temperature
+    coefficients and nominal temperature. SPICE3 geometric cards (`R` or `C`) compute
+    the value from `W` and `L` via [`geometric`][jolty.spice.models.geometric], scaled
+    by ``.option scale`` (``resparam.c``, lines 59, 63; ``capparam.c``, lines 50, 54).
+
+    Element-level coefficients (``TC=tc1,tc2`` or named keys) override card values.
+    Resistors support ``TCE``; resistors and capacitors support ``VC1``, ``VC2``, and
+    ``SCALE``. Effective multiplicity ``M`` (combined with subcircuit multiplicity)
+    divides resistance and inductance, multiplies capacitance, and scales resistor
+    flicker noise as ``m · KF · (|I| / m)^AF`` (``resnoise.c``, line 109).
     """
     element_letter = kind[0]
     curved = frozenset(models.PASSIVE_CURVATURE) if model != "inductor" else frozenset()
@@ -148,7 +145,7 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
             return
         geometric = card is not None and card.kind in models.GEOMETRIC
         if len(values) > 1 or not (values or geometric):
-            message = f"a {model} has one value"
+            message = f"a {model} accepts one value"
             raise statement.fail(message)
         own = {
             name: single_keyword(translation.value, statement, name, words)
@@ -258,14 +255,15 @@ def _behaves(
     values: Sequence[str],
     assigned: Mapping[str, list[str]],
 ) -> bool:
-    """Whether the passive element is a behavioral device, which it is then read as.
+    """Translates behavioral passive elements and returns whether one was matched.
 
-    It is one where it is a capacitor of a charge, ``Q``, or where its value reads a
-    voltage or a current: a capacitor holding its value's integral as its charge, a
-    resistor a behavioral current.
+    Handles capacitors with explicit ``Q=`` charge expressions, voltage-dependent
+    capacitors integrated into charge, and expression-defined resistors rendered as
+    behavioral current sources.
 
     Raises:
-        SpiceError: When it gives more than one charge, or cannot be read so.
+        SpiceError: When ``Q`` has multiple tokens or the behavioral form is
+            unsupported.
     """
     charged = assigned.get("q")
     if charged is not None:
@@ -287,7 +285,7 @@ def _behaves(
 def _card_and_values(
     translation: Translation, words: Sequence[str], kinds: set[str]
 ) -> tuple[ModelCard | None, list[str]]:
-    """The model card of one of `kinds` that `words` name, if any, and the others."""
+    """Separates a matching `ModelCard` of `kinds` from value tokens in `words`."""
     card: ModelCard | None = None
     values: list[str] = []
     for word in words:
@@ -306,18 +304,16 @@ def _value_of_voltage(
     resistance: Expression,
     assigned: Mapping[str, list[str]],
 ) -> None:
-    """A resistor whose value reads a voltage or a current, as ngspice makes it.
+    """Translates a voltage- or current-dependent resistor into a behavioral current.
 
-    ngspice makes it a behavioral current, ``I = m · V(a, b) / (R · (1 + TC1 · ΔT +
-    TC2 · ΔT²))`` (``inpcom.c``, lines 6149 to 6151 and 6825 to 6870), its model card
-    and sizes left out, ΔT the temperature above 27 °C (``asrcload.c``, lines 41 to
-    51), here the temperature the library is read at, at which its ``temper`` is too;
-    and without noise, as ngspice's behavioral current has none, unless the element
-    asks for it, which jolty does not read.
+    Matches ngspice ``I = m · V(a, b) / (R · (1 + TC1 · ΔT + TC2 · ΔT²))``
+    (``inpcom.c``, lines 6149-6151, 6825-6870; ``asrcload.c``, lines 41-51). Ignores
+    model cards and geometry, evaluates ``ΔT`` relative to 27 °C at library
+    temperature, and emits no thermal noise.
 
     Raises:
-        SpiceError: When the element is an inductor, which jolty reads not yet so, or
-            gives a coefficient but its temperature's.
+        SpiceError: When the element is an inductor or sets unsupported coefficients
+            outside ``TC1`` and ``TC2``.
     """
     element_letter = letter(statement)
     if element_letter != "r":
@@ -365,20 +361,16 @@ def _charge(
     nodes: tuple[str, str],
     capacitance: Expression,
 ) -> Expression:
-    """The charge of a capacitor whose `capacitance` reads its voltage: its integral.
+    """Integrates a voltage-dependent `capacitance` into a charge expression ``Q(v)``.
 
-    ngspice makes such a capacitor a behavioral current, ``m · C(v) · dv/dt``
-    (``inpcom.c``, lines 6895 to 6905 and 6958 to 6983), of which the charge
-    ``Q(v) = ∫₀ᵛ C(u) du`` is the integral; read so, the capacitor conserves charge,
-    its capacitance exactly ``C``. Every term of the capacitance that reads no voltage
-    is evaluated first, then the charge integrated in closed form, as
-    [`integral`][jolty.spice.expressions.integral] finds it. ngspice's resistance of
-    1e15 Ω across the capacitor, which keeps a node it alone joins from floating
-    (line 6978), is left out.
+    Rewrites ngspice ``m · C(v) · dv/dt`` (``inpcom.c``, lines 6895-6905, 6958-6983)
+    into conserving charge ``Q(v) = ∫₀ᵛ C(u) du``. Constant subexpressions evaluate
+    before closed-form integration via [`integral`][jolty.spice.expressions.integral],
+    omitting the ngspice 1e15 Ω anti-floating shunt (line 6978).
 
     Raises:
-        SpiceError: When the capacitance reads another voltage or a current, which
-            make no charge, or has no integral in closed form.
+        SpiceError: When `capacitance` depends on another voltage or current, or has no
+            closed-form antiderivative.
     """
     own = Voltage(*nodes)
     written = _of_own_voltage(_folded(translation, capacitance), nodes)
@@ -425,7 +417,7 @@ def _mark_unknowns(expression: Expression) -> dict[int, bool]:
 
 
 def _folded(translation: Translation, expression: Expression) -> Expression:
-    """`expression` with each part that reads no voltage or current evaluated."""
+    """Evaluates constant subexpressions in `expression` without node references."""
     has_unknown = _mark_unknowns(expression)
 
     def replace(current: Expression) -> Expression | None:
@@ -437,16 +429,17 @@ def _folded(translation: Translation, expression: Expression) -> Expression:
 
 
 def _unknowns(expression: Expression) -> set[Voltage | Current]:
-    """The voltages and currents `expression` reads."""
+    """Returns the set of `Voltage` and `Current` references inside `expression`."""
     return {node for node in walk(expression) if isinstance(node, Voltage | Current)}
 
 
 def _of_own_voltage(
     expression: Expression, nodes: tuple[str, str]
 ) -> Expression | None:
-    """`expression` reading the voltage of `nodes` as ``V(a, b)``, if it reads no other.
+    """Rewrites terminal-voltage references in `expression` to ``V(a, b)``, or None.
 
-    ``V(b, a)`` is its negation, and ``V(a)`` it where `b` is the ground, ``0``.
+    Maps ``V(b, a)`` to ``-V(a, b)`` and ``V(a)`` to ``V(a, b)`` when `b` is ground
+    ``0``. Returns None when `expression` references any other voltage or current.
     """
     a, b = (node.casefold() for node in nodes)
     own = Voltage(*nodes)
@@ -469,17 +462,14 @@ def _charge_of_voltage(
     charge: Expression,
     assigned: Mapping[str, list[str]],
 ) -> None:
-    """A capacitor whose `charge` is an expression of voltages, a behavioral capacitor.
+    """Translates a charge-defined capacitor (``Q=`` or integrated ``C(v)``).
 
-    ngspice makes a capacitor of a charge ``Q=`` a behavioral current, ``m · dQ/dt``
-    (``inpcom.c``, lines 6937 to 6950), and one whose value reads a voltage one of its
-    charge's rate of change too, as `_charge` integrates it; its copies `m`, its
-    subcircuit's multiplier's too, multiply the charge, and its own temperature, which
-    ngspice does not carry over, changes nothing.
+    Matches ngspice ``m · dQ/dt`` (``inpcom.c``, lines 6937-6950). Multiplies `charge`
+    by combined copy count `m` and ignores instance temperature overrides, which
+    ngspice does not apply to behavioral capacitors.
 
     Raises:
-        SpiceError: When the element gives temperature or voltage coefficients, or a
-            size, which jolty does not read of such a capacitor.
+        SpiceError: When unsupported temperature, voltage, or geometry keys are set.
     """
     unread = sorted(
         {"tc", "tc1", "tc2", "vc1", "vc2", "w", "l", "scale"} & assigned.keys()
@@ -508,16 +498,14 @@ def _valued(
     own: Mapping[str, float],
     reading: tuple[str, frozenset[str]],
 ) -> tuple[float, dict[str, float]]:
-    """A passive element's value, before its copies, and what its `card` says of it.
+    """Computes pre-multiplicity passive value and card drift parameters from `card`.
 
-    `reading` is the letter of its value and the parameters of its drift and noise a
-    card gives. The element's `own` parameters hold its value by that letter, where it
-    gives one, and its sizes; SPICE3's `card` of a resistor or a capacitor gives its
-    value from its geometry where the element gives none, and PSpice's scales the
-    element's by the parameter of that letter, and gives those of its drift and noise.
+    Unpacks `reading` into `(element_letter, allowed_card_keys)`. Evaluates SPICE3
+    geometric cards through `models.geometric`, and applies PSpice card multipliers
+    and parameter evaluation to `own` element values.
 
     Raises:
-        SpiceError: When the card gives what jolty does not model.
+        SpiceError: When `card` specifies parameters unsupported by jolty.
     """
     element_letter, read = reading
     if card is not None and card.kind in models.GEOMETRIC:
@@ -560,10 +548,7 @@ def _valued(
 
 
 def _temperatures(given: Mapping[str, float]) -> dict[str, JsonValue]:
-    """A resistor's, capacitor's or inductor's drift, by jolty name.
-
-    It comes from the nominal temperature and the coefficients `given` by SPICE name.
-    """
+    """Maps passive nominal temperature and SPICE drift keys in `given` to jolty."""
     parameters: dict[str, JsonValue] = {}
     for name, amount in given.items():
         if name in models.NOMINAL_TEMPERATURES:
@@ -579,12 +564,12 @@ def _coefficients(
     assigned: Mapping[str, list[str]],
     drifts: frozenset[str],
 ) -> dict[str, float]:
-    """The temperature and voltage coefficients an element gives, by SPICE name.
+    """Extracts temperature and voltage coefficients from `assigned` under SPICE names.
 
-    It gives them as ``TC=tc1,tc2``, or each of `drifts` by name.
+    Accepts both positional ``TC=tc1,tc2`` syntax and individual keywords in `drifts`.
 
     Raises:
-        SpiceError: When ``TC`` gives more than two.
+        SpiceError: When ``TC`` is empty or provides more than two coefficients.
     """
     listed = assigned.get("tc")
     if listed is not None:
@@ -652,13 +637,12 @@ def _mutual(translation: Translation, statement: Statement) -> None:
 
 
 def _transmission_line(translation: Translation, statement: Statement) -> None:
-    """A T element, a lossless transmission line, between two ports of two nodes.
+    """Translates a lossless SPICE `T` transmission line connecting two two-node ports.
 
-    Its characteristic impedance is ``Z0``, or ``ZO``. Its delay is ``TD``, or else the
-    normalized length ``NL`` over the frequency ``F``, either taking ngspice's default
-    where it is not given (``tratemp.c``, lines 35 to 37). Its initial conditions,
-    ``IC`` or ``V1``, ``I1``, ``V2`` and ``I2``, are accepted and not applied by
-    jolty's transmission line model.
+    Reads characteristic impedance from ``Z0`` (or ``ZO``) and propagation delay from
+    ``TD`` or ``NL / F`` using ngspice defaults (``tratemp.c``, lines 35 to 37).
+    Initial condition keywords (``IC``, ``V1``, ``I1``, ``V2``, ``I2``) are accepted
+    and ignored by the jolty transmission-line model.
     """
     positional, assigned = split_keywords(tokens(statement.text))
     check_keywords(statement, assigned, _LINE_KEYWORDS)

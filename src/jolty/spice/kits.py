@@ -1,19 +1,18 @@
 # Copyright 2026 Maxence Faldor
-"""Foundries' process design kits: their model files, fetched by digest, and read.
+"""Foundry process design kits: digest-verified model fetching and library loading.
 
-A [`Kit`][jolty.spice.kits.Kit] pins one release of a kit's ngspice model files, each
-file or archive fetched from where it is published and checked against its SHA-256
-digest, and laid out as open_pdks installs the kit, so a kit installed elsewhere reads
-alike. [`root`][jolty.spice.kits.root] fetches it into the cache the first time.
+A [`Kit`][jolty.spice.kits.Kit] pins one release of ngspice model files verified by
+SHA-256 digest and arranged in open_pdks directory layout so local installations work
+identically. [`root`][jolty.spice.kits.root] downloads and caches the pinned release
+on first use.
 
-[`read`][jolty.spice.kits.read] reads a kit's model libraries at a process corner, one
-section of each, as ngspice reads them, into a [`Library`][jolty.spice.Library]:
-``.lib`` sections, ``.include``, ``.option scale``, parameters and their expressions,
-``.if`` blocks, binned models, ``temper`` at the temperature it reads at, and the
-statistical functions ``agauss``, ``gauss``, ``aunif``, ``unif`` and ``limit``, drawn
-per instance from a sample's seed and index, or at their nominal values without one.
-[`inventory`][jolty.spice.kits.inventory] states, for each of the kit's devices, the
-models it needs and whether jolty has them.
+[`read`][jolty.spice.kits.read] loads a kit's model libraries at selected process
+corners into a [`Library`][jolty.spice.Library] with ngspice semantics. Supported
+features include ``.lib`` sections, ``.include``, ``.option scale``, parameter
+expressions, ``.if`` blocks, binned models, ``temper``, and statistical functions
+(``agauss``, ``gauss``, ``aunif``, ``unif``, ``limit``).
+[`inventory`][jolty.spice.kits.inventory] classifies every kit device by model coverage
+and native simulation readiness.
 """
 
 import shutil
@@ -36,64 +35,62 @@ from jolty.spice.ngspice import Compatibility
 
 @dataclass(frozen=True, slots=True)
 class Fetched:
-    """One file of a kit's release: where it is published, its digest, and its place.
+    """Single file or archive belonging to a pinned PDK release.
 
-    An archive keeps its members under `within`, at their own paths; any other file is
-    kept at `within`, a path within the kit's root.
+    Archives extract members under `within` preserving relative paths; plain files
+    copy directly to `within` inside the kit root.
     """
 
     url: str
     digest: str
-    """Its SHA-256 digest, in hexadecimal."""
+    """Lowercase hexadecimal SHA-256 digest of the downloaded payload."""
     within: PurePosixPath
     archive: bool = False
-    """Whether it is a tar archive compressed with Zstandard, as ciel publishes kits."""
+    """True when the payload is a Zstandard-compressed tar archive from ciel."""
 
 
 type Section = tuple[PurePosixPath, str]
-"""A section of a model library: the library's path within its kit's root, and the
-section's name."""
+"""Model library section identified by relative library path and section name."""
 
 
 @dataclass(frozen=True, slots=True)
 class Corners:
-    """A model library of a kit, and its sections, each a process corner it reads at.
+    """Model library paired with its available process corner section names.
 
-    The first section is the typical corner.
+    The first entry in `sections` is the typical corner.
     """
 
     library: PurePosixPath
-    """Its path within the kit's root."""
+    """Relative path of the library file within the kit root."""
     sections: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class Kit:
-    """A foundry's process design kit, pinned at one release of its model files.
+    """Foundry process design kit pinned to a specific release of ngspice models.
 
-    ngspice reads the files `includes` names whole, then one section of each library of
-    `corners`; together they define the kit's devices. A section of `statistics` draws
-    the process's variation instead of a corner's.
+    ngspice loads all files in `includes`, then one section per entry in `corners` to
+    define the kit devices. Entries in `statistics` select process-variation sections.
     """
 
     name: str
     version: str
-    """The commit of the release's sources."""
+    """Pinned upstream commit hash for this kit release."""
     files: tuple[Fetched, ...]
     includes: tuple[PurePosixPath, ...]
     corners: tuple[Corners, ...]
     statistics: tuple[Section, ...] = ()
     compatibility: Compatibility | None = None
-    """The compatibility mode ngspice reads the kit in, its own unless given."""
+    """Optional ngspice compatibility mode required by the kit, or None for default."""
 
     @property
     def typical(self) -> tuple[Section, ...]:
-        """Each library's typical section."""
+        """Typical corner section for every library in `corners`."""
         return tuple((each.library, each.sections[0]) for each in self.corners)
 
     @property
     def sections(self) -> tuple[Section, ...]:
-        """Every section of the kit's libraries, corners and statistics."""
+        """All corner and statistical sections across the kit libraries."""
         return (
             *(
                 (each.library, section)
@@ -105,15 +102,14 @@ class Kit:
 
 
 def root(kit: Kit, settings: Settings | None = None) -> Path:
-    """The directory that holds `kit`: the settings' PDK root, or its pinned release.
+    """Returns the root directory containing `kit`, downloading and caching if needed.
 
-    The pinned release's files are fetched into the settings' cache the first time,
-    each checked against its digest, and read from it after.
+    Uses ``settings.pdk_root`` when configured; otherwise downloads, verifies, and
+    caches the pinned release on first call.
 
     Raises:
-        DownloadError: When a file cannot be downloaded, or its digest is wrong.
-        JoltyError: When the settings' PDK root lacks one of the kit's libraries, or the
-            settings are invalid.
+        DownloadError: When a download fails or fails SHA-256 verification.
+        JoltyError: When ``pdk_root`` lacks a required library or settings are invalid.
     """
     chosen = Settings.load() if settings is None else settings
     needed = (*kit.includes, *(each.library for each in kit.corners))
@@ -165,17 +161,16 @@ def read(
     temperature: float = _core.REFERENCE_TEMPERATURE,
     settings: Settings | None = None,
 ) -> Library:
-    """`kit`'s model libraries, read at `sections`, as ngspice reads them.
+    """Loads `kit` model libraries at `sections` into a `Library` using ngspice rules.
 
-    The files the kit includes come first, then each section, each library's typical
-    one unless given, in the kit's compatibility mode; ``temper`` is `temperature`, in
-    kelvins.
+    Includes top-level kit files first, then loads `sections` (defaulting to each
+    library's typical section) in the kit's compatibility mode with ``temper`` set to
+    `temperature` in kelvins.
 
     Raises:
-        DownloadError: When a file cannot be downloaded, or its digest is wrong.
-        JoltyError: When the settings' PDK root lacks one of the kit's libraries, or the
-            settings are invalid.
-        SpiceError: When a file holds what jolty cannot read.
+        DownloadError: When a download fails or fails SHA-256 verification.
+        JoltyError: When ``pdk_root`` lacks a required library or settings are invalid.
+        SpiceError: When a model file contains unsupported SPICE syntax.
     """
     found = root(kit, settings)
     library = Library(temperature, kit.compatibility)
@@ -187,44 +182,42 @@ def read(
 
 
 type Status = Literal["native", "verilog-a", "neither", "unread", "unvalued"]
-"""What jolty has of a device's models: every one natively, ``native``; all but
-Verilog-A models, which its compiler compiles rather than loads, ``verilog-a``; not
-some SPICE model, ``neither``; or every model its elements need, but its reader cannot
-read how the kit places some subcircuit, ``unread``, or some element reads a parameter
-that has no value, which an instance gives, ``unvalued``."""
+"""Native simulation readiness classification for a PDK device.
+
+Values are ``native`` (all models built in), ``verilog-a`` (remaining models are
+Verilog-A), ``neither`` (unsupported SPICE model), ``unread`` (unsupported element
+syntax), and ``unvalued`` (missing required instance parameters).
+"""
 
 
 @dataclass(frozen=True, slots=True)
 class Device:
-    """A device a kit defines, a subcircuit or a model, and what jolty has of it."""
+    """Top-level subcircuit or model defined by a PDK and its native coverage status."""
 
     name: str
     kind: Literal["subcircuit", "model"]
-    """Whether it is a subcircuit, which an ``X`` element places, or a model, which an
-    element of its type names."""
+    """Declaration kind: ``subcircuit`` (instantiated by ``X``) or ``model``."""
     uses: tuple[Use, ...]
-    """Each element it holds, the model it needs, and why jolty cannot read it."""
+    """Element usages, required models, and any translation blockers."""
     parameters: Mapping[str, float] = field(default_factory=dict)
-    """The parameters it is read with, its defaults but these: a subcircuit's length
-    and width, `l` and `w`, where its defaults are a size no bin holds; or, where its
-    defaults read a parameter nothing defines, those the first placement of it within
-    another subcircuit gives, or its size, where a parameter defaults to SPICE's length
-    or width, `l` or `w`, at the size ngspice gives a resistor that gives none, 10 µm
-    square."""
+    """Override parameters used during survey when subcircuit defaults are unbinned.
+
+    Populated with bin-midpoint ``l``/``w``, caller placement parameters, or the 10 µm
+    ngspice fallback resistor size when default parameters cannot be surveyed directly.
+    """
 
     @property
     def models(self) -> tuple[str, ...]:
-        """The models its elements need, each once, in order."""
+        """Deduplicated model names referenced by device elements, in order."""
         return tuple(dict.fromkeys(use.model for use in self.uses if use.model))
 
     @property
     def status(self) -> Status:
-        """What jolty has of its models.
+        """Readiness status derived from element model support and parameter resolution.
 
-        An element that jolty cannot read for its model makes the device's status
-        ``verilog-a`` if every such element is a Verilog-A model, ``neither`` if not;
-        failing those, a placement it cannot read makes it ``unread``, and an element it
-        cannot read for want of a parameter's value alone ``unvalued``.
+        Unrecognized models yield ``verilog-a`` if all are Verilog-A or ``neither``
+        otherwise. Remaining translation errors yield ``unread``, and missing parameter
+        values yield ``unvalued``; clean devices return ``native``.
         """
         problems = [use for use in self.uses if use.problem is not None]
         valued = [use for use in problems if use.undefined is None]
@@ -241,10 +234,7 @@ _DEFAULT_SIZES: Final = {
     "l": models.DEFAULT_RESISTOR_LENGTH,
     "w": models.DEFAULT_WIDTH,
 }
-"""The length and the width, in meters, ngspice gives a resistor whose element and card
-give none, 10 µm each: the size the inventory reads a subcircuit at whose parameters
-default to SPICE's length and width, `l` and `w`, that nothing defines, as GF180MCU's
-resistors and capacitors do."""
+"""Default 10 µm square length and width fallback for unvalued PDK subcircuits."""
 
 
 def inventory(
@@ -252,25 +242,18 @@ def inventory(
     sections: Sequence[Section] | None = None,
     settings: Settings | None = None,
 ) -> tuple[Device, ...]:
-    """Each device `kit` defines at `sections`, each library's typical one unless given.
+    """Surveys every top-level subcircuit and model defined by `kit` at `sections`.
 
-    Its devices are the subcircuits and the models its libraries define outside any
-    subcircuit, each read at its parameters' defaults, as
-    [`Library.survey`][jolty.spice.Library.survey] reads it; a subcircuit whose
-    defaults are a size that no bin of a MOSFET it holds holds, but that gives its
-    length `l` and width `w`, is read again at the middle of that model's first bin,
-    in the units of the library's `scale`, and is stated so where every bin it selects
-    then holds its size. A subcircuit whose defaults read a parameter nothing defines
-    is read again as the first placement of it within another subcircuit places it, or,
-    where none does, with each of its parameters that defaults to `l` or `w` at the size
-    ngspice gives a resistor that gives none, 10 µm square, in the units of the
-    library's `scale`, and is stated so where it then reads every parameter.
+    Defaults to typical sections when `sections` is omitted. Each top-level subcircuit
+    is surveyed at its defaults via [`Library.survey`][jolty.spice.Library.survey].
+    Subcircuits whose defaults miss MOSFET bins retry at the first bin midpoint in
+    library ``scale`` units. Subcircuits with undefined defaults retry with parameters
+    from their first call site or the 10 µm square fallback in ``scale`` units.
 
     Raises:
-        DownloadError: When a file cannot be downloaded, or its digest is wrong.
-        JoltyError: When the settings' PDK root lacks one of the kit's libraries, or the
-            settings are invalid.
-        SpiceError: When a file holds what jolty cannot read.
+        DownloadError: When a download fails or fails SHA-256 verification.
+        JoltyError: When ``pdk_root`` lacks a required library or settings are invalid.
+        SpiceError: When a model file contains unsupported SPICE syntax.
     """
     library = read(kit, sections, settings=settings)
     subcircuits = [_subcircuit(library, name) for name in library.subcircuits]
@@ -292,11 +275,11 @@ def inventory(
 def _valued(
     library: Library, device: Device, placements: Mapping[str, Mapping[str, float]]
 ) -> Device:
-    """`device`, read again with values for parameters it reads that nothing defines.
+    """Re-surveys an unvalued `device` using call-site parameters or fallback sizes.
 
-    It is read as `placements` place it, by subcircuit, or else with each parameter that
-    defaults to SPICE's length or width at `_DEFAULT_SIZES`, in the units of the
-    library's `scale`; and stated so where it then reads every parameter.
+    Uses `placements` first, falling back to `_DEFAULT_SIZES` scaled by library
+    ``scale`` for parameters defaulting to SPICE ``l`` or ``w``. Keeps the updated
+    survey only when all undefined-parameter errors clear.
     """
     if device.status != "unvalued":
         return device
@@ -323,11 +306,11 @@ def _valued(
 
 
 def _subcircuit(library: Library, name: str) -> Device:
-    """The subcircuit `name` of `library`, read at a size a bin holds if it can be.
+    """Surveys subcircuit `name` in `library`, retrying at a MOSFET bin midpoint.
 
-    It is read at its defaults; where a MOSFET's size is one no bin holds, and the
-    subcircuit gives its length and width, `l` and `w`, again at the middle of the
-    first bin of that MOSFET's model, in the units of the library's `scale`.
+    When default parameters fall outside every MOSFET model bin and the subcircuit
+    accepts `l` and `w`, re-surveys at the first bin midpoint in library ``scale``
+    units.
     """
     uses = library.survey(name)
     middle = next((use.middle for use in uses if use.middle is not None), None)

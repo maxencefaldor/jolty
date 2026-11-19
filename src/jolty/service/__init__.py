@@ -1,12 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""The service layer: every command, defined once.
+"""Service layer defining every jolty command once.
 
-Each command is a request model and an async function that takes it with the
-settings. The command line and the MCP server derive from them, so both front ends share
-one set of argument names, defaults and descriptions, and print the same text.
+Each command pairs a request model with an async handler that accepts the request and
+runtime settings. Both the CLI and the MCP server derive from these models so argument
+names, defaults, descriptions, and formatted output match across front ends.
 
-Scripts run in a child process (see [`jolty.runner`][jolty.runner]) within the
-configured time limit, and what they print is captured and returned.
+User scripts execute in a child process (see [`jolty.runner`][jolty.runner]) under the
+configured timeout, with stdout and stderr captured and returned.
 """
 
 # jolty's modules load as each command first uses them, so that a command that draws
@@ -159,95 +159,92 @@ _WARN_DESCRIPTION = (
     "overrides the configured levels."
 )
 _IGNORE_DESCRIPTION = (
-    "Rules to leave out, such as 'shorted-device', or 'all' for every rule; "
+    "Rules to omit, such as 'shorted-device', or 'all' for every rule; "
     "overrides the configured levels."
 )
 _MAX_DIAGNOSTICS_DESCRIPTION = (
-    "Diagnostics to list at most; defaults to the configured limit."
+    "Maximum diagnostics to list; defaults to the configured limit."
 )
 _SCHEMATIC_DESCRIPTION = (
-    "Draw the top component's schematic beside the circuit, marking the instances the "
-    "listed diagnostics name."
+    "Draw the top component's schematic next to the circuit, marking instances named "
+    "in listed diagnostics."
 )
 _ANNOTATED_DESCRIPTION = (
-    "Draw the top component's schematic beside the circuit, marking the instances the "
-    "listed diagnostics name and writing the voltages of the plan's first operating "
+    "Draw the top component's schematic next to the circuit, marking instances named "
+    "in listed diagnostics and annotating voltages from the plan's first operating "
     "point."
 )
 _RECORD_DESCRIPTION = (
-    "Instances whose currents, charges, derivatives and variables the results keep "
-    "beside the unknowns, by path or pattern, such as 'M1', 'X1/**' or '!X1/bias/**', "
-    "a pattern after ! taking back what earlier ones named; replaces the plan's record."
+    "Instance paths or glob patterns (such as 'M1', 'X1/**', or '!X1/bias/**') whose "
+    "currents, charges, derivatives, and variables are recorded in addition to "
+    "unknowns. Patterns prefixed with ! exclude earlier matches; replaces the plan "
+    "record list."
 )
 _TRACES_DESCRIPTION = (
-    "Unknowns to plot, such as 'out', 'X1/mid' or 'V1:current'; defaults to the "
-    "nets the top component names, up to eight."
+    "Unknowns to plot, such as 'out', 'X1/mid', or 'V1:current'; defaults to up to "
+    "eight named nets on the top component."
 )
 _SOLVES_DESCRIPTION = (
-    "The fewest frequencies or right-hand sides a task takes when a run spreads its "
-    "small-signal analyses and sensitivities across threads, once they fill one for "
-    "every thread; replaces the plan's. No result depends on it."
+    "Minimum frequencies or right-hand sides per task when parallelizing small-signal "
+    "analyses and sensitivities across threads; replaces the plan setting. Numerical "
+    "results are unaffected."
 )
 _INSTANCES_DESCRIPTION = (
-    "The fewest device instances of a group a task evaluates when a run spreads its "
-    "devices' evaluation across threads, once they fill one for every thread, a linear "
-    "device, evaluated once a run, counting none; replaces the plan's. No result "
-    "depends on it."
+    "Minimum nonlinear device instances per task when parallelizing device evaluation "
+    "across threads (linear devices are evaluated once and excluded); replaces the "
+    "plan setting. Numerical results are unaffected."
 )
 _UNKNOWNS_DESCRIPTION = (
-    "The fewest unknowns, or stored entries of the matrix, a task takes when a run "
-    "spreads the work of its Newton iteration and its step control on each across "
-    "threads, once they fill one for every thread; replaces the plan's. No result "
-    "depends on it."
+    "Minimum unknowns or stored matrix entries per task when parallelizing Newton "
+    "iteration and step control across threads; replaces the plan setting. Numerical "
+    "results are unaffected."
 )
 _INTERIORS_DESCRIPTION = (
-    "The most unknowns of an interior when a run orders a block of its matrix by "
-    "nested dissection into interiors and the separators between them, which factor "
-    "in parallel, as it does each larger block whose elimination that makes cheaper; "
-    "replaces the plan's. It orders the factorization's operations, so results "
-    "depend on it in their last digits, but not on the threads."
+    "Maximum unknowns per interior block during nested-dissection parallel matrix "
+    "factorization; replaces the plan setting. Changing block boundaries alters "
+    "operation order in the lowest floating-point bits, independently of thread count."
 )
 _SAMPLES_DESCRIPTION = (
-    "Run only the samples of the plan's Monte Carlo analysis from START up to STOP, "
-    "written START:STOP, such as 0:1000000, as a shard of the analysis: at the plan's "
-    "own conditions and at every corner, running none of its other analyses, into "
-    "the directory of shards, for jolty merge to report with the others. A shard "
-    "draws no schematic and no plot, and traces only the unknowns its traces name."
+    "Monte Carlo sample slice formatted as START:STOP (such as 0:1000000) to run as a "
+    "shard across nominal conditions and corners without other analyses. Shard runs "
+    "write to the shards directory for jolty merge, skip schematics and plots, and "
+    "trace only requested unknowns."
 )
 _SHARDS_DESCRIPTION = (
-    "The directory a shard of samples is written to, as shard-START-STOP.npz; "
+    "Directory where sample shards are written as shard-START-STOP.npz; "
     "defaults to <script>.shards."
 )
 
 
 class CommandResult(FrozenModel, ABC):
-    """What a command produced, as data and as text."""
+    """Structured data and formatted text produced by a service command."""
 
     @property
     def ok(self) -> bool:
-        """Whether the circuit is sound; if not, the command line exits with 1."""
+        """True when the command succeeded; false causes CLI exit status 1."""
         return True
 
     @abstractmethod
     def describe(self) -> str:
-        """The result as text, for people and agents."""
+        """Formats the command result as human- and agent-readable text."""
 
     def images(self) -> tuple[Path, ...]:
-        """The images the command wrote, which the MCP server sends with its text."""
+        """Returns image paths written by the command for MCP attachment."""
         return ()
 
 
 class ScriptOutput(FrozenModel):
-    """What a script printed."""
+    """Captured standard output and standard error from a script execution."""
 
     stdout: str = Field(default="", description="Standard output, up to the limit.")
     stderr: str = Field(default="", description="Standard error, up to the limit.")
     truncated: bool = Field(
-        default=False, description="Whether either stream was cut at the limit."
+        default=False,
+        description="True when stdout or stderr reached the capture limit.",
     )
 
     def describe(self) -> str:
-        """The output as text, empty when the script printed nothing."""
+        """Formats captured script output as text, or empty if nothing was written."""
         blocks = [
             f"script {title}:\n{_indent(text.rstrip())}"
             for title, text in (("output", self.stdout), ("errors", self.stderr))
@@ -259,32 +256,32 @@ class ScriptOutput(FrozenModel):
 
 
 class Plot(FrozenModel):
-    """A plot of an analysis's results."""
+    """Saved plot image for a single analysis."""
 
-    analysis: str = Field(description="The analysis's name.")
-    path: Path = Field(description="The PNG image.")
+    analysis: str = Field(description="Name of the plotted analysis.")
+    path: Path = Field(description="Path to the generated PNG image.")
 
 
 class CircuitSummary(FrozenModel):
-    """A saved circuit, and whether the engine elaborates it."""
+    """Summary of a saved circuit file and its elaboration status."""
 
-    path: Path = Field(description="The saved circuit file.")
-    components: int = Field(description="Components the circuit defines.")
+    path: Path = Field(description="Path to the saved circuit file.")
+    components: int = Field(description="Number of components defined by the circuit.")
     devices: int | None = Field(
-        description="Devices with every component instance unfolded; null when the "
-        "circuit does not elaborate."
+        description="Number of unfolded device instances, or null if elaboration "
+        "failed."
     )
     unknowns: int | None = Field(
-        description="Node voltages and branch currents the engine solves for; null "
-        "when the circuit does not elaborate."
+        description="Number of node voltages and branch currents solved by the "
+        "engine, or null if elaboration failed."
     )
     problems: tuple[str, ...] = Field(
-        description="Why the circuit does not elaborate, each naming an instance and "
-        "the script line that placed it."
+        description="Elaboration errors, each naming the affected instance and "
+        "build-script line."
     )
 
     def describe(self) -> str:
-        """The summary as text."""
+        """Formats the circuit summary and any elaboration errors as text."""
         counts = [_plural(self.components, "component")]
         if self.devices is not None:
             counts.append(_plural(self.devices, "device"))
@@ -299,14 +296,15 @@ class CircuitSummary(FrozenModel):
 class BuildRequest(FrozenModel):
     """Run a script's build(), save the circuit it returns, and elaborate it.
 
-    The script runs as ordinary Python with the user's permissions, in its own process
-    with a time limit; that process is not a sandbox.
+    The script runs as standard Python with the user's permissions in a separate timed
+    subprocess; that subprocess is not a sandbox.
     """
 
     script: CliPositionalArg[Path] = Field(description=_SCRIPT_DESCRIPTION)
     output: Path | None = Field(
         default=None,
-        description="Where to save the circuit; defaults to <script>.jolty.json.",
+        description="Destination path for the saved circuit; defaults to "
+        "<script>.jolty.json.",
     )
     check: bool = Field(default=True, description=_CHECK_DESCRIPTION)
     error: list[str] = Field(default_factory=list, description=_ERROR_DESCRIPTION)
@@ -319,28 +317,28 @@ class BuildRequest(FrozenModel):
 
 
 class BuildResult(CommandResult):
-    """What a build produced."""
+    """Outcome of building, elaborating, and optionally checking a circuit."""
 
     circuit: CircuitSummary
     report: checks.CheckReport | None = Field(
-        description="What the structural checks found; null when checking is off or "
-        "the circuit does not elaborate."
+        description="Structural check report, or null when checking is disabled or "
+        "elaboration fails."
     )
     schematic: Path | None = Field(
-        description="The top component's schematic; null when drawing is off."
+        description="Path to the top component schematic, or null when drawing is off."
     )
-    output: ScriptOutput = Field(description="What the script printed.")
-    seconds: float = Field(description="Seconds the command took.")
+    output: ScriptOutput = Field(description="Captured stdout and stderr from build.")
+    seconds: float = Field(description="Elapsed wall-clock seconds for the command.")
 
     @property
     @override
     def ok(self) -> bool:
-        """Whether the circuit elaborates and its checks found no error."""
+        """True when the circuit elaborates and structural checks find no errors."""
         return not self.circuit.problems and (self.report is None or self.report.ok)
 
     @override
     def describe(self) -> str:
-        """The result as text."""
+        """Formats the build result summary as text."""
         blocks = [
             self.circuit.describe(),
             self.report.describe() if self.report else "",
@@ -352,26 +350,22 @@ class BuildResult(CommandResult):
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """The schematic."""
+        """Returns the generated schematic path when drawing was enabled."""
         return (self.schematic,) if self.schematic else ()
 
 
 class SimulateRequest(FrozenModel):
-    """Build a script's circuit, run every analysis of a plan on it, check its specs.
+    """Build a script's circuit, run every analysis in a plan, and check its specs.
 
-    A plan is a Python file defining plan(), which returns a jolty Plan: named analyses,
-    the numerical options they share, among them the instances whose currents and
-    small-signal models the saved results record beside the unknowns, a temperature,
-    corners, other temperatures or arguments to build() at which the analyses run
-    again, a Monte Carlo analysis that runs them on samples of the circuit's
-    tolerances, and variants, the values of many runs of it. It may define specs(),
-    which returns jolty Specs: requirements on measures of the analyses' results, each
-    of which passes, is marginal, fails or goes unmeasured, at its worst corner, and a
-    yield target for the Monte Carlo samples. It can be the build script itself.
-    Given samples, it runs only those of the Monte Carlo analysis, as a shard, which
-    jolty merge reports with the others as one run of every sample.
-    The scripts run as ordinary Python with the user's permissions, in their own process
-    with a time limit; that process is not a sandbox.
+    A plan script defines plan() returning a jolty Plan with named analyses, shared
+    numerical options, recorded instance patterns, temperature, operating or process
+    corners, Monte Carlo tolerances, and batch variants. The plan script may also
+    define specs() returning jolty Specs with requirements evaluated at the worst
+    corner and an optional Monte Carlo yield target. The plan path defaults to the
+    build script itself. When samples are given, simulation runs only that Monte Carlo
+    shard for later combination via jolty merge. Scripts run as standard Python with
+    the user's permissions in a separate timed subprocess; that subprocess is not a
+    sandbox.
     """
 
     script: CliPositionalArg[Path] = Field(description=_SCRIPT_DESCRIPTION)
@@ -382,16 +376,19 @@ class SimulateRequest(FrozenModel):
     )
     output: Path | None = Field(
         default=None,
-        description="Where to save the circuit; defaults to <script>.jolty.json.",
+        description="Destination path for the saved circuit; defaults to "
+        "<script>.jolty.json.",
     )
     results: Path | None = Field(
         default=None,
-        description="Where to save the results; defaults to <script>.results.npz.",
+        description="Destination path for the saved results; defaults to "
+        "<script>.results.npz.",
     )
     raw: Path | None = Field(
         default=None,
-        description="Where to save a SPICE raw file of completed operating point, "
-        "DC sweep, small-signal response and transient analyses; omitted when unset.",
+        description="Destination path for a SPICE raw file of completed operating "
+        "point, DC sweep, small-signal response, and transient analyses; omitted when "
+        "unset.",
     )
     raw_format: Literal["binary", "ascii"] = Field(
         default="binary",
@@ -408,8 +405,8 @@ class SimulateRequest(FrozenModel):
     schematic: bool = Field(default=True, description=_ANNOTATED_DESCRIPTION)
     plot: bool = Field(
         default=True,
-        description="Plot every analysis but operating points and sensitivities "
-        "beside the results.",
+        description="Plot all non-DC analyses (excluding operating points and "
+        "sensitivities) next to the results.",
     )
     traces: list[str] = Field(default_factory=list, description=_TRACES_DESCRIPTION)
     record: list[str] | None = Field(default=None, description=_RECORD_DESCRIPTION)
@@ -432,7 +429,7 @@ class SimulateRequest(FrozenModel):
 
     @model_validator(mode="after")
     def _sharded(self) -> Self:
-        """Checks that shard and raw options agree with one another.
+        """Validates that shard and raw options agree with one another.
 
         Raises:
             ValueError: When samples are empty, shards lack samples, raw is set on a
@@ -454,7 +451,7 @@ class SimulateRequest(FrozenModel):
         return self
 
     def taken(self) -> range | None:
-        """The samples the request names, None for a run of the whole plan."""
+        """Returns the requested sample index range, or None for a full plan run."""
         if self.samples is None:
             return None
         start, stop = self.samples.split(":")
@@ -462,84 +459,86 @@ class SimulateRequest(FrozenModel):
 
 
 class SimulateResult(CommandResult):
-    """What a simulation produced."""
+    """Outcome of building a circuit, running its plan, and checking its specs."""
 
     circuit: CircuitSummary
     report: checks.CheckReport | None = Field(
-        description="What the structural checks found; null when checking is off or "
-        "the circuit does not elaborate."
+        description="Structural check report, or null when checking is disabled or "
+        "elaboration fails."
     )
     results: Path | None = Field(
-        description="The saved results file; null when no analysis ran to its end."
+        description="Path to the saved results file, or null when no analysis "
+        "completed."
     )
     raw: Path | None = Field(
         default=None,
-        description="The saved SPICE raw file; null unless --raw was set and a "
-        "raw-writable analysis ran to its end.",
+        description="Path to the saved SPICE raw file, or null unless --raw was set "
+        "and a raw-writable analysis completed.",
     )
     analyses: tuple[AnalysisReport, ...] = Field(
-        description="A report per analysis, in the plan's order."
+        description="Report for each analysis, in plan order."
     )
     corners: tuple[CornerReport, ...] = Field(
-        description="A report per corner of the plan, in its order."
+        description="Report for each plan corner, in plan order."
     )
     monte_carlo: MonteCarloReport | None = Field(
-        description="What the plan's Monte Carlo analysis found; null without one."
+        description="Monte Carlo analysis report, or null when no Monte Carlo "
+        "analysis is configured."
     )
     variants: VariantsReport | None = Field(
-        description="What the runs of the plan's variants found; null without them."
+        description="Batch variants report, or null when no variants are configured."
     )
     worst_case: WorstCaseReport | None = Field(
-        description="What the plan's worst-case analysis found; null without one."
+        description="Worst-case analysis report, or null when no worst-case analysis "
+        "is configured."
     )
     batches: Path | None = Field(
-        description="The saved batches of the plan's Monte Carlo analysis and "
-        "variants, at its own conditions; null without them."
+        description="Path to saved nominal Monte Carlo and variant batches, or null "
+        "when neither ran."
     )
     shard: ShardReport | None = Field(
         default=None,
-        description="What the shard of the plan's Monte Carlo samples ran; null "
-        "unless the request names samples.",
+        description="Summary of the executed Monte Carlo shard, or null unless "
+        "samples were specified.",
     )
     shard_file: Path | None = Field(
         default=None,
-        description="The shard's file; null unless the request names samples.",
+        description="Path to the written shard file, or null unless samples were "
+        "specified.",
     )
     specs: tuple[Verdict, ...] = Field(
-        description="The verdict on each requirement of the plan's specs, in order; "
-        "empty when the plan defines no specs()."
+        description="Verdict for each requirement in specs(), in order; empty when "
+        "no specs() function is defined."
     )
     fidelity: FidelityReport | None = Field(
-        description="The models the plan's fidelity chose, and its spot checks; null "
-        "when it chooses none."
+        description="Selected fidelity models and spot-check results, or null when "
+        "no fidelity overrides are configured."
     )
     schematic: Path | None = Field(
-        description="The top component's schematic; null when drawing is off."
+        description="Path to the top component schematic, or null when drawing is off."
     )
     plots: tuple[Plot, ...] = Field(
-        description="A plot per analysis but operating points and sensitivities, "
-        "then a histogram of each batch's measures and an envelope of each "
-        "analysis it traced; empty when plotting is off or nothing ran to its end."
+        description="Plots for all non-DC analyses plus batch histograms and trace "
+        "envelopes; empty when plotting is off or no analysis completed."
     )
-    output: ScriptOutput = Field(description="What the scripts printed.")
-    seconds: float = Field(description="Seconds the command took.")
+    output: ScriptOutput = Field(description="Captured stdout and stderr from scripts.")
+    seconds: float = Field(description="Elapsed wall-clock seconds for the command.")
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """The schematic, then the plots."""
+        """Returns the schematic path followed by all generated plot paths."""
         drawn = (self.schematic,) if self.schematic else ()
         return (*drawn, *(plot.path for plot in self.plots))
 
     @property
     @override
     def ok(self) -> bool:
-        """Whether the circuit elaborates, checks clean, and meets its plan.
+        """True when the circuit elaborates, checks clean, and satisfies the plan.
 
-        It meets its plan when every analysis ends, at the plan's own conditions and
-        at every corner, every requirement passes, if only marginally, the Monte Carlo
-        analysis's yield and the variants' reach the specs' target, every requirement
-        passes at its worst-case extremes, and every model its fidelity chose agrees
-        with its circuit where a spot check looked.
+        A simulation satisfies its plan when every nominal and corner analysis
+        completes, every spec requirement passes or is marginal, Monte Carlo and
+        variant yields meet any target, worst-case extremes pass, and fidelity spot
+        checks agree with the underlying circuit.
         """
         checked = self.report is None or self.report.ok
         return (
@@ -560,7 +559,7 @@ class SimulateResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """The result as text."""
+        """Formats the simulation result summary as text."""
         blocks = [
             self.circuit.describe(),
             self.report.describe() if self.report else "",
@@ -587,10 +586,10 @@ class SimulateResult(CommandResult):
 
 
 async def build(request: BuildRequest, settings: Settings) -> BuildResult:
-    """Runs a script's ``build()`` in its own process, saves the circuit, elaborates it.
+    """Runs ``build()`` in a separate subprocess, saves the circuit, and elaborates it.
 
     Raises:
-        JoltyError: When the script is missing, fails, runs out of time or returns no
+        JoltyError: When the script is missing, fails, times out, or returns no
             circuit.
     """
     started = time.perf_counter()
@@ -618,15 +617,14 @@ async def build(request: BuildRequest, settings: Settings) -> BuildResult:
 
 
 async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResult:
-    """Builds a script's circuit and runs every analysis of a plan on it.
+    """Builds a script's circuit and runs every analysis in the plan on it.
 
-    The results file holds the analyses that ran to their end. When none did, a results
-    file left at its path by an earlier run is removed, so it never describes another
-    circuit.
+    The results file contains all completed analyses. When no analysis completes, any
+    stale results file at the target path is removed.
 
     Raises:
-        JoltyError: When a script is missing, fails, runs out of time, or returns no
-            circuit or no plan.
+        JoltyError: When a script is missing, fails, times out, or returns no circuit
+            or plan.
     """
     started = time.perf_counter()
     chosen = _levels(request, settings)
@@ -639,7 +637,7 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         max_unknowns=settings.max_unknowns,
         check=request.check,
         record=request.record,
-        # A shard's outcome is its measures, and the traces named alone besides.
+        # Shards evaluate measures plus any explicitly requested traces.
         plot=request.plot and (taken is None or bool(request.traces)),
         traces=request.traces,
         parallelism=runner.Thresholds(
@@ -737,61 +735,57 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
 
 
 class MergeRequest(FrozenModel):
-    """Merge the shards of a plan's Monte Carlo analysis, and report them as one run.
+    """Merge the shards of a plan's Monte Carlo analysis and report them as one run.
 
-    The shards are the shard-START-STOP.npz files that jolty simulate --samples writes
-    into a directory, each the samples from START up to STOP. The merge refuses shards
-    whose digests differ, as they ran other circuits, plans, options, builds or
-    platforms, and shards whose samples leave a gap or overlap; it joins their batches
-    in the order of their samples, and reports every sample against the specs the
-    shards measured, as a simulation of every sample in one run does, bit for bit. It
-    saves the batch at the plan's own conditions and plots its distribution as a
-    simulation does, and runs no script.
+    Input shards are shard-START-STOP.npz files produced by jolty simulate --samples
+    for sample ranges [START, STOP). Merging rejects shards with mismatched digests
+    (different circuits, plans, options, builds, or platforms) or gaps and overlaps in
+    sample ranges. Valid shards concatenate in sample order and produce a bit-identical
+    report against the measured specs. Merging saves the nominal batch, plots the
+    resulting distributions, and executes no user script.
     """
 
     shards: CliPositionalArg[Path] = Field(
-        description="The directory of the shards, such as amp.shards."
+        description="Directory containing shard files, such as amp.shards."
     )
     output: Path | None = Field(
         default=None,
-        description="Where to save the merged batch; defaults to <name>.batches.npz "
-        "beside the directory, its name without .shards.",
+        description="Destination path for the merged batch; defaults to "
+        "<name>.batches.npz next to the directory with the .shards suffix removed.",
     )
     plot: bool = Field(
         default=True,
-        description="Plot a histogram of each requirement's values, and the envelope "
-        "of each analysis the shards traced, beside the merged batch.",
+        description="Plot histograms for each requirement and trace envelopes next to "
+        "the merged batch.",
     )
 
 
 class MergeResult(CommandResult):
-    """What the merge of a Monte Carlo analysis's shards found."""
+    """Outcome of merging Monte Carlo analysis shards."""
 
-    shards: tuple[Path, ...] = Field(
-        description="The shards merged, in the order of their samples."
-    )
+    shards: tuple[Path, ...] = Field(description="Merged shard paths in sample order.")
     monte_carlo: MonteCarloReport = Field(
-        description="What the analysis found over every sample."
+        description="Aggregated Monte Carlo report across all merged samples."
     )
     batches: Path = Field(
-        description="The saved batch of the samples at the plan's own conditions."
+        description="Path to the saved nominal batch across all merged samples."
     )
     plots: tuple[Plot, ...] = Field(
-        description="A histogram of the batch's measures and an envelope of each "
-        "analysis it traced; empty when plotting is off."
+        description="Histograms for batch measures and envelopes for traced analyses; "
+        "empty when plotting is off."
     )
-    seconds: float = Field(description="Seconds the command took.")
+    seconds: float = Field(description="Elapsed wall-clock seconds for the command.")
 
     @property
     @override
     def ok(self) -> bool:
-        """Whether the samples' yield reaches the specs' target, if they state one."""
+        """True when sample yield meets the specs target, or when no target is set."""
         passing = self.monte_carlo.yield_
         return passing is None or passing.met
 
     @override
     def describe(self) -> str:
-        """The result as text."""
+        """Formats the merge summary as text."""
         blocks = [
             f"merged {_plural(len(self.shards), 'shard')}",
             f"saved {self.batches}",
@@ -804,16 +798,16 @@ class MergeResult(CommandResult):
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """The plots."""
+        """Returns the generated plot paths."""
         return tuple(plot.path for plot in self.plots)
 
 
 async def merge(request: MergeRequest, settings: Settings) -> MergeResult:
-    """Merges the shards in a directory, and saves and plots their batch; no settings.
+    """Merges shards in a directory, saves their batch, and plots distributions.
 
     Raises:
-        JoltyError: When the directory holds no shard, a file is not one, the shards'
-            digests differ, or their samples leave a gap or overlap.
+        JoltyError: When the directory contains no shards, a file is invalid, shard
+            digests differ, or sample ranges have gaps or overlaps.
     """
     del settings
     started = time.perf_counter()
@@ -837,12 +831,12 @@ async def merge(request: MergeRequest, settings: Settings) -> MergeResult:
 
 
 def _merged(directory: Path, target: Path) -> tuple[tuple[Path, ...], MonteCarloReport]:
-    """Merges the shards in `directory`, saves their batch at `target`, and reports.
+    """Merges shards in `directory`, saves the nominal batch to `target`, and reports.
 
-    Returns the shards, in the order of their samples, and what they found.
+    Returns the ordered shard paths and the aggregated Monte Carlo report.
 
     Raises:
-        JoltyError: When the shards do not merge.
+        JoltyError: When the shards fail validation or cannot be merged.
     """
     shard, ordered = shards.merge(sorted(directory.glob(files.SHARD_PATTERN)))
     analyzed, batch = shards.monte_carlo(shard)
@@ -858,35 +852,35 @@ class PlotRequest(FrozenModel):
     results: CliPositionalArg[Path] = Field(description="A .results.npz file.")
     analyses: list[str] = Field(
         default_factory=list,
-        description="Analyses to plot, by name; every one but operating points and "
-        "sensitivities by default.",
+        description="Analysis names to plot; defaults to all non-DC analyses "
+        "(excluding operating points and sensitivities).",
     )
     traces: list[str] = Field(default_factory=list, description=_TRACES_DESCRIPTION)
 
 
 class PlotResult(CommandResult):
-    """The plots drawn."""
+    """Collection of generated analysis plots."""
 
-    plots: tuple[Plot, ...] = Field(description="A plot per analysis.")
+    plots: tuple[Plot, ...] = Field(description="Generated plot per analysis.")
 
     @override
     def describe(self) -> str:
-        """The plots, one line each."""
+        """Formats the generated plot paths, one per line."""
         return _describe_plots(self.plots) if self.plots else "nothing to plot"
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """The plots."""
+        """Returns the generated plot paths."""
         return tuple(plot.path for plot in self.plots)
 
 
 async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
-    """Plots the analyses of a saved results file beside it; settings play no part.
+    """Plots analyses from a saved results file next to it; settings are unused.
 
     Raises:
-        JoltyError: When the optional `matplotlib` extra is missing, the file is missing
-            or holds no results, an analysis named is not in it or is taken at DC
-            solutions, or a trace names no unknown.
+        JoltyError: When the optional `matplotlib` extra is missing, the file is
+            missing or contains no results, a named analysis is absent or DC-only, or
+            a trace names an unknown signal.
     """
     del settings
     _require_plots("plotting results")
@@ -898,29 +892,30 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
 
 
 class MeasureResult(CommandResult):
-    """A measure read from a saved results file."""
+    """Single measure evaluated from a saved results file."""
 
-    results: Path = Field(description="The saved results file.")
-    analysis: str = Field(description="The analysis read.")
-    measure: MeasureKind = Field(description="The measure read.")
+    results: Path = Field(description="Path to the saved results file.")
+    analysis: str = Field(description="Name of the evaluated analysis.")
+    measure: MeasureKind = Field(description="Evaluated measure kind.")
     description: str = Field(
-        description="The measure in words, such as 'gain of out at 1 kHz in bode'."
+        description="Human-readable measure description, such as 'gain of out at "
+        "1 kHz in bode'."
     )
     value: ExtendedReal = Field(
-        description="The value read, in SI base units, or in dB, degrees or percent."
+        description="Numeric value in SI base units, dB, degrees, or percent."
     )
     unit: str = Field(
-        description="The value's unit, such as 'V', 'Hz', 's', 'dB', '°', '%', or '' "
-        "for a plain number."
+        description="Unit string such as 'V', 'Hz', 's', 'dB', '°', '%', or '' for "
+        "dimensionless values."
     )
     formatted: str = Field(
-        description="The value formatted with SI prefix or unit, such as '2.5 V' or "
+        description="Formatted value with SI prefix or unit, such as '2.5 V' or "
         "'-3.01 dB'."
     )
 
     @override
     def describe(self) -> str:
-        """The reading as text, in one line."""
+        """Formats the measure reading as a single line."""
         return f"{self.description}: {self.formatted}"
 
 
@@ -956,10 +951,10 @@ async def measure(request: MeasureRequest, settings: Settings) -> MeasureResult:
 
 
 def _load(path: Path) -> dict[str, results.AnalysisResult]:
-    """The results saved at `path`, by analysis.
+    """Loads saved analysis results from `path`, keyed by analysis name.
 
     Raises:
-        JoltyError: When there is no such file.
+        JoltyError: When `path` does not exist.
     """
     try:
         return files.load_results(path)
@@ -974,17 +969,17 @@ def _plot(
     analyses: list[str],
     traces: list[str],
 ) -> tuple[Plot, ...]:
-    """Plots the `analyses` of the results `loaded` from `path`, or all, beside it.
+    """Plots requested `analyses` (or all plottable ones) from `loaded` next to `path`.
 
     Raises:
-        JoltyError: When an analysis named is not in the results or is taken at DC
-            solutions, or a trace names no unknown.
+        JoltyError: When a named analysis is absent or DC-only, or a trace names an
+            unknown signal.
     """
     missing = [name for name in analyses if name not in loaded]
     if missing:
         known = tuple(loaded)
         problems = [
-            f"{path} holds no analysis named {name!r}{close_names(known, name)}"
+            f"{path} contains no analysis named {name!r}{close_names(known, name)}"
             for name in missing
         ]
         raise PlanError(problems)
@@ -1020,10 +1015,10 @@ def _plot(
 
 
 def _plot_batches(results_path: Path, path: Path) -> tuple[Plot, ...]:
-    """Plots each batch saved at `path` beside the results at `results_path`.
+    """Plots each saved batch in `path` next to `results_path`.
 
-    A batch draws a histogram of its measures, if it has any, and an envelope of
-    each analysis it traced along points of an axis.
+    Each batch produces a histogram of its requirement measures (when present) and an
+    envelope plot for every traced analysis along a multi-point axis.
     """
     drawn = []
     for name, batch in files.load_batches(path).items():
@@ -1046,49 +1041,50 @@ def _describe_plots(drawn: tuple[Plot, ...]) -> str:
 
 
 class DrawRequest(FrozenModel):
-    """Draw the schematic of a saved circuit's top component, or of an instance's."""
+    """Draw the schematic of a saved circuit's top component or a selected instance."""
 
     circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
     instance: str = Field(
         default="",
-        description="The path of the component instance to draw, such as 'X1' or "
-        "'X1/X2'; the top component by default.",
+        description="Path of the component instance to draw, such as 'X1' or 'X1/X2'; "
+        "defaults to the top component.",
     )
     results: Path | None = Field(
         default=None,
-        description="A .results.npz file of the circuit, whose first operating point "
-        "gives the voltage written on each net.",
+        description="Saved .results.npz file whose first operating point annotates "
+        "net voltages on the schematic.",
     )
     output: Path | None = Field(
         default=None,
-        description="Where to save the image; defaults to <stem>.schematic.png beside "
-        "the circuit, or <stem>.X1.X2.schematic.png for the instance X1/X2.",
+        description="Destination path for the PNG image; defaults to "
+        "<stem>.schematic.png next to the circuit, or <stem>.X1.X2.schematic.png for "
+        "instance X1/X2.",
     )
 
 
 class DrawResult(CommandResult):
-    """The schematic drawn."""
+    """Generated schematic image result."""
 
-    schematic: Path = Field(description="The PNG image.")
+    schematic: Path = Field(description="Path to the generated PNG schematic.")
 
     @override
     def describe(self) -> str:
-        """The schematic, in one line."""
+        """Formats the schematic output path as a single line."""
         return f"drew {self.schematic}"
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """The schematic."""
+        """Returns the generated schematic path."""
         return (self.schematic,)
 
 
 async def draw(request: DrawRequest, settings: Settings) -> DrawResult:
-    """Draws a component of a saved circuit beside it; settings play no part.
+    """Draws a component schematic next to a saved circuit file; settings are unused.
 
     Raises:
         JoltyError: When the optional `matplotlib` extra is missing, a file is missing
-            or holds no circuit, no component instance is at the path, or the results
-            hold no operating point.
+            or contains no circuit, no component instance exists at the path, or the
+            results contain no operating point.
     """
     del settings
     _require_plots("drawing schematics")
@@ -1098,7 +1094,7 @@ async def draw(request: DrawRequest, settings: Settings) -> DrawResult:
         loaded = await asyncio.to_thread(_load, request.results)
         point = _first_point(loaded)
         if point is None:
-            message = f"{request.results} holds no operating point"
+            message = f"{request.results} contains no operating point"
             raise JoltyError(message)
     target = request.output or files.schematic_path(request.circuit, request.instance)
     drawn = await asyncio.to_thread(
@@ -1108,47 +1104,47 @@ async def draw(request: DrawRequest, settings: Settings) -> DrawResult:
 
 
 class ViewRequest(FrozenModel):
-    """Write a 3D viewer of a saved circuit and its results, one HTML page to open.
+    """Write a standalone HTML 3D viewer for a saved circuit and its results.
 
-    The viewer lays each component out on a board, its parts on their pins and its
-    wires as traces, and plays every analysis of the results on it: each trace takes
-    its net's voltage as a color, light runs along each lead as its current flows, and
-    clicking a part shows its parameters and its state at each point. It loads three.js
-    from jsDelivr when opened.
+    The viewer lays out components on a board with pins and wire traces and animates
+    all loaded analyses. Trace colors encode net voltages, light pulses indicate lead
+    currents, and clicking a part displays its parameters and state at each point. The
+    generated HTML page loads three.js from jsDelivr when opened in a browser.
     """
 
     circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
     results: Path | None = Field(
         default=None,
-        description="A .results.npz file of the circuit, whose analyses the viewer "
-        "plays; none shows the circuit alone.",
+        description="Saved .results.npz file whose analyses the viewer animates; "
+        "omitting it displays the circuit geometry alone.",
     )
     output: Path | None = Field(
         default=None,
-        description="Where to save the page; defaults to <stem>.view.html beside the "
-        "circuit.",
+        description="Destination path for the HTML page; defaults to <stem>.view.html "
+        "next to the circuit.",
     )
     title: str = Field(
-        default="", description="The page's title; the top component's name if empty."
+        default="",
+        description="HTML page title; defaults to the top component name when empty.",
     )
 
 
 class ViewResult(CommandResult):
-    """The 3D viewer written."""
+    """Generated 3D HTML viewer result."""
 
-    viewer: Path = Field(description="The HTML page.")
+    viewer: Path = Field(description="Path to the generated HTML page.")
 
     @override
     def describe(self) -> str:
-        """The page, in one line."""
+        """Formats the 3D viewer output path as a single line."""
         return f"wrote the 3D viewer {self.viewer}"
 
 
 async def view(request: ViewRequest, settings: Settings) -> ViewResult:
-    """Writes the 3D viewer of a saved circuit and its results; settings play no part.
+    """Writes a 3D HTML viewer for a saved circuit and its results; settings unused.
 
     Raises:
-        JoltyError: When a file is missing or holds no circuit or no results.
+        JoltyError: When a file is missing or contains no valid circuit or results.
     """
     del settings
     circuit = await asyncio.to_thread(_load_circuit, request.circuit)
@@ -1165,40 +1161,40 @@ async def view(request: ViewRequest, settings: Settings) -> ViewResult:
 
 
 class CostRequest(FrozenModel):
-    """Price a saved circuit's top component, or an instance's, with a catalog."""
+    """Price a saved circuit's top component or a selected instance with a catalog."""
 
     circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
-    catalog: Path = Field(description="A catalog file of parts and their prices.")
+    catalog: Path = Field(description="Catalog file of parts and their prices.")
     instance: str = Field(
         default="",
-        description="The path of the component instance to price, such as 'X1'; the "
-        "top component by default.",
+        description="Path of the component instance to price, such as 'X1'; defaults "
+        "to the top component.",
     )
 
 
 class CostResult(CommandResult):
-    """The bill of materials."""
+    """Priced bill of materials for a circuit component."""
 
     bill: catalog.Bill
 
     @property
     @override
     def ok(self) -> bool:
-        """Whether a part builds every device instance."""
+        """True when every device instance matched a priced catalog part."""
         return not self.bill.unpriced
 
     @override
     def describe(self) -> str:
-        """The bill, a line per instance."""
+        """Formats the bill of materials, one line per instance."""
         return self.bill.describe()
 
 
 async def cost(request: CostRequest, settings: Settings) -> CostResult:
-    """Prices a component of a saved circuit with a catalog; settings play no part.
+    """Prices a component of a saved circuit using a catalog; settings are unused.
 
     Raises:
-        JoltyError: When a file is missing or holds no circuit or no catalog, or no
-            component instance is at the path.
+        JoltyError: When a file is missing or contains no valid circuit or catalog, or
+            no component instance exists at the path.
     """
     del settings
     circuit = await asyncio.to_thread(_load_circuit, request.circuit)
@@ -1210,50 +1206,50 @@ async def cost(request: CostRequest, settings: Settings) -> CostResult:
 
 
 class ExportKicadRequest(FrozenModel):
-    """Write a saved circuit's top component, or an instance's, as a KiCad netlist.
+    """Write a saved circuit's top component or a selected instance as a KiCad netlist.
 
-    Each part of its bill of materials becomes a footprint, which its catalog part
-    states with the pads each terminal joins, and KiCad's PCB editor imports the file.
+    Each part in the bill of materials becomes a footprint defined by its catalog
+    entry and pad-to-terminal mapping for import into the KiCad PCB editor.
     """
 
     circuit: CliPositionalArg[Path] = Field(description="A .jolty.json circuit file.")
     catalog: Path = Field(
-        description="A catalog file of parts, with their footprints and pins."
+        description="Catalog file of parts with their footprints and pins."
     )
     instance: str = Field(
         default="",
-        description="The path of the component instance to write, such as 'X1'; the "
-        "top component by default.",
+        description="Path of the component instance to export, such as 'X1'; defaults "
+        "to the top component.",
     )
     output: Path | None = Field(
         default=None,
-        description="Where to save the netlist; defaults to <stem>.net beside the "
-        "circuit, or <stem>.X1.X2.net for the instance X1/X2.",
+        description="Destination path for the netlist; defaults to <stem>.net next to "
+        "the circuit, or <stem>.X1.X2.net for instance X1/X2.",
     )
 
 
 class ExportKicadResult(CommandResult):
-    """The KiCad netlist written, or what keeps the component off a board."""
+    """Generated KiCad netlist or the list of blockers preventing export."""
 
     netlist: kicad.Netlist | None = Field(
-        default=None, description="The netlist, when it was written."
+        default=None, description="Generated netlist when export succeeded."
     )
-    path: Path | None = Field(default=None, description="The netlist file written.")
+    path: Path | None = Field(default=None, description="Path to the written netlist.")
     problems: tuple[str, ...] = Field(
         default=(),
-        description="What keeps the component, or an instance by its path, off the "
-        "board; the netlist is written only when there is none.",
+        description="Blockers preventing PCB export for the component or an instance; "
+        "the netlist is written only when this list is empty.",
     )
 
     @property
     @override
     def ok(self) -> bool:
-        """Whether the netlist was written."""
+        """True when the netlist was written with no export blockers."""
         return not self.problems
 
     @override
     def describe(self) -> str:
-        """The netlist, a line per footprint, or each problem."""
+        """Formats the written netlist summary or each export blocker."""
         if self.netlist is None or self.path is None:
             listed = "".join(f"\n  {problem}" for problem in self.problems)
             return f"cannot write the netlist:{listed}"
@@ -1263,11 +1259,11 @@ class ExportKicadResult(CommandResult):
 async def export_kicad(
     request: ExportKicadRequest, settings: Settings
 ) -> ExportKicadResult:
-    """Writes a component of a saved circuit as a KiCad netlist; settings play no part.
+    """Writes a component of a saved circuit as a KiCad netlist; settings are unused.
 
     Raises:
-        JoltyError: When a file is missing or holds no circuit or no catalog, or no
-            component instance is at the path.
+        JoltyError: When a file is missing or contains no valid circuit or catalog, or
+            no component instance exists at the path.
     """
     del settings
     circuit = await asyncio.to_thread(_load_circuit, request.circuit)
@@ -1284,7 +1280,7 @@ async def export_kicad(
 
 
 def _plots_available() -> bool:
-    """Whether the optional `matplotlib` dependency is installed."""
+    """Returns whether the optional `matplotlib` dependency is installed."""
     return importlib.util.find_spec("matplotlib") is not None
 
 
@@ -1306,10 +1302,10 @@ def _draw(
     point: results.OperatingPointResult | None = None,
     marked: Collection[str] = (),
 ) -> Path:
-    """Draws the component at `instance` to `path`, and returns `path`.
+    """Draws the component at `instance` to `path` and returns `path`.
 
     Raises:
-        JoltyError: When no component instance is at `instance`.
+        JoltyError: When no component instance exists at `instance`.
     """
     figure = schematic.draw(circuit, instance, point=point, marked=marked)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1320,7 +1316,7 @@ def _draw(
 def _first_point(
     loaded: Mapping[str, results.AnalysisResult],
 ) -> results.OperatingPointResult | None:
-    """The first operating point among the results, if any."""
+    """Returns the first operating point result in `loaded`, if present."""
     return next(
         (
             result
@@ -1332,7 +1328,7 @@ def _first_point(
 
 
 def _marked(report: checks.CheckReport | None) -> tuple[str, ...]:
-    """The paths of the instances the listed diagnostics name."""
+    """Returns instance paths named by diagnostics in `report`."""
     if report is None:
         return ()
     return tuple(
@@ -1355,27 +1351,26 @@ class CheckRequest(FrozenModel):
 
 
 class CheckResult(CommandResult):
-    """What a check found."""
+    """Outcome of elaborating and checking a saved circuit."""
 
-    circuit: Path = Field(description="The circuit file.")
+    circuit: Path = Field(description="Path to the checked circuit file.")
     problems: tuple[str, ...] = Field(
-        description="Why the circuit does not elaborate, each naming an instance and "
-        "the script line that placed it."
+        description="Elaboration errors, each naming the affected instance and "
+        "build-script line."
     )
     report: checks.CheckReport | None = Field(
-        description="What the structural checks found; null when the circuit does "
-        "not elaborate."
+        description="Structural check report, or null when elaboration fails."
     )
 
     @property
     @override
     def ok(self) -> bool:
-        """Whether the circuit elaborates and its checks found no error."""
+        """True when the circuit elaborates and structural checks find no errors."""
         return not self.problems and self.report is not None and self.report.ok
 
     @override
     def describe(self) -> str:
-        """The result as text."""
+        """Formats the check report or elaboration problems as text."""
         if self.report is None:
             return _unelaborated(str(self.circuit), self.problems)
         return self.report.describe()
@@ -1385,8 +1380,8 @@ async def check(request: CheckRequest, settings: Settings) -> CheckResult:
     """Elaborates a saved circuit and checks its structure.
 
     Raises:
-        JoltyError: When the file is missing or holds no circuit, or a rule named in
-            the options or settings does not exist.
+        JoltyError: When the file is missing or contains no valid circuit, or a named
+            rule in options or settings does not exist.
     """
     chosen = _levels(request, settings)
     circuit = await asyncio.to_thread(_load_circuit, request.circuit)
@@ -1406,7 +1401,7 @@ async def check(request: CheckRequest, settings: Settings) -> CheckResult:
 
 
 class ExplainRequest(FrozenModel):
-    """Explain rules: the exact condition each checks, and its level."""
+    """Explain check rules, including each rule's condition and severity level."""
 
     rules: CliPositionalArg[list[str]] = Field(
         default_factory=list, description="Rules to explain; every rule by default."
@@ -1414,22 +1409,22 @@ class ExplainRequest(FrozenModel):
 
 
 class RuleSummary(FrozenModel):
-    """One rule: its name, its levels and its condition."""
+    """Metadata describing a single structural check rule."""
 
     name: str
-    level: Level = Field(description="The level the settings give it.")
-    default_level: Level = Field(description="The level it has unless configured.")
-    condition: str = Field(description="The exact condition it checks.")
+    level: Level = Field(description="Active severity level from current settings.")
+    default_level: Level = Field(description="Built-in default severity level.")
+    condition: str = Field(description="Exact circuit condition checked by the rule.")
 
 
 class ExplainResult(CommandResult):
-    """The rules explained."""
+    """Formatted explanation of structural check rules."""
 
     rules: tuple[RuleSummary, ...]
 
     @override
     def describe(self) -> str:
-        """The rules as text, one paragraph each."""
+        """Formats the explained rules as text, one paragraph each."""
         return "\n\n".join(
             f"{rule.name} ({rule.level}"
             + (
@@ -1443,11 +1438,10 @@ class ExplainResult(CommandResult):
 
 
 async def explain(request: ExplainRequest, settings: Settings) -> ExplainResult:
-    """Explains the rules `request` names, or every rule.
+    """Explains the rules named in `request`, or all rules when none are listed.
 
     Raises:
-        JoltyError: When a name is no rule, or the settings name a rule that does not
-            exist.
+        JoltyError: When a requested or configured rule name does not exist.
     """
     known = checks.rules()
     chosen = checks.levels(settings.rules)
@@ -1472,7 +1466,7 @@ async def explain(request: ExplainRequest, settings: Settings) -> ExplainResult:
 
 
 class ReadDocsResult(CommandResult):
-    """Either the listing of offline documents, or the single document requested."""
+    """Listing of offline documents or the single requested document."""
 
     entries: tuple[DocumentSummary, ...] = Field(
         default=(),
@@ -1480,19 +1474,19 @@ class ReadDocsResult(CommandResult):
     )
     document: Document | None = Field(
         default=None,
-        description="The requested document with its full text; null when listing.",
+        description="Requested document with full text; null when listing.",
     )
 
     @override
     def describe(self) -> str:
-        """The document text when reading one, or the grouped listing of topics."""
+        """Formats the requested document text or the grouped topic listing."""
         if self.document is not None:
             return self.document.content.rstrip("\n")
         return _docs.describe_entries(self.entries)
 
 
 async def read_docs(request: ReadDocsRequest, settings: Settings) -> ReadDocsResult:
-    """Lists available offline documents or reads the topic `request` names.
+    """Lists available offline documents or reads the topic named in `request`.
 
     Raises:
         JoltyError: When the offline bundle is unavailable or the requested topic is
@@ -1521,12 +1515,12 @@ def _load_validated[Loaded](
 
 
 def _load_circuit(path: Path) -> ir.Circuit:
-    """The circuit saved at `path`."""
+    """Loads the circuit saved at `path`."""
     return _load_validated(path, "circuit", files.load_circuit)
 
 
 def _load_catalog(path: Path) -> catalog.Catalog:
-    """The catalog saved at `path`."""
+    """Loads the parts catalog saved at `path`."""
     return _load_validated(path, "catalog", catalog.Catalog.load)
 
 
@@ -1544,7 +1538,7 @@ def _report(
     chosen: dict[str, Level],
     settings: Settings,
 ) -> checks.CheckReport | None:
-    """The report of the checks the runner made, when the request asks for it."""
+    """Builds the structural check report from runner diagnostics when requested."""
     if not request.check or built.problems:
         return None
     limit = request.max_diagnostics or settings.max_diagnostics
@@ -1552,10 +1546,10 @@ def _report(
 
 
 async def _existing(script: Path) -> Path:
-    """The absolute path of `script`.
+    """Resolves the absolute path of `script` after verifying the file exists.
 
     Raises:
-        JoltyError: When there is no such file.
+        JoltyError: When `script` does not exist.
     """
     if not await asyncio.to_thread(script.is_file):
         message = f"no such script: {script}"
@@ -1646,10 +1640,10 @@ async def _child(directory: Path, limit: int) -> tuple[ScriptOutput, int]:
 def _pipes(
     process: asyncio.subprocess.Process,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamReader]:
-    """The standard output and error of `process`, started with both as pipes.
+    """Returns stdout and stderr pipe readers for `process`.
 
     Raises:
-        JoltyError: Never, unless the process was started without pipes.
+        JoltyError: When `process` was started without stdout or stderr pipes.
     """
     if process.stdout is None or process.stderr is None:
         message = "could not capture the runner's output"
@@ -1658,9 +1652,10 @@ def _pipes(
 
 
 async def _read_capped(stream: asyncio.StreamReader, limit: int) -> tuple[str, bool]:
-    """The first `limit` characters of `stream`, read to its end, and if it had more.
+    """Reads `stream` to EOF, keeping at most `limit` characters and a truncation flag.
 
-    It keeps no more bytes than `limit` characters can take, however much is written.
+    Buffered bytes are bounded by the maximum UTF-8 width of `limit` characters
+    regardless of total stream volume.
     """
     kept = bytearray()
     dropped = False
@@ -1673,7 +1668,7 @@ async def _read_capped(stream: asyncio.StreamReader, limit: int) -> tuple[str, b
 
 
 def _read(path: Path) -> runner.JobResult | None:
-    """The runner's job result, or None when it exited before writing all of it."""
+    """Reads the runner job result from `path`, or returns None if incomplete."""
     try:
         return runner.JOB_RESULTS.validate_json(path.read_bytes())
     except FileNotFoundError, ValidationError:
@@ -1681,7 +1676,7 @@ def _read(path: Path) -> runner.JobResult | None:
 
 
 def _move(source: Path, destination: Path) -> None:
-    """Moves `source` to `destination`, or removes `destination` without a source."""
+    """Moves `source` to `destination`, or removes `destination` when absent."""
     if source.is_file():
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(source, destination)
@@ -1702,11 +1697,10 @@ def _write_atomic(target: Path, writer: Callable[[Path], object]) -> None:
 
 
 def _place(source: Path, destination: Path) -> None:
-    """Moves `source` to `destination` at once, or removes `destination` without one.
+    """Copies `source` into `destination` atomically, or removes `destination`.
 
-    A reader of `destination` finds the whole file there, or the one there before,
-    never part of it, even when the move is stopped: the file is copied to a hidden
-    name beside `destination`, then renamed atomically.
+    Concurrent readers observe either the complete new file or the prior file, never a
+    partial write, because the copy stages to a hidden sibling file before renaming.
     """
     if not source.is_file():
         destination.unlink(missing_ok=True)
@@ -1754,9 +1748,9 @@ def _save_raw(
 
 
 def _save(built: runner.Built, path: Path) -> CircuitSummary:
-    """Saves the circuit `built` holds at `path` atomically via a sibling file.
+    """Saves the circuit from `built` atomically to `path` via a sibling file.
 
-    Shards of one analysis, run at once, each save the same circuit there.
+    Concurrent shards of a single analysis safely write identical circuit files here.
     """
     _write_atomic(path, lambda staged: files.save_circuit(staged, built.circuit))
     return CircuitSummary(
@@ -1778,7 +1772,7 @@ def _indent(text: str) -> str:
 
 
 def _unelaborated(circuit: str, problems: Collection[str]) -> str:
-    """Each of a circuit's `problems`, then how many stop it from elaborating."""
+    """Formats elaboration `problems` for `circuit` with the total error count."""
     count = _plural(len(problems), "error")
     return "\n\n".join([*problems, f"{circuit} does not elaborate: {count}"])
 

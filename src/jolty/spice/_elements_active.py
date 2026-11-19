@@ -38,26 +38,26 @@ _TRANSIENT_FUNCTIONS: Final = frozenset({"pulse", "sin", "pwl", "exp", "sffm", "
 """The names of SPICE's waveforms of an independent source over time."""
 
 _SINE_OPTIONS: Final = ("delay", "damping", "phase")
-"""What a `SIN` may give after its offset, amplitude and frequency, in order."""
+"""Optional `SIN` parameter names following offset, amplitude, and frequency."""
 
 _SCALED: Final = {
     **dict.fromkeys(("w", "l", "pd", "ps", "sa", "sb", "sd", "sc"), 1),
     **dict.fromkeys(("ad", "as"), 2),
 }
-"""The sizes of a MOSFET's element that ngspice's ``scale`` option scales, by the power
-of it each takes: a length's 1, an area's 2 (``mos1par.c``), and a BSIM4's distances to
-its diffusion's edges, between its fingers and to its well's edge (``b4v5par.c``, lines
-87 to 111)."""
+"""MOSFET instance parameters scaled by ``.option scale``, mapped to scale powers.
+
+Lengths scale linearly (power 1) and areas scale quadratically (power 2), matching
+ngspice ``mos1par.c`` and ``b4v5par.c`` (lines 87 to 111).
+"""
 
 _VDMOS_TERMINALS: Final = ("drain", "gate", "source")
-"""A VDMOS's terminals, in its element's order."""
+"""VDMOS terminals in SPICE element order."""
 
 _VDMOS_NODES: Final = 5
-"""The most nodes a VDMOS joins: its terminals, then a thermal junction and case, which
-join nothing unless it heats."""
+"""Maximum node count on a VDMOS statement (three electrical plus two thermal)."""
 
 _BIPOLAR_TERMINALS: Final = ("collector", "base", "emitter")
-"""A bipolar transistor's terminals, in its element's order, before its substrate."""
+"""Primary bipolar transistor terminals in SPICE element order before substrate."""
 
 _TABLE_NUMBER: Final = re.compile(
     r"[-+]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?[a-z]*", re.IGNORECASE
@@ -65,8 +65,8 @@ _TABLE_NUMBER: Final = re.compile(
 """Pattern matching numbers with optional scale suffixes inside a ``TABLE`` source."""
 
 _ROUNDING: Final = 0.1
-"""How much of the shorter segment beside each corner of a ``TABLE`` source ngspice
-rounds: its XSPICE ``pwl`` model's ``input_domain``."""
+"""Fraction of the shorter adjacent segment rounded at each ``TABLE`` corner, matching
+XSPICE ``pwl`` ``input_domain``."""
 
 _POLY_HEADER: Final = re.compile(r"poly\((\d+)\)", re.IGNORECASE)
 """Header of a SPICE2 ``POLY(n)`` controlled source."""
@@ -81,11 +81,11 @@ _ARBITRARY_SOURCE: Final = re.compile(
 
 
 def _independent(model: str) -> ElementTranslator:
-    """The translation of an independent source of `model`.
+    """Builds a translator for independent sources (`voltage_source`/`current_source`).
 
-    Its level is its DC level, or its waveform over time, SPICE's `PULSE`, `SIN`, `PWL`
-    or `EXP`, whose level at time zero every other analysis reads, as ngspice reads it
-    for a source with no DC level.
+    Reads a DC level or a time-domain waveform (`PULSE`, `SIN`, `PWL`, or `EXP`).
+    Non-transient analyses evaluate the waveform at time zero, matching ngspice when no
+    separate DC level is given.
     """
 
     def translated(translation: Translation, statement: Statement) -> None:
@@ -143,15 +143,14 @@ def _independent(model: str) -> ElementTranslator:
 def _transient_function(
     translation: Translation, statement: Statement, words: list[str]
 ) -> tuple[list[str], dict[str, JsonValue] | None]:
-    """`words` without a waveform over time, and that waveform, if they hold one.
+    """Extracts a SPICE time-domain waveform from `words`, returning remaining tokens.
 
-    The waveform is written ``PULSE(...)`` or ``PULSE (...)``, or as SPICE2 wrote it,
-    ``PULSE`` followed by its arguments to the statement's end, and likewise ``SIN``,
-    ``PWL`` and ``EXP``.
+    Supports ``PULSE(...)``, ``PULSE (...)``, and bare SPICE2 argument lists for
+    ``PULSE``, ``SIN``, ``PWL``, and ``EXP``.
 
     Raises:
-        SpiceError: When the waveform is one jolty has not, such as `SFFM`, or leaves
-            out what SPICE takes from the transient analysis.
+        SpiceError: When the waveform is unsupported (such as `SFFM`) or omits required
+            parameters that SPICE derives from transient step or stop time.
     """
     for index, word in enumerate(words):
         name, _, inside = word.partition("(")
@@ -172,13 +171,12 @@ def _transient_function(
 def _waveform(
     name: str, arguments: list[float], statement: Statement
 ) -> dict[str, JsonValue]:
-    """The waveform SPICE's function `name` of `arguments` writes, in jolty's format.
+    """Converts SPICE waveform `name` and numeric `arguments` into a jolty dict.
 
     Raises:
-        SpiceError: When jolty has no such waveform, or the function leaves out what
-            SPICE takes from the transient analysis: a pulse's rise, fall or width, a
-            sine's frequency, or an exponential's delays and time constants, which
-            ngspice 47 takes from the transient's step wherever they are 0.
+        SpiceError: When `name` is unsupported or omits parameters that SPICE takes
+            from transient step/stop time (pulse rise/fall/width, sine frequency, or
+            exponential delays and time constants).
     """
     match name, arguments:
         case "pulse", [initial, pulsed, delay, rise, fall, width, *period] if (
@@ -273,9 +271,9 @@ def _scaled_mosfet(
 def _semiconductor(
     terminals: tuple[str, ...], kinds: frozenset[str]
 ) -> ElementTranslator:
-    """The translation of a diode or a transistor between `terminals`.
+    """Builds a translator for semiconductor devices connecting `terminals`.
 
-    Its model card is of one of `kinds`.
+    Validates that the referenced model card has a type in `kinds`.
     """
 
     def translated(translation: Translation, statement: Statement) -> None:
@@ -294,8 +292,8 @@ def _semiconductor(
                 instance, library.options.get("scale", 1.0), statement
             )
         elif "d" in kinds:
-            # A level 3 diode scales its sizes by `scale` as it reads them, its masks'
-            # offsets in their own units (`diosetup.c`, lines 336 to 360).
+            # Level-3 diodes scale instance dimensions by `scale` while keeping mask
+            # offsets in native units (`diosetup.c`, lines 336 to 360).
             instance["scale"] = library.options.get("scale", 1.0)
         card = library.model(rest[0], cards)
         if card is None and "nmos" in kinds:
@@ -347,7 +345,7 @@ _MOSFET: Final = _semiconductor(
 def _find_model_card(
     translation: Translation, positional: Sequence[str], first: int
 ) -> tuple[int | None, ModelCard | None]:
-    """First position from `first` in `positional` naming a model, and its card."""
+    """Finds the first token at or after `first` in `positional` naming a model card."""
     for position in range(first, len(positional)):
         card = translation.library.model(positional[position], translation.models)
         if card is not None:
@@ -371,17 +369,16 @@ def _check_vdmos_flags(statement: Statement, words: Sequence[str]) -> None:
 
 
 def _transistor(translation: Translation, statement: Statement) -> None:
-    """The translation of an `M` element: a MOSFET, or a VDMOS, as its model card says.
+    """Translates an `M` element into a MOSFET or VDMOS device by its model card.
 
-    As in ngspice, the element names its model after its nodes, the first word from the
-    fourth node on that names a model: a MOSFET joins four nodes, and a VDMOS three,
-    its drain, gate and source, and a fourth and a fifth, its thermal nodes, which join
-    nothing where the element does not heat by ngspice's ``thermal``, and jolty reads
-    no element that does. A VDMOS takes its number of copies, ``M``, and no area.
+    Follows ngspice model lookup starting at the fourth positional token. MOSFETs
+    connect four terminals, while VDMOS devices connect drain, gate, and source plus
+    up to two unused thermal nodes (self-heating ``thermal`` VDMOS instances are
+    rejected). VDMOS instances accept multiplier ``M`` and no area.
 
     Raises:
-        SpiceError: When no model follows the nodes, or the element is not one jolty
-            reads.
+        SpiceError: When no valid model follows the nodes or an unsupported option is
+            supplied.
     """
     positional, assigned = split_keywords(tokens(statement.text))
     named, card = _find_model_card(translation, positional, len(_VDMOS_TERMINALS) + 1)
@@ -410,19 +407,16 @@ def _transistor(translation: Translation, statement: Statement) -> None:
 
 
 def _bipolar(translation: Translation, statement: Statement) -> None:
-    """The translation of a `Q` element: a Gummel-Poon transistor or a VBIC, by card.
+    """Translates a `Q` element into a Gummel-Poon BJT or VBIC device by model card.
 
-    As in ngspice, the element names its model after its nodes, the first word from the
-    fourth node on that names a model: three nodes, then a substrate, the ground unless
-    a fourth node gives it, and for a VBIC a fifth, its thermal node. A VBIC whose card
-    heats, by a positive ``RTH`` and a ``SELFT`` of 1 or none, heats through a thermal
-    terminal on that node's net, held to the ambient by its thermal resistance and
-    capacitance, devices named after the element with ``.rth`` and ``.cth``; without a
-    thermal node, its thermal node is the ground, as ngspice joins it, and it does not
-    heat.
+    Locates the model name starting at the fourth positional token after collector,
+    base, emitter, optional substrate (defaulting to ground), and optional VBIC fifth
+    thermal node. When a five-node VBIC card enables self-heating (``RTH > 0`` and
+    ``SELFT`` omitted or 1), attaches a thermal terminal alongside ``.rth`` and
+    ``.cth`` devices to ambient ground.
 
     Raises:
-        SpiceError: When no bipolar transistor's model follows three to five nodes.
+        SpiceError: When no bipolar model card follows three to five node tokens.
     """
     positional, assigned = split_keywords(tokens(statement.text))
     named, card = _find_model_card(translation, positional, len(_BIPOLAR_TERMINALS) + 1)
@@ -485,7 +479,7 @@ def _bipolar(translation: Translation, statement: Statement) -> None:
 
 
 def _controlled(output: str) -> ElementTranslator:
-    """The translation of an E, F, G or H source, whose output is `output`."""
+    """Builds a translator for controlled sources (`E`, `F`, `G`, `H`) by `output`."""
 
     def translated(translation: Translation, statement: Statement) -> None:
         words = tokens(statement.text)
@@ -540,9 +534,9 @@ def _linear_current(
     rest: list[str],
     output: str,
 ) -> None:
-    """A current-controlled source with a gain.
+    """Translates a linear current-controlled source (`F` or `H`) with scalar gain.
 
-    Its control port is in series with the source whose current it reads.
+    Inserts the control port in series with the sensed voltage source.
     """
     source, gain = rest
     control_positive, control_negative = translation.sense(source, statement)
@@ -563,10 +557,11 @@ def _linear_current(
 def _table(
     translation: Translation, statement: Statement, rest: list[str]
 ) -> Expression:
-    """``TABLE {x} = (x1, y1) …``, as ngspice reads it.
+    """Parses a SPICE ``TABLE {x} = (x1, y1) ...`` lookup table into a call node.
 
-    It interpolates its points, holds beyond the ends, and rounds its corners. The
-    points are read leniently, as PSpice reads unbalanced parentheses.
+    Interpolates table points linearly, clamps beyond endpoints, and rounds corners
+    with `_ROUNDING`. Parses coordinates leniently to tolerate unbalanced PSpice
+    parentheses.
     """
     if len(rest) < 2:  # noqa: PLR2004 - the keyword and the input
         message = "a TABLE has an input and points"
@@ -597,10 +592,10 @@ def _polynomial_count(statement: Statement, header: str) -> int:
 def _polynomial(
     statement: Statement, rest: list[str], *, by_current: bool
 ) -> Expression:
-    """``POLY(n)`` controls and coefficients, as SPICE2's polynomial.
+    """Parses a SPICE2 ``POLY(n)`` controlled source into a polynomial `Expression`.
 
-    The coefficients are the constant's, the linear terms', then each product of two
-    controls', then of three, in order.
+    Orders coefficients from constant term through linear, quadratic, and higher
+    degree control monomials.
     """
     count = _polynomial_count(statement, rest[0])
     words = [part for word in rest[1:] for part in _split_group(word)]
@@ -642,14 +637,14 @@ def _polynomial(
 
 
 def _split_group(word: str) -> list[str]:
-    """The words of a group such as ``(3,0)``, or the word itself."""
+    """Splits a parenthesized ``POLY`` group such as ``(3,0)`` into tokens."""
     if word.startswith("(") and word.endswith(")"):
         return [part for part in _GROUP_SEPARATOR.split(word[1:-1]) if part]
     return [word]
 
 
 def _arbitrary(translation: Translation, statement: Statement) -> None:
-    """A B source: ``V=`` or ``I=`` an expression."""
+    """Translates an arbitrary behavioral `B` source (`V=` or `I=`) into jolty IR."""
     match = _ARBITRARY_SOURCE.match(statement.text)
     if match is None:
         message = "a B source joins two nodes, then sets `V=` or `I=` an expression"
@@ -668,7 +663,7 @@ def _arbitrary(translation: Translation, statement: Statement) -> None:
 
 
 def _switch(*, by_current: bool) -> ElementTranslator:
-    """The translation of an S (voltage) or W (current) controlled switch."""
+    """Builds a translator for voltage-controlled (`S`) or current (`W`) switches."""
     expected_words = 5 if by_current else 6
     expected_kind = "iswitch" if by_current else "vswitch"
 
@@ -716,7 +711,7 @@ def _switch(*, by_current: bool) -> ElementTranslator:
 
 
 def _instance(translation: Translation, statement: Statement) -> None:
-    """An X instance of a subcircuit, with its parameters."""
+    """Translates an `X` subcircuit instantiation statement with its parameters."""
     words = [word for word in tokens(statement.text) if word.casefold() != "params:"]
     # Each parameter is `name = value`; the subcircuit's name is the last word besides,
     # which HSPICE's netlists, such as SKY130's, may write after the parameters.

@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""SPICE's expressions: read, evaluated, and written in jolty's language.
+"""Parser, evaluator, and translator for SPICE expressions.
 
-SPICE writes numbers with scale suffixes, such as ``4.7k`` or ``1MEG``, and its
-functions with PSpice's meanings, which ngspice shares: ``PWR(x, y)`` is
-``|x| ^ y``, ``LIMIT(x, a, b)`` holds ``x`` between ``a`` and ``b``, ``&`` and ``|`` are
-logical. Names are case-insensitive.
+SPICE literals accept scale suffixes such as ``4.7k`` or ``1MEG``. Functions follow
+PSpice and ngspice semantics: ``PWR(x, y)`` computes ``|x| ^ y``, ``LIMIT(x, a, b)``
+clamps ``x`` to ``[a, b]``, and ``&`` and ``|`` are logical operators. Identifiers are
+case-insensitive.
 
 Examples:
     >>> expression = parse("LIMIT(Gain*V(VC+,VC-), -1m, 1m)")
@@ -38,7 +38,7 @@ _SCALES: Final = {
     "p": 1e-12,
     "f": 1e-15,
 }
-"""SPICE's scale suffixes, which a unit's letters may follow, as in ``10uF``."""
+"""SPICE scale suffixes, optionally followed by unit letters such as ``10uF``."""
 
 _NUMBER: Final = re.compile(
     r"(?P<mantissa>[-+]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)"
@@ -48,16 +48,16 @@ _NUMBER: Final = re.compile(
 
 
 class UndefinedError(SpiceError):
-    """An expression reads a name that no parameter or constant has."""
+    """Error raised when an expression references an undefined name."""
 
     def __init__(self, message: str, name: str) -> None:
-        """The error that `name` is undefined, stated by `message`."""
+        """Initializes an undefined-name error with `message` and missing `name`."""
         super().__init__(message)
         self.name = name
 
 
 def number(text: str) -> float | None:
-    """The number `text` writes, with its scale suffix, or `None` if it is not one.
+    """Parses a numeric literal with an optional SPICE scale suffix, or returns `None`.
 
     Returns `None` for non-finite values, including literals that overflow IEEE-754
     double precision on parsing or scale multiplication.
@@ -78,21 +78,21 @@ def number(text: str) -> float | None:
 
 @dataclass(frozen=True, slots=True)
 class Number:
-    """A constant."""
+    """Numeric constant expression node."""
 
     value: float
 
 
 @dataclass(frozen=True, slots=True)
 class Name:
-    """A parameter or a constant, by its case-folded name."""
+    """Parameter or constant reference identified by its case-folded name."""
 
     name: str
 
 
 @dataclass(frozen=True, slots=True)
 class Voltage:
-    """``V(a)``, a node's voltage, or ``V(a, b)``, one node's over another's."""
+    """Node voltage ``V(a)`` or differential voltage ``V(a, b)`` expression node."""
 
     positive: str
     negative: str | None
@@ -100,7 +100,7 @@ class Voltage:
 
 @dataclass(frozen=True, slots=True)
 class Current:
-    """``I(Vx)``, the current through a voltage source."""
+    """Branch current ``I(Vx)`` through a voltage source."""
 
     source: str
 
@@ -135,7 +135,7 @@ class _Compound:
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Call(_Compound):
-    """A function, by its case-folded name, of its arguments."""
+    """Function invocation with a case-folded name and argument tuple."""
 
     function: str
     arguments: tuple[Expression, ...]
@@ -143,7 +143,7 @@ class Call(_Compound):
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Unary(_Compound):
-    """A sign or a negation of an operand."""
+    """Unary sign or logical negation applied to one operand."""
 
     operator: str
     operand: Expression
@@ -151,7 +151,7 @@ class Unary(_Compound):
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Binary(_Compound):
-    """An operator between two operands."""
+    """Binary operation combining left and right operands."""
 
     operator: str
     left: Expression
@@ -160,7 +160,7 @@ class Binary(_Compound):
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
 class Conditional(_Compound):
-    """``c ? a : b``."""
+    """Ternary conditional expression ``c ? a : b``."""
 
     condition: Expression
     then: Expression
@@ -174,9 +174,9 @@ type Expression = (
 
 @dataclass(frozen=True, slots=True)
 class Function:
-    """A user's function, SPICE's ``.func``: its parameters and its body.
+    """User-defined SPICE ``.func`` declaration with parameter names and body.
 
-    The parameters are case-folded names, which the body, an expression, reads.
+    Parameter names are stored case-folded and referenced within `body`.
     """
 
     parameters: tuple[str, ...]
@@ -198,7 +198,7 @@ _LEVELS: Final = (
     {"+": "+", "-": "-"},
     {"*": "*", "/": "/"},
 )
-"""The binary operators at each level of precedence, loosest first, and what each is."""
+"""Binary operators grouped by precedence (loosest first) with canonical forms."""
 
 
 _BINARY: Final[dict[str, tuple[int, str]]] = {
@@ -206,26 +206,26 @@ _BINARY: Final[dict[str, tuple[int, str]]] = {
     for precedence, operators in enumerate(_LEVELS)
     for symbol, operator in operators.items()
 }
-"""Each binary operator symbol mapped to `(precedence, canonical_operator)`."""
+"""Mapping from binary operator symbols to `(precedence, canonical_operator)`."""
 
 _UNARY: Final = {"-": "-", "+": "+", "!": "!", "~": "!"}
 """Unary operator symbols mapped to their canonical operator."""
 
 _MAX_DEPTH: Final = 100
-"""The maximum nesting depth accepted by the expression parser."""
+"""Maximum nesting depth accepted by the expression parser."""
 
 _MAX_CORE_DEPTH: Final = 256
-"""The maximum parenthesis depth passed to the Rust expression engine.
+"""Maximum parenthesis depth passed to the Rust expression engine.
 
 Matches `jolty_expressions::parser::MAX_DEPTH` (`256`) so SPICE behavioral and
 parameter translation raises `SpiceError` directly before crossing into `_core`.
 """
 
 _MAX_INLINED_NODES: Final = 100_000
-"""The maximum number of expression nodes built while inlining user functions."""
+"""Maximum expression node count allowed while inlining user functions."""
 
 _MAX_POLYNOMIAL_DEGREE: Final = 64
-"""The largest polynomial degree integrated in closed form."""
+"""Largest polynomial degree integrated in closed form."""
 
 _MAX_TRANSLATED_LENGTH: Final = 1_000_000
 """Maximum character length allowed for a translated expression string.
@@ -264,12 +264,14 @@ redundant parentheses on flat operator chains.
 
 
 _ENCLOSING: Final = {"{": "}", "'": "'", '"': '"'}
-"""The marks that may enclose an expression: braces, or single or double quotes, as
-HSPICE writes them, one within another, as in SKY130's ``{"-tol_nfom/2"}``."""
+"""Delimiter pairs that enclose SPICE expressions (braces or quotes).
+
+Supports nested delimiters such as HSPICE and SKY130 forms like ``{"-tol_nfom/2"}``.
+"""
 
 
 def _is_enclosed(text: str) -> bool:
-    """Whether `text` starts and ends with one matched pair of enclosing marks."""
+    """Returns whether `text` is wrapped in one matched pair of delimiters."""
     if len(text) <= 1:
         return False
     opening = text[0]
@@ -290,7 +292,7 @@ def _is_enclosed(text: str) -> bool:
 
 
 def nesting_depth(text: str) -> int:
-    """The maximum parenthesis nesting depth of `text`."""
+    """Returns the maximum parenthesis nesting depth in `text`."""
     depth = 0
     deepest = 0
     for character in text:
@@ -318,10 +320,10 @@ def check_core_depth(text: str) -> None:
 
 
 def parse(text: str) -> Expression:
-    """The expression `text` writes, with or without braces or quotes around it.
+    """Parses a SPICE expression string, stripping outer braces or quotes.
 
     Raises:
-        SpiceError: When `text` is not an expression.
+        SpiceError: When `text` is not a valid expression.
     """
     stripped = text.strip()
     while _is_enclosed(stripped):
@@ -341,7 +343,7 @@ class _Parser:
         self.depth = 0
 
     def fail(self, expected: str) -> SpiceError:
-        """An error: `expected` is not where the parser is."""
+        """Builds a `SpiceError` reporting that `expected` was not found at cursor."""
         rest = self.text[self.position :].strip() or "the end"
         return SpiceError(f"expected {expected} in `{self.text}`, not `{rest}`")
 
@@ -360,7 +362,7 @@ class _Parser:
             self.depth -= 1
 
     def scan(self) -> tuple[str, str, int] | None:
-        """The next token's kind and text, and where it ends, if one is left."""
+        """Returns the next token kind, text, and end index, or `None` at end."""
         match = _TOKEN.match(self.text, self.position)
         kind = None if match is None else match.lastgroup
         if match is None or kind is None:
@@ -453,7 +455,7 @@ class _Parser:
                     message = f"number `{text}` is not finite in `{self.text}`"
                     raise SpiceError(message)
                 return Number(value)
-            # A parameter in braces within an expression, as in PSpice: `{VTHRES} + 1`.
+            # Brace-enclosed parameter inside an expression, as in PSpice: `{VTHRES}+1`.
             case ("symbol", "(" | "{" as opening):
                 with self._nested():
                     inner = self.conditional()
@@ -469,7 +471,7 @@ class _Parser:
     def call(self, function: str) -> Expression:
         self.take()
         if function in {"v", "i"}:
-            # Node names may hold signs, as in V(VC+,COM): they are read as written.
+            # Node names may contain signs (such as V(VC+,COM)) and are read verbatim.
             end = self.text.find(")", self.position)
             if end < 0:
                 expected = "`)`"
@@ -496,7 +498,7 @@ class _Parser:
 
 
 def children(expression: Expression) -> tuple[Expression, ...]:
-    """The direct sub-expressions of `expression`, in order."""
+    """Returns the direct sub-expressions of `expression` in evaluation order."""
     match expression:
         case Unary(_, operand):
             return (operand,)
@@ -510,7 +512,7 @@ def children(expression: Expression) -> tuple[Expression, ...]:
 
 
 def _label(expression: Expression) -> str:
-    """The distinguishing tag of a compound expression node."""
+    """Returns the operator or function name identifying a compound node."""
     match expression:
         case Call(function, _):
             return function
@@ -521,7 +523,7 @@ def _label(expression: Expression) -> str:
 
 
 def _equal(first: Expression, second: Expression) -> bool:
-    """Iterative structural equality that never hits Python's recursion limit."""
+    """Checks structural equality iteratively without Python recursion limits."""
     stack: list[tuple[Expression, Expression]] = [(first, second)]
     while stack:
         left, right = stack.pop()
@@ -559,12 +561,12 @@ def fold[Result](
     *,
     before: Callable[[Expression], None] | None = None,
 ) -> Result:
-    """Iteratively folds `expression` bottom-up without recursion.
+    """Folds `expression` bottom-up iteratively without recursion.
 
     When `leaf(node)` returns a non-`None` value, that value is used directly
-    without descending into `node`'s children. Otherwise `before(node)` (if given)
-    runs before descending left-to-right, and `combine(node, built)` combines the
-    children's folded results.
+    without descending into the children of `node`. Otherwise `before(node)` (when
+    provided) runs before descending left-to-right, and `combine(node, built)`
+    combines the folded child results.
     """
     frames: list[tuple[Expression, bool]] = [(expression, False)]
     results: list[Result] = []
@@ -612,7 +614,7 @@ def rebuild(expression: Expression, subexpressions: list[Expression]) -> Express
 
 
 def _no_replace(_node: Expression) -> Expression | None:
-    """Default replacement hook that leaves every node to be rebuilt bottom-up."""
+    """Returns `None` so `rewrite` rebuilds every node bottom-up by default."""
     return None
 
 
@@ -623,7 +625,7 @@ def rewrite(
     before: Callable[[Expression], None] | None = None,
     combine: Callable[[Expression, list[Expression]], Expression] = rebuild,
 ) -> Expression:
-    """Iteratively rewrites `expression` bottom-up without recursion."""
+    """Rewrites `expression` bottom-up iteratively without recursion."""
     leaf = _no_replace if replace is None else replace
     return fold(expression, leaf, combine, before=before)
 
@@ -641,7 +643,7 @@ def _hash_combine(node: Expression, child_hashes: list[int]) -> int:
 
 
 def _hash(expression: Expression) -> int:
-    """Iterative structural hash that never hits Python's recursion limit."""
+    """Computes a structural hash iteratively without Python recursion limits."""
     return fold(expression, _hash_leaf, _hash_combine)
 
 
@@ -666,7 +668,7 @@ def _push_call_repr(
 
 
 def _repr(expression: Expression) -> str:
-    """Iterative structural representation that never hits Python's recursion limit."""
+    """Formats a structural representation iteratively without recursion limits."""
     parts: list[str] = []
     stack: list[Expression | str] = [expression]
     while stack:
@@ -710,7 +712,7 @@ def _inline_call(
     functions: Mapping[str, Function],
     calling: tuple[str, ...],
 ) -> tuple[Expression, tuple[str, ...]]:
-    """Substitutes `arguments` into `function`'s body and extends `calling`."""
+    """Substitutes `arguments` into the body of `function` and extends `calling`."""
     defined = functions[function]
     given = dict(zip(defined.parameters, arguments, strict=True))
     if not given:
@@ -749,11 +751,11 @@ def inlined(
     functions: Mapping[str, Function],
     calling: tuple[str, ...] = (),
 ) -> Expression:
-    """`expression` with each call of one of the user's `functions` written out.
+    """Returns `expression` with all calls to user-defined `functions` expanded inline.
 
-    A call becomes its function's body, the function's parameters replaced by the
-    call's arguments, within the functions `calling`. A function may call another, but
-    none itself, directly or through others.
+    Each matching call is replaced by its function body with parameters bound to the
+    call arguments, tracking active frames in `calling`. User functions may call other
+    user functions, but direct or indirect recursion is rejected.
 
     Examples:
         >>> twice = Function(("x",), parse("2 * x"))
@@ -763,8 +765,7 @@ right=Binary(operator='*', left=Number(value=2.0), right=Name(name='y'))), \
 right=Number(value=1.0))
 
     Raises:
-        SpiceError: When a function calls itself, naming the functions through which,
-            a call gives a function another number of arguments than it takes, or
+        SpiceError: When a function recurses, receives the wrong argument count, or
             inlining exceeds `_MAX_INLINED_NODES` nodes.
     """
     if not functions:
@@ -811,9 +812,11 @@ _CONSTANTS: Final = {
     "vt": (27.0 + 273.15) * 8.6173303e-5,
     "gmin": 1e-12,
 }
-"""The names every expression knows, as ngspice defines PSpice's: ``TEMP``, the
-temperature in degrees Celsius, ``VT``, the thermal voltage there by ngspice's constant,
-and ``GMIN``, the minimum conductance."""
+"""Built-in constants defined for every expression, matching ngspice PSpice defaults.
+
+Includes ``TEMP`` (temperature in degrees Celsius), ``VT`` (thermal voltage using
+the ngspice constant), and ``GMIN`` (minimum conductance).
+"""
 
 _FUNCTIONS: Final[dict[str, tuple[int | None, str]]] = {
     **{
@@ -850,19 +853,19 @@ _FUNCTIONS: Final[dict[str, tuple[int | None, str]]] = {
     "pwl": (None, "pwl"),
     "rounded_table": (None, "rounded_table"),
 }
-"""Each function: its number of arguments, `None` for any, and how jolty writes it.
+"""Supported SPICE functions mapped to `(arity, jolty_name_or_template)`.
 
-jolty writes a function by its name, or by a template of its arguments. PSpice's
-``PWR`` is of the magnitude of the base, and ``POW`` as `_power` writes it. A
-``TABLE`` within an expression is ngspice's ``pwl``, extended beyond its ends; a
-``TABLE`` source's, made by [`library`][jolty.spice.library], is a ``rounded_table``.
+An arity of `None` accepts any argument count. PSpice ``PWR`` operates on the
+magnitude of the base, while ``POW`` follows `_power`. Inside expressions, ``TABLE``
+maps to ngspice ``pwl`` (extended past endpoints), whereas source-level ``TABLE``
+elements built by [`library`][jolty.spice.library] use ``rounded_table``.
 """
 
 
 def substituted(
     expression: Expression, variable: Expression, replacement: Expression
 ) -> Expression:
-    """`expression` with each occurrence of `variable` replaced by `replacement`."""
+    """Replaces every occurrence of `variable` in `expression` with `replacement`."""
 
     def replace(node: Expression) -> Expression | None:
         return replacement if node == variable else None
@@ -871,7 +874,7 @@ def substituted(
 
 
 type Polynomial = dict[int, float]
-"""A polynomial of one variable: each power's coefficient."""
+"""Univariate polynomial mapping each exponent to its numeric coefficient."""
 
 
 def _combine_polynomial(
@@ -950,7 +953,7 @@ def _polynomial_integral(polynomial: Polynomial, variable: Expression) -> Expres
 
 
 def _power_polynomial(base: Polynomial | None, power: float) -> Polynomial | None:
-    """`base` raised to integer `power`, up to `_MAX_POLYNOMIAL_DEGREE`."""
+    """Raises `base` to integer `power`, up to `_MAX_POLYNOMIAL_DEGREE`."""
     if base is None or not (
         power.is_integer() and 0 <= power <= _MAX_POLYNOMIAL_DEGREE
     ):
@@ -968,12 +971,12 @@ def _power_polynomial(base: Polynomial | None, power: float) -> Polynomial | Non
 
 
 def _scaled(polynomial: Polynomial, factor: float) -> Polynomial:
-    """`polynomial` times `factor`."""
+    """Scales every coefficient of `polynomial` by `factor`."""
     return {power: coefficient * factor for power, coefficient in polynomial.items()}
 
 
 def _added(first: Polynomial, second: Polynomial) -> Polynomial:
-    """The sum of two polynomials."""
+    """Returns the sum of two polynomials."""
     total = dict(first)
     for power, coefficient in second.items():
         total[power] = total.get(power, 0.0) + coefficient
@@ -981,7 +984,7 @@ def _added(first: Polynomial, second: Polynomial) -> Polynomial:
 
 
 def _multiplied(first: Polynomial, second: Polynomial) -> Polynomial | None:
-    """The product of two polynomials, or `None` past `_MAX_POLYNOMIAL_DEGREE`."""
+    """Multiplies two polynomials, returning `None` past `_MAX_POLYNOMIAL_DEGREE`."""
     if first and second and max(first) + max(second) > _MAX_POLYNOMIAL_DEGREE:
         return None
     product: Polynomial = {}
@@ -998,8 +1001,7 @@ _ANTIDERIVATIVES: Final[dict[str, Callable[[Expression], Expression]]] = {
     "sin": lambda argument: Unary("-", Call("cos", (argument,))),
     "cos": lambda argument: Call("sin", (argument,)),
 }
-"""The antiderivative of each function whose antiderivative is elementary and holds
-for every argument, of its argument."""
+"""Elementary antiderivatives for functions integrable over all real arguments."""
 
 
 class _NotIntegrableError(Exception):
@@ -1040,14 +1042,13 @@ def _combine_integral(expression: Expression, built: list[Expression]) -> Expres
 def integral(
     expression: Expression, variable: Expression, depth: int = 0
 ) -> Expression | None:
-    """An antiderivative of `expression` with respect to `variable`, in closed form.
+    """Computes a closed-form antiderivative of `expression` for `variable`.
 
-    `expression` holds numbers and `variable` alone, as one whose other terms are
-    evaluated does. A closed form is found where `expression` is a sum of a polynomial
-    of the variable and of numbers times ``exp``, ``sinh``, ``cosh``, ``tanh``, ``sin``
-    or ``cos`` of a linear function of it: each power integrated term by term, and each
-    function by its antiderivative over the line's slope; `None` where no closed form
-    exists.
+    Assumes `expression` contains only numeric constants and `variable`. Supports sums
+    of polynomials in `variable` and scalar multiples of ``exp``, ``sinh``, ``cosh``,
+    ``tanh``, ``sin``, or ``cos`` applied to linear functions of `variable`. Polynomial
+    powers are integrated term by term, and elementary functions are divided by the
+    linear slope. Returns `None` when no closed-form antiderivative is supported.
     """
     if depth > _MAX_DEPTH:
         return None
@@ -1077,35 +1078,37 @@ def integral(
 
 
 def names(expression: Expression) -> set[str]:
-    """The names `expression` reads, of parameters or constants."""
+    """Returns the set of parameter and constant names referenced in `expression`."""
     return {node.name for node in walk(expression) if isinstance(node, Name)}
 
 
 STATISTICAL: Final = {"agauss": 3, "gauss": 3, "aunif": 2, "unif": 2, "limit": 2}
-"""ngspice's statistical functions, by name, and their number of arguments, the first
-the nominal value each draws about (numparam's ``xpressn.c``). ``limit`` of any other
-number of arguments is PSpice's, which holds its first between its next two."""
+"""ngspice statistical functions mapped to their expected argument counts.
+
+Matches numparam ``xpressn.c``, where the first argument is the nominal value.
+Three-argument ``limit`` is the PSpice clamping function rather than statistical.
+"""
 
 type Draw = Callable[[str, tuple[float, ...]], float]
-"""The value a statistical function, by name, draws with its arguments' values."""
+"""Callback sampling a statistical function from its name and numeric arguments."""
 
 
 def nominal(_function: str, arguments: tuple[float, ...]) -> float:
-    """The nominal value of a statistical function: its first argument, undrawn."""
+    """Returns the nominal value (first argument) of a statistical function call."""
     return arguments[0]
 
 
 def evaluate(
     expression: Expression, parameters: Mapping[str, float], draw: Draw = nominal
 ) -> float:
-    """The value of `expression`, which reads no voltage or current, with `parameters`.
+    """Evaluates a parameter-only `expression` using `parameters` and `draw`.
 
-    Each statistical function it calls takes the value `draw` draws, its nominal one
-    unless given, in the order the expression writes them, inner calls first.
+    Statistical calls take values returned by `draw` (defaulting to `nominal`),
+    evaluated in source order with inner calls first.
 
     Raises:
-        SpiceError: When the expression reads a voltage, a current or an unknown name,
-            or calls an unknown function.
+        SpiceError: When `expression` references a voltage, current, unknown
+            identifier, or unknown function.
     """
     match expression:
         case Number(value) if math.isfinite(value):
@@ -1135,7 +1138,7 @@ def evaluate(
 
 
 def is_statistical(expression: Expression) -> bool:
-    """Whether `expression` is a call to one of SPICE's statistical functions."""
+    """Returns whether `expression` is a call to a SPICE statistical function."""
     if not isinstance(expression, Call):
         return False
     function = expression.function
@@ -1147,10 +1150,10 @@ def is_statistical(expression: Expression) -> bool:
 def _drawn(
     expression: Expression, parameters: Mapping[str, float], draw: Draw
 ) -> Expression:
-    """`expression` with each statistical function's call replaced by what it draws.
+    """Replaces statistical function calls in `expression` with sampled numeric values.
 
     Raises:
-        SpiceError: When a statistical function takes the wrong number of arguments.
+        SpiceError: When a statistical function receives an invalid argument count.
     """
 
     def check(node: Expression) -> None:
@@ -1188,15 +1191,15 @@ def translate(
     node: Callable[[str], str],
     current: Callable[[str], str],
 ) -> str:
-    """`expression` in jolty's language.
+    """Translates `expression` into the jolty expression language.
 
-    Each parameter is its value, each node but the ground a terminal named by `node`,
-    and each source whose current it reads a port named by `current`. Emits
-    parentheses only where operator precedence or associativity requires them.
+    Substitutes numeric values for parameters, maps non-ground nodes through `node`,
+    and maps voltage-source currents through `current`. Emits parentheses only where
+    operator precedence or associativity requires them.
 
     Raises:
-        SpiceError: When the expression names an unknown parameter or function, or
-            the translated text exceeds `_MAX_TRANSLATED_LENGTH`.
+        SpiceError: When `expression` references an unknown parameter or function, or
+            when the translated text exceeds `_MAX_TRANSLATED_LENGTH`.
     """
 
     def leaf(part: Expression) -> tuple[str, int] | None:
@@ -1273,13 +1276,12 @@ def _format_node(
 
 
 def _power(base: str, exponent: str) -> str:
-    """`base` to the power of `exponent`, in jolty's language, as ngspice takes it.
+    """Formats `base` raised to `exponent` in the jolty expression language.
 
-    A negative base to a whole power keeps its sign where the power is odd, as ngspice's
-    parameters and behavioral sources raise it (``xpressn.c``, lines 136 to 137 and 786
-    to 803; ``ptfuncs.c``, lines 69 to 87), where the exponent is a constant; any other
-    power is of the magnitude of the base, where ngspice's behavioral sources give 0 and
-    its parameters no number.
+    Preserves the sign of a negative base when `exponent` is a constant odd integer,
+    matching ngspice parameter and behavioral-source evaluation (``xpressn.c``, lines
+    136 to 137 and 786 to 803; ``ptfuncs.c``, lines 69 to 87). All other exponents
+    apply ``pow`` to ``abs(base)`` to avoid NaN results on negative bases.
     """
     power = math.nan
     if nesting_depth(exponent) <= _MAX_CORE_DEPTH:
@@ -1305,10 +1307,10 @@ def _leaf(
     node: Callable[[str], str],
     current: Callable[[str], str],
 ) -> str:
-    """A number, a name, a voltage or a current, in jolty's language.
+    """Formats a leaf expression node in the jolty expression language.
 
     Raises:
-        SpiceError: When no parameter or constant is named as the leaf is.
+        UndefinedError: When a `Name` node matches no parameter or built-in constant.
     """
     match leaf:
         case Number(value):
@@ -1327,7 +1329,7 @@ def _leaf(
 
 
 def _voltage(positive: str, negative: str | None, node: Callable[[str], str]) -> str:
-    """``V(a, b)`` in jolty's language, the ground, ``0``, left out."""
+    """Formats ``V(a, b)`` in the jolty expression language, omitting ground ``0``."""
     match positive, negative:
         case "0", None | "0":
             return "0.0"
@@ -1366,6 +1368,6 @@ def _call(function: str, arguments: list[str]) -> str:
 
 
 def _number(value: float) -> str:
-    """`value` as jolty's language writes it: a negative one in parentheses."""
+    """Formats numeric `value` for jolty expressions, parenthesizing negatives."""
     written = repr(value)
     return f"({written})" if written.startswith("-") else written

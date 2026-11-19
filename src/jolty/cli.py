@@ -1,9 +1,8 @@
 # Copyright 2026 Maxence Faldor
-"""The ``jolty`` command line.
+"""Command-line interface for ``jolty``.
 
-Each subcommand extends a request model of [`jolty.service`][jolty.service] with an
-output format, so the command line takes exactly the arguments the MCP tools take and
-prints the text they return.
+Each subcommand extends a request model from [`jolty.service`][jolty.service] with an
+output format, so CLI flags match the MCP tool parameters and print the same text.
 """
 
 __lazy_modules__ = [
@@ -37,11 +36,13 @@ from jolty.settings import Settings
 
 class _Output(BaseModel):
     output_format: Literal["text", "json"] = Field(
-        default="text", description="'text' for people and agents, 'json' for programs."
+        default="text",
+        description="Output format: 'text' for human and agent readers, or 'json' for "
+        "structured tooling.",
     )
 
     def emit(self, result: service.CommandResult) -> None:
-        """Prints `result` in the requested format; exits with 1 if it is not ok."""
+        """Prints `result` in the requested format and exits 1 on failure."""
         if self.output_format == "json":
             print(result.model_dump_json(indent=2))
         else:
@@ -91,7 +92,7 @@ class MeasureCommand(service.MeasureRequest, _Output):
 
 
 class DrawCommand(service.DrawRequest, _Output):
-    """Draw the schematic of a saved circuit's top component, or of an instance's."""
+    """Draw the schematic of a saved circuit's top component or a selected instance."""
 
     async def cli_cmd(self) -> None:
         """Runs the command."""
@@ -115,7 +116,7 @@ class CheckCommand(service.CheckRequest, _Output):
 
 
 class ExplainCommand(service.ExplainRequest, _Output):
-    """Explain rules: the exact condition each checks, and its level."""
+    """Explain check rules, including each rule's condition and severity level."""
 
     async def cli_cmd(self) -> None:
         """Runs the command."""
@@ -147,15 +148,15 @@ class ExportKicadCommand(service.ExportKicadRequest, _Output):
 
 
 class CommandLine(BaseSettings):
-    """A command line in jolty's conventions, read from its arguments alone.
+    """Base command-line settings class configured with jolty CLI conventions.
 
-    Its options are kebab-case, its flags take no value, an option that may be none
-    shows no type for it, a list is given as ``--option a,b`` or as the option
-    repeated rather than as JSON, and a required option must be given. It never reads
-    the environment: jolty's configuration lives in
-    [`Settings`][jolty.settings.Settings]. A subclass names its program with
-    ``model_config = SettingsConfigDict(cli_prog_name=...)``, declares its options as
-    fields, and does its work in ``cli_cmd``; [`run`][jolty.cli.run] runs it.
+    Options use kebab-case names, boolean flags take no value, optional fields omit
+    ``None`` from displayed types, list options accept comma-separated or repeated
+    arguments instead of JSON, and required options are enforced. Environment variables
+    are ignored because runtime configuration lives in
+    [`Settings`][jolty.settings.Settings]. Subclasses set
+    ``model_config = SettingsConfigDict(cli_prog_name=...)``, declare CLI options as
+    fields, implement ``cli_cmd``, and execute through [`run`][jolty.cli.run].
     """
 
     model_config = SettingsConfigDict(
@@ -181,11 +182,11 @@ class CommandLine(BaseSettings):
 
 
 def run(command: type[CommandLine], arguments: Sequence[str] | None = None) -> None:
-    """Runs `command` on `arguments`, the process's own by default.
+    """Runs `command` on `arguments`, defaulting to the process command-line arguments.
 
     Raises:
-        SystemExit: With 2, having named each invalid option and said what it accepts,
-            when a value is invalid.
+        SystemExit: Exits with status 2 and reports each invalid option and its
+            expected input when validation fails.
     """
     given = sys.argv[1:] if arguments is None else list(arguments)
     try:
@@ -242,13 +243,13 @@ class Jolty(CommandLine):
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Runs the command line.
+    """Runs the ``jolty`` command-line entry point.
 
-    The exit status is 1 when a circuit does not elaborate, a check finds an error, an
-    analysis fails, a merged Monte Carlo analysis's yield misses its target, no part
-    prices a device instance or a component's netlist cannot be written, and 2 when the
-    arguments or settings are invalid, a command needs a subcommand, or a command
-    fails, as when a script raises. The lone argument ``--version`` prints the version.
+    Passing ``--version`` alone prints the package version and exits with status 0.
+    Exit status 1 indicates a circuit or analysis failure: failed elaboration, check
+    errors, a failed simulation, missed Monte Carlo yield target, an unpriced device,
+    or a failed netlist export. Exit status 2 indicates invalid arguments or settings,
+    a missing subcommand, or an unhandled command failure such as a script exception.
     """
     arguments = sys.argv[1:] if argv is None else list(argv)
     if arguments == ["--version"]:
@@ -287,7 +288,7 @@ def _wants_json(arguments: Sequence[str]) -> bool:
 
 
 def _invalid(error: ValidationError) -> str:
-    """Names each invalid option and says what it accepts."""
+    """Formats each invalid CLI option with its validation message."""
     problems = []
     for problem in error.errors():
         names = [part for part in problem["loc"] if isinstance(part, str)]

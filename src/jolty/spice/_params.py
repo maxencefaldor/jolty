@@ -61,27 +61,25 @@ or bare, after an ``=`` or not."""
 
 @dataclass(frozen=True, slots=True)
 class Sample:
-    """A Monte Carlo sample, whose statistical functions draw from its seed and index.
+    """Monte Carlo sample seeding deterministic draws for statistical functions.
 
-    A call draws the standard variate the engine's generator of Monte Carlo samples
-    draws for its seed, its index, the path of the placement whose definitions call it
-    and which call it is, a parameter's name and the call's place among those its
-    definition makes; so a sample draws the same alone or on any shard, and each
-    placement its own.
+    Each call queries the engine variate generator using `seed`, `index`, placement
+    path, and parameter call identifier. Results are therefore identical whether
+    evaluated alone or on any shard, while each placement draws independently.
     """
 
     seed: int
     index: int
 
     def draw(self, scope: str, name: str) -> Draw:
-        """The draws of the statistical functions `name`'s definition calls in `scope`.
+        """Returns a draw callback for statistical calls in `name` under `scope`.
 
-        Each draws as ngspice defines it (numparam's ``xpressn.c``), of a standard
-        normal variate ``z`` or a uniform one ``u`` in ``[-1, 1)``: ``agauss(x, a, s)``
-        is ``x + a / s * z``, ``gauss(x, r, s)`` is ``x + x * r / s * z``, each ``x``
-        where ``a``, ``r`` or ``s`` is not positive, ``aunif(x, a)`` is ``x + a * u``,
-        ``unif(x, r)`` is ``x + x * r * u``, and ``limit(x, a)`` is ``x + a`` where
-        ``u`` is positive, ``x - a`` elsewhere.
+        Matches ngspice numparam ``xpressn.c`` using standard normal ``z`` or uniform
+        ``u`` in ``[-1, 1)``. ``agauss(x, a, s)`` returns ``x + a / s * z`` and
+        ``gauss(x, r, s)`` returns ``x + x * r / s * z``, returning ``x`` when ``a``,
+        ``r``, or ``s`` is non-positive. ``aunif(x, a)`` returns ``x + a * u``,
+        ``unif(x, r)`` returns ``x + x * r * u``, and ``limit(x, a)`` returns ``x + a``
+        for ``u > 0`` and ``x - a`` otherwise.
         """
         calls = itertools.count()
 
@@ -109,14 +107,12 @@ class Sample:
 
 
 def standard_deviation(function: str, arguments: tuple[float, ...]) -> float:
-    """The standard deviation of what the statistical function `function` draws.
+    """Computes the standard deviation of statistical `function` given `arguments`.
 
-    It draws of `arguments` as [`Sample.draw`][jolty.spice.Sample.draw] defines it:
-    ``agauss(x, a, s)`` a normal number of standard deviation ``a / s``, and
-    ``gauss(x, r, s)`` of ``|x| r / s``, each 0 where ``a``, ``r`` or ``s`` is not
-    positive; ``aunif(x, a)`` a uniform one within ``|a|`` of ``x``, whose standard
-    deviation is ``|a| / √3``, and ``unif(x, r)`` within ``|x r|``; ``limit(x, a)``
-    ``x + a`` or ``x - a``, each half the time, so ``|a|``.
+    Matches [`Sample.draw`][jolty.spice.Sample.draw]: ``agauss(x, a, s)`` gives
+    ``a / s`` and ``gauss(x, r, s)`` gives ``|x| r / s`` (or 0 when ``a``, ``r``, or
+    ``s`` is non-positive). Uniform calls ``aunif(x, a)`` and ``unif(x, r)`` give
+    ``|a| / √3`` and ``|x r| / √3``, and ``limit(x, a)`` gives ``|a|``.
 
     Examples:
         >>> standard_deviation("agauss", (0.0, 0.03, 3.0))
@@ -141,11 +137,11 @@ def standard_deviation(function: str, arguments: tuple[float, ...]) -> float:
 
 @dataclass(slots=True)
 class Probe:
-    """Statistical functions at their nominal values, but for one call, moved.
+    """Statistical draw probe returning nominal values except for one perturbed call.
 
-    The call `moved` takes its nominal value plus `offset`. Each call is recorded by
-    where its definitions are and which call of them it is, as a
-    [`Sample`][jolty.spice.Sample] keys its draws, with its function and its arguments.
+    The call identified by `moved` returns its nominal value plus `offset`. Every
+    encountered call is recorded under `(scope, call_id)` with its function name and
+    evaluated arguments, matching [`Sample`][jolty.spice.Sample] keys.
     """
 
     moved: tuple[str, str] | None = None
@@ -155,7 +151,7 @@ class Probe:
     )
 
     def draw(self, scope: str, name: str) -> Draw:
-        """The draws of the functions `name`'s definition calls in `scope`."""
+        """Returns a recording callback for statistical calls in `name` at `scope`."""
         calls = itertools.count()
 
         def drawn(function: str, arguments: tuple[float, ...]) -> float:
@@ -169,23 +165,23 @@ class Probe:
 
 @dataclass(frozen=True, slots=True)
 class Drawing:
-    """How a placement's statistical functions draw.
+    """Statistical sampling context pairing a `Sample` or `Probe` with a circuit path.
 
-    They draw of `sample`, at `path`, or take their nominal values without a sample, or
-    as a probe sets them.
+    Statistical calls draw from `sample` at `path`, return nominal values when `sample`
+    is None, or record perturbations under a `Probe`.
     """
 
     sample: Sample | Probe | None
     path: str
 
     def draws(self, name: str) -> Draw:
-        """The draws of the statistical functions of `name`'s definition."""
+        """Returns the `Draw` callback for statistical calls in definition `name`."""
         if self.sample is None:
             return nominal
         return self.sample.draw(self.path, name)
 
     def named(self, name: str) -> str:
-        """`name`, the placement's component's, told apart from another placement's."""
+        """Qualifies component `name` with path and sample identity to avoid clashes."""
         match self.sample:
             case Sample(seed=seed, index=index):
                 return f"{name}@{self.path}#{seed}:{index}"
@@ -194,7 +190,7 @@ class Drawing:
         return name
 
     def within(self, instance: str) -> Drawing:
-        """How the placement of `instance` within this one draws."""
+        """Returns a child `Drawing` scoped to nested placement `instance`."""
         path = f"{self.path}/{instance}" if self.path else instance
         return Drawing(self.sample, path)
 
@@ -231,7 +227,7 @@ class GlobalPlan:
 def dependency_graph(
     definitions: Mapping[str, Expression],
 ) -> tuple[dict[str, int], dict[str, list[str]]]:
-    """In-degrees and forward dependency edges over `definitions`."""
+    """Builds in-degrees and forward dependency edges over `definitions`."""
     in_degree: dict[str, int] = {}
     dependents: dict[str, list[str]] = {}
     keys = definitions.keys()
@@ -248,7 +244,7 @@ def topological_order(
     in_degree: dict[str, int],
     dependents: Mapping[str, list[str]],
 ) -> tuple[list[str], list[str]]:
-    """Kahn's topological sort returning `(ordered, cycle_remaining)`."""
+    """Runs Kahn's topological sort and returns `(ordered, cycle_remaining)`."""
     remaining_degree = dict(in_degree)
     ready = deque(name for name in definitions if remaining_degree[name] == 0)
     ordered: list[str] = []
@@ -267,7 +263,7 @@ def stochastic_closure(
     definitions: Mapping[str, Expression],
     dependents: Mapping[str, list[str]],
 ) -> set[str]:
-    """Every parameter containing a statistical call or transitively reading one."""
+    """Returns all parameters containing or depending on statistical calls."""
     roots = [
         name
         for name, expression in definitions.items()
@@ -404,9 +400,9 @@ def split_assigned_pairs(words: Sequence[str]) -> tuple[list[str], list[str]]:
 
 
 def parse_options(statement: Statement) -> dict[str, Expression]:
-    """The options an ``.option`` statement sets to values, by case-folded name.
+    """Parses ``name = value`` options from an ``.option`` statement by folded name.
 
-    A flag it sets, a name without a value, changes nothing jolty reads.
+    Bare boolean flags without values are ignored because jolty does not read them.
     """
     words = tokens(statement.text)[1:]
     assigned = [
@@ -419,11 +415,11 @@ def parse_options(statement: Statement) -> dict[str, Expression]:
 
 
 def parse_function(statement: Statement) -> tuple[str, Function]:
-    """The name, case-folded, and the definition of the function `statement` defines.
+    """Parses a ``.func`` `statement` into `(folded_name, Function)`.
 
     Raises:
-        SpiceError: When the statement is not a function's definition, or its body not
-            an expression.
+        SpiceError: When `statement` is malformed or its body is not a valid
+            expression.
     """
     found = _FUNCTION.fullmatch(statement.text.strip())
     if found is None:
@@ -441,13 +437,13 @@ def parse_function(statement: Statement) -> tuple[str, Function]:
 
 
 def parse_assignments(statement: Statement) -> list[tuple[str, Expression]]:
-    """The parameters a ``.param`` statement assigns, in order.
+    """Parses ``.param`` assignments in source order as `(name, Expression)` pairs.
 
-    As ngspice reads them, a value runs to the name of the next assignment, so it may
-    be an expression written with spaces, as in ``.param a = 1 + b c = 2``.
+    Follows ngspice rules where each value extends up to the next assignment name,
+    allowing unbraced spaced expressions such as ``.param a = 1 + b c = 2``.
 
     Raises:
-        SpiceError: When the words do not pair names with values.
+        SpiceError: When tokens do not form valid ``name = value`` pairs.
     """
     words = tokens(statement.text)[1:]
     signs = [position for position, word in enumerate(words) if word == "="]
@@ -468,9 +464,9 @@ def parse_assignments(statement: Statement) -> list[tuple[str, Expression]]:
 def parse_pins_and_parameters(
     statement: Statement, words: list[str]
 ) -> tuple[list[str], dict[str, Expression]]:
-    """A subcircuit's pins, then its parameters' defaults.
+    """Splits a `.subckt` header into pin names and default parameter expressions.
 
-    The defaults follow ``PARAMS:``, or start with the first ``name = value``.
+    Parameter defaults begin after ``PARAMS:`` or at the first ``name = value`` pair.
     """
     split = next(
         (
@@ -487,9 +483,10 @@ def parse_pins_and_parameters(
 
 
 def split_keywords(words: list[str]) -> tuple[list[str], dict[str, list[str]]]:
-    """A statement's positional words, then its ``name = value`` assignments.
+    """Splits element `words` into positional tokens and ``name = value`` lists.
 
-    Each assignment holds every value that follows it, as in ``TC=1m,2u``.
+    Each keyword collects all subsequent tokens until the next assignment, as in
+    ``TC=1m,2u``.
     """
     positional: list[str] = []
     assigned: dict[str, list[str]] = {}
@@ -530,7 +527,7 @@ def single_keyword(
         message = f"`{name.upper()}` is not assigned a value"
         raise statement.fail(message)
     if len(words) != 1:
-        message = f"`{name.upper()}` has one value, not `{' '.join(words)}`"
+        message = f"`{name.upper()}` accepts one value, not `{' '.join(words)}`"
         raise statement.fail(message)
     return evaluate_word(words[0])
 
@@ -566,7 +563,7 @@ def instance_keywords(
         value_word, *extra = words
         stray = [word for word in extra if word.casefold() not in flags]
         if stray:
-            message = f"`{key.upper()}` has one value, not `{' '.join(words)}`"
+            message = f"`{key.upper()}` accepts one value, not `{' '.join(words)}`"
             raise statement.fail(message)
         values[key] = evaluate_word(value_word)
     return values

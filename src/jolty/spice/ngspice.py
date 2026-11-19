@@ -54,11 +54,10 @@ type Real = npt.NDArray[np.float64]
 
 
 def option_temperature(temperature: float) -> float:
-    """Where ngspice's thermal voltage is jolty's at `temperature`, in degrees Celsius.
+    """Computes Celsius temperature matching jolty thermal voltage at `temperature`.
 
-    The temperature is in kelvins. Running ngspice there, and its models' nominal
-    temperature where it is jolty's, compares the devices rather than the physical
-    constants.
+    Accepts `temperature` in kelvins. Adjusting simulation and nominal temperatures
+    aligns thermal voltages so comparisons reflect device models rather than constants.
     """
     return _process.thermal_option_temperature(
         temperature, _SPICE_THERMAL_VOLTAGE_PER_KELVIN
@@ -66,12 +65,10 @@ def option_temperature(temperature: float) -> float:
 
 
 def same_kelvins(temperature: float) -> float:
-    """The temperature to give [`run`][jolty.spice.ngspice.run] to run at `temperature`.
+    """Computes the input to [`run`][jolty.spice.ngspice.run] running at `temperature`.
 
-    `run` runs ngspice where its thermal voltage is jolty's at the temperature it is
-    given; given this one, it runs it at `temperature` itself, in kelvins. A model that
-    computes with constants of its own, as BSIM3 does with Boltzmann's over the
-    electron's charge, agrees with ngspice's at the same kelvins.
+    Inverts `option_temperature` so ngspice executes at exact `temperature` in kelvins,
+    which matches models such as BSIM3 that embed fixed Boltzmann and charge constants.
 
     Examples:
         >>> round(option_temperature(same_kelvins(300.15)), 9)
@@ -83,86 +80,75 @@ def same_kelvins(temperature: float) -> float:
 
 @dataclass(frozen=True)
 class Result:
-    """The vectors of one ngspice analysis, by lowercase name.
+    """Vectors from one ngspice analysis plot keyed by lowercase name.
 
-    It keeps what ngspice printed while it ran the deck the analysis is of.
+    Retains combined stdout and stderr printed by ngspice during the run.
     """
 
     plot: str
     vectors: dict[str, npt.NDArray[np.complex128]]
     printed: str
     seconds: float | None = None
-    """The time from starting the ngspice that ran the analysis to its exit, in
-    seconds, as jolty measures it, the same for every analysis that ngspice ran; None
-    for a raw file read without running it."""
+    """Wall-clock runtime of the ngspice process in seconds, or None for file reads."""
 
     def real(self, name: str) -> Real:
-        """The real part of the vector `name`."""
+        """Returns the real part of the vector `name`."""
         return self.vectors[name].real
 
 
 _TRANSIENT_OPERATING_POINT: Final = "Transient op started"
-"""What ngspice prints when Newton iteration, gmin stepping and source stepping all fail
-to find an operating point, and it takes the end of a transient from zero instead."""
+"""Marker printed when ngspice falls back from DC solvers to a transient op."""
 
 _ABORTED: Final = "simulation(s) aborted"
-"""What ngspice prints when an analysis stops short, as a transient whose step falls
-below its smallest; the results it writes then end where it stopped."""
+"""Marker printed when ngspice aborts an analysis before completion."""
 
 _SHORTEST_TRANSIENT_OPERATING_POINT: Final = "optran 1 1 1 1n 1n 0"
-"""Keeps ngspice's first Newton iteration, gmin stepping and source stepping, and makes
-the transient it falls back to a single nanosecond: its end is refused anyway, and the
-default 10 µs can take minutes on a circuit that defeats the others."""
+"""Control directive capping fallback transient op at 1 ns (fallback is rejected)."""
 
 
 TIMEOUT: Final = _process.TIMEOUT
-"""The seconds ngspice may run an analysis."""
+"""Default timeout in seconds for an ngspice subprocess."""
 
 
 type Compatibility = Literal["ps", "psa", "hsa"]
-"""A compatibility mode of ngspice's: PSpice's, ``ps`` (libraries) or ``psa`` (whole
-deck, translating ``VSWITCH``/``ISWITCH`` via XSPICE), or HSPICE's, ``hsa``, which
-foundries' process design kits ask for."""
+"""ngspice compatibility mode: PSpice (``ps``/``psa``) or HSPICE (``hsa`` for PDKs)."""
 
 
 class Running(TypedDict, total=False):
-    """How ngspice runs a deck."""
+    """Keyword configuration options for ngspice deck execution."""
 
     libraries: tuple[Path, ...]
-    """The files it includes."""
+    """Library files included via ``.include``."""
     sections: tuple[tuple[Path, str], ...]
-    """The sections of libraries it reads, each a file and a section's name, such as a
-    foundry's model library at a process corner."""
+    """Library ``(path, section)`` pairs included via ``.lib``, such as PDK corners."""
     compatibility: Compatibility | None
-    """The mode it reads the deck and the files in, its own unless given."""
+    """ngspice compatibility mode, or None for default behavior."""
     options: str
-    """The options line, as tight as jolty's tightest unless given."""
+    """SPICE ``.options`` line, defaulting to jolty's tightest tolerances."""
     temperature: float
-    """jolty's temperature, in kelvins, 27 °C unless given."""
+    """Simulation temperature in kelvins, defaulting to 27 °C."""
     seed: int | None
-    """The seed of ngspice's random numbers, such as a kit's mismatch draws, if any."""
+    """Optional RNG seed for ngspice statistical mismatch draws."""
     timeout: float | None
-    """The seconds it may run, `TIMEOUT` unless given, or as long as it takes if
-    None."""
+    """Subprocess timeout in seconds (`TIMEOUT` by default, or None for unlimited)."""
 
 
 class NgspiceTimeoutError(JoltyError):
-    """ngspice ran for longer than it was given."""
+    """Error raised when an ngspice subprocess exceeds its timeout."""
 
 
 @dataclass(frozen=True, slots=True)
 class Executed(_process.Executed[bytes]):
-    """What one run of ngspice on a deck left, and how long it took."""
+    """Raw output, exit code, wall time, and raw-file bytes from one ngspice run."""
 
 
 VALUES: Final = "result.raw"
-"""The raw file a deck run by [`execute`][jolty.spice.ngspice.execute] writes its values
-to, which it reads back."""
+"""Raw filename written by decks run via [`execute`][jolty.spice.ngspice.execute]."""
 
 
 @functools.cache
 def version() -> str | None:
-    """Ngspice's version and build, as it states them, or None when it is not installed.
+    """Returns the installed ngspice version and build banner, or None if unavailable.
 
     Examples:
         >>> version() is None or version().startswith("ngspice")
@@ -183,22 +169,16 @@ def execute(
     compatibility: Compatibility | None = None,
     timeout: float | None = TIMEOUT,
 ) -> Executed:
-    """Runs ngspice in batch mode on the lines `deck`, in a directory of its own.
+    """Runs ngspice in batch mode on `deck` inside a dedicated temporary directory.
 
-    The deck is written to ``circuit.cir`` in a temporary directory, which the run
-    takes as its own, with a ``.spiceinit`` that sets the `compatibility` mode if one
-    is given, so the raw file its ``write`` names, `VALUES`, is read back from there;
-    the run is stopped after `timeout` seconds, or never if None.
-
-    It is the one way jolty runs ngspice, as
-    [`xyce.execute`][jolty.spice.xyce.execute] is Xyce's:
-    [`runs`][jolty.spice.ngspice.runs] writes its deck and reads its results around
-    it, and the benchmarks run their decks by it.
+    Writes `deck` to ``circuit.cir`` (plus ``.spiceinit`` when `compatibility` is set),
+    reads back `VALUES` written by ``write``, and enforces `timeout` seconds unless
+    None. Serves as the single ngspice process entry point parallel to
+    [`xyce.execute`][jolty.spice.xyce.execute].
 
     Raises:
-        JoltyError: When ngspice is not installed.
-        NgspiceTimeoutError: When it runs for more than `timeout` seconds, with what it
-            had printed.
+        JoltyError: When ngspice is unavailable.
+        NgspiceTimeoutError: When ngspice exceeds `timeout` seconds.
     """
     if EXECUTABLE is None:
         message = "ngspice is not installed"
@@ -226,12 +206,12 @@ def run(
     analysis: str,
     **running: Unpack[Running],
 ) -> Result:
-    """Runs one analysis command in ngspice and reads the raw file it writes.
+    """Runs one analysis command in ngspice and parses the resulting raw plot.
 
-    ngspice runs as [`runs`][jolty.spice.ngspice.runs] says.
+    Accepts the same `running` options as [`runs`][jolty.spice.ngspice.runs].
 
     Raises:
-        JoltyError: As `runs` does.
+        JoltyError: Under the same failure conditions as `runs`.
     """
     (result,) = runs(deck, (analysis,), **running)
     return result
@@ -242,20 +222,16 @@ def runs(
     analyses: Sequence[str],
     **running: Unpack[Running],
 ) -> tuple[Result, ...]:
-    """Runs analysis commands in turn in one ngspice, and reads the plot each writes.
+    """Runs multiple analysis commands sequentially in one ngspice process.
 
-    ngspice includes the `libraries`, reads the `sections` of others, and reads them
-    and the deck in its `compatibility` mode, its random numbers drawn from `seed`.
-    `options` replaces the tight options. The deck runs at jolty's `temperature`, in
-    kelvins, its models' nominal temperature at jolty's 27 °C, for at most `timeout`
-    seconds. Each command runs one analysis producing one plot, and a result is read
-    from each plot with the time the run took.
+    Includes configured `libraries` and `sections`, sets `compatibility` and `seed`,
+    replaces default tight tolerances with `options`, aligns thermal voltage with
+    `temperature` (in kelvins) and nominal 27 °C, and enforces `timeout`. Returns one
+    parsed `Result` per plot along with the process runtime.
 
     Raises:
-        JoltyError: When `deck` is empty, ngspice is not installed, runs out of time,
-            writes no results, runs no analysis, aborts one, or finds an operating point
-            only as the end of a transient of fixed length, which it does not check to
-            be one.
+        JoltyError: When `deck` is empty, ngspice is unavailable, times out, writes no
+            results, runs no analysis, aborts, or falls back to transient op.
     """
     if not deck:
         message = "ngspice deck is empty; a SPICE deck begins with a title line"
@@ -419,7 +395,7 @@ def parse_raw(data: str | bytes) -> tuple[RawPlot, ...]:
 
 
 def _skip_whitespace(raw: bytes, position: int) -> int:
-    """First non-whitespace byte index in `raw` at or after `position`."""
+    """Returns the first non-whitespace byte index in `raw` at or after `position`."""
     match = _NON_WHITESPACE.search(raw, position)
     return len(raw) if match is None else match.start()
 
@@ -489,18 +465,13 @@ def _typed_values(
 
 
 def read(data: str | bytes, printed: str = "") -> tuple[Result, ...]:
-    """Each plot of the raw file `data`, with what ngspice `printed` as it ran.
+    """Parses all plots in SPICE raw `data` into `Result` objects with `printed` text.
 
-    The file is SPICE's raw format, ASCII, as text or bytes, or binary, as bytes, its
-    numbers little-endian doubles: each plot a header, from its ``Title:`` to its
-    ``Values:`` or ``Binary:``, then its points, as many as its ``No. Points:`` says,
-    each a value of every variable, a complex one's real part then its imaginary.
-    ngspice writes a plot per ``write``, each appended to the last with
-    ``appendwrite``.
+    Supports both ASCII and binary (little-endian double) SPICE raw formats, including
+    multi-plot files appended by ``appendwrite``.
 
     Raises:
-        JoltyError: When a plot's header lacks what it must state, or its values end
-            short of its points.
+        JoltyError: When a plot header is malformed or values end before ``No. Points``.
     """
     plots: list[Result] = []
     for raw_plot in parse_raw(data):
@@ -514,7 +485,7 @@ def read(data: str | bytes, printed: str = "") -> tuple[Result, ...]:
 
 
 _VALUES: Final = re.compile(rb"^(Values|Binary):[ \t]*(?:\r?\n|$)", re.MULTILINE)
-"""The line that ends a raw file's plot's header, saying how its values are written."""
+"""Pattern matching the header terminator marking ASCII or binary plot values."""
 
 
 def _parse_count(fields: dict[str, str], key: str, label: str, plot: str) -> int:
@@ -629,13 +600,13 @@ def _ascii(
     *,
     complex_values: bool,
 ) -> tuple[npt.NDArray[np.float64], int]:
-    """The `points` an ASCII plot's values write from `start`, and where they end.
+    """Reads `points` rows of ASCII raw values from `raw` starting at `start`.
 
-    Each point is its index, a bare integer, then each variable's value, ``re,im`` for
-    a complex one; the table has `width` columns, a complex value's parts two.
+    Each row starts with an integer point index followed by `variable_count` values
+    (``re,im`` pairs when `complex_values` is true). Returns the table and end offset.
 
     Raises:
-        JoltyError: When the values end short of the points or hold invalid numbers.
+        JoltyError: When values end early or contain malformed numeric tokens.
     """
     width = variable_count * (2 if complex_values else 1)
     numbers: list[float] = []
@@ -719,7 +690,7 @@ and any other after an underscore."""
 
 
 def _spice_name(name: str) -> str:
-    """A raw file's vector name in the ``v(node)`` and ``i(device)`` forms."""
+    """Normalizes a raw-file vector `name` into ``v(node)`` or ``i(device)`` form."""
     if name.endswith("#branch"):
         return f"i({name.removesuffix('#branch')})"
     if name.startswith(("v(", "i(", *_NOISES)) or name in _SCALES:

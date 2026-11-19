@@ -71,7 +71,7 @@ def check_net_name(node: str, statement: Statement) -> None:
 
 
 def node_of(written: str) -> str | None:
-    """The node `written`, ``V(node)``, names, or None when it names no one node."""
+    """Extracts the single node name from ``V(node)``, or returns None otherwise."""
     if written[:2].casefold() != "v(" or not written.endswith(")"):
         return None
     inside = written[2:-1].strip()
@@ -83,10 +83,10 @@ def parse_voltages(
     scope: Mapping[str, float],
     functions: Mapping[str, Function],
 ) -> dict[str, float]:
-    """The voltage each node of an ``.ic`` or ``.nodeset`` statement is given, by name.
+    """Parses ``V(node)=value`` voltage entries from an ``.ic`` or ``.nodeset`` line.
 
     Raises:
-        SpiceError: When the statement gives anything but a node's voltage.
+        SpiceError: When an entry is malformed or evaluates to a non-finite value.
     """
     words = tokens(statement.text)[1:]
     found: dict[str, float] = {}

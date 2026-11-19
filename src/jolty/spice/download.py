@@ -1,9 +1,8 @@
 # Copyright 2026 Maxence Faldor
-"""Model files fetched from where their makers publish them, checked, and kept.
+"""Digest-verified downloading and caching of published SPICE model files.
 
-A file is named by its address and the SHA-256 digest of its contents, so what is read
-is always what was checked, and is downloaded once into the cache of
-[`Settings`][jolty.settings.Settings].
+Each download is pinned by URL and SHA-256 digest and stored once in the cache
+configured by [`Settings`][jolty.settings.Settings].
 """
 
 import hashlib
@@ -44,16 +43,16 @@ class _Readable(Protocol):
 
 
 def fetch(url: str, digest: str, cache: Path | None = None) -> Path:
-    """The file at `url`, whose SHA-256 digest is `digest`, kept in `cache`.
+    """Fetches the file at `url`, verifies SHA-256 `digest`, and caches it in `cache`.
 
-    The file is downloaded the first time, and read from the cache after. The cache is
-    the settings' unless one is given.
+    Subsequent calls return the verified cached file without downloading again. Uses
+    the configured settings cache directory when `cache` is None.
 
     Raises:
-        DownloadError: When `digest` is malformed, `url` names no safe file, the file
-            cannot be downloaded, its size exceeds `_MAX_DOWNLOAD_BYTES`, or its digest
-            is not `digest`.
-        JoltyError: When the settings are invalid.
+        DownloadError: When `digest` is malformed, `url` names an unsafe filename,
+            the transfer fails, the payload exceeds `_MAX_DOWNLOAD_BYTES`, or the
+            computed digest does not match `digest`.
+        JoltyError: When runtime settings are invalid.
     """
     if _DIGEST_PATTERN.fullmatch(digest) is None:
         message = f"a SHA-256 digest is 64 hexadecimal digits, not {digest!r}"
@@ -117,9 +116,8 @@ def _write_verified(
 ) -> None:
     """Streams `response` to a temporary file, verifies SHA-256, and replaces `path`."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Each download is written to a file of its own, then renamed onto the kept one at
-    # once: fetches of one file at the same time never write into the same file, and
-    # none reads a file another is still writing.
+    # Stage into a unique temporary file before atomic rename so concurrent fetches
+    # never clobber one another or expose partial downloads.
     partial = path.with_name(f"{path.name}.{uuid.uuid4().hex}.partial")
     try:
         found = _copy_hashed(response, partial, url)

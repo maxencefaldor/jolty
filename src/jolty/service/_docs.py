@@ -24,7 +24,7 @@ from jolty.errors import JoltyError
 from jolty.ir import FrozenModel
 
 type DocumentSection = Literal["guide", "examples"]
-"""Whether an offline document belongs to the guide or the example scripts."""
+"""Section classification for offline documents: ``'guide'`` or ``'examples'``."""
 
 DOCS_URI_PREFIX: Final = "jolty://docs"
 """Base URI for offline documentation resources exposed over MCP."""
@@ -43,7 +43,7 @@ _QUALIFIED_SEGMENT_COUNT: Final = 2
 _REPOSITORY_PARENT_INDEX: Final = 3
 
 _DOCUMENT_SECTION_DESCRIPTION: Final = (
-    "Whether the document is a 'guide' page or an 'examples' script."
+    "Document section: 'guide' for a guide page or 'examples' for an example script."
 )
 _DOCUMENT_SLUG_DESCRIPTION: Final = (
     "The topic slug, such as 'units', 'rc_filter' or 'cluster/amplifier'."
@@ -75,9 +75,9 @@ class DocumentSummary(FrozenModel):
 
 
 class Document(DocumentSummary):
-    """One offline document: its metadata and full UTF-8 text."""
+    """Offline document combining summary metadata and full UTF-8 content."""
 
-    content: str = Field(description="The full UTF-8 text of the document.")
+    content: str = Field(description="Full UTF-8 text of the document.")
 
 
 class ReadDocsRequest(FrozenModel):
@@ -87,8 +87,8 @@ class ReadDocsRequest(FrozenModel):
         default=None,
         description="Topic to read: a bare slug such as 'units' or 'rc_filter', "
         "a qualified name such as 'guide/units' or 'examples/cluster/amplifier', "
-        "or a resource URI such as 'jolty://docs/guide/units'. Lists all topics "
-        "when omitted.",
+        "or a resource URI such as 'jolty://docs/guide/units'. Omitting the topic "
+        "lists all available documents.",
     )
     section: DocumentSection | None = Field(
         default=None,
@@ -120,7 +120,7 @@ def describe_entries(entries: tuple[DocumentSummary, ...]) -> str:
 
 
 def _repository_root() -> Path | None:
-    """The repository root inferred from this module's location, if accessible."""
+    """Returns the repository root inferred from this module path, if accessible."""
     try:
         parents = Path(__file__).resolve().parents
     except OSError:

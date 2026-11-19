@@ -1,30 +1,27 @@
 # Copyright 2026 Maxence Faldor
-"""Specs: what a circuit must do, measured on the results of its plan's analyses.
+"""Circuit specifications measured against simulation plan results.
 
-A [`Measure`][jolty.specs.Measure] reads one number from the result of a named
-analysis, such as the gain of ``out`` at 1 kHz in the analysis ``bode``. Comparing it
-with a bound makes a [`Requirement`][jolty.specs.Requirement], and a plan script's
-``specs()`` returns its requirements as [`Specs`][jolty.specs.Specs]. Each requirement
-passes, fails, or goes unmeasured when its analysis did not end or its measure
-cannot be read; one that passes by less than its margin is marginal. A requirement
-holds at the plan's own conditions and at each of its corners, and its
-[`Verdict`][jolty.specs.Verdict] is the worst of them: it states the value read there
-and the slack, how far the value lies inside its bounds, negative outside them. Over a
-Monte Carlo analysis's samples, each requirement's [`Spread`][jolty.specs.Spread] states
-the values read, and the [`Yield`][jolty.specs.Yield] how many samples meet every
-requirement, with the [`wilson`][jolty.specs.wilson] interval of their share, against
-the specs' yield target.
+A [`Measure`][jolty.specs.Measure] reads one value from a named analysis result, such
+as the gain of ``out`` at 1 kHz in ``bode``. Comparing a measure against a bound creates
+a [`Requirement`][jolty.specs.Requirement], and a plan script's ``specs()`` returns a
+[`Specs`][jolty.specs.Specs] collection. Each requirement evaluates to passed, marginal
+(passing by less than its margin), failed, or unmeasured when the analysis fails or the
+measure cannot be read. Requirements evaluate under nominal conditions and across all
+plan corners; the resulting [`Verdict`][jolty.specs.Verdict] reports the worst corner,
+measured value, and slack (positive inside bounds, negative outside). Over Monte Carlo
+samples, [`Spread`][jolty.specs.Spread] summarizes measured values per requirement, and
+[`Yield`][jolty.specs.Yield] reports the passing fraction with a 95 %
+[`wilson`][jolty.specs.wilson] interval against the yield target.
 
-A measure reads a signal, an unknown of the circuit such as the voltage ``out`` or
-the current ``V1:current``, or a voltage relative to the voltage of a ``reference``.
-Bounds are quantities, such as ``2 * V``; a gain is in decibels, a phase in degrees, an
-overshoot in percent and a damping ratio a plain number, so their bounds are numbers.
+Measures target a circuit unknown such as node voltage ``out`` or branch current
+``V1:current``, or a differential voltage relative to ``reference``. Physical bounds
+use dimensioned quantities such as ``2 * V``; decibel gains, phase degrees, percent
+overshoot, and damping ratios use plain numbers.
 
-The engine reads every measure this module makes, in Rust, from a result's arrays: the
-measure resolves its signals to the result's unknowns and its quantities to SI base
-units, its [`ResolvedMeasure`][jolty.specs.ResolvedMeasure] form, and the engine
-computes the number, as a batch of runs does without Python. A `Measure` a script makes
-with a `read` of its own is read in Python.
+Built-in measures resolve signals to unknown indices and parameters to SI base units as
+[`ResolvedMeasure`][jolty.specs.ResolvedMeasure] objects so the Rust engine computes
+them directly during batched runs without Python overhead. Custom `Measure` objects
+supplying a Python `read` callable evaluate in Python.
 
 Examples:
     >>> from jolty.units import V, kHz

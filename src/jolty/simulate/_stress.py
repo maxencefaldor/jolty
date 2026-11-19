@@ -23,29 +23,27 @@ _UNITS: Final[dict[ir.Stress, str]] = {
 
 @dataclass(frozen=True, slots=True)
 class Joined:
-    """Where a terminal of a device, a component instance or a logic device joins."""
+    """Connection target of a device, component instance, or logic terminal."""
 
     node: str | None
-    """The unknown that is its voltage, by name; None on the ground."""
+    """Name of the connected node voltage unknown, or None when grounded."""
     thermal: bool
-    """Whether it is thermal: its voltage a temperature above the ambient, and its
-    current the heat flowing into it."""
+    """True for thermal terminals (voltage is temperature rise; current is heat)."""
 
 
 def rated_instances(
     circuit: ir.Circuit, substituted: Collection[str]
 ) -> Iterator[tuple[str, ir.Instance]]:
-    """Every rated instance of `circuit`, by path, each before those it places.
+    """Yields every rated instance in `circuit` in preorder by hierarchical path.
 
-    The walk skips the inside of each component instance whose path is among
-    `substituted`, a model standing in for it, and of each component that holds no
-    rated instance.
+    The traversal skips subtrees replaced by `substituted` models as well as
+    components containing no rated instances.
     """
     prefixes = tuple(f"{path}/" for path in substituted)
     holds: dict[str, bool] = {}
 
     def holding(component: str) -> bool:
-        """Whether `component` holds a rated instance, at any depth."""
+        """Returns whether `component` contains a rated instance at any depth."""
         if component not in holds:
             holds[component] = any(
                 instance.ratings
@@ -69,9 +67,10 @@ def rated_instances(
 
 
 def _own(ambient: float, parameters: Mapping[str, JsonValue]) -> float:
-    """The temperature of an instance with `parameters`, the simulation's `ambient`.
+    """Computes the instance base temperature from `parameters` and `ambient`.
 
-    It is the instance's own, held or offset from the simulation's, if it has one.
+    Uses an explicit instance ``temperature`` or ``temperature_offset`` when present,
+    defaulting to the simulation ambient temperature.
     """
     match parameters:
         case {"temperature": int() | float() as held}:
@@ -83,7 +82,7 @@ def _own(ambient: float, parameters: Mapping[str, JsonValue]) -> float:
 
 @dataclass(frozen=True, slots=True)
 class _Terminals:
-    """The voltage at and the current into each reached terminal, over a result."""
+    """Terminal voltage, current, and temperature-rise evaluator over one result."""
 
     joined: Callable[[str, str], Joined | None]
     ambient: float
@@ -96,10 +95,10 @@ class _Terminals:
     def stress(
         self, path: str, instance: ir.Instance, rating: ir.Rating
     ) -> results.Real | None:
-        """The stress `rating` limits on the instance at `path`, at each point.
+        """Computes the stress trajectory for `rating` on `instance` at `path`.
 
-        There is none when a rated terminal is on a logic or a thermal net, or the
-        result recorded no current into it and the stress needs one.
+        Returns None when a rated terminal connects to a logic or thermal net, or when
+        the result did not record a required terminal current.
         """
         if rating.stress == "temperature":
             replaced = {**instance.parameters, **self.overrides.get(path, {})}
@@ -130,12 +129,12 @@ class _Terminals:
         )
 
     def _electrical(self, path: str, terminal: str) -> bool:
-        """Whether `terminal` of the instance at `path` is on an electrical net."""
+        """Returns whether `terminal` on `path` connects to an electrical net."""
         found = self.joined(path, terminal)
         return found is not None and not found.thermal
 
     def _rise(self, path: str) -> results.Real:
-        """The temperature above the ambient of the instance at `path`."""
+        """Returns the temperature rise above ambient for the instance at `path`."""
         found = self.joined(path, "thermal")
         if found is None or not found.thermal or found.node is None:
             return np.zeros(self.values.shape[0])
@@ -150,7 +149,7 @@ class _Terminals:
 
 @dataclass(frozen=True, slots=True)
 class Stressed:
-    """A rated stress of a device over one analysis's points, judged by its rating."""
+    """Rated stress trajectory of one device over an analysis against its bounds."""
 
     analysis: str
     path: str
@@ -158,14 +157,14 @@ class Stressed:
     rating: ir.Rating
     stress: results.Real
     times: results.Real | None
-    """The time of each point, or None at an operating point."""
+    """Time point array for transient analyses, or None for an operating point."""
 
     def diagnostics(self) -> list[checks.Diagnostic]:
-        """The diagnostics of over-rating and near-rating, one per bound at most."""
+        """Collects over-rating and near-rating diagnostics, at most one per bound."""
         found: list[checks.Diagnostic] = []
         high = int(np.argmax(self.stress))
         low = int(np.argmin(self.stress))
-        # Derating keeps its margin from zero, a temperature's from 0 °C.
+        # Derating measures margin from zero, or from 0 °C for temperatures.
         origin = ZERO_CELSIUS if self.rating.stress == "temperature" else 0.0
         for point, bound, sign in (
             (high, self.rating.maximum, 1),
@@ -193,8 +192,7 @@ class Stressed:
             "temperature": f"the temperature of `{self.path}`",
         }[self.rating.stress]
         if self.rating.stress == "temperature":
-            # In degrees Celsius, as datasheets state them, rounded past the
-            # conversion's own error.
+            # Convert to Celsius as stated in datasheets, rounding past float noise.
             bound, value = (round(each - ZERO_CELSIUS, 9) for each in (bound, value))
         where = (
             f"at the operating point of `{self.analysis}`"
@@ -229,7 +227,7 @@ def check_results(
     joined: Callable[[str, str], Joined | None],
     solved: Mapping[str, results.AnalysisResult],
 ) -> tuple[checks.Diagnostic, ...]:
-    """Every diagnostic of the rules on the analyses' results `solved`."""
+    """Evaluates result-level rules across `solved` and returns all diagnostics."""
     found = list(specs.diagnose(solved))
     cached_joined = functools.cache(joined)
     rated = [

@@ -1,8 +1,8 @@
 # Copyright 2026 Maxence Faldor
-"""GlobalFoundries' GF180MCU process: its model files, as published for ngspice.
+"""GlobalFoundries GF180MCU ngspice model kit definition.
 
-Its primitives' repository publishes them, and [`KIT`][jolty.spice.gf180mcu.KIT] pins
-them, as [`kits.read`][jolty.spice.kits.read] reads them.
+[`KIT`][jolty.spice.gf180mcu.KIT] pins the published primitives repository files for
+loading through [`kits.read`][jolty.spice.kits.read].
 """
 
 from pathlib import PurePosixPath
@@ -11,17 +11,16 @@ from typing import Final
 from jolty.spice.kits import Corners, Fetched, Kit
 
 VERSION: Final = "9f992d5a9186d1f7820c58f039c484ad35b2edea"
-"""The commit of GF180MCU's primitives' repository whose ngspice models jolty pins, its
-last."""
+"""Pinned commit hash of the GF180MCU primitives repository."""
 
 _SOURCES: Final = (
     "https://raw.githubusercontent.com/google/globalfoundries-pdk-libs-gf180mcu_fd_pr/"
     f"{VERSION}/models/ngspice/"
 )
-"""Where GlobalFoundries publishes GF180MCU's ngspice models."""
+"""Base raw GitHub URL for published GF180MCU ngspice model files."""
 
 DIRECTORY: Final = PurePosixPath("gf180mcuD/libs.tech/ngspice")
-"""Where open_pdks installs GF180MCU's ngspice models, for its five-metal stack."""
+"""Installation path of GF180MCU five-metal ngspice models under open_pdks."""
 
 _FILES: Final = {
     "design.ngspice": (

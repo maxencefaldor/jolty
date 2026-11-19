@@ -40,8 +40,7 @@ _RAISED: Final[dict[str, type[Exception]]] = {
     "indeterminate": ValueError,
     "memory": MemoryError,
 }
-"""What Python raises where the engine's arithmetic stopped a measure, by its reason,
-as `math.fsum` or the allocation of a distortion's samples would."""
+"""Python exception types corresponding to engine measure failure categories."""
 
 _ALONG: Final[dict[type, Literal["point", "swept", "frequency", "time"]]] = {
     OperatingPoint: "point",
@@ -50,7 +49,7 @@ _ALONG: Final[dict[type, Literal["point", "swept", "frequency", "time"]]] = {
     Transient: "time",
     PeriodicSteadyState: "time",
 }
-"""What the points of each kind of analysis a batch traces are."""
+"""Axis domain label traced by a batch for each analysis type."""
 
 type _Decoder = tuple[
     Callable[[str], results.Recording],
@@ -75,15 +74,15 @@ class BatchHost:
 
 
 def mismatch(seed: int, index: int) -> int:
-    """The seed of the kit's mismatch of the sample `index` of a Monte Carlo analysis.
+    """Computes the kit mismatch seed for Monte Carlo sample `index`.
 
-    It is the same at every corner, so a corner runs the same parts.
+    The derived seed is independent of corner so every corner evaluates the same parts.
     """
     return int(np.random.SeedSequence([seed, index]).generate_state(1)[0])
 
 
 def labels(parameters: Sequence[tuple[str, str] | None]) -> tuple[str, ...]:
-    """The name of each of `parameters`: ``R1 resistance``, or ``temperature``."""
+    """Formats column labels for `parameters`, such as ``R1 resistance``."""
     return tuple(
         "temperature" if parameter is None else f"{parameter[0]} {parameter[1]}"
         for parameter in parameters
@@ -92,7 +91,7 @@ def labels(parameters: Sequence[tuple[str, str] | None]) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class _Reading:
-    """How a batch reads one measure: by the engine, in Python, or not at all."""
+    """Execution plan for one batch measure: engine, Python fallback, or skipped."""
 
     measure: specs.Measure
     resolved: specs.ResolvedMeasure | None = None
@@ -192,7 +191,7 @@ class Planned:
         return planned
 
     def _reading(self, measure: specs.Measure) -> _Reading:
-        """How the batch reads `measure`."""
+        """Resolves how the batch evaluates `measure`."""
         name = measure.analysis
         if name not in self.analyses:
             close = close_names(self.names, name)
@@ -214,7 +213,7 @@ class Planned:
         return _Reading(measure, resolved=resolved, slot=slot)
 
     def _in_python(self) -> list[int]:
-        """The measures read in Python, by their indices."""
+        """Returns indices of measures evaluated in Python."""
         return [
             index
             for index, reading in enumerate(self.readings)
@@ -222,7 +221,7 @@ class Planned:
         ]
 
     def _readings(self, index: int, run: results.Run) -> None:
-        """Reads each measure read in Python of the results of the run `index`."""
+        """Evaluates all Python-side measures on `run` at batch slot `index`."""
         for place in self._in_python():
             measure = self.readings[place].measure
             result = run.results.get(measure.analysis)
@@ -240,7 +239,7 @@ class Planned:
         runs: range,
         each: Callable[[results.Run], object] | None,
     ) -> _core.BatchResult:
-        """What the engine finds on the runs `runs` of `ran`, each handed to `each`."""
+        """Executes `runs` of `ran` in the native engine, invoking `each` per run."""
         measures = [
             (self.engine[reading.measure.analysis], reading.resolved.measure)
             for reading in self.readings
@@ -283,7 +282,7 @@ class Planned:
         problems: list[_core.Problem] | None,
         outcomes: list[_core.AnalysisResult | str],
     ) -> results.Run:
-        """What the run `index` found, its outcomes read by `decoder`."""
+        """Decodes engine `outcomes` and `problems` for run `index` using `decoder`."""
         if problems is not None:
             return results.Run(
                 index, {}, {}, tuple(checks.problem(each) for each in problems)
@@ -306,7 +305,7 @@ class Planned:
         runs: range,
         each: Callable[[results.Run], object] | None,
     ) -> _core.BatchResult:
-        """What ngspice finds on the runs `runs` of `ran`, each handed to `each`."""
+        """Executes `runs` of `ran` in ngspice across worker threads."""
         with ThreadPoolExecutor(engine_pool().threads) as executor:
             found = list(executor.map(functools.partial(self._ngspice, ran), runs))
         count = len(found)
@@ -356,7 +355,7 @@ class Planned:
     def _ngspice(
         self, ran: _core.Variants, index: int
     ) -> tuple[results.Run, list[_core.Problem] | None, list[float]]:
-        """What ngspice finds on the run `index` of `ran`, and the values it took."""
+        """Runs ngspice on variant `index` of `ran` and returns the sampled values."""
         replaced, temperature = ran.overrides(index)
         own = self.host.conditions.overrides
         overrides: dict[str, dict[str, float]] = {
@@ -403,12 +402,12 @@ class Planned:
         return results.Run(index, solved, failed), None, numbers
 
     def result(self, found: _core.BatchResult) -> results.BatchResult:
-        """The result of the batch, from what the engine or ngspice `found`.
+        """Assembles the typed `BatchResult` from raw engine or ngspice output.
 
         Raises:
-            OverflowError: Where a measure's sum overflowed on a run.
-            ValueError: Where a measure's sum was indeterminate on a run.
-            MemoryError: Where a distortion's samples would not fit in memory.
+            OverflowError: When a measure summation overflows on a run.
+            ValueError: When a measure summation is indeterminate on a run.
+            MemoryError: When distortion samples exceed available memory.
         """
         ended_engine = found["ended"]
         runs = int(found["values"].shape[0])
@@ -456,7 +455,7 @@ class Planned:
     def _read_in_python(
         self, place: int, columns: _Columns
     ) -> Dimension | results.Plain | None:
-        """Writes what the measure at `place` read in Python of each run, or not."""
+        """Copies Python-evaluated measure values for slot `place` into `columns`."""
         unit: Dimension | results.Plain | None = None
         for (index, at), read in sorted(self.read.items()):
             if at != place:
@@ -474,7 +473,7 @@ class Planned:
         return unit
 
     def _errors(self, found: _core.BatchResult, runs: int) -> dict[int, dict[str, str]]:
-        """Why each analysis that failed on a run failed, by the run, then by name."""
+        """Collects per-run analysis failure messages keyed by run index and name."""
         problems = found["problems"]
         failed: dict[int, dict[str, str]] = {}
         by_place = {place: name for name, place in self.engine.items()}
@@ -493,7 +492,7 @@ class Planned:
         }
 
     def _traces(self, found: _core.BatchResult) -> tuple[results.Traces, ...]:
-        """Each analysis traced, from the arrays `found` holds."""
+        """Builds traced waveform containers from the arrays in `found`."""
         traces = []
         for (name, columns), values in zip(self.traces, found["traces"], strict=True):
             analysis = self.analyses[name]
@@ -517,7 +516,7 @@ class Planned:
 
 @dataclass(slots=True)
 class _Columns:
-    """What a batch's measures read of each run, or why not, as it is written."""
+    """Mutable buffer accumulating measure values and failure causes across runs."""
 
     measured: results.Real
     causes: npt.NDArray[np.int32]
@@ -531,11 +530,11 @@ class _Columns:
         self.raised = []
 
     def told(self, reason: str) -> np.int32:
-        """The place of `reason` among the reasons, added if it is new."""
+        """Returns the interned table index of `reason`, inserting if absent."""
         return np.int32(self.texts.setdefault(reason, len(self.texts)))
 
     def engine(self, place: int, reading: _Reading, found: _core.BatchResult) -> None:
-        """Writes what the engine read of the measure at `place`, or why not."""
+        """Populates `place` from engine-computed measure values and failure causes."""
         if reading.resolved is None:
             return
         failed = f"the analysis {reading.measure.analysis} failed"
@@ -557,7 +556,7 @@ class _Columns:
     def unresolved(
         self, place: int, reading: _Reading, where: npt.NDArray[np.bool_]
     ) -> None:
-        """Writes why the measure at `place`, which resolves against none, read nil."""
+        """Records the unmeasured cause for every run of unresolved slot `place`."""
         if reading.reason is None:
             return
         if reading.everywhere:
@@ -571,7 +570,7 @@ class _Columns:
 
 
 def _axis(analysis: Analysis, built: ir.Circuit) -> results.Real:
-    """The points a batch traces `analysis` along: none at an operating point."""
+    """Returns the axis coordinates traced for `analysis`, or empty for DC points."""
     match analysis:
         case DcSweep():
             dimension = swept_dimension(built, analysis)
@@ -590,7 +589,7 @@ def _at(
     analysis: Analysis,
     unknowns: Sequence[results.Unknown],
 ) -> results.Real | results.Complex:
-    """The values of `unknowns` at each traced point of `analysis`, in `result`."""
+    """Extracts values of `unknowns` at each traced point of `analysis` in `result`."""
     points = points_of(analysis)
     if isinstance(analysis, Ac):
         phasors = np.full((points, len(unknowns)), np.nan, dtype=np.complex128)
@@ -637,7 +636,7 @@ def _picked(
 
 
 def _interpolated(times: results.Real, values: results.Real, time: float) -> float:
-    """The value at `time`, linearly interpolated between accepted times."""
+    """Interpolates `values` linearly at `time` between accepted time points."""
     after = int(np.searchsorted(times, time, side="left"))
     if after < len(times) and times[after] == time:
         return float(values[after])

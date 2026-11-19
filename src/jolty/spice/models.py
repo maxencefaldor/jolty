@@ -1,14 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""SPICE's model cards, and the parameters of the jolty devices they make.
+"""SPICE `.model` card definitions and conversion to jolty device parameters.
 
-Each SPICE parameter maps to a jolty device's parameter, converted to SI base units
-where SPICE writes centimeters, and the nominal temperature ``TNOM`` from degrees
-Celsius to kelvins. Parameters that change nothing jolty computes are left out: those
-that only choose among noise equations, of a VDMOS card, its part's annotations, its
-``PHI`` and its thermal network, and of a BSIM3 card, its bins' ranges, its safe
-operating area and what only its non-quasi-static and area calculation models read
-where they are off, as the reader's tables say. Any other parameter jolty does not
-model is an error, never silently dropped.
+SPICE card parameters map to jolty device parameters converted into SI base units
+(for example, centimeter quantities to meters and ``TNOM`` from degrees Celsius to
+kelvins). Parameters with no effect on jolty simulation are ignored explicitly:
+noise-equation selectors, VDMOS part annotations, VDMOS ``PHI`` and thermal networks,
+and BSIM bin bounds, safe-operating-area limits, and disabled submodel parameters.
+Any other unsupported parameter raises an error rather than being silently dropped.
 """
 
 import functools
@@ -40,7 +38,7 @@ from jolty.spice.netlist import Statement, tokens
 from jolty.units import celsius
 
 type Table = Mapping[str, tuple[str, float]]
-"""Each SPICE parameter's jolty name, and the factor to SI base units."""
+"""Mapping from SPICE parameter names to `(jolty_name, si_scale_factor)`."""
 
 _EMPTY_STRINGS: Final[Mapping[str, str]] = MappingProxyType({})
 _EMPTY_SCALES: Final[Mapping[str, float]] = MappingProxyType({})
@@ -89,21 +87,20 @@ FLICKER: Final[Table] = {
     "kf": ("flicker_coefficient", 1.0),
     "af": ("flicker_exponent", 1.0),
 }
-"""The flicker noise of a diode's or a transistor's current: SPICE's ``KF`` and
-``AF``."""
+"""SPICE flicker noise parameters ``KF`` and ``AF`` for diodes and transistors."""
 
 PASSIVE_DRIFT: Final = {
     "tc1": "temperature_coefficient",
     "tc2": "quadratic_temperature_coefficient",
     "tce": "exponential_temperature_coefficient",
 }
-"""The temperature coefficients of a resistor, capacitor or inductor, by SPICE name."""
+"""SPICE temperature coefficient names for resistors, capacitors, and inductors."""
 
 PASSIVE_CURVATURE: Final = {
     "vc1": "voltage_coefficient",
     "vc2": "quadratic_voltage_coefficient",
 }
-"""The voltage coefficients of a resistor or capacitor, by HSPICE's name."""
+"""HSPICE voltage coefficient names for resistors and capacitors."""
 
 DIODE: Final[Table] = _table(
     {
@@ -151,58 +148,68 @@ DIODE: Final[Table] = _table(
     drifts=("rs", "tt", "m"),
     extra=FLICKER,
 )
-"""ngspice 47's diode, by every name it reads (``dio.c``, lines 48 to 147), but its
-geometry and its safe operating area, which `DIODE_GEOMETRY` and `DIODE_IGNORED`
-name."""
+"""ngspice 47 diode parameters (``dio.c``, lines 48 to 147).
+
+Geometry and ignored safe-operating-area parameters live in `DIODE_GEOMETRY` and
+`DIODE_IGNORED`.
+"""
 
 DIODE_BY_AREA: Final = (
     *("is", "js", "cjo", "cj0", "cj"),
     *("ikf", "ik", "ikr", "isr", "jtun"),
 )
-"""A diode card's parameters of its bottom junction that its element's area and copies
-multiply (``diosetup.c``, lines 362 to 365; ``diotemp.c``, lines 120, 136 and 147); its
-series resistance, ``RS``, they divide (``diotemp.c``, line 254)."""
+"""Diode bottom-junction parameters scaled linearly by area and multiplicity.
+
+Reference: ``diosetup.c`` (lines 362 to 365) and ``diotemp.c`` (lines 120, 136, 147).
+Series resistance ``RS`` divides by the same factor (``diotemp.c``, line 254).
+"""
 
 DIODE_BY_PERIMETER: Final = ("jsw", "isw", "cjp", "cjsw", "ikp", "jtunsw")
-"""A diode card's parameters of its sidewall that its element's perimeter and copies
-multiply (``diosetup.c``, lines 364 and 366; ``diotemp.c``, lines 128 and 139); its
-series resistance, ``RSW``, they divide (``diotemp.c``, line 262)."""
+"""Diode sidewall parameters scaled linearly by perimeter and multiplicity.
+
+Reference: ``diosetup.c`` (lines 364, 366) and ``diotemp.c`` (lines 128, 139).
+Sidewall resistance ``RSW`` divides by the same factor (``diotemp.c``, line 262).
+"""
 
 DIODE_KNEES: Final = frozenset(
     name for name, (jolty, _) in DIODE.items() if jolty.endswith("knee_current")
 )
-"""A diode card's knee currents, each of which ngspice turns off below
-`MIN_CURRENT`."""
+"""Diode knee-current parameters disabled by ngspice below `MIN_CURRENT`."""
 
 DIODE_SELECTORS: Final = frozenset({"tlev", "tlevc"})
-"""A diode card's selectors of its temperature equations, whole numbers."""
+"""Integer diode temperature-equation selector parameter names."""
 
 DIODE_GEOMETRY: Final = {
     "area": 1.0,
     **dict.fromkeys(("pj", "lm", "lp", "wm", "wp", "xm", "xp", "xw"), 0.0),
     **dict.fromkeys(("xom", "xoi"), 1e4),
 }
-"""A diode card's geometry and its defaults (``diosetup.c``, lines 183 to 188 and 281 to
-307): the area and perimeter factors its elements take unless they give their own, and
-level 3's metal and polysilicon over the bulk, the thicknesses of their oxides and
-their masks' offsets."""
+"""Default diode card geometry parameters (``diosetup.c``, lines 183-188, 281-307).
+
+Covers default area and perimeter factors used when an instance omits them, plus
+level-3 metal and polysilicon dimensions, oxide thicknesses, and mask offsets.
+"""
 
 METAL_AND_POLY: Final = ("lm", "lp", "wm", "wp")
-"""The sizes of a level 3 diode's metal and polysilicon over its bulk, which an element
-gives or its card: jolty reads none but zero, which no open kit sizes otherwise."""
+"""Level-3 diode metal and polysilicon bulk dimension parameter names.
+
+Nonzero metal or polysilicon dimensions are unsupported and rejected during import.
+"""
 
 DIODE_IGNORED: Final = frozenset(
     {"fv_max", "bv_max", "id_max", "te_max", "pd_max", "d", "scalm"}
 )
-"""A diode card's parameters that change nothing ngspice computes: the safe operating
-area, which only its checks read; the flag ``D`` that names its type; and HSPICE's model
-scale ``SCALM``, which ngspice's diode does not have, and which ngspice ignores, as it
-ignores every parameter a model does not have (``inpgmod.c``, lines 157 to 191)."""
+"""Diode card parameters ignored during simulation (``inpgmod.c``, lines 157-191).
+
+Includes safe-operating-area limits, the ``D`` type flag, and HSPICE ``SCALM``.
+"""
 
 MIN_CURRENT: Final = 1e-28
-"""ngspice's ``epsmin`` (``cktinit.c``, line 98), the minimum saturation current a diode
-takes, and below which it turns a knee current off (``diosetup.c``, lines 110 to 130 and
-230)."""
+"""ngspice ``epsmin`` floor (``cktinit.c``, line 98) for diode saturation currents.
+
+Diode knee currents below this threshold are disabled (``diosetup.c``, lines 110-130,
+230).
+"""
 
 JFET: Final[Table] = _table(
     {
@@ -382,72 +389,66 @@ VDMOS: Final[Table] = _table(
     drifts=("ksubthres", "rd", "rs", "rg", "rb"),
     extra=FLICKER,
 )
-"""ngspice's VDMOS, the power MOSFETs' model of LTspice's cards."""
+"""ngspice VDMOS power MOSFET parameters matching LTspice model cards."""
 
 VDMOS_INSTANCE: Final[Table] = _table({"m": "multiplier"})
-"""A VDMOS's own parameters: the number of transistors in parallel."""
+"""VDMOS instance parameters (parallel device multiplier ``M``)."""
 
 VDMOS_KINDS: Final = frozenset({"vdmosn", "vdmosp"})
-"""A VDMOS card's types, as the reader gives them: of its channel's polarity."""
+"""Normalized VDMOS card type names encoding channel polarity."""
 
 VDMOS_ANNOTATIONS: Final = frozenset({"mfg", "vds", "ron", "qg"})
-"""What LTspice's VDMOS cards say of their part, its maker, ratings and gate charge,
-which ngspice reads past, and the reader with it."""
+"""LTspice VDMOS part metadata keys (manufacturer, ratings, gate charge) ignored by
+ngspice and jolty."""
 
 VDMOS_SELF_HEATING: Final = frozenset({"rthjc", "rthca", "cthj"})
-"""A VDMOS card's thermal network, which ngspice heats a transistor on only where its
-instance says ``thermal``: elsewhere it changes nothing, and jolty reads no such
-instance."""
+"""VDMOS thermal-network card parameters ignored because jolty does not import
+self-heating VDMOS instances."""
 
 _NO_FUNCTIONS: Final[Mapping[str, Function]] = MappingProxyType({})
 """Empty user-function mapping used when a caller supplies none."""
 
 _WRAPPED_PREFIX: Final = re.compile(r"[\w\s=.+-]*")
-"""The parameter assignments that may precede an enclosing ``(...)`` group, as in
-``NPN Level=4(...)``, which ngspice reads as it reads them all in parentheses."""
+"""Parameter assignments that may precede an enclosing ``(...)`` group, as in
+``NPN Level=4(...)``, parsed identically to assignments inside parentheses."""
 
 _BARE_EQUALS: Final = re.compile(r"(?<![=!<>])=(?!=)")
-"""A bare assignment ``=``, distinguishing a card's parameter list from a call's
-arguments."""
+"""Bare assignment ``=`` distinguishing a card parameter list from call arguments."""
 
 _CALL_PREFIX: Final = re.compile(r"=\s*[A-Za-z_][A-Za-z0-9_]*$")
-"""A function name immediately after ``=``, as in ``IS=scale()``."""
+"""Function name immediately after ``=``, as in ``IS=scale()``."""
 
 _CHANNEL: Final = re.compile(r"\b([np])chan\b", re.IGNORECASE)
-"""A VDMOS card's polarity, ``nchan`` or ``pchan``, a word anywhere in its card."""
+"""VDMOS channel polarity flag (``nchan`` or ``pchan``) appearing anywhere in a card."""
 
 _AKO: Final = re.compile(r"ako:\s*([^\s(]+)\s*(.*)", re.IGNORECASE | re.DOTALL)
-"""An ``AKO:`` inheritance header: the base model's name and remaining body."""
+"""Inheritance header ``AKO:`` matching base model name and remaining card body."""
 
 _LEADING_WORD: Final = re.compile(r"\w*")
-"""A model card's leading type word before any whitespace, ``=``, or ``(``."""
+"""Leading type token on a model card before whitespace, ``=``, or ``(``."""
 
 BSIM3_LEVELS: Final = frozenset({8, 49})
-"""The levels of a BSIM3 card, ngspice's 8 and HSPICE's 49."""
+"""BSIM3 model levels: ngspice level 8 and HSPICE level 49."""
 
 BSIM3_INSTANCE: Final[Table] = _table(
     {"delvto": "threshold_adjustment", "mulu0": "mobility_multiplier"},
     extra=MOSFET_INSTANCE,
 )
-"""A BSIM3 instance's own parameters: a MOSFET's, a shift of its threshold and a factor
-of its mobility."""
+"""BSIM3 instance parameters extending `MOSFET_INSTANCE` with threshold shift and
+mobility multiplier."""
 
 BSIM3_SELECTORS: Final = {
     "mobmod": "mobility_model",
     "capmod": "capacitance_model",
     "noimod": "noise_model",
 }
-"""A BSIM3 card's choices among its equations, each a whole number, by their SPICE
-names: jolty's name of each."""
+"""Integer BSIM3 equation-selector SPICE names mapped to jolty parameter names."""
 
 BSIM3_SETTINGS: Final = {"paramchk": "check_parameters", "xpart": "charge_partition"}
-"""A BSIM3 card's check of its parameters and its drain's share of the channel's
-charge, by their SPICE names: jolty's name of each."""
+"""BSIM3 parameter-check and charge-partition SPICE names mapped to jolty names."""
 
 BSIM3_OFF: Final = ("nqsmod", "acnqsmod", "acm")
-"""BSIM3's non-quasi-static models, of the transient and of the small signal, and
-HSPICE's area calculation method, which jolty does not model: a card or an instance
-reads only with each off."""
+"""Unsupported BSIM3 non-quasi-static and HSPICE area modes required to be zero."""
 
 BSIM4_UNREAD: Final = frozenset(
     {
@@ -456,8 +457,11 @@ BSIM4_UNREAD: Final = frozenset(
         *("vgsr_max", "vgdr_max", "vgbr_max", "vbsr_max", "vbdr_max"),
     }
 )
-"""What a BSIM4 card says that changes nothing ngspice computes: its bin's ranges, which
-only select it, and the safe operating area, which only ngspice's checks read."""
+"""BSIM4 card parameters that do not affect simulation equations.
+
+Includes bin dimension bounds used only for bin selection and safe-operating-area
+limits read only by SOA checks.
+"""
 
 BSIM3_UNREAD: Final = BSIM4_UNREAD | frozenset(
     {
@@ -465,14 +469,15 @@ BSIM3_UNREAD: Final = BSIM4_UNREAD | frozenset(
         *("hdif", "ldif", "ld", "rd", "rs", "rdc", "rsc", "wmlt"),
     }
 )
-"""What a BSIM3 card says that changes nothing ngspice computes with the
-non-quasi-static models and the area calculation off: its bin's ranges, which only
-select it, the non-quasi-static model's Elmore constant, the area calculation's
-parameters, and the safe operating area, which only ngspice's checks read."""
+"""BSIM3 card parameters unused when non-quasi-static and area modes are disabled.
+
+Extends `BSIM4_UNREAD` with NQS Elmore constants and disabled area-calculation
+parameters.
+"""
 
 BSIM3_DENSITIES: Final = {"nch": 1e20, "ngate": 1.000001e24}
-"""The concentrations of a BSIM3 card that ngspice reads per cubic meter above a bound,
-and per cubic centimeter below it, as its ``b3mpar.c`` reads each."""
+"""BSIM3 doping parameters read per cubic centimeter up to a threshold and per cubic
+meter above it (``b3mpar.c``)."""
 
 BSIM4_INSTANCE: Final[Table] = _table(
     {
@@ -487,10 +492,8 @@ BSIM4_INSTANCE: Final[Table] = _table(
     },
     extra=MOSFET_INSTANCE,
 )
-"""A BSIM4 instance's own parameters: a MOSFET's, its fingers, the distances that set
-the stress of its length of diffusion, a shift of its threshold, a factor of its
-mobility, and the body resistances and the gate's contacts it takes over from its
-card."""
+"""BSIM4 instance parameters extending `MOSFET_INSTANCE` with finger counts, diffusion
+stress distances, threshold shift, mobility multiplier, and body/gate overrides."""
 
 BSIM4_SELECTORS: Final = {
     "rbodymod": "body_resistance_model",
@@ -500,12 +503,11 @@ BSIM4_SELECTORS: Final = {
     "fnoimod": "flicker_noise_model",
     "tnoimod": "thermal_noise_model",
 }
-"""A BSIM4 card's choices among its equations that jolty models more than one value
-of, each a whole number, by their SPICE names: jolty's name of each."""
+"""Integer BSIM4 equation-selector SPICE names with multiple supported values mapped to
+jolty parameter names."""
 
 BSIM4_SETTINGS: Final = BSIM3_SETTINGS
-"""A BSIM4 card's check of its parameters and its drain's share of the channel's
-charge, by their SPICE names: jolty's name of each."""
+"""BSIM4 parameter-check and charge-partition SPICE names mapped to jolty names."""
 
 BSIM4_MODES: Final = {
     "mobmod": 0,
@@ -521,18 +523,18 @@ BSIM4_MODES: Final = {
     "wpemod": 0,
     "min": 0,
 }
-"""BSIM4's choices among its equations that jolty models one value of, the one
-SKY130's and GF180MCU's cards select, each ngspice's default too, by their SPICE
-names: a card or an instance reads only with each at it. ``min`` is an instance's
-choice of the drains or the sources an even number of fingers has fewer of."""
+"""Fixed BSIM4 model and instance mode selectors required to match ngspice defaults.
+
+Covers the modes selected by SKY130 and GF180MCU cards, including instance ``min`` for
+even-finger drain/source count selection.
+"""
 
 BSIM4_INSTANCE_UNREAD: Final = frozenset({"sca", "scb", "scc", "sc"})
-"""What a BSIM4 instance says that changes nothing ngspice computes with `BSIM4_MODES`:
-its distances to the well's edge, which only the well proximity effect reads."""
+"""BSIM4 instance well-proximity parameters ignored when ``WPEMOD`` is zero."""
 
 BSIM4_DENSITIES: Final = {"ndep": 1e20, "nsd": 1.000001e24, "ngate": 1.000001e24}
-"""The concentrations of a BSIM4 card that ngspice reads per cubic meter above a bound,
-and per cubic centimeter below it, as its ``b4v5mpar.c`` reads each."""
+"""BSIM4 doping parameters read per cubic centimeter up to a threshold and per cubic
+meter above it (``b4v5mpar.c``)."""
 
 BSIM4_ALIASES: Final = {
     "vtho": "vth0",
@@ -540,7 +542,7 @@ BSIM4_ALIASES: Final = {
     "wvtho": "wvth0",
     "pvtho": "pvth0",
 }
-"""The other names ngspice reads some of a BSIM4 card's parameters by."""
+"""Alternative SPICE parameter names accepted by ngspice on BSIM4 cards."""
 
 
 VBIC: Final[Table] = _table(
@@ -641,9 +643,10 @@ VBIC: Final[Table] = _table(
     temperature_pairs={"tvbbe": "breakdown_voltage"},
     extra=FLICKER,
 )
-"""ngspice's VBIC, its bipolar transistor of level 4 or 9, by every name ngspice reads,
-its aliases among them: SPICE's ``KF`` and ``AF``, which no VBIC card gives, read as
-``KFN`` and ``AFN``."""
+"""ngspice VBIC bipolar transistor parameters (levels 4 and 9) with aliases.
+
+Standard SPICE ``KF`` and ``AF`` map to flicker parameters alongside ``KFN``/``AFN``.
+"""
 
 _TABLES: Final[Mapping[str, Table]] = {
     "diode": DIODE,
@@ -651,71 +654,65 @@ _TABLES: Final[Mapping[str, Table]] = {
     "bipolar_transistor": BIPOLAR,
     "vbic": VBIC,
 }
-"""The table of each device whose parameters an area scales."""
+"""Parameter tables for device models whose parameters scale with area."""
 
 VBIC_LEVELS: Final = frozenset({4.0, 9.0})
-"""The levels of a bipolar transistor's card at which ngspice selects VBIC."""
+"""Bipolar model-card levels selecting VBIC in ngspice."""
 
 VBIC_RESISTANCES: Final = ("rcx", "rci", "rbx", "rbi", "re", "rs", "rbp")
-"""A VBIC card's resistances, each of which ngspice raises to `VBIC_MIN_RESISTANCE`
-where a card gives it below that, and divides by the area."""
+"""VBIC card resistances clamped to `VBIC_MIN_RESISTANCE` and divided by area."""
 
 VBIC_MIN_RESISTANCE: Final = 0.01
-"""The minimum resistance ngspice's VBIC takes from a card, in ohms, its ``R_MIN``."""
+"""Minimum VBIC resistance in ohms enforced by ngspice (``R_MIN``)."""
 
 BIPOLAR_ABSENT_AT_ZERO: Final = frozenset(
     {"vaf", "va", "var", "vb", "ikf", "ik", "ikr", "irb", "vtf", "iss"}
 )
-"""A Gummel-Poon card's parameters that ngspice takes as infinite where they are 0:
-the Early voltages and knee currents (``bjttemp.c:83-99``), the base resistance's
-current (``bjtload.c:620``) and the transit time's voltage (``bjttemp.c:51-54``); and
-the substrate's saturation current, whose junction then conducts the minimum
-conductance alone, as without one (``bjtload.c:487-499``)."""
+"""Gummel-Poon parameters treated as infinite by ngspice when set to zero.
+
+Includes Early voltages and knee currents (``bjttemp.c:83-99``), base-resistance
+current (``bjtload.c:620``), transit-time voltage (``bjttemp.c:51-54``), and substrate
+saturation current (``bjtload.c:487-499``).
+"""
 
 BIPOLAR_TEMPERATURE_MODELS: Final = {
     "tlev": "temperature_model",
     "tlevc": "capacitance_temperature_model",
 }
-"""A Gummel-Poon card's choices of how its parameters follow the temperature, each 0 or
-1, by their SPICE names: jolty's name of each. ngspice's ``TLEV`` 3, a power of each
-saturation current that does not commute with an element's area, jolty does not model,
-nor 2, for which ngspice computes no saturation current (``bjttemp.c:166-197``)."""
+"""Gummel-Poon temperature-model selectors (``TLEV`` and ``TLEVC``) supporting 0 or 1.
+
+``TLEV=3`` does not commute with element area scaling, and ``TLEV=2`` computes no
+saturation current in ngspice (``bjttemp.c:166-197``).
+"""
 
 BIPOLAR_POWER_COEFFICIENTS: Final = frozenset(
     {"tis1", "tis2", "tise1", "tise2", "tisc1", "tisc2", "tiss1", "tiss2"}
 )
-"""The coefficients of ``TLEV`` 3's powers of the saturation currents, which change
-nothing ngspice computes at the ``TLEV`` 0 and 1 jolty models (``bjttemp.c:183-197``
-and ``250-253``)."""
+"""Saturation-current coefficients used only by ``TLEV=3`` and ignored for modes 0 and
+1 (``bjttemp.c:183-197``, ``250-253``)."""
 
 BIPOLAR_SATURATION_CURRENTS: Final = ("ibe", "ibc")
-"""A Gummel-Poon card's saturation currents of the base-emitter and base-collector
-junctions apart, which ngspice reads only where both are given, taking ``IS`` for both
-otherwise (``bjttemp.c:169-180``)."""
+"""Split base-emitter and base-collector saturation currents (``IBE``, ``IBC``), read
+by ngspice only when both are provided (``bjttemp.c:169-180``)."""
 
 BIPOLAR_UNDEFINED: Final = frozenset({"dcap", "gap1", "gap2", "cbcp", "cbep", "ccsp"})
-"""HSPICE's parameters of a Gummel-Poon card that ngspice 47's BJT does not define, its
-depletion capacitance's equation, its band gap's temperature coefficients and its
-external junctions' capacitances: ngspice reads past them, warning that each is an
-"unrecognized parameter", and the reader with it."""
+"""HSPICE Gummel-Poon parameters undefined in ngspice 47 and ignored with warnings."""
 
 BIPOLAR_MAX_HIGH_INJECTION_EXPONENT: Final = 1.0
-"""The largest ``NKF`` ngspice takes: it limits one beyond to it, with a warning
+"""Maximum ``NKF`` accepted by ngspice before clamping with a warning
 (``bjtsetup.c:332-338``)."""
 
 VBIC_INFINITE_AT_ZERO: Final = frozenset(
     {"vo", "v0", "vef", "ver", "ikf", "ikr", "ikp", "vtf", "vbbe"}
 )
-"""A VBIC card's parameters that ngspice takes as infinite, or as absent for ``VBBE``,
-where they are not positive."""
+"""VBIC parameters treated as infinite (or disabled for ``VBBE``) when non-positive."""
 
 VBIC_MULTIPLIED: Final = (
     *("is", "ibei", "iben", "ibci", "ibcn", "isp", "ibeip", "ibenp", "ibcip", "ibcnp"),
     *("ikf", "ikr", "ikp", "itf", "ibbe", "cje", "cjc", "cjep", "cjcp", "ccso"),
     *("cbeo", "cbe0", "cbco", "cbc0", "qco", "qc0"),
 )
-"""A VBIC card's currents, capacitances and charges, which ngspice multiplies by the
-area and the number of copies."""
+"""VBIC currents, capacitances, and charges multiplied by area and copy count."""
 
 VBIC_IGNORED: Final = frozenset(
     {
@@ -724,29 +721,27 @@ VBIC_IGNORED: Final = frozenset(
         *("vbefwd", "vbcfwd", "vsubfwd"),
     }
 )
-"""What a VBIC card gives that changes nothing ngspice computes: its version, ``EBBE``,
-which ngspice computes from ``VBBE`` and ``NBBE`` whatever the card says, and the limits
-its safe-operating-area check warns beyond."""
+"""VBIC card parameters without simulation effect in ngspice.
+
+Covers model version, ``EBBE`` (recomputed from ``VBBE`` and ``NBBE``), and
+safe-operating-area warning limits.
+"""
 
 VBIC_SELF_HEATING: Final = frozenset({"rth", "cth", "selft"})
-"""A VBIC card's self-heating: its thermal resistance and capacitance, which heat only a
-transistor whose element joins a fifth node, its thermal node, and ``SELFT``, which may
-switch it off."""
+"""VBIC self-heating parameters (``RTH``, ``CTH``, ``SELFT``) active only when an
+instance connects a fifth thermal node."""
 
 VBIC_INSTANCE: Final = frozenset({"area", "m", "ic", "icvbe", "icvce"})
-"""A VBIC element's own parameters: its area and number of copies, which scale its
-card, and its initial conditions, which only act where a transient skips its operating
-point."""
+"""Allowed VBIC instance parameters: area, parallel copies, and initial conditions."""
 
 VBIC_MIN_THERMAL_CAPACITANCE: Final = 1e-12
-"""The minimum thermal capacitance ngspice's VBIC takes from a card that gives a thermal
-resistance, in joules per kelvin."""
+"""Minimum VBIC thermal capacitance in joules per kelvin enforced by ngspice."""
 
 CONSTRUCTIONS: Final = {1.0: "vertical", -1.0: "lateral"}
-"""The construction of a bipolar transistor of each value of SPICE's ``SUBS``."""
+"""Bipolar substrate construction mapped from SPICE ``SUBS`` values."""
 
 GATE_TYPES: Final = {1.0: "opposite_doping", -1.0: "same_doping", 0.0: "aluminum"}
-"""The gate material of each value of SPICE's ``TPG``."""
+"""MOSFET gate material mapped from SPICE ``TPG`` values."""
 
 SWITCH: Final[Table] = _table(
     {
@@ -756,7 +751,7 @@ SWITCH: Final[Table] = _table(
         "voff": "off_voltage",
     }
 )
-"""PSpice's ``VSWITCH`` parameters, as a voltage-controlled switch takes them."""
+"""PSpice ``VSWITCH`` parameters for voltage-controlled switches."""
 
 CURRENT_SWITCH: Final[Table] = _table(
     {
@@ -766,32 +761,31 @@ CURRENT_SWITCH: Final[Table] = _table(
         "ioff": "off_current",
     }
 )
-"""PSpice's ``ISWITCH`` parameters, as a current-controlled switch takes them."""
+"""PSpice ``ISWITCH`` parameters for current-controlled switches."""
 
 NOMINAL_TEMPERATURES: Final = frozenset({"tnom", "t_measured"})
-"""The parameters that give the temperature, in degrees Celsius, a card was measured at:
-the nominal temperature of the device it makes. ``T_MEASURED`` is PSpice's."""
+"""Model-card measurement temperature keys in degrees Celsius (including PSpice
+``T_MEASURED``)."""
 
 OWN_TEMPERATURES: Final = frozenset(
     {"t_abs", "t_rel_global", "t_rel_local", "temp", "dtemp"}
 )
-"""The parameters that set a device's own temperature apart from the circuit's: a card's
-``T_ABS``, ``T_REL_GLOBAL`` and ``T_REL_LOCAL``, PSpice's, and an instance's ``TEMP``
-and ``DTEMP``, ngspice's."""
+"""Card and instance parameters setting per-device temperature overrides (PSpice
+``T_ABS``/``T_REL_*`` and ngspice ``TEMP``/``DTEMP``)."""
 
 
 def own_temperature(
     card: Mapping[str, float], instance: Mapping[str, float], statement: Statement
 ) -> dict[str, JsonValue]:
-    """The device's own temperature, as a held one or an offset, if it has one.
+    """Extracts a per-device absolute temperature or offset from `card` and `instance`.
 
-    A card's ``T_ABS`` and an instance's ``TEMP``, in degrees Celsius, hold the device
-    there; a card's ``T_REL_GLOBAL`` and an instance's ``DTEMP`` raise it above the
-    circuit's.
+    Card ``T_ABS`` and instance ``TEMP`` (in degrees Celsius) pin the device
+    temperature. Card ``T_REL_GLOBAL`` and instance ``DTEMP`` specify an offset from
+    circuit temperature.
 
     Raises:
-        SpiceError: When the device sets it more than once, or by ``T_REL_LOCAL``,
-            relative to the card a card inherits from, which jolty does not read.
+        SpiceError: When temperature is specified more than once or uses unsupported
+            ``T_REL_LOCAL`` inheritance offsets.
     """
     given = {
         name: value
@@ -814,7 +808,7 @@ def own_temperature(
 
 
 def _nominal(_name: str) -> Draw:
-    """The draws of a definition's statistical functions at their nominal values."""
+    """Returns the default nominal-value callback for statistical parameters."""
     return nominal
 
 
@@ -831,9 +825,7 @@ RESISTOR_CARD: Final = {
     "l": "defl",
     "noisy": "noise",
 }
-"""The parameters of SPICE3's resistor card, of type ``r``, by each name ngspice reads
-(``res.c``, its model's and, for ``noise``, its instances' defaults): the name of each
-here."""
+"""SPICE3 ``R`` model-card parameter aliases mapped to canonical names (``res.c``)."""
 
 CAPACITOR_CARD: Final = {
     **{name: name for name in ("cap", "cj", "cjsw", "narrow", "short", "del", "tc1")},
@@ -844,33 +836,32 @@ CAPACITOR_CARD: Final = {
     "w": "defw",
     "l": "defl",
 }
-"""The parameters of SPICE3's capacitor card, of type ``c``, by each name ngspice reads
-(``cap.c``): the name of each here."""
+"""SPICE3 ``C`` model-card parameter aliases mapped to canonical names (``cap.c``)."""
 
 GEOMETRIC: Final = {"r": RESISTOR_CARD, "c": CAPACITOR_CARD}
-"""SPICE3's cards of a resistor and a capacitor, which size them by their geometry, by
-type: the names of their parameters."""
+"""Mapping from SPICE3 geometric passive card kinds (`r`, `c`) to parameter tables."""
 
 DEFAULT_WIDTH: Final = 10e-6
-"""The width, in meters, of a resistor or a capacitor whose card and element give none
-(``ressetup.c``, line 31, and ``capsetup.c``, line 38)."""
+"""Default resistor or capacitor width in meters when omitted
+(``ressetup.c``, line 31; ``capsetup.c``, line 38)."""
 
 DEFAULT_RESISTOR_LENGTH: Final = 10e-6
-"""The length, in meters, of a resistor whose card and element give none
-(``ressetup.c``, line 32); a capacitor's is 0, its card's ``DEFL`` unread
-(``capsetup.c``, line 96)."""
+"""Default resistor length in meters when omitted (``ressetup.c``, line 32).
+
+Capacitor length defaults to 0 and ignores ``DEFL`` (``capsetup.c``, line 96).
+"""
 
 MIN_RESISTANCE: Final = 1e-3
-"""The resistance, in ohms, of a resistor of a card that gives it none, nor a sheet
-resistance its geometry makes one of (``restemp.c``, line 79)."""
+"""Fallback resistance in ohms when a resistor card omits both ``R`` and sheet
+resistance (``restemp.c``, line 79)."""
 
 VACUUM_PERMITTIVITY: Final = 1 / (4e-7 * math.pi * 299792458.0**2)
-"""The vacuum's permittivity as ngspice's capacitor reads it, in farads per meter:
-``1 / (μ₀ c²)``, μ₀ = 4π·10⁻⁷ H/m (``const.h``, lines 44 to 47)."""
+"""Vacuum permittivity in farads per meter used by ngspice capacitors:
+``1 / (μ₀ c²)`` with μ₀ = 4π·10⁻⁷ H/m (``const.h``, lines 44 to 47)."""
 
 SILICA_RELATIVE_PERMITTIVITY: Final = 3.9
-"""Silicon dioxide's permittivity relative to the vacuum's, a capacitor's insulator's
-where its card gives none (``const.h``, line 51)."""
+"""Relative permittivity of silicon dioxide assumed as default capacitor dielectric
+when ``DI`` is omitted (``const.h``, line 51)."""
 
 
 def geometric_values(
@@ -881,16 +872,14 @@ def geometric_values(
     *,
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> dict[str, float]:
-    """SPICE3's resistor or capacitor `card`'s parameters, by `GEOMETRIC`'s names.
+    """Evaluates SPICE3 resistor or capacitor `card` parameters under `GEOMETRIC` keys.
 
-    Each is evaluated in `scope` with user `functions` inlined, the statistical
-    functions of each parameter's drawn by `draws` of its name, at their nominal values
-    unless given. ``BV_MAX``, which only ngspice's checks of the safe operating area
-    read, is left out.
+    Evaluates each card expression in `scope` with `functions` inlined and statistical
+    calls sampled by `draws`. Ignores ``BV_MAX``, which affects only SOA checks.
 
     Raises:
-        SpiceError: When the card gives a parameter ngspice's device has not, stated at
-            `statement`, the card's own unless given.
+        SpiceError: When `card` specifies an unsupported parameter, attributed to
+            `statement` or `card.statement`.
     """
     table = GEOMETRIC[card.kind]
     values: dict[str, float] = {}
@@ -905,11 +894,10 @@ def geometric_values(
 
 @dataclass(frozen=True, slots=True)
 class Geometric:
-    """What a resistor or capacitor of SPICE3's card is: its value and its drift.
+    """Resolved resistance or capacitance value and drift parameters from a SPICE3 card.
 
-    The value is in ohms or farads, before its copies; the drift is its temperature
-    coefficients ``tc1``, ``tc2`` and ``tce``, its nominal temperature ``tnom`` and its
-    flicker noise ``kf`` and ``af``, by SPICE's names, as its card gives them.
+    Stores the pre-multiplicity `value` in ohms or farads alongside SPICE `drift` keys
+    (``tc1``, ``tc2``, ``tce``, ``tnom``, ``kf``, and ``af``).
     """
 
     value: float
@@ -922,24 +910,25 @@ def geometric(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> Geometric:
-    """The resistor or capacitor SPICE3's `card`, of `values`, makes for `instance`.
+    """Computes the resistance or capacitance and drift of a SPICE3 geometric element.
 
-    `values` are the card's parameters by the names `GEOMETRIC` gives them; `instance`
-    the element's own: its value, ``r`` or ``c``, if it gives one, its width ``w`` and
-    length ``l`` in meters, and its ``scale``, which multiplies its value. Its value is
-    ngspice's: a resistor's ``(L - 2·SHORT) / (W - 2·NARROW) · RSH`` where that is
-    positive, or else its card's ``R``, or else 1 mΩ (``restemp.c``, lines 67 to 81),
-    its flicker coefficient divided by its noise area, ``(L - 2·SHORT)^LF · (W -
-    2·NARROW)^WF`` where the element gives a size (``ressetup.c``, lines 60 to 64); a
-    capacitor's its card's ``CAP``, or else ``CJ · (W - NARROW) · (L - SHORT) + 2 · CJSW
-    · (L - SHORT + W - NARROW)``, ``CJ`` given or of its insulator's ``THICK`` and
-    relative permittivity ``DI``, ``DEL`` the default of each of ``NARROW`` and
-    ``SHORT`` halved (``capsetup.c``, lines 71 to 88; ``captemp.c``, lines 60 to 72).
+    Uses card parameters in `values` (keyed by `GEOMETRIC`) and instance attributes in
+    `instance` (`r`/`c`, `w`, `l`, and `scale`).
+
+    Resistors use explicit `r`, else ``(L - 2·SHORT) / (W - 2·NARROW) · RSH`` when
+    positive, else card ``R``, else 1 mΩ (``restemp.c``, lines 67 to 81). When the
+    instance sets `w` or `l`, flicker coefficient ``KF`` divides by
+    ``(L - 2·SHORT)^LF · (W - 2·NARROW)^WF`` (``ressetup.c``, lines 60 to 64).
+
+    Capacitors use explicit `c`, else card ``CAP``, else
+    ``CJ · (W - NARROW) · (L - SHORT) + 2 · CJSW · (L - SHORT + W - NARROW)``
+    (``capsetup.c``, lines 71 to 88; ``captemp.c``, lines 60 to 72). Omitted ``CJ`` is
+    derived from ``THICK`` and ``DI``, and ``2 · DEL`` supplies omitted ``NARROW`` or
+    ``SHORT``.
 
     Raises:
-        SpiceError: When the card turns a resistor's noise off, or gives its flicker
-            noise a frequency exponent other than 1, which jolty's resistor does not
-            model.
+        SpiceError: When a resistor card disables thermal noise or sets flicker
+            frequency exponent ``EF`` to a value other than 1.
     """
     resistor = card.kind == "r"
     letter = "r" if resistor else "c"
@@ -996,11 +985,11 @@ def _noise_area(
     wide: float,
     statement: Statement,
 ) -> float:
-    """The effective flicker-noise area of a geometric resistor card.
+    """Computes the effective flicker-noise area of a geometric resistor card.
 
     Raises:
-        SpiceError: When the dimensions or exponents make the area non-positive,
-            overflow, or non-finite.
+        SpiceError: When effective dimensions or exponents yield a non-positive,
+            overflowing, or non-finite area.
     """
     if not (long > 0 and wide > 0):
         message = (
@@ -1024,16 +1013,18 @@ def _noise_area(
 
 
 NOISE: Final = frozenset({"nlev", "gdsnoi"})
-"""PSpice's choices among a MOSFET's noise equations, which jolty reads past: it keeps
-SPICE's own, which it writes for ngspice 43 and later as `nlev=1`."""
+"""PSpice MOSFET noise-equation selectors ignored during import.
+
+jolty retains classic SPICE flicker noise and exports ``nlev=1`` for ngspice 43+.
+"""
 
 
 @dataclass(frozen=True, slots=True)
 class ModelCard:
-    """A model card: its name, its type and its parameters' expressions.
+    """Parsed SPICE `.model` card with name, type, and parameter expressions.
 
-    The parameters are by their case-folded SPICE names, with any the card inherits
-    through ``AKO`` already merged.
+    Parameters are stored under case-folded SPICE names with inherited ``AKO:``
+    parameters already merged.
     """
 
     name: str
@@ -1041,22 +1032,23 @@ class ModelCard:
     parameters: Mapping[str, Expression]
     statement: Statement = field(repr=False)
     version: str | None = None
-    """The model's version, as a BSIM card names the equations it is of, if given."""
+    """Optional model version string (such as a BSIM card version)."""
 
 
 def is_derived(statement: Statement) -> bool:
-    """Whether a ``.model`` statement inherits from another card through ``AKO:``."""
+    """Returns whether a ``.model`` statement inherits from another via ``AKO:``."""
     words = statement.text.split(maxsplit=2)
-    return len(words) >= 3 and words[2].casefold().startswith("ako:")  # noqa: PLR2004 - `.model`, name, type
+    return (
+        len(words) >= 3  # noqa: PLR2004 - `.model`, name, type
+        and words[2].casefold().startswith("ako:")
+    )
 
 
 def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
-    """The model card `statement` defines.
-
-    A card may inherit from a model in `known`, through ``AKO:``.
+    """Parses a `.model` `statement` into a `ModelCard`, resolving ``AKO:`` in `known`.
 
     Raises:
-        SpiceError: When the statement is not a model card.
+        SpiceError: When `statement` is malformed or references an unknown base model.
     """
     words = statement.text.split(maxsplit=2)
     if len(words) < 3:  # noqa: PLR2004 - `.model`, the name and the type
@@ -1130,7 +1122,7 @@ def _unwrap_body(body: str) -> str:
 
 
 def _version_taken(words: list[str]) -> tuple[str | None, list[str]]:
-    """A card's ``VERSION``, as written, such as ``3.3.0``, and its words without it."""
+    """Extracts ``VERSION=...`` from card `words` and returns the remaining tokens."""
     for position in range(len(words) - 2):
         if words[position].casefold() == "version" and words[position + 1] == "=":
             raw = words[position + 2]
@@ -1145,10 +1137,10 @@ def _version_taken(words: list[str]) -> tuple[str | None, list[str]]:
 
 
 def _vdmos_card(kind: str, body: str) -> tuple[str, str]:
-    """A VDMOS card's type, of its channel's polarity, and its body without it.
+    """Determines VDMOS channel polarity and removes polarity flags from `body`.
 
-    As ngspice reads a card, ``VDMOS`` is an n-channel's, and a p-channel's given
-    ``pchan`` anywhere in its card or the type ``VDMOSP``.
+    Follows ngspice rules: ``VDMOS`` defaults to n-channel, while ``pchan`` anywhere
+    in `body` or type ``VDMOSP`` selects p-channel.
     """
     flags = {flag.casefold() for flag in _CHANNEL.findall(body)}
     polarity = "p" if "p" in flags or (kind == "vdmosp" and "n" not in flags) else "n"
@@ -1156,7 +1148,7 @@ def _vdmos_card(kind: str, body: str) -> tuple[str, str]:
 
 
 def _annotations_removed(words: list[str]) -> list[str]:
-    """A VDMOS card's words without its part's annotations, `VDMOS_ANNOTATIONS`."""
+    """Removes `VDMOS_ANNOTATIONS` key-value assignments from VDMOS card `words`."""
     kept: list[str] = []
     position = 0
     while position < len(words):
@@ -1170,12 +1162,12 @@ def _annotations_removed(words: list[str]) -> list[str]:
 
 
 def assignments(statement: Statement, words: list[str]) -> dict[str, Expression]:
-    """The parameters `words` assign, ``name = value`` each, by case-folded name.
+    """Parses `name = value` token triples from `words` into case-folded expressions.
 
-    A value is a number, a name, or an expression in braces or quotes.
+    Each value may be a numeric literal, identifier, or delimited expression.
 
     Raises:
-        SpiceError: When the words do not pair names with values.
+        SpiceError: When `words` do not form valid `name = value` assignments.
     """
     found: dict[str, Expression] = {}
     for position in range(0, len(words), 3):
@@ -1188,23 +1180,20 @@ def assignments(statement: Statement, words: list[str]) -> dict[str, Expression]
 
 
 def value(word: str) -> Expression:
-    """The expression a value writes.
-
-    A value is a number, a name, or an expression in braces or quotes.
-    """
+    """Parses a single parameter value token into a numeric or general `Expression`."""
     written = number(word)
     return Number(written) if written is not None else parse(word)
 
 
 @dataclass(frozen=True, slots=True)
 class Made:
-    """What a model card makes: a jolty device model and its parameters, in SI units."""
+    """Translated jolty device model name and SI parameter dictionary."""
 
     model: str
     parameters: dict[str, JsonValue]
 
 
-def device(  # noqa: PLR0913 - card, scope, instance, statement, draws and user functions
+def device(  # noqa: PLR0913 - device translation inputs
     card: ModelCard,
     scope: Mapping[str, float],
     instance: Mapping[str, float],
@@ -1213,14 +1202,13 @@ def device(  # noqa: PLR0913 - card, scope, instance, statement, draws and user 
     *,
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> Made:
-    """The device a model card makes for an instance with `instance` parameters.
+    """Translates `card` and `instance` parameters into a jolty `Made` device.
 
-    An instance's parameters include its area. The card's expressions are evaluated in
-    `scope` with user `functions` inlined, the statistical functions of each
-    parameter's drawn by `draws` of its name, at their nominal values unless given.
+    Evaluates card expressions in `scope` with user `functions` inlined and statistical
+    calls sampled via `draws` (defaulting to nominal values).
 
     Raises:
-        SpiceError: When the model's type or a parameter has no jolty counterpart.
+        SpiceError: When the model type or any parameter is unsupported by jolty.
     """
     every = {
         name: evaluate(inlined(expression, functions), scope, draws(name))
@@ -1243,14 +1231,10 @@ def _bipolar_device(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> Made:
-    """The bipolar transistor a card of `values` makes.
-
-    A card of level 4 or 9 makes a VBIC, and one of level 1, the default, a
-    Gummel-Poon transistor.
+    """Builds a Gummel-Poon (`level=1`) or VBIC (`level=4`/`9`) bipolar device.
 
     Raises:
-        SpiceError: When the card is of another level, or a parameter has no jolty
-            counterpart.
+        SpiceError: When the card specifies an unsupported level or parameter.
     """
     if values.get("level", 1.0) in VBIC_LEVELS:
         return Made("vbic", _vbic(card, values, instance, statement))
@@ -1270,14 +1254,10 @@ def _mosfet_device(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> Made:
-    """The MOSFET a card of `values` makes for an instance of `instance`.
-
-    A card of level 8 or 49 makes a BSIM3, one of level 14 or 54 a BSIM4, and
-    any other a MOSFET, which `_mosfet` reads.
+    """Dispatches a MOSFET card to BSIM3, BSIM4, or level-1/3 MOSFET translation.
 
     Raises:
-        SpiceError: When the card is of a level or version jolty does not model, or a
-            parameter has no jolty counterpart.
+        SpiceError: When the card specifies an unsupported level, version, or parameter.
     """
     level = values.get("level")
     if level in BSIM3_LEVELS:
@@ -1293,10 +1273,10 @@ def _device(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> Made:
-    """The device a model card of `values` makes for an instance of `instance`.
+    """Dispatches evaluated `card` `values` and `instance` parameters by device kind.
 
     Raises:
-        SpiceError: When the model's type or a parameter has no jolty counterpart.
+        SpiceError: When the model type or any parameter is unsupported by jolty.
     """
     match card.kind:
         case "d":
@@ -1337,30 +1317,29 @@ def _diode(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> dict[str, JsonValue]:
-    """A diode's parameters, from its model card of level 1 or 3 and its instance's.
+    """Translates a level-1 or level-3 diode card and instance into jolty parameters.
 
-    As ngspice sizes it (``diosetup.c``, lines 313 to 366): its area and perimeter
-    factors are its element's, or its card's where the element gives neither a width
-    nor a length; at level 3, an element that gives both makes them its area and
-    perimeter, ``(W + XW) · (L + XW)`` and ``2 · (W + XW) + 2 · (L + XW)`` scaled by the
-    library's `scale`. The bottom junction's currents and capacitance are multiplied,
-    and its resistance divided, by its area times the element's copies `m`; the
-    sidewall's by its perimeter times them; and the breakdown current by its copies,
-    and at level 3 by its area too. ngspice multiplies a level 3 diode sized by its
-    width and length by its copies twice, once in its area (``diosetup.c``, line 336)
-    and again as every diode's (``diotemp.c``, line 120), where jolty multiplies once,
-    as the guide's departures state.
+    Follows ngspice sizing rules (``diosetup.c``, lines 313 to 366). Area and perimeter
+    default from the card when neither `w` nor `l` is set on `instance`. For level-3
+    cards with both `w` and `l`, area is ``(W + XW) · (L + XW) · scale^2`` and
+    perimeter is ``(2·(W + XW) + 2·(L + XW)) · scale``.
+
+    Bottom-junction currents and capacitances scale by ``area · m`` while ``RS``
+    divides by it. Sidewall parameters scale by ``perimeter · m`` while ``RSW`` divides
+    by it. Breakdown current scales by `m`, and additionally by `area` at level 3.
+    Unlike ngspice (which applies `m` twice on geometric level-3 diodes), jolty scales
+    by `m` once.
 
     Raises:
-        SpiceError: When the card is of a level other than 1 and 3, a parameter has no
-            jolty counterpart, the element's area times its copies is not positive, or
-            it sizes a level 3 diode's metal or polysilicon over the bulk.
+        SpiceError: When the level is unsupported, a parameter has no jolty
+            counterpart, effective area is non-positive, or metal/polysilicon bulk
+            dimensions are set.
     """
     level = values.pop("level", 1.0)
     if level not in {1.0, 3.0}:
         message = f"`{card.name}` is a diode of level {level:g}; jolty models 1 and 3"
         raise statement.fail(message)
-    geometric = level == 3  # noqa: PLR2004 - the level of the diode sized by its geometry
+    geometric = level == 3  # noqa: PLR2004 - geometric diode level
     geometry = {
         name: values.pop(name, default) for name, default in DIODE_GEOMETRY.items()
     }
@@ -1427,7 +1406,7 @@ def _diode(
 
 
 def unmatched(card: ModelCard, parameter: str, statement: Statement) -> SpiceError:
-    """The error that jolty's devices have no counterpart to `parameter` of `card`."""
+    """Builds a `SpiceError` reporting that `parameter` on `card` has no counterpart."""
     message = (
         f"jolty's devices have no counterpart to `{parameter.upper()}` of `{card.name}`"
     )
@@ -1435,10 +1414,10 @@ def unmatched(card: ModelCard, parameter: str, statement: Statement) -> SpiceErr
 
 
 def _area(instance: Mapping[str, float], statement: Statement) -> float:
-    """An element's area times its number of copies, as SPICE scales a device by it.
+    """Computes effective `area * m` scaling factor for `instance`.
 
     Raises:
-        SpiceError: When the copies or scaled area is not positive and finite.
+        SpiceError: When multiplicity `m` or effective area is not positive and finite.
     """
     copies = instance.get("m", 1.0)
     if not (copies > 0 and math.isfinite(copies)):
@@ -1457,10 +1436,7 @@ def _scaled(
     multiplied: tuple[str, ...],
     divided: tuple[str, ...],
 ) -> dict[str, float]:
-    """`values` scaled by `area`, as SPICE scales a device by its area.
-
-    Each `multiplied` parameter is multiplied by the area, each `divided` one divided.
-    """
+    """Scales `values` by `area`, multiplying `multiplied` and dividing `divided`."""
     return {
         name: value * area
         if name in multiplied
@@ -1484,13 +1460,11 @@ def _area_scaled(
     multiplied: tuple[str, ...],
     divided: tuple[str, ...],
 ) -> dict[str, float]:
-    """`values` scaled by `area` as SPICE scales a device of `model`, its defaults too.
+    """Scales `values` and nonzero engine defaults of `model` by effective `area`.
 
-    Each `multiplied` parameter is multiplied by the area, each `divided` one divided,
-    as `_scaled` does; one the card leaves out takes the engine's default first, where
-    that is a number other than zero, as ngspice scales the default it gives, such as a
-    bipolar transistor's saturation current of 1e-16 A (``bjttemp.c:168``, from
-    ``bjtsetup.c:48``).
+    Multiplies keys in `multiplied` and divides keys in `divided`. Omitted parameters
+    with nonzero engine defaults (such as the 1e-16 A BJT saturation current in
+    ``bjtsetup.c:48``) are populated before scaling to match ngspice.
     """
     if area == 1:
         return dict(values)
@@ -1542,10 +1516,10 @@ def _mapped(  # noqa: PLR0913 - card, values, table, statement, skipped and TREF
     *,
     allow_tref: bool = False,
 ) -> dict[str, JsonValue]:
-    """`values` by their jolty names, in SI units.
+    """Maps SPICE parameter `values` into jolty SI parameters via `table`.
 
     Raises:
-        SpiceError: When a parameter has no jolty counterpart.
+        SpiceError: When an unskipped parameter has no jolty counterpart.
     """
     parameters: dict[str, JsonValue] = {}
     for name, value in values.items():
@@ -1567,16 +1541,15 @@ def _bipolar(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> dict[str, JsonValue]:
-    """A bipolar transistor's parameters, from its model card and its instance's.
+    """Translates a level-1 Gummel-Poon BJT card and instance into jolty parameters.
 
-    The transistor has a substrate, as in SPICE: an NPN is vertical and a PNP lateral,
-    unless ``SUBS`` builds it otherwise. A parameter ngspice takes as infinite where
-    it is 0 is left out there, to the engine's infinite default, as is what ngspice
-    reads past: HSPICE's parameters it does not define, ``TLEV`` 3's coefficients, and
-    a lone ``IBE`` or ``IBC``.
+    Defaults substrate construction to vertical for NPN and lateral for PNP unless
+    ``SUBS`` specifies otherwise. Omits zero-valued infinite-default parameters,
+    unsupported HSPICE parameters ignored by ngspice, ``TLEV=3`` coefficients, and a
+    lone ``IBE`` or ``IBC``.
 
     Raises:
-        SpiceError: When a parameter has no jolty counterpart.
+        SpiceError: When a selector or parameter is unsupported by jolty.
     """
     construction = values.pop("subs", 1.0 if card.kind == "npn" else -1.0)
     if construction not in CONSTRUCTIONS:
@@ -1627,11 +1600,11 @@ def _mosfet(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> dict[str, JsonValue]:
-    """A MOSFET's parameters, from its model card and its instance's.
+    """Translates a level-1 or level-3 MOSFET card and instance into jolty parameters.
 
     Raises:
-        SpiceError: When the model is not of level 1 or 3, or a parameter has no jolty
-            counterpart.
+        SpiceError: When the level is not 1 or 3, ``TPG`` is invalid, or a parameter
+            has no jolty counterpart.
     """
     level = values.pop("level", 1.0)
     if level not in {1, 3}:
@@ -1662,18 +1635,19 @@ def _vdmos(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> dict[str, JsonValue]:
-    """A VDMOS's parameters, from its model card and its instance's.
+    """Translates a VDMOS model card and instance into jolty parameters.
 
-    ``PHI`` feeds only ngspice's distortion analysis, which jolty has not, and its
-    thermal network only an instance that heats, so both change nothing jolty computes
-    and are left out; ngspice refuses a ``PHI`` that is not positive, and so does jolty.
+    Omits ``PHI`` (used only by ngspice distortion analysis) and thermal-network
+    parameters (unused without self-heating), while still rejecting non-positive
+    ``PHI``.
 
     Raises:
-        SpiceError: When a parameter has no jolty counterpart.
+        SpiceError: When ``PHI`` is non-positive or a parameter has no jolty
+            counterpart.
     """
     potential = values.pop("phi", None)
     if potential is not None and potential <= 0:
-        message = f"`PHI` of `{card.name}` must be positive, not {potential!r}"
+        message = f"`PHI` of `{card.name}` is positive, not {potential!r}"
         raise statement.fail(message)
     parameters = _mapped(card, values, VDMOS, statement, VDMOS_SELF_HEATING)
     parameters |= _mapped(card, dict(instance), VDMOS_INSTANCE, statement)
@@ -1682,25 +1656,23 @@ def _vdmos(
 
 
 BIN_TOLERANCE: Final = 1e-9
-"""How near a bound of a bin's range a length or a width counts as on it, in meters, as
-ngspice's ``INPgetModBin`` counts it."""
+"""Boundary tolerance in meters for MOSFET bin matching in ngspice ``INPgetModBin``."""
 
 
 BSIM4_LEVELS: Final = frozenset({14, 54})
-"""The levels of BSIM4's cards, as ngspice reads them (``inpdomod.c``, line 297)."""
+"""BSIM4 model-card levels recognized by ngspice (``inpdomod.c``, line 297)."""
 
 BSIM_SOI_LEVELS: Final = frozenset({10, 58})
-"""The levels of BSIM-SOI's cards, as ngspice reads them (``inpdomod.c``, line 347)."""
+"""BSIM-SOI model-card levels recognized by ngspice (``inpdomod.c``, line 347)."""
 
 HISIM2_LEVELS: Final = frozenset({68})
-"""The level of HiSIM2's cards, as ngspice reads them (``inpdomod.c``, line 363)."""
+"""HiSIM2 model-card level recognized by ngspice (``inpdomod.c``, line 363)."""
 
 HISIM_HV_LEVELS: Final = frozenset({73})
-"""The level of HiSIM_HV's cards, as ngspice reads them (``inpdomod.c``, line 371)."""
+"""HiSIM_HV model-card level recognized by ngspice (``inpdomod.c``, line 371)."""
 
 BINNED_LEVELS: Final = BSIM3_LEVELS | BSIM4_LEVELS | HISIM2_LEVELS | HISIM_HV_LEVELS
-"""The levels of the MOSFETs ngspice selects bins of, BSIM3's, BSIM4's, HiSIM2's and
-HiSIM_HV's (``INPgetModBin`` in ``inpgmod.c``)."""
+"""MOSFET levels supporting bin selection in ngspice ``INPgetModBin``."""
 
 
 def holds(
@@ -1710,14 +1682,12 @@ def holds(
     *,
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> bool:
-    """Whether a MOSFET's `card` is a bin for an instance of `size`.
+    """Returns whether binned MOSFET `card` matches an instance of `(length, width)`.
 
-    As ngspice selects a bin, a card of a level it bins, `BINNED_LEVELS`, that gives
-    ``LMIN``, ``LMAX``, ``WMIN`` and ``WMAX`` holds an instance whose length, the first
-    of `size`, lies between the first two and whose width between the others, on a
-    bound counted in; its expressions are evaluated in `scope` with user `functions`
-    inlined. A card of a level jolty does not model may be a bin too, which the device
-    it makes then refuses.
+    Matches ngspice bin selection for `BINNED_LEVELS` cards defining ``LMIN``,
+    ``LMAX``, ``WMIN``, and ``WMAX`` evaluated in `scope` with `functions` inlined.
+    Boundaries are inclusive within `BIN_TOLERANCE`. Cards of unmodeled binned levels
+    can still match here and fail later during device translation.
     """
     bounds = _bounds(card, scope, functions)
     if bounds is None:
@@ -1733,9 +1703,10 @@ def center(
     *,
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> tuple[float, float] | None:
-    """The length and the width at the middle of the ranges of a MOSFET's bin, `card`.
+    """Returns the midpoint `(length, width)` of binned MOSFET `card`, or `None`.
 
-    None where the card is no bin, as [`holds`][jolty.spice.models.holds] reads one.
+    Returns `None` when `card` is not a binned card as defined by
+    [`holds`][jolty.spice.models.holds].
     """
     bounds = _bounds(card, scope, functions)
     if bounds is None:
@@ -1749,9 +1720,9 @@ def _bounds(
     scope: Mapping[str, float],
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> tuple[float, float, float, float] | None:
-    """A bin's ``LMIN``, ``LMAX``, ``WMIN`` and ``WMAX``, evaluated in `scope`.
+    """Evaluates ``(LMIN, LMAX, WMIN, WMAX)`` for a binned MOSFET `card` in `scope`.
 
-    None where the card is of a level ngspice does not bin, or lacks one of them.
+    Returns `None` when `card` is not a binned level or omits any bound.
     """
     level = card.parameters.get("level")
     if level is None or evaluate(inlined(level, functions), scope) not in BINNED_LEVELS:
@@ -1766,7 +1737,7 @@ def _bounds(
 
 
 def _within(value: float, low: float, high: float) -> bool:
-    """Whether `value` is between `low` and `high`, or within `BIN_TOLERANCE` of one."""
+    """Returns whether `value` lies within `[low, high]` up to `BIN_TOLERANCE`."""
     return (
         abs(value - low) < BIN_TOLERANCE
         or abs(value - high) < BIN_TOLERANCE
@@ -1776,13 +1747,11 @@ def _within(value: float, low: float, high: float) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class Bsim:
-    """How ngspice reads a BSIM model's card, and how jolty writes one for it.
+    """Configuration table describing SPICE-to-jolty translation for a BSIM family.
 
-    Each mapping and set is by SPICE's names: the level and version a card is written
-    at, the instance's own parameters, the choices among its equations and its
-    settings with jolty's name of each, the card's parameters and those that bin, the
-    concentrations ngspice reads per cubic meter above a bound, what the card says that
-    changes nothing jolty computes, and the other names of some parameters.
+    Stores export level/version headers, instance parameter mappings, selector and
+    setting mappings, valid card and binned parameter sets, dual-unit doping density
+    thresholds, ignored parameters, and parameter aliases.
     """
 
     written: tuple[str, ...]
@@ -1819,7 +1788,7 @@ BSIMS: Final = {
         BSIM4_ALIASES,
     ),
 }
-"""How ngspice reads each BSIM model's card, by jolty's name of the model."""
+"""BSIM family translation configurations keyed by jolty model name."""
 
 
 def _check_bsim_modes(
@@ -1843,19 +1812,14 @@ def _bsim3(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> dict[str, JsonValue]:
-    """A BSIM3 transistor's parameters, from its model card and its instance's.
+    """Translates a BSIM3v3.3 model card and instance into jolty SI parameters.
 
-    Each parameter keeps its name, in SI units: a concentration per cubic meter, where
-    the card's ``nch`` and ``ngate`` are per cubic centimeter up to ngspice's bounds and
-    per cubic meter above them, and its ``nsub`` per cubic centimeter; a mobility in
-    square meters per volt-second, where a card's ``u0`` above 1, and its dependences
-    with it, are in square centimeters per volt-second; and, with ngspice's default
-    ``binunit = 1``, each length and width dependence per micrometer, and each area
-    dependence per square micrometer, of the effective length and width.
+    Converts doping densities (``nch``, ``ngate``, ``nsub``) to per-cubic-meter SI
+    units using ngspice thresholds, scales ``u0`` above 1 from cm^2/(V·s) to m^2/(V·s),
+    and converts binned ``L``/``W``/``P`` dependencies according to ``BINUNIT``.
 
     Raises:
-        SpiceError: When the card is not of BSIM3's version 3.3, which ngspice runs
-            other models for, a non-quasi-static model or the area calculation is on,
+        SpiceError: When the card version is not 3.3, an unsupported mode is enabled,
             or a parameter has no jolty counterpart.
     """
     values.pop("level")
@@ -1880,20 +1844,16 @@ def _bsim4(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> dict[str, JsonValue]:
-    """A BSIM4 transistor's parameters, from its model card and its instance's.
+    """Translates a BSIM4v4.5 model card and instance into jolty SI parameters.
 
-    Each parameter keeps its name, in SI units: a concentration per cubic meter, where
-    the card's ``ndep``, ``nsd`` and ``ngate`` are per cubic centimeter up to ngspice's
-    bounds and per cubic meter above them, and its ``nsub`` per cubic centimeter; a
-    mobility in square meters per volt-second, where a card's ``u0`` above 1, and its
-    dependences with it, are in square centimeters per volt-second; and, with ngspice's
-    default ``binunit = 1``, each length and width dependence per micrometer, and each
-    area dependence per square micrometer, of the effective length and width.
+    Converts doping densities (``ndep``, ``nsd``, ``ngate``, ``nsub``) to
+    per-cubic-meter SI units using ngspice thresholds, scales ``u0`` above 1 from
+    cm^2/(V·s) to m^2/(V·s), and converts binned ``L``/``W``/``P`` dependencies via
+    ``BINUNIT``.
 
     Raises:
-        SpiceError: When the card is not of BSIM4's version 4.5, which ngspice runs
-            other models for, a choice among its equations is one jolty does not model,
-            or a parameter has no jolty counterpart.
+        SpiceError: When the card version is not 4.5, a fixed mode selector mismatches
+            `BSIM4_MODES`, or a parameter has no jolty counterpart.
     """
     values.pop("level")
     if card.version is None or not card.version.startswith("4.5"):
@@ -1937,10 +1897,10 @@ def _bsim_setting(
 def _bsim_card(
     bsim: Bsim, card: ModelCard, values: dict[str, float], statement: Statement
 ) -> dict[str, JsonValue]:
-    """A BSIM card's parameters but its level and its fixed choices, in SI units.
+    """Converts BSIM card parameters into SI units, excluding fixed mode selectors.
 
     Raises:
-        SpiceError: When a parameter has no jolty counterpart, or ``BINUNIT`` or
+        SpiceError: When a parameter has no jolty counterpart or ``BINUNIT`` or
             ``PARAMCHK`` holds an unsupported value.
     """
     binunit = values.pop("binunit", 1.0)
@@ -1976,10 +1936,10 @@ def _bsim_card(
 
 
 def _bsim_factor(bsim: Bsim, name: str, value: float, centimeters: float) -> float:
-    """The factor that takes a BSIM parameter `name`, or a dependence of it, to SI.
+    """Returns the SI unit multiplier for BSIM parameter `name` given `value`.
 
-    A density's factor follows its `value`, and a mobility's is `centimeters`, the
-    card's.
+    Uses ngspice density thresholds for doping concentrations and `centimeters` for
+    mobility ``u0``.
     """
     if name in bsim.densities:
         return 1.0 if value > bsim.densities[name] else 1e6
@@ -1991,10 +1951,10 @@ def _bsim_factor(bsim: Bsim, name: str, value: float, centimeters: float) -> flo
 
 
 def _whole(card: ModelCard, name: str, value: float, statement: Statement) -> int:
-    """A model selector's `value`, a whole number.
+    """Validates that selector `value` for `name` on `card` is an integer.
 
     Raises:
-        SpiceError: When it is not one.
+        SpiceError: When `value` has a fractional part.
     """
     if not value.is_integer():
         message = f"`{name.upper()}` of `{card.name}` is a whole number, not {value!r}"
@@ -2008,18 +1968,16 @@ def _vbic(
     instance: Mapping[str, float],
     statement: Statement,
 ) -> dict[str, JsonValue]:
-    """A VBIC's parameters, from its model card and its instance's, as ngspice reads it.
+    """Translates a VBIC model card and instance into jolty parameters matching ngspice.
 
-    A resistance the card gives below 10 mΩ is raised to it, and a parameter ngspice
-    takes as infinite where it is not positive is left out; the area times the number of
-    copies multiplies the currents, capacitances and charges and divides the
-    resistances, and the flicker coefficient takes the copies' noise as ngspice adds it,
-    ``m · KFN · (|I| / m)^AFN``. ``QBM`` chooses the base charge's form, and ``TREF`` is
-    ``TNOM``.
+    Clamps card resistances to at least 10 mΩ and omits non-positive infinite-default
+    parameters. Scales currents, capacitances, charges, and resistances by
+    ``area * m``, scales flicker coefficients as ``m · KFN · (|I| / m)^AFN``, maps
+    ``QBM`` to base charge mode, and accepts ``TREF`` as ``TNOM``.
 
     Raises:
-        SpiceError: When a parameter has no jolty counterpart, or the instance gives one
-            that is not the area, the copies or an initial condition.
+        SpiceError: When a parameter has no jolty counterpart or `instance` contains an
+            unsupported key outside `VBIC_INSTANCE`.
     """
     for name in instance:
         if name not in VBIC_INSTANCE:
@@ -2042,16 +2000,16 @@ def _vbic(
     parameters = _mapped(card, values, VBIC, statement, allow_tref=True)
     parameters["polarity"] = card.kind
     if charge is not None:
-        threshold = 0.5  # ngspice's, below which QBM chooses VBIC's own form
+        threshold = 0.5  # ngspice threshold below which QBM selects VBIC form
         parameters["base_charge"] = "vbic" if charge < threshold else "gummel_poon"
     return parameters
 
 
 def _vbic_read(values: Mapping[str, float]) -> dict[str, float]:
-    """A VBIC card's `values` as ngspice reads them.
+    """Normalizes VBIC card `values` according to ngspice preprocessing rules.
 
-    That is without what changes nothing it computes, each resistance at least 10 mΩ,
-    and without the parameters infinite where they are not positive.
+    Drops ignored and self-heating keys, clamps resistances to `VBIC_MIN_RESISTANCE`,
+    and drops non-positive values of `VBIC_INFINITE_AT_ZERO` parameters.
     """
     read = {
         name: value
@@ -2075,13 +2033,11 @@ def vbic_heating(
     *,
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> tuple[float, float] | None:
-    """The thermal resistance and capacitance a VBIC's card heats it through, if any.
+    """Returns scaled `(rth, cth)` self-heating parameters for a VBIC card, or `None`.
 
-    ngspice heats a VBIC whose card gives a positive ``RTH`` and leaves ``SELFT`` out
-    or sets it to 1, through ``RTH`` and ``CTH``, at least 1e-12 J/K, from its thermal
-    node to the ground; the area times the number of copies divides the resistance and
-    multiplies the capacitance. The resistance is in kelvins per watt, the capacitance
-    in joules per kelvin.
+    Active when ``RTH`` is positive and ``SELFT`` is omitted or equal to 1. Clamps
+    ``CTH`` to `VBIC_MIN_THERMAL_CAPACITANCE`, divides thermal resistance (K/W) by
+    ``area * m``, and multiplies thermal capacitance (J/K) by ``area * m``.
     """
     given = {
         name: evaluate(inlined(card.parameters[name], functions), scope)

@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
 """Programmatic MCP server instructions derived from code and offline docs.
 
-Introspects jolty's waveforms, devices, real parts, analyses, plan controls, and spec
-measures lazily on first call, combining them with the current offline
-documentation URIs so server instructions stay synchronized with the codebase without
-imposing import-time work or coupling `jolty.mcp` to lower layers.
+Lazily introspects jolty waveforms, devices, real parts, analyses, plan controls, and
+spec measures on first call. Combines those summaries with current offline
+documentation URIs so server instructions stay synchronized without import-time work
+or tight coupling in ``jolty.mcp``.
 """
 
 __lazy_modules__ = ["jolty"]
@@ -20,7 +20,7 @@ from jolty import builder, devices, parts, plan, specs, waveforms
 from jolty.service._docs import DOCS_URI_PREFIX, document_summaries
 
 _MAX_INLINE_KEYWORD_PARAMETERS: Final = 5
-"""List optional keyword parameters inline when at most this many; otherwise ``...``."""
+"""Maximum optional keyword parameters listed inline before collapsing to ``...``."""
 
 _MKDOCS_CROSS_REFERENCE: Final = re.compile(r"\[`?([^`\]]+)`?\]\[[^\]]+\]")
 _MARKDOWN_LINK: Final = re.compile(r"\[([^\]]+)\]\([^)]+\)")
@@ -28,47 +28,50 @@ _MARKDOWN_LINK: Final = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _WORKFLOW_OVERVIEW: Final = """\
 jolty builds and simulates electronic circuits written as Python scripts.
 
-Workflow: write a script whose build() returns the top component of a circuit, and call
-build_circuit on it. It saves the circuit, reports device and unknown counts (or every
-reason the engine cannot elaborate it), checks its structure, and draws its schematic:
-each diagnostic, such as error[no-dc-path], names the instances and the script lines
-that placed them, and the schematic marks them in red. explain_rules gives the exact
-condition behind each rule. Add plan() returning a jolty.Plan of named analyses, and
-optionally specs() returning jolty.Specs of requirements against those analyses, then
-call simulate_circuit: it reports each analysis, transistor operating-point regions and
-margins nearest a boundary first (OperatingPointResult.region(instance)), writes the
-first operating point's voltages on the schematic, checks specs() verdicts (passed,
-marginal, failed, unmeasured, with slack, worst corner and Wilson yield interval), plots
-each analysis except operating points and sensitivities, and saves results to a .npz
-file readable by jolty.files.load_results. plot_results draws other unknowns from saved
-results; measure_results reads any measure from saved results without running a
-simulation; draw_schematic draws the component inside an instance; view_circuit writes a
-standalone 3D HTML viewer; check_circuit checks a saved circuit; cost_circuit prices
-instances against a catalog file; export_kicad_netlist writes a KiCad netlist; and
-read_docs (or MCP resources below) reads the offline guide and examples.
-simulate_circuit with samples, such as "0:1000000", runs only that range of the plan's
-Monte Carlo analysis as a shard on any machine, and merge_shards merges a directory of
-shards into one bit-identical report. Exact derivatives of analyses are available in
-Python via jolty.function, jolty.jvp, jolty.vjp, and jolty.jax.function.
+Workflow: write a script whose build() function returns the top component of a circuit,
+then call build_circuit on the script. Calling build_circuit saves the circuit, reports
+device and unknown counts (or elaboration errors), runs structural checks, and draws a
+schematic. Each diagnostic, such as error[no-dc-path], names the affected instances and
+the script lines that placed them, and the schematic highlights those instances in red.
+Call explain_rules to inspect the exact condition behind each check rule.
 
-Components: decorate a function taking a jolty.Builder with @jolty.component. Inside,
-c.port(name, role) declares a port (Role.SIGNAL, SUPPLY, GROUND, INPUT or OUTPUT),
-c.place(device or component, name=...) places an instance whose terminals are its
-attributes, and c.connect(*points, name=...) joins terminals and nets into one net. The
-top component has a ground port, the reference of every voltage. Values carry units from
-jolty.units: 10 * kohm, 4.7 * uF, 10 * nV / rtHz, celsius(-40).
+Add plan() returning a jolty.Plan of named analyses, and optionally specs() returning a
+jolty.Specs of requirements against those analyses, then call simulate_circuit. Calling
+simulate_circuit reports each analysis, transistor operating-point regions and margins
+nearest a boundary first (OperatingPointResult.region(instance)), and specs() verdicts
+(passed, marginal, failed, or unmeasured, with slack, worst corner, and Wilson yield
+interval). Simulation also annotates the schematic with the first operating point,
+plots all non-DC analyses, and saves results to a .npz file readable by
+jolty.files.load_results. Additional tools operate on saved outputs: plot_results plots
+additional unknowns; measure_results evaluates measures without re-simulating;
+draw_schematic draws a component inside an instance; view_circuit writes a standalone
+3D HTML viewer. Call check_circuit to re-check a saved circuit, cost_circuit to price
+instances against a catalog, export_kicad_netlist to write a KiCad netlist, and
+read_docs (or MCP resources below) to read the offline guide and examples. Passing
+samples such as "0:1000000" to simulate_circuit runs that Monte Carlo slice as a shard
+on any machine, and merge_shards combines a shard directory into one bit-identical
+report. Exact derivatives are available in Python via jolty.function, jolty.jvp,
+jolty.vjp, and jolty.jax.function.
 
-Unknowns and recording: unknowns are named by path (a net voltage such as out or
-stage/mid, or a source/inductor current such as V1:current). Results record instances
-matched by record patterns in Plan or Recorded analyses (such as record=["X1/**",
-"!X1/bias/**"] or record=["**"], a pattern after ! taking back earlier ones): read with
-current(instance, terminal) and charge(instance, terminal), plus device conductances and
-variables; operating point and transient also record instances rated for current or
-power. Logic devices join logic nets simulated by an event scheduler; electrical=True
-adds supply and ground pins to join electrical nets; results read logic levels with
-logic_level(net): 0, 1, or NaN for unknown. Plan fidelity (such as
-fidelity={"adder/*": Characterized(3.3 * V)}) swaps matching components for logic cells
-characterized from their circuits and verified by spot checks."""
+Components: decorate a function accepting a jolty.Builder with @jolty.component. Inside
+the function, c.port(name, role) declares a port (Role.SIGNAL, SUPPLY, GROUND, INPUT,
+or OUTPUT), c.place(device or component, name=...) places an instance whose terminals
+are attributes, and c.connect(*points, name=...) joins terminals and nets into one net.
+The top component requires a ground port as the voltage reference. Values carry units
+from jolty.units, such as 10 * kohm, 4.7 * uF, 10 * nV / rtHz, and celsius(-40).
+
+Unknowns and recording: unknowns are addressed by path, including net voltages (such as
+out or stage/mid) and source or inductor currents (such as V1:current). Results record
+instances matched by record patterns in Plan or Recorded analyses (such as
+record=["X1/**", "!X1/bias/**"] or record=["**"], where a pattern prefixed with !
+excludes prior matches). Recorded results expose current(instance, terminal),
+charge(instance, terminal), device conductances, and internal variables; operating
+point and transient analyses also record instances rated for current or power. Logic
+devices connect to logic nets simulated by an event scheduler, with electrical=True
+adding supply and ground pins for electrical nets. Read logic results with
+logic_level(net), returning 0, 1, or NaN for unknown. Plan fidelity (such as
+fidelity={"adder/*": Characterized(3.3 * V)}) substitutes matching components with
+logic cells characterized from their circuits and verified by spot checks."""
 
 
 def _clean_summary(docstring: str | None) -> str:
@@ -176,7 +179,7 @@ def _entry(
 
 
 def _is_component_factory(callable_object: object) -> bool:
-    """Whether `callable_object` is a ``@component``-decorated builder factory."""
+    """Returns whether `callable_object` is a ``@component``-decorated builder."""
     if not inspect.isfunction(callable_object) or not hasattr(
         callable_object, "__wrapped__"
     ):

@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""Requirements, their verdicts, and their spread over Monte Carlo samples.
+"""Specification requirements, verdicts, and Monte Carlo yield spreads.
 
-What [`jolty.specs`][jolty.specs] describes: a measure compared with a bound, the
-verdict on it at each of a plan's conditions, and the yield. Over a batch's runs, the
-verdicts are [`Judged`][jolty.specs.Judged] as columns, one entry per run, each what the
-verdict on that run alone states.
+Implements the core data models described in [`jolty.specs`][jolty.specs]: measures
+compared with bounds, per-condition verdicts, and yield statistics. Across batched
+runs, [`Judged`][jolty.specs.Judged] stores verdicts in columnar arrays with one entry
+per run matching single-run evaluation.
 """
 
 import math
@@ -49,7 +49,7 @@ type Bound = Quantity | float
 """A bound: a quantity, or a number for a measure in dB, degrees or percent."""
 
 type Status = Literal["passed", "marginal", "failed", "unmeasured"]
-"""What became of a requirement."""
+"""Evaluation outcome for a specification requirement."""
 
 _STATUSES: Final[tuple[Status, ...]] = ("passed", "marginal", "failed", "unmeasured")
 
@@ -59,7 +59,7 @@ _SEVERITY: Final[dict[Status, int]] = {
     "marginal": 2,
     "passed": 3,
 }
-"""How bad each status is, the worst first: the order a verdict picks its run by."""
+"""Severity rank for each status, worst first, used to pick the worst-corner verdict."""
 
 
 _CONFIG: Final = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
@@ -121,39 +121,37 @@ class MeasureError(JoltyError):
 
 @dataclass(frozen=True, slots=True)
 class Reading:
-    """What a measure read: a value in SI base units, and its unit."""
+    """Single measured scalar value in SI base units paired with its unit."""
 
     value: float
     unit: Dimension | results.Plain
 
     @property
     def dimension(self) -> Dimension:
-        """The value's dimension; a plain number has none."""
+        """Physical dimension of the reading, or `DIMENSIONLESS` for plain numbers."""
         return self.unit if isinstance(self.unit, Dimension) else DIMENSIONLESS
 
 
 @dataclass(frozen=True, slots=True)
 class ResolvedMeasure:
-    """A measure resolved for the engine to read, against one kind of result.
+    """Engine-ready measure resolved against one result kind.
 
-    Its `measure` holds its signals as the indices of the result's unknowns, and its
-    times, values and frequencies in SI base units, so the engine reads it without
-    Python.
+    Stores unknown indices and SI-unit parameters in `measure` so the Rust engine
+    evaluates the reading directly without Python callbacks.
     """
 
     measure: _core.Measure
     unit: Dimension | results.Plain
-    """The unit of what the engine reads."""
+    """Unit of the value computed by the engine."""
     explain: Callable[[_core.MeasureError], str] = field(repr=False, compare=False)
-    """Says in words why the engine could not read a result, from its error."""
+    """Formatter converting an engine `MeasureError` into a human-readable message."""
 
     def read(self, result: results.AnalysisResult) -> Reading:
-        """What the engine reads of `result`, a result of the kind it was resolved for.
+        """Evaluates this resolved measure on `result` using the Rust engine.
 
         Raises:
-            MeasureError: When the engine cannot read it.
-            ValueError: When a noise integral's band does not lie within the
-                frequencies, as `results.integrate` raises.
+            MeasureError: When the engine cannot compute the measure on `result`.
+            ValueError: When a noise integration band lies outside the frequency range.
         """
         try:
             value = _engine(self.measure, result)
@@ -163,10 +161,10 @@ class ResolvedMeasure:
 
 
 def _engine(measure: _core.Measure, result: results.AnalysisResult) -> float:
-    """What the engine's `measure` reads of the arrays of `result`.
+    """Invokes the Rust engine evaluator for `measure` on `result` arrays.
 
     Raises:
-        MeasureError: When it cannot read them.
+        MeasureError: When `result` cannot be evaluated by the engine.
     """
     match result:
         case results.OperatingPointResult():
@@ -212,49 +210,49 @@ def _complex(values: np.typing.ArrayLike) -> results.Complex:
 
 @dataclass(frozen=True, slots=True)
 class Measure:
-    """A number read from the result of one named analysis."""
+    """Scalar quantity extracted from the result of one named analysis."""
 
     analysis: str
     description: str
-    """What the measure reads, such as ``gain of out at 1 kHz``."""
+    """Human-readable label of the measured value, such as ``gain of out at 1 kHz``."""
     plain: results.Plain | None
-    """The unit of a measure that reads a plain number; None for a quantity."""
+    """Display unit for plain measures (such as ``dB``), or None for quantities."""
     read: Callable[[results.AnalysisResult], Reading] = field(repr=False, compare=False)
-    """Reads the measure from the analysis's result; raises a `JoltyError`, or a
-    `KeyError` for an unknown the result lacks, when it cannot."""
+    """Evaluator extracting a `Reading` from an analysis result (raises on failure)."""
     resolved: Callable[[results.AnalysisResult], ResolvedMeasure] | None = field(
         default=None, repr=False, compare=False
     )
-    """Resolves the measure for the engine to read against a result, from no more
-    than the result's kind and unknowns, a sweep's source and quantity, and a noise
-    analysis's output's and source's quantities; raises as `read` does when it cannot.
-    None for a measure only Python reads, such as one a plan script writes."""
+    """Optional resolver building an engine `ResolvedMeasure` from result metadata.
+
+    None for Python-only custom measures defined by user scripts.
+    """
     diagnose: Callable[[results.AnalysisResult], Sequence[str]] | None = field(
         default=None, repr=False, compare=False
     )
-    """Collects every static problem resolving the measure against a result shape,
-    such as every unknown signal, reference or divisor name and every dimension error.
-    None when only `resolved` or Python's `read` checks the measure."""
+    """Optional static validator collecting signal and dimension errors against a shape.
+
+    None when validation relies solely on `resolved` or Python `read`.
+    """
 
     def __ge__(self, minimum: Bound) -> Requirement:
-        """The requirement that the measure be at least `minimum`."""
+        """Constructs a lower-bound requirement asserting measure >= `minimum`."""
         return Requirement(self, minimum=_quantity(minimum), source_location=caller())
 
     def __le__(self, maximum: Bound) -> Requirement:
-        """The requirement that the measure be at most `maximum`."""
+        """Constructs an upper-bound requirement asserting measure <= `maximum`."""
         return Requirement(self, maximum=_quantity(maximum), source_location=caller())
 
     def between(self, minimum: Bound, maximum: Bound) -> Requirement:
-        """The requirement that the measure lie between `minimum` and `maximum`."""
+        """Constructs a two-sided requirement on `[minimum, maximum]`."""
         return Requirement(
             self, _quantity(minimum), _quantity(maximum), source_location=caller()
         )
 
     def within(self, target: Bound, tolerance: Bound) -> Requirement:
-        """The requirement that the measure lie within `tolerance` of `target`.
+        """Constructs a requirement bounding the measure within `tolerance` of `target`.
 
         Raises:
-            DimensionError: When the target and the tolerance differ in dimension.
+            DimensionError: When `target` and `tolerance` have incompatible dimensions.
         """
         center, spread = _quantity(target), _quantity(tolerance)
         return Requirement(
@@ -263,17 +261,17 @@ class Measure:
 
     @override
     def __str__(self) -> str:
-        """What the measure reads, and in which analysis."""
+        """Formats the measure description together with its analysis name."""
         return f"{self.description} in {self.analysis}"
 
 
 @pydantic_dataclass(frozen=True, slots=True, config=_REQUIREMENT_CONFIG)
 class Requirement:
-    """A measure and the bounds it must lie within.
+    """Measure paired with lower, upper, and optional margin bounds.
 
-    A requirement's slack is how far the value read lies inside its bounds, negative
-    outside them. It passes when its slack is at least its margin, is marginal when
-    its slack is less, and fails when its slack is negative.
+    Slack is the signed distance inside the bounds (negative when out of bounds). A
+    requirement passes when slack is at least `margin`, is marginal when slack is
+    non-negative but below `margin`, and fails when slack is negative.
     """
 
     measure: Measure
@@ -344,14 +342,14 @@ class Requirement:
         return value
 
     def with_margin(self, margin: Bound) -> Requirement:
-        """The requirement, marginal when it passes by less than `margin`."""
+        """Returns a copy of this requirement flagged marginal when slack < `margin`."""
         return replace(self, margin=_quantity(margin))
 
     def judge(self, reading: Reading) -> tuple[Status, float]:
-        """Whether `reading` passes, is marginal or fails, and its slack.
+        """Evaluates `reading` against the bounds and returns `(status, slack)`.
 
         Raises:
-            DimensionError: When a bound or the margin is not in the reading's unit.
+            DimensionError: When a bound or margin does not match the reading unit.
         """
         slack = math.inf
         if self.minimum is not None:
@@ -372,7 +370,7 @@ class Requirement:
 
     @override
     def __str__(self) -> str:
-        """The requirement, such as ``gain of out at 1 kHz in bode ≥ -3 dB``."""
+        """Formats the requirement, such as ``gain of out at 1 kHz in bode ≥ -3 dB``."""
         bounds = [
             f"{relation} {self._text(bound)}"
             for relation, bound in (("≥", self.minimum), ("≤", self.maximum))
@@ -442,34 +440,34 @@ class Specs:
 
 
 class Verdict(ir.FrozenModel):
-    """What became of one requirement."""
+    """Evaluation outcome for a single requirement across nominal and corner runs."""
 
-    requirement: str = Field(description="The requirement, in words.")
+    requirement: str = Field(description="Human-readable requirement specification.")
     status: Status
     value: ExtendedReal | None = Field(
-        default=None, description="The value read, in SI base units; null when unread."
+        default=None, description="Measured value in SI base units, or null if unread."
     )
     unit: str | None = Field(
-        default=None, description="The value's unit, such as 'V' or 'dB'."
+        default=None, description="Unit string for the value, such as 'V' or 'dB'."
     )
     slack: ExtendedReal | None = Field(
         default=None,
-        description="How far the value lies inside the bounds, negative outside them.",
+        description="Signed margin inside the bounds (negative when out of bounds).",
     )
     corner: str | None = Field(
         default=None,
-        description="The corner of the plan the verdict comes from; null for the "
-        "plan's own conditions.",
+        description="Plan corner producing the worst verdict, or null for nominal "
+        "conditions.",
     )
     reason: str | None = Field(
-        default=None, description="Why the requirement is unmeasured."
+        default=None, description="Explanation when the requirement is unmeasured."
     )
     source_location: ir.SourceLocation | None = Field(
-        default=None, description="The script line that stated the requirement."
+        default=None, description="Script line that declared the requirement."
     )
 
     def describe(self) -> str:
-        """The verdict, then the script line that stated the requirement."""
+        """Formats the verdict line followed by its source location when known."""
         at = "" if self.corner is None else f" at the corner {self.corner}"
         if self.value is None or self.unit is None or self.slack is None:
             head = f"unmeasured: {self.requirement}: {self.reason}{at}"
@@ -485,27 +483,28 @@ class Verdict(ir.FrozenModel):
 
 
 class SummaryStatistics(ir.FrozenModel):
-    """The values a requirement read over samples, in SI base units."""
+    """Summary statistics of measured values across samples, in SI base units."""
 
-    unit: str = Field(description="The values' unit, such as 'V' or 'dB'.")
+    unit: str = Field(
+        description="Unit string for the statistics, such as 'V' or 'dB'."
+    )
     minimum: ExtendedReal
     maximum: ExtendedReal
     mean: ExtendedReal | None = Field(
-        description="The values' mean; null when it is not a number, as when some "
-        "values are infinities of either sign."
+        description="Arithmetic mean, or null when opposite-sign infinities occur."
     )
     standard_deviation: float | None = Field(
-        description="The values' standard deviation; null when some value is infinite."
+        description="Population standard deviation, or null when any value is infinite."
     )
 
     @classmethod
     def from_numbers(
         cls, numbers: npt.NDArray[np.float64], unit: str
     ) -> SummaryStatistics:
-        """The least, the greatest, the mean and the deviation of `numbers`.
+        """Computes min, max, mean, and standard deviation of `numbers`.
 
-        An infinity among them is their mean, unless one of each sign is, and leaves
-        their deviation undefined.
+        A single-sign infinity sets `mean` to that infinity and leaves
+        `standard_deviation` undefined; opposite-sign infinities leave both undefined.
         """
         finite = np.isfinite(numbers)
         infinities = {float(number) for number in numbers[~finite]}
@@ -524,17 +523,17 @@ class SummaryStatistics(ir.FrozenModel):
 
 
 class Spread(ir.FrozenModel):
-    """What one requirement read over a Monte Carlo analysis's samples."""
+    """Distribution summary for one requirement across Monte Carlo samples."""
 
-    requirement: str = Field(description="The requirement, in words.")
-    measured: int = Field(description="Samples on which it was measured.")
-    passing: int = Field(description="Samples on which it passed, if marginally.")
+    requirement: str = Field(description="Human-readable requirement specification.")
+    measured: int = Field(description="Number of samples with a measured value.")
+    passing: int = Field(description="Number of samples passing or marginally passing.")
     values: SummaryStatistics | None = Field(
-        default=None, description="The values read; null when none was."
+        default=None, description="Measured summary statistics, or null if none."
     )
 
     def describe(self, samples: int) -> str:
-        """The spread as one line, over `samples` samples."""
+        """Formats the requirement spread as one line across `samples` total runs."""
         head = f"{self.requirement}: {self.passing} of {samples} pass"
         if self.values is None:
             return f"{head}, none measured"
@@ -556,24 +555,24 @@ class Spread(ir.FrozenModel):
 
 
 class Yield(ir.FrozenModel):
-    """How many of a Monte Carlo analysis's samples meet every requirement."""
+    """Monte Carlo passing count, yield estimate, and 95 % Wilson interval."""
 
     samples: int
-    passing: int = Field(description="Samples on which every requirement passed.")
-    estimate: float = Field(description="The fraction of samples that pass.")
-    lower: float = Field(description="The 95 % Wilson interval's lower end.")
-    upper: float = Field(description="The 95 % Wilson interval's upper end.")
+    passing: int = Field(description="Samples satisfying every requirement.")
+    estimate: float = Field(description="Observed fraction of passing samples.")
+    lower: float = Field(description="Lower bound of the 95 % Wilson interval.")
+    upper: float = Field(description="Upper bound of the 95 % Wilson interval.")
     target: float | None = Field(
-        default=None, description="The specs' yield target; null for none."
+        default=None, description="Target yield fraction from specs, or null if unset."
     )
 
     @property
     def met(self) -> bool:
-        """Whether the estimate reaches the target, or there is no target."""
+        """True when the yield estimate meets `target`, or when `target` is unset."""
         return self.target is None or self.estimate >= self.target
 
     def describe(self) -> str:
-        """The yield as one line."""
+        """Formats the yield summary and Wilson interval as one line."""
         head = (
             f"yield: {self.passing} of {self.samples}, {100 * self.estimate:.4g} % "
             f"(95 % interval {100 * self.lower:.4g} to {100 * self.upper:.4g} %)"
@@ -600,10 +599,10 @@ def _yield_of(passing: int, samples: int, target: float | None) -> Yield:
 def spread(
     specs: Specs, sampled: Sequence[Sequence[Verdict]]
 ) -> tuple[tuple[Spread, ...], Yield]:
-    """Each requirement's spread, and the yield, over the verdicts on each sample.
+    """Computes per-requirement spreads and overall yield from per-sample verdicts.
 
-    `sampled` holds, for each sample, the verdict on each requirement in order. A sample
-    passes when every requirement passes, if marginally.
+    Each entry in `sampled` contains verdicts for `specs.requirements` in order. A
+    sample passes when every requirement passes or is marginal.
     """
     spreads = tuple(
         _spread(requirement, [verdicts[index] for verdicts in sampled])
@@ -657,11 +656,10 @@ def judged(
     place: int,
     runs: int,
 ) -> Judged:
-    """`requirement`'s verdict on each of `runs` runs of `batch`, as `evaluate` says.
+    """Evaluates `requirement` across `runs` batch entries at measure slot `place`.
 
-    `planned` names every analysis of the plan, and the measure at `place` among
-    the batch's is the requirement's; with no batch, the circuit does not elaborate,
-    and no analysis ends on any run.
+    Matches single-run `evaluate` semantics using `planned` analysis names. When
+    `batch` is None, all runs are marked unmeasured.
     """
     status = np.full(runs, _SEVERITY["unmeasured"], dtype=np.int8)
     slack = np.full(runs, math.inf)
@@ -700,13 +698,13 @@ def judged(
 
 
 def worst(conditions: Sequence[Judged]) -> Judged:
-    """The worst verdict on each run over `conditions`, as `judge` picks it.
+    """Selects the worst per-run verdict across `conditions`, matching `judge`.
 
-    The worst is failed, then unmeasured, then marginal, then passed, and the least
-    slack among equals, the first condition among those alike.
+    Orders severity as failed, unmeasured, marginal, then passed; breaks ties by least
+    slack, then earliest condition.
 
     Raises:
-        ValueError: When there is no condition.
+        ValueError: When `conditions` is empty.
     """
     if not conditions:
         message = "the worst verdict is of a condition or more"
@@ -735,9 +733,9 @@ def worst(conditions: Sequence[Judged]) -> Judged:
 def spread_of(
     specs: Specs, judged: Sequence[Judged]
 ) -> tuple[tuple[Spread, ...], Yield]:
-    """Each requirement's spread, and the yield, as `spread` states them, of `judged`.
+    """Computes per-requirement spreads and overall yield from columnar `judged` arrays.
 
-    `judged` holds each requirement's verdicts on every sample, in the specs' order.
+    Entries in `judged` correspond to `specs.requirements` in order across all samples.
     """
     spreads = tuple(
         _spread_of(requirement, each)
@@ -775,19 +773,17 @@ _Z: Final = 1.959963984540054
 
 
 def wilson(passing: int, samples: int) -> tuple[float, float]:
-    """The 95 % Wilson score interval of a proportion of `passing` out of `samples`.
+    """Computes the 95 % Wilson score interval for `passing` out of `samples`.
 
-    It is the interval a [`Yield`][jolty.specs.Yield] states (E. B. Wilson,
-    "Probable inference, the law of succession, and statistical inference", Journal
-    of the American Statistical Association 22, 1927), whose coverage stays near 95 %
-    for few samples and for proportions near 0 or 1, where the normal approximation's
-    falls short (L. D. Brown, T. T. Cai and A. DasGupta, "Interval estimation for a
-    binomial proportion", Statistical Science 16, 2001). The lower end,
-    `(p + w/2 - z·s) / (1 + w)` with `w = z²/n`, is computed in its conjugate form
-    `p² / (p + w/2 + z·s)`, which subtracts nothing: it is exactly 0 when nothing
-    passes, where the textbook form leaves rounding. The interval is symmetric, so its
-    upper end is one less the lower end of the proportion that fails, exactly 1 when
-    everything passes.
+    Produces the confidence interval reported by [`Yield`][jolty.specs.Yield] (E. B.
+    Wilson, "Probable inference, the law of succession, and statistical inference",
+    JASA 22, 1927). Coverage stays near 95 % even for small sample counts and
+    proportions near 0 or 1, where normal approximations under-cover (Brown, Cai, and
+    DasGupta, Statistical Science 16, 2001). The lower bound
+    `(p + w/2 - z·s) / (1 + w)` with `w = z²/n` is evaluated in the subtraction-free
+    conjugate form `p² / (p + w/2 + z·s)`, returning exact 0.0 when `passing == 0`.
+    By symmetry, the upper bound equals one minus the lower bound for the failure
+    proportion, returning exact 1.0 when every sample passes.
 
     Examples:
         >>> low, high = wilson(37, 200)
@@ -797,7 +793,7 @@ def wilson(passing: int, samples: int) -> tuple[float, float]:
         (0.0, 1.0)
 
     Raises:
-        ValueError: When there is no sample, or `passing` is not from 0 to `samples`.
+        ValueError: When `samples < 1` or `passing` lies outside `0..samples`.
     """
     if samples < 1:
         message = f"a proportion is of one sample or more, not {samples}"
@@ -817,7 +813,7 @@ def wilson(passing: int, samples: int) -> tuple[float, float]:
 
 
 def describe(verdicts: Sequence[Verdict]) -> str:
-    """The verdicts as text: each verdict, then how many have each status."""
+    """Formats `verdicts` as text blocks followed by a status tally line."""
     counts = Counter(verdict.status for verdict in verdicts)
     tally = ", ".join(
         f"{counts[status]} {status}" for status in _STATUSES if counts[status]
@@ -833,11 +829,11 @@ def evaluate(
     solved: Mapping[str, results.AnalysisResult],
     corners: Mapping[str, Mapping[str, results.AnalysisResult]] | None = None,
 ) -> tuple[Verdict, ...]:
-    """The verdict on each requirement, the worst of the plan's own run and its corners.
+    """Evaluates each requirement across nominal results and optional corners.
 
-    `planned` names every analysis of the plan; one planned but not solved failed.
-    `solved` holds the results of the plan's own run by analysis, and `corners` the
-    results of each corner's run, by corner then by analysis.
+    `planned` lists all planned analysis names (omissions in `solved` indicate failed
+    analyses). `solved` maps analysis names to nominal results, and `corners` maps
+    corner names to per-analysis results.
     """
     runs = [(None, solved), *(corners or {}).items()]
     return tuple(
@@ -850,13 +846,13 @@ def judge(
     planned: Collection[str],
     runs: Iterable[tuple[str | None, Mapping[str, results.AnalysisResult]]],
 ) -> Verdict:
-    """The worst verdict on `requirement` over `runs`.
+    """Returns the worst verdict for `requirement` across `runs`.
 
-    Each run holds the results of the analyses that ended, by name, and is named by its
-    corner, None for the plan's own conditions; `planned` names every analysis.
+    Each entry in `runs` pairs a corner name (or None for nominal conditions) with its
+    completed analysis results; `planned` lists all planned analysis names.
 
     Raises:
-        ValueError: When there is no run.
+        ValueError: When `runs` is empty.
     """
     verdicts = [_verdict(requirement, planned, found, corner) for corner, found in runs]
     if not verdicts:
@@ -868,13 +864,13 @@ def judge(
 def reading(
     requirement: Requirement, found: Mapping[str, results.AnalysisResult]
 ) -> float | None:
-    """The value `requirement` reads of the results `found`; None when it cannot."""
+    """Evaluates `requirement` on `found` and returns its numeric value, or None."""
     verdict = _verdict(requirement, found.keys(), found, None)
     return verdict.value
 
 
 def _badness(verdict: Verdict) -> tuple[int, float]:
-    """How bad a verdict is, the worst least: by status, then by slack."""
+    """Returns the `(severity, slack)` sort key placing worst verdicts first."""
     slack = math.inf if verdict.slack is None else verdict.slack
     return _SEVERITY[verdict.status], slack
 
@@ -890,7 +886,7 @@ def _tag(requirement: Requirement, message: str) -> str:
 def _bound_problems(
     requirement: Requirement, unit: Dimension | results.Plain
 ) -> list[str]:
-    """Every bound or margin on `requirement` whose dimension differs from `unit`."""
+    """Collects dimension mismatches between `requirement` bounds and `unit`."""
     expected = Reading(0.0, unit)
     problems: list[str] = []
     for bound, label in (
@@ -980,7 +976,7 @@ def validate_specs(
 
     Analyses named in `unknown_units` still check kind, referral, and parameter
     dimensions, skipping only the bound and margin dimension comparison because the
-    analysis's own output unit could not be determined.
+    analysis output unit could not be determined.
     """
     defined = ", ".join(planned)
     problems: list[str] = []
@@ -1026,10 +1022,10 @@ def _verdict(
 
 
 def _quantity(bound: Bound) -> Quantity:
-    """`bound` as a quantity: a number is a plain one.
+    """Converts `bound` into a finite `Quantity`, treating floats as dimensionless.
 
     Raises:
-        ValueError: When the bound is infinite or not a number.
+        ValueError: When `bound` is infinite or NaN.
     """
     quantity = bound if isinstance(bound, Quantity) else Quantity(bound, DIMENSIONLESS)
     finite(quantity.value, "a bound")
@@ -1037,10 +1033,10 @@ def _quantity(bound: Bound) -> Quantity:
 
 
 def _against(bound: Quantity, reading: Reading, name: str) -> float:
-    """`bound` in SI base units, after checking it is in the unit of `reading`.
+    """Converts `bound` to SI base units after verifying compatibility with `reading`.
 
     Raises:
-        DimensionError: When it is not.
+        DimensionError: When `bound` does not match the dimension of `reading`.
     """
     if bound.dimension != reading.dimension:
         message = (
@@ -1051,7 +1047,7 @@ def _against(bound: Quantity, reading: Reading, name: str) -> float:
 
 
 def format_reading(value: float, unit: str) -> str:
-    """`value` in `unit`, to four significant digits, with an SI prefix if any."""
+    """Formats `value` in `unit` to four significant digits with an SI prefix if any."""
     if unit in {"dB", "°", "%"}:
         return f"{value:.4g} {unit}"
     if not unit:

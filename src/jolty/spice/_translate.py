@@ -136,7 +136,7 @@ class LibraryHost(Protocol):
         """Looks up a subcircuit definition by name."""
         ...
 
-    def place_built(  # noqa: PLR0913 - subcircuit placement state and optional survey list
+    def place_built(  # noqa: PLR0913 - subcircuit placement state and survey list
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
@@ -241,9 +241,10 @@ class Translation:
             self.net(pin)
 
     def translate(self, name: str) -> Built:
-        """The component, named `name`, with its net spellings and initial state.
+        """Translates the subcircuit into a `Built` component named `name`.
 
-        Its ``.if`` blocks choose by its parameters, those defined outside them.
+        Evaluates ``.if`` conditional blocks using parameters declared outside those
+        blocks.
         """
         body = self.subcircuit.body
         outside_conditions = {id(statement) for statement in unconditional(body)}
@@ -317,14 +318,14 @@ class Translation:
         )
 
     def component(self, name: str) -> Component:
-        """The component, named `name`."""
+        """Translates the subcircuit and returns its built `Component` named `name`."""
         return self.translate(name).component
 
     def net(self, node: str) -> str:
-        """The net of SPICE node `node`.
+        """Resolves SPICE `node` to its canonical net name in this subcircuit.
 
-        Node ``0`` is the ground; any other is named as first written, matched without
-        case.
+        Node ``0`` maps to `GROUND`; other nodes preserve their first spelling while
+        matching case-insensitively.
         """
         if node == "0":
             self.grounded = True
@@ -333,9 +334,9 @@ class Translation:
         return self.nets.setdefault(node.casefold(), node)
 
     def value(self, word: str) -> float:
-        """The value `word` writes: a number, or an expression of the parameters.
+        """Evaluates numeric literal or parameter expression `word` in current scope.
 
-        Statistical functions draw as those of the element being translated.
+        Statistical calls sample using the active element's `self.draw` callback.
 
         Raises:
             SpiceError: When `word` evaluates to a non-finite number.
@@ -352,22 +353,20 @@ class Translation:
         return resolved
 
     def multiplied(self, instance: Mapping[str, float]) -> dict[str, float]:
-        """An element's `instance` parameters, its copies `m` times the subcircuit's.
+        """Applies the enclosing subcircuit multiplier `m` to `instance` parameters.
 
-        ngspice multiplies them so in HSPICE's compatibility, and in its others gives
-        the element the subcircuit's alone (``inpcom.c``, lines 4257 to 4283); jolty
-        multiplies them in each, as copies of copies are.
+        Multiplies instance `m` by `self.multiplier` in all compatibility modes,
+        matching ngspice HSPICE mode (``inpcom.c``, lines 4257 to 4283).
         """
         if self.multiplier == 1:
             return dict(instance)
         return {**instance, "m": instance.get("m", 1.0) * self.multiplier}
 
     def parse(self, text: str) -> Expression:
-        """The expression `text` writes, each call of the user's functions written out.
+        """Parses SPICE expression `text` and inlines all visible user functions.
 
         Raises:
-            SpiceError: When `text` is not an expression, or calls a function that
-                calls itself.
+            SpiceError: When `text` is invalid or invokes a recursive user function.
         """
         return inlined(parse(text), self.functions)
 
@@ -380,10 +379,10 @@ class Translation:
         *,
         identifier: str | None = None,
     ) -> None:
-        """Places a device of `model`, the element of `statement`, or a part of it.
+        """Validates and appends a device instance of `model` for `statement`.
 
-        Its terminals join `terminals`' nets; it takes the element's name, or
-        `identifier` for a part of it.
+        Connects terminals according to `terminals` and names the instance after the
+        element token unless `identifier` is supplied.
         """
         made = checked_device(statement, model, parameters)
         self.instances.append(
@@ -410,10 +409,10 @@ class Translation:
         nodes: tuple[str, str],
         expression: Expression,
     ) -> None:
-        """Places a behavioral device of `model` between `nodes` following `expression`.
+        """Places a behavioral device of `model` between `nodes` using `expression`.
 
-        Each node it reads becomes a terminal of its own, and each source whose current
-        it reads becomes a sensing port in series with that source.
+        Adds dedicated sense terminals for referenced node voltages and inserts series
+        sensing ports for referenced source currents.
         """
         terminals = {
             "positive": self.net(nodes[0]),
@@ -449,10 +448,10 @@ class Translation:
         self.add(statement, model, {"expression": text}, terminals)
 
     def sense(self, source: str, statement: Statement) -> tuple[str, str]:
-        """The nets of a port placed in series with the voltage source `source`.
+        """Inserts a current-sensing port in series with voltage source `source`.
 
-        The port senses the source's current: it runs from the net the source's positive
-        terminal joined to a new one, which the terminal joins instead.
+        Returns the `(entry, exit)` net pair spliced onto the source's positive
+        terminal.
         """
         found = self.senses.get(source.casefold())
         if found is None:
@@ -689,10 +688,9 @@ class Translation:
     def device(
         self, card: ModelCard, instance: Mapping[str, float], statement: Statement
     ) -> models.Made:
-        """The device `card` makes for an element of `instance` parameters.
+        """Translates model `card` and `instance` parameters into a `Made` device.
 
-        Its statistical functions draw for each of the card's parameters, by the card's
-        name and the parameter's.
+        Statistical functions in `card` sample under keys ``<card_name>.<parameter>``.
         """
         prefix = card.name.casefold()
 
@@ -772,9 +770,9 @@ def _propagate_thermal(
 
 
 def _groups(couplings: list[Coupling]) -> list[list[Coupling]]:
-    """The couplings grouped by the inductors they share, directly or through others.
+    """Partitions `couplings` into connected components sharing inductor windings.
 
-    Each group is sorted by expanded statement order.
+    Each returned group is sorted in expanded statement order.
     """
     groups: list[list[Coupling]] = []
     for coupling in couplings:
@@ -792,14 +790,14 @@ def _groups(couplings: list[Coupling]) -> list[list[Coupling]]:
 def _coupled(
     group: list[Coupling], names: list[str], windings: list[ir.Instance]
 ) -> tuple[int, ir.Instance]:
-    """The coupled inductors of `group`'s couplings and expanded order of the first.
+    """Builds a `coupled_inductors` device and order index for one coupling `group`.
 
-    Windings are `windings`, the inductors named `names`, and they run at the
-    windings' own temperature, which every winding shares.
+    Combines `windings` (matching `names`) and preserves their shared instance
+    temperature override.
 
     Raises:
-        SpiceError: When a coupling couples an inductor with itself, or a pair twice, or
-            the windings run at different temperatures of their own.
+        SpiceError: When a coupling self-couples an inductor, duplicates a winding
+            pair, or joins windings with conflicting instance temperatures.
     """
     numbers = {name: index for index, name in enumerate(names, start=1)}
     pairs: dict[frozenset[int], float] = {}
@@ -861,9 +859,9 @@ def _coupled(
 
 
 def _identifier(name: str, taken: set[str]) -> str:
-    """A name that jolty's expressions read, from a SPICE node's or source's.
+    """Synthesizes a unique jolty expression identifier from SPICE `name`.
 
-    The identifier names a terminal or a port, distinct from any in `taken`.
+    Avoids collisions with existing names in `taken` and reserved port suffixes.
     """
     base = _NON_IDENT_CHAR.sub("_", name.replace("+", "_plus").replace("-", "_minus"))
     if not _IDENTIFIER.fullmatch(base):
