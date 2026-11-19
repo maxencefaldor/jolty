@@ -5,8 +5,18 @@ import itertools
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+import jolty.layout
 from jolty import Builder, Role, circuit, component, devices, ir
-from jolty.layout import Layout, Net, Orientation, Point, Segment, layout
+from jolty.layout import (
+    Layout,
+    Net,
+    Orientation,
+    Placed,
+    Point,
+    Segment,
+    Shape,
+    layout,
+)
 from jolty.units import V, kohm, nF, uS
 
 TERMINALS = {
@@ -296,3 +306,51 @@ def test_a_net_of_many_pins_is_wired_whole() -> None:
     assert len(set(bus.pins)) == 25
     assert not bus.labeled
     assert_sound(drawn)
+
+
+def test_wire_crossing_rollback_preserves_crossed_net() -> None:
+    net_a = Net(name="A", role=Role.SIGNAL, pins=[(-2, 1), (6, 1)])
+    net_b = Net(name="B", role=Role.SIGNAL, pins=[(2, -1), (2, 3), (12, 12)])
+    net_c = Net(name="C", role=Role.SIGNAL, pins=[(1, 0), (3, 2)])
+    cage = Placed(
+        name="BLOCK",
+        instance=ir.Instance(
+            name="BLOCK", of=ir.DeviceOf(model="resistor"), terminals={}
+        ),
+        shape=Shape(pins={}, body=((-1, -1), (1, 1))),
+        origin=(12, 12),
+        orientation=Orientation(),
+        column=0,
+    )
+    router = jolty.layout._Router(  # noqa: SLF001 - test crossing rollback
+        [net_a, net_b, net_c], [cage]
+    )
+    router.route(net_a)
+    assert router.through[(2, 1)] == ("A", "h")
+
+    router.route(net_b)
+    assert net_b.labeled
+    assert not net_b.segments
+    assert router.through[(2, 1)] == ("A", "h")
+    assert (2, 1) not in router.ends
+    assert not router.crossed
+    assert router._crosses("C", (2, 1))  # noqa: SLF001 - verify A remains reserved
+    assert not router._may_cross(  # noqa: SLF001 - verify same axis stays blocked
+        "C", (2, 1), (1, 0), (3, 1)
+    )
+    assert not router._may_cross(  # noqa: SLF001 - verify ending on A stays blocked
+        "C", (2, 1), (0, 1), (2, 1)
+    )
+
+    router.route(net_c)
+    assert not net_c.labeled
+    assert router.through[(2, 1)] == ("A", "h")
+    assert all((2, 1) not in points(segment) for segment in net_c.segments)
+    assert_sound(
+        Layout(
+            component="top",
+            instances=(cage,),
+            flags=(),
+            nets=(net_a, net_b, net_c),
+        )
+    )

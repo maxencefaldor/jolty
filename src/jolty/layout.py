@@ -650,6 +650,15 @@ type _Heading = tuple[int, int] | None
 
 type _State = tuple[Point, _Heading]
 
+type _Edge = tuple[Point, Point]
+"""An undirected grid step between two adjacent points, endpoints ordered."""
+
+
+def _edge(first: Point, second: Point) -> _Edge:
+    """Returns the canonical ordered pair for an undirected grid step."""
+    return (first, second) if first <= second else (second, first)
+
+
 _DIRECTIONS: Final = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 _JOINED: Final = 3
@@ -686,8 +695,9 @@ class _Router:
         for net in nets:
             for pin in net.pins:
                 self.pins.setdefault(pin, net.name)
-        self.steps: dict[frozenset[Point], str] = {}
+        self.steps: dict[_Edge, str] = {}
         self.through: dict[Point, tuple[str, str]] = {}
+        self.crossed: dict[Point, tuple[str, str]] = {}
         self.ends: dict[Point, str] = {}
 
     def route(self, net: Net) -> None:
@@ -720,12 +730,14 @@ class _Router:
 
         counter = itertools.count()
         starts: list[_State] = [(point, None) for point in sorted(tree)]
-        frontier = [(estimate(state[0]), next(counter), state) for state in starts]
+        frontier = [(estimate(state[0]), next(counter), 0, state) for state in starts]
         heapq.heapify(frontier)
         costs: dict[_State, int] = dict.fromkeys(starts, 0)
         previous: dict[_State, _State] = {}
         while frontier:
-            _, _, state = heapq.heappop(frontier)
+            _, _, popped_cost, state = heapq.heappop(frontier)
+            if popped_cost > costs[state]:
+                continue
             point, heading = state
             if point == pin:
                 return _path(previous, state)
@@ -733,18 +745,28 @@ class _Router:
                 following = (point[0] + direction[0], point[1] + direction[1])
                 if not self._open(name, point, following, direction, pin):
                     continue
-                cost = costs[state] + _STEP
-                if heading is not None and direction != heading:
-                    cost += _BEND
-                if self._crosses(name, following):
-                    cost += _CROSSING
+                cost = popped_cost + self._step_cost(
+                    name, heading, direction, following
+                )
                 successor = (following, direction)
                 if cost < costs.get(successor, cost + 1):
                     costs[successor] = cost
                     previous[successor] = state
                     priority = cost + estimate(following)
-                    heapq.heappush(frontier, (priority, next(counter), successor))
+                    heapq.heappush(frontier, (priority, next(counter), cost, successor))
         return None
+
+    def _step_cost(
+        self,
+        name: str,
+        heading: _Heading,
+        direction: tuple[int, int],
+        following: Point,
+    ) -> int:
+        """Returns the incremental cost for stepping onto `following`."""
+        bend = _BEND if heading is not None and direction != heading else 0
+        crossing = _CROSSING if self._crosses(name, following) else 0
+        return _STEP + bend + crossing
 
     def _directions(
         self, name: str, point: Point, heading: _Heading
@@ -768,15 +790,15 @@ class _Router:
     ) -> bool:
         """Whether the net `name` may step from `point` to `following`."""
         x, y = following
-        inside = self.low[0] <= x <= self.high[0] and self.low[1] <= y <= self.high[1]
-        ours = {None, name}
-        free = (
-            self.steps.get(frozenset((point, following))) in ours
-            and self.pins.get(following) in ours
-            and self.ends.get(following) in ours
-            and (following not in self.blocked or following == pin)
+        if not (self.low[0] <= x <= self.high[0] and self.low[1] <= y <= self.high[1]):
+            return False
+        return (
+            (following not in self.blocked or following == pin)
+            and self.steps.get(_edge(point, following), name) == name
+            and self.pins.get(following, name) == name
+            and self.ends.get(following, name) == name
+            and self._may_cross(name, following, direction, pin)
         )
-        return inside and free and self._may_cross(name, following, direction, pin)
 
     def _may_cross(
         self, name: str, point: Point, direction: tuple[int, int], pin: Point
@@ -794,7 +816,7 @@ class _Router:
         one other nets may cross; any other point of the path is the net's alone.
         """
         for first, second in itertools.pairwise(path):
-            self.steps[frozenset((first, second))] = name
+            self.steps[_edge(first, second)] = name
         inner = {
             point: (before, after)
             for before, point, after in zip(path, path[1:], path[2:], strict=False)
@@ -808,18 +830,24 @@ class _Router:
             if point in inner and straight and fresh:
                 self.through[point] = (name, "h" if before[1] == point[1] else "v")
             else:
-                self.through.pop(point, None)
+                displaced = self.through.pop(point, None)
+                if displaced is not None and displaced[0] != name:
+                    self.crossed[point] = displaced
                 self.ends[point] = name
 
     def _release(self, name: str, path: list[Point]) -> None:
         """Frees what `path` claimed for the net `name`, which is labeled instead."""
         for first, second in itertools.pairwise(path):
-            if self.steps.get(frozenset((first, second))) == name:
-                del self.steps[frozenset((first, second))]
+            edge = _edge(first, second)
+            if self.steps.get(edge) == name:
+                del self.steps[edge]
         for point in path:
             if self.ends.get(point) == name:
                 del self.ends[point]
-            if point in self.through and self.through[point][0] == name:
+                restored = self.crossed.pop(point, None)
+                if restored is not None:
+                    self.through[point] = restored
+            elif point in self.through and self.through[point][0] == name:
                 del self.through[point]
 
 
