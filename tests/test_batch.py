@@ -1,17 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""A batch of runs finds, on each run, what a simulation at its values alone finds.
+"""Parity tests confirming `Simulation.batch` matches standalone single-variant runs.
 
-[`Simulation.batch`][jolty.simulate.Simulation.batch] runs a plan's analyses on every
-run of its variants in one call to the engine, across its threads. Each run's
-measures, traced unknowns and failures are those of a simulation made for its
-values alone, bit for bit, on any number of threads; a run whose values make problems
-is reported and the batch goes on; a run whose values give the circuit another
-structure measures the unknowns of the names its measures read.
+[`Simulation.batch`][jolty.simulate.Simulation.batch] executes a plan across all variant
+runs in one multithreaded engine call. Every run's measures, traced unknowns, and
+failures match a standalone simulation bit for bit across any thread count. Failed runs
+report diagnostics while remaining runs proceed, and structural changes measure unknowns
+by name.
 
-The runs compared with simulations made alone take their numbers as those do, through
-the same JSON text, so that both read the same numbers; a Monte Carlo sample is drawn
-in the engine and read by no parser, so its draws are compared with
-`jolty.variation.sample`'s.
+Variant overrides pass through identical JSON serialization so batched and standalone
+runs receive identical floats. Monte Carlo samples are drawn directly in the engine
+without parsing, so those draws are compared against `jolty.variation.sample`.
 """
 
 import itertools
@@ -57,7 +55,7 @@ from sample_circuits import divider
 
 @component
 def clipper(c: Builder) -> None:
-    """A divider whose output a diode clips and a capacitor holds, toleranced parts."""
+    """Builds a toleranced divider with diode-clipped, capacitor-filtered output."""
     ground = c.port("ground", Role.GROUND)
     pulse = devices.voltage_source(
         Pulse(
@@ -98,7 +96,7 @@ def _alone(
 ) -> tuple[
     Simulation, results.OperatingPointResult, results.AcResult, results.TransientResult
 ]:
-    """A simulation made for `variant` alone, and what its analyses find."""
+    """Runs a standalone simulation for `variant` and returns its analysis outputs."""
     elaborated = Elaborated(built, variant.temperature)
     simulation = Simulation.from_elaborated(elaborated, variant.overrides)
     point = simulation.run(OperatingPoint())
@@ -108,7 +106,7 @@ def _alone(
 
 
 def _bits(array: np.ndarray) -> np.ndarray:
-    """The bits of every number of `array`, so that NaNs compare too."""
+    """Reinterprets `array` elements as raw bit patterns so NaNs compare exactly."""
     return np.ascontiguousarray(array).view(np.uint8)
 
 
@@ -195,7 +193,7 @@ def _same(found: results.BatchResult, other: results.BatchResult) -> None:
 
 
 def _peak(result: results.AnalysisResult) -> Reading:
-    """The output's highest voltage, unread above 0.656 V, why naming the voltage."""
+    """Returns peak output voltage, or an unread reason above 0.656 V."""
     if not isinstance(result, results.TransientResult):
         raise TypeError(result)
     volts = float(result.voltage("out").max())
@@ -223,8 +221,7 @@ def test_ranges_of_a_batch_hold_its_rows_and_join_into_it() -> None:
         )
 
     whole = batch()
-    # Every other run fails, and some of the others read no peak, each for a reason of
-    # its own.
+    # Every other run fails, and several remaining runs report distinct unread reasons.
     assert whole.failed.tolist() == [False, True] * 15
     assert len(whole.reasons) > 4
     cuts = [0, 4, 11, 15, 16, 30]
@@ -349,9 +346,9 @@ def test_a_run_that_fails_is_reported_and_the_batch_goes_on() -> None:
 
 @component
 def shunted(c: Builder) -> None:
-    """A shunt placed before its source.
+    """Builds a shunt resistor placed before its voltage source.
 
-    Below 1 Ω, the shunt's current is an unknown, which comes before the source's.
+    Below 1 Ω, the shunt current becomes an explicit unknown ordered before the source.
     """
     ground = c.port("ground", Role.GROUND)
     shunt = c.place(devices.resistor(2 * ohm), name="R1")

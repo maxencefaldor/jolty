@@ -29,15 +29,15 @@ from jolty.waveforms import Pulse
 RESISTANCE = 100.0
 """The heated resistor's resistance at the ambient, in ohms."""
 COEFFICIENT = 4e-3
-"""Its linear temperature coefficient, per kelvin."""
+"""Linear temperature coefficient of the test resistor, per kelvin."""
 SINK = 50.0
-"""The thermal resistance from it to the ambient, in kelvins per watt."""
+"""Thermal resistance from the test resistor to ambient, in kelvins per watt."""
 STORE = 2e-3
-"""The heat capacity beside it, in joules per kelvin."""
+"""Thermal capacitance coupled to the test resistor, in joules per kelvin."""
 
 
 def _warmed(supply: devices.Device, coefficient: float = COEFFICIENT) -> Component:
-    """`supply` across a heated resistor, held to the ambient by `SINK` and `STORE`."""
+    """Builds `supply` across a self-heated resistor with `SINK` and `STORE`."""
 
     @component
     def warmed(c: Builder, supply: devices.Device, coefficient: float) -> None:
@@ -59,9 +59,9 @@ def _warmed(supply: devices.Device, coefficient: float = COEFFICIENT) -> Compone
 
 
 def _rise(voltage: float, coefficient: float = COEFFICIENT) -> float:
-    """The rise that heats `R(ΔT) = r · (1 + tc · ΔT)` by `v² / R(ΔT)` through `SINK`.
+    """Computes steady temperature rise for `R(ΔT) = r · (1 + tc · ΔT)` via `SINK`.
 
-    `ΔT = SINK · v² / R(ΔT)` is `tc · ΔT² + ΔT - SINK · v² / r = 0`.
+    Solving `ΔT = SINK · v² / R(ΔT)` yields `tc · ΔT² + ΔT - SINK · v² / r = 0`.
     """
     heat = SINK * voltage**2 / RESISTANCE
     if coefficient == 0:
@@ -112,7 +112,7 @@ def test_heating_slows_a_resistors_small_signal_response_below_its_thermal_pole(
     hot = RESISTANCE * (1 + COEFFICIENT * response.operating_point.rise("junction"))
     slope = RESISTANCE * COEFFICIENT
     # dV = R · dI + I · R' · dT, and dT = Z · (2 · I · R · dI + I² · R' · dT), with Z
-    # the sink beside the store.
+    # the parallel thermal impedance of SINK and STORE.
     mount = SINK / (1 + 2j * np.pi * frequencies * tau)
     warming = 2 * bias * hot * mount / (1 - bias**2 * slope * mount)
     expected = hot + bias * slope * warming
@@ -144,7 +144,7 @@ def test_sensitivities_carry_through_the_heat() -> None:
 
 @component
 def follower(c: Builder, *, heated: bool, sink: float, emitter: float) -> None:
-    """A 2N3904 from 12 V into `emitter` ohms, joined by `sink` K/W to the ambient."""
+    """Builds a 2N3904 emitter follower on 12 V with `emitter` ohms and `sink` K/W."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(12 * V), name="V1")
     base = c.place(devices.voltage_source(1.5 * V), name="V2")
@@ -161,7 +161,7 @@ def follower(c: Builder, *, heated: bool, sink: float, emitter: float) -> None:
 
 
 def _power(point: results.OperatingPointResult) -> float:
-    """The power the follower's transistor dissipates at `point`."""
+    """Computes power dissipated by the follower transistor at `point`."""
     return sum(
         point.voltage(net) * point.current("Q1", terminal)
         for net, terminal in (("vcc", "collector"), ("b", "base"), ("e", "emitter"))
@@ -187,7 +187,7 @@ def test_a_heated_transistor_is_the_transistor_at_the_temperature_it_reaches() -
 
 
 def _diagnosed(simulation: Simulation, stress: str) -> list[str]:
-    """The diagnostics of the follower's transistor's rating of `stress`."""
+    """Returns rating diagnostics for `stress` on the follower transistor."""
     point = simulation.run(OperatingPoint())
     return [
         each.message
@@ -246,7 +246,7 @@ def test_a_part_at_a_temperature_of_its_own_is_held_to_its_rating_there() -> Non
 
     (over,) = diagnosed(parts.d1n4148().held_at(celsius(180)))
     assert over.startswith("the temperature of `D1` reaches 180.0 °C")
-    # An override of its own temperature, as a Monte Carlo sample's, holds too.
+    # Per-instance temperature overrides, as in Monte Carlo samples, apply as well.
     simulation = Simulation(
         clamp(parts.d1n4148().held_at(celsius(180))),
         overrides={"D1": {"temperature": celsius(20).value}},
@@ -257,7 +257,8 @@ def test_a_part_at_a_temperature_of_its_own_is_held_to_its_rating_there() -> Non
         for each in simulation.check_results({"op": point})
         if "temperature" in each.message
     ] == []
-    # Heated, it warms from its own temperature: about 2 mW through 300 K/W, 0.5 K.
+    # With self-heating enabled, the diode warms ~0.5 K above its set temperature
+    # (~2 mW through 300 K/W).
     (warmed,) = diagnosed(parts.d1n4148(heated=True).held_at(celsius(174.9)))
     reached = float(warmed.split(" reaches ")[1].split(" °C")[0])
     assert 175.0 < reached < 175.9

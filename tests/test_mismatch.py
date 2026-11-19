@@ -1,12 +1,11 @@
 # Copyright 2026 Maxence Faldor
-"""Mismatch analyses against closed forms, and against Monte Carlo on one circuit.
+"""Mismatch analyses verified against closed forms and Monte Carlo simulation.
 
-Monte Carlo's standard deviation over `n` samples has a relative standard error of
-``sqrt((kurtosis - 1) / n) / 2``, the delta method's on the sample variance's, whose
-variance is ``σ⁴ (kurtosis - 1) / n``; each comparison takes the kurtosis the samples
-show, and holds the two standard deviations within five such standard errors, as
-`test_kits.py` holds its draws. The draws are fixed by their seeds, so the tests are
-deterministic.
+By the delta method, a Monte Carlo standard deviation over `n` samples has relative
+standard error ``sqrt((kurtosis - 1) / n) / 2``, derived from sample-variance variance
+``σ⁴ (kurtosis - 1) / n``. Each comparison uses the sample kurtosis and checks
+agreement within five standard errors, matching `test_kits.py`. Fixed seeds keep all
+draws deterministic.
 """
 
 import math
@@ -33,7 +32,7 @@ from jolty.spice import Library, Sample, kits, sg13g2, sky130, standard_deviatio
 from jolty.units import A, F, GHz, H, MHz, V, format_si, kHz, kohm, nF, uA, um
 
 STANDARD_ERRORS: Final = 5
-"""How many of Monte Carlo's standard errors the two standard deviations lie within."""
+"""Number of Monte Carlo standard errors allowed between standard deviations."""
 
 
 def agrees(first_order: float, samples: np.ndarray) -> None:
@@ -53,7 +52,7 @@ def agrees(first_order: float, samples: np.ndarray) -> None:
 
 @component
 def divider(c: Builder) -> None:
-    """1 kΩ over 3 kΩ, fed 1 V, both from one lot that scales them alike."""
+    """Builds a 1 kΩ / 3 kΩ divider driven at 1 V with a shared lot scale factor."""
     ground = c.port("ground", Role.GROUND)
     lot = ir.Lot(name="die", relative=0.2, distribution="normal")
     upper = devices.resistor(1 * kohm).toleranced("resistance", 0.03, "normal", lot)
@@ -67,13 +66,13 @@ def divider(c: Builder) -> None:
 
 
 def test_a_dividers_spread_is_its_closed_form() -> None:
-    """Each resistor's own factor spreads the ratio, and the lot that scales both not.
+    """Verifies that divider mismatch matches closed-form sensitivity expressions.
 
-    `out = R2 / (R1 + R2)` moves by `-R2 / (R1 + R2)²` with `R1` and `R1 / (R1 + R2)²`
-    with `R2`; a normal tolerance of 3 % is a standard deviation of 1 %, a uniform one
-    of 1 % is one of `1 % / √3`, and a common factor moves the ratio by nothing. The
-    divider's two unknowns solve exactly but for rounding, so the two agree within
-    1e-12, about 4500 ε.
+    The ratio `out = R2 / (R1 + R2)` has derivatives `-R2 / (R1 + R2)²` with respect to
+    `R1` and `R1 / (R1 + R2)²` with respect to `R2`. A 3 % normal tolerance gives a 1 %
+    standard deviation, a 1 % uniform tolerance gives `1 % / √3`, and the common lot
+    factor cancels. The linear solve is exact apart from rounding, so both agree within
+    1e-12 (about 4500 ε).
     """
     found = Simulation(divider()).run(Mismatch(["out"]))
     named = [(each.instance, each.lot, each.name) for each in found.random_variables]
@@ -94,7 +93,7 @@ def test_a_dividers_spread_is_its_closed_form() -> None:
     assert found.shares("out") == pytest.approx(
         [(each / deviation) ** 2 for each in contributions], abs=1e-12
     )
-    # The lot's contribution is 0 but for rounding, which its line would show.
+    # The lot contribution is zero apart from rounding, which its line would show.
     assert report("spread", found, 10).describe().splitlines()[1:4] == [
         "  out = 750 mV, standard deviation 2.165 mV",
         "    R1       resistance  -1.875 mV  75.0%",
@@ -108,7 +107,7 @@ def test_a_dividers_spread_is_its_closed_form() -> None:
 
 @component
 def low_pass(c: Builder) -> None:
-    """A 10 kΩ, 1 nF low-pass, each part within 3 %, normally."""
+    """Builds a 10 kΩ, 1 nF low-pass filter with 3 % normal tolerances."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(0 * V), name="V1")
     resistor = devices.resistor(10 * kohm).toleranced("resistance", 0.03, "normal")
@@ -121,13 +120,13 @@ def low_pass(c: Builder) -> None:
 
 
 def test_a_responses_magnitude_and_phase_spread_as_their_closed_forms() -> None:
-    """A low-pass's magnitude and phase spread with `x = ωRC`, each part's 1 % of it.
+    """Verifies low-pass AC magnitude and phase mismatch against closed-form formulas.
 
-    `|H| = (1 + x²)^(-1/2)` moves by `-x (1 + x²)^(-3/2)` and its phase `-atan(x)` by
-    `-1 / (1 + x²)` per unit of `x`, which each part's standard deviation of 1 % moves
-    by `x / 100`, the two apart. The circuit is linear and its operating point does not
-    move, so the derivatives are the adjoint's alone, exact but for rounding: 1e-10
-    holds them, about 450,000 ε, as each frequency's solve rounds.
+    With `x = ωRC`, magnitude `|H| = (1 + x²)^(-1/2)` changes by `-x (1 + x²)^(-3/2)`
+    and phase `-atan(x)` changes by `-1 / (1 + x²)` per unit `x`. Each component has a
+    1 % standard deviation, contributing `x / 100` independently. The circuit is linear
+    with a fixed operating point, so adjoint derivatives are exact apart from rounding
+    and agree within 1e-10 (about 450,000 ε).
     """
     frequencies = decade(1 * kHz, 1 * MHz, 3)
     found = Simulation(low_pass()).run(Mismatch(["out"], of=Ac("V1", frequencies)))
@@ -147,10 +146,10 @@ def test_a_responses_magnitude_and_phase_spread_as_their_closed_forms() -> None:
 
 
 def test_a_sweeps_spread_scales_with_its_level() -> None:
-    """Along a sweep of the divider's supply, its output spreads with the supply.
+    """Verifies that swept divider output spread scales linearly with supply voltage.
 
-    `out = V R2 / (R1 + R2)`, so each contribution is the operating point's at 1 V times
-    the level, to the same rounding.
+    With `out = V R2 / (R1 + R2)`, each contribution equals the 1 V operating-point
+    value scaled by the sweep level, up to floating-point rounding.
     """
     levels = [0.5 * V, 1 * V, 2 * V]
     simulation = Simulation(divider())
@@ -163,12 +162,11 @@ def test_a_sweeps_spread_scales_with_its_level() -> None:
 
 
 def test_an_oscillators_period_spreads_with_its_tank() -> None:
-    """A tank's period scales with time, L and C alike, so it spreads with them.
+    """Verifies that oscillator period spread scales with tank L and C.
 
-    Each part's own random variable moves its period by its value times the period's
-    derivative with respect to it, so the two sum to the period, `L ∂T/∂L + C ∂T/∂C =
-    T`, as `test_periodic.py` holds the sensitivities to it at a relative tolerance of
-    1e-6: within 1e-12.
+    Each tank random variable shifts the period by its value times the corresponding
+    period derivative. The two contributions sum to the period (`L ∂T/∂L + C ∂T/∂C =
+    T`), matching `test_periodic.py` sensitivities within 1e-12 at reltol 1e-6.
     """
     inductance, capacitance = 1e-6, 1e-9
     impedance = math.sqrt(inductance / capacitance)
@@ -206,7 +204,7 @@ def test_an_oscillators_period_spreads_with_its_tank() -> None:
 
 @pytest.fixture(scope="session")
 def kept(pytestconfig: pytest.Config) -> Settings:
-    """Settings whose cache, pytest's, holds the kits' pinned files."""
+    """Returns settings backed by the pytest cache directory for pinned PDK files."""
     assert pytestconfig.cache is not None
     return Settings(cache=pytestconfig.cache.mkdir("downloads"))
 
@@ -217,18 +215,17 @@ HBT: Final = (sg13g2.DIRECTORY / "cornerHBT.lib", "hbt_typ_mismatch")
 
 @pytest.fixture(scope="session")
 def hbt(kept: Settings) -> Library:
-    """SG13G2's bipolar transistors, read where they draw their mismatch."""
+    """Loads the SG13G2 bipolar library configured to evaluate mismatch draws."""
     return kits.read(sg13g2.KIT, (HBT,), settings=kept)
 
 
 def test_a_placements_random_variables_are_its_kits_calls(hbt: Library) -> None:
-    """Each `agauss` of `npn13G2` that moves its transistor is a random variable.
+    """Verifies that each effective `agauss` in `npn13G2` becomes a random variable.
 
-    The card's `is` is `4.81e-17 (Nx/4) vbic_is (1 + mm_ok (is_mm - 1) / √(m Nx))`, so
-    the saturation current moves by 1.2025e-17 A per unit of `is_mm`, of standard
-    deviation `is_var_mm`, 0.038. The central difference rounds by about ε times the
-    number over its step, 0.038 times the cube root of ε, so by about 1e-9: 1e-8 holds
-    it with room for the reading's own rounding.
+    The card defines `is` as `4.81e-17 (Nx/4) vbic_is (1 + mm_ok (is_mm - 1) / √(m
+    Nx))`, so saturation current changes by 1.2025e-17 A per unit of `is_mm` with
+    standard deviation `is_var_mm` (0.038). Central-difference rounding scales as ε
+    divided by step `0.038 * ε^(1/3)` (about 1e-9), so 1e-8 bounds the error.
     """
     found = {each.name: each for each in hbt.random_variables("npn13G2", "Q1", mm_ok=1)}
     assert set(found) == {
@@ -249,10 +246,10 @@ def test_a_placements_random_variables_are_its_kits_calls(hbt: Library) -> None:
 
 
 def test_each_statistical_function_spreads_as_it_draws() -> None:
-    """A function's standard deviation is the one its draws show over many samples.
+    """Verifies that each statistical function's standard deviation matches large draws.
 
-    The bounds are five standard errors of the standard deviation over `SAMPLES`
-    draws of each, the draws fixed by their seed.
+    Bounds equal five standard errors of the standard deviation across `SAMPLES` seeded
+    draws per function.
     """
     calls = {
         "agauss": (2.0, 0.3, 3.0),
@@ -288,7 +285,7 @@ five standard errors are 18 % of the standard deviation."""
 
 
 def transistor() -> devices.Device:
-    """A level 1 MOSFET, its threshold and transconductance within 3 %, normally."""
+    """Builds a level-1 MOSFET with 3 % normal tolerances on threshold and beta."""
     made = devices.mosfet(
         channel="n",
         width=10 * um,
@@ -308,7 +305,7 @@ input follows the first, off by the pair's input offset times `GAIN / (1 + GAIN)
 
 @component
 def mosfet_pair(c: Builder) -> None:
-    """A differential pair of `transistor`s, its second input following its first."""
+    """Builds a differential pair of `transistor` devices with matched gate bias."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(3 * V), name="VDD")
     held = c.place(devices.voltage_source(1.5 * V), name="VIN")
@@ -329,7 +326,7 @@ def mosfet_pair(c: Builder) -> None:
 
 @component
 def mosfet_mirror(c: Builder) -> None:
-    """A current mirror of `transistor`s, 100 µA in, its output held at 1.5 V."""
+    """Builds a current mirror of `transistor` devices, 100 µA in and 1.5 V out."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(3 * V), name="VDD")
     driven = c.place(devices.current_source(100 * uA), name="IIN")
@@ -351,12 +348,11 @@ def mosfet_mirror(c: Builder) -> None:
 def test_tolerances_spread_as_monte_carlo_finds(
     circuit: Callable[[], Component], output: str
 ) -> None:
-    """A pair's input offset and a mirror's output current, from 3 % thresholds.
+    """Verifies MOSFET pair offset and mirror current spread against Monte Carlo.
 
-    Each transistor's threshold and transconductance parameter is within 3 %, a
-    standard deviation of 1 %; the threshold's 7 mV of each transistor makes the
-    pair's offset, and the mirror's output, the Monte Carlo analysis's own within its
-    statistics.
+    Each transistor threshold and transconductance parameter varies by 3 % (1 %
+    standard deviation). Threshold variation (7 mV per device) drives both pair offset
+    and mirror output spread within Monte Carlo statistical bounds.
     """
     simulation = Simulation(circuit())
     first_order = float(simulation.run(Mismatch([output])).standard_deviation(output))
@@ -370,7 +366,7 @@ def test_tolerances_spread_as_monte_carlo_finds(
 
 
 def bipolar(library: Library, path: str, index: int | None) -> Component:
-    """SG13G2's `npn13G2` drawing its mismatch, nominal or in the sample `index`."""
+    """Builds an SG13G2 `npn13G2` device drawing nominal or indexed mismatch."""
     if index is None:
         return library.component("npn13G2", mm_ok=1)
     return library.drawn("npn13G2", Sample(5, index), path, mm_ok=1)
@@ -378,9 +374,9 @@ def bipolar(library: Library, path: str, index: int | None) -> Component:
 
 @component
 def bipolar_pair(c: Builder, library: Library, index: int | None) -> None:
-    """A differential pair of `npn13G2`s, both bases at 1.2 V.
+    """Builds a differential pair of `npn13G2` transistors with both bases at 1.2 V.
 
-    Its output is its collectors' difference: its input offset times its gain, about 19.
+    The differential collector output equals the input offset times a gain of about 19.
     """
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(2.5 * V), name="VDD")
@@ -402,7 +398,7 @@ def bipolar_pair(c: Builder, library: Library, index: int | None) -> None:
 
 @component
 def bipolar_mirror(c: Builder, library: Library, index: int | None) -> None:
-    """A current mirror of `npn13G2`s, 100 µA in, its output held at 1.5 V."""
+    """Builds an `npn13G2` current mirror with 100 µA input and 1.5 V output."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(2.5 * V), name="VDD")
     driven = c.place(devices.current_source(100 * uA), name="IIN")
@@ -426,11 +422,11 @@ def test_sg13g2s_mismatch_spreads_as_monte_carlo_finds(
     circuit: Callable[[Library, int | None], Component],
     output: str,
 ) -> None:
-    """SG13G2's VBIC pair and mirror, from the kit's own mismatch of each transistor.
+    """Verifies SG13G2 VBIC pair and mirror mismatch spread against Monte Carlo.
 
-    The saturation current's 3.8 % of each transistor makes nearly all of either
-    spread, its emitter resistance's 5.5 % the rest; Monte Carlo reads each placement
-    anew in each sample.
+    Saturation-current variation (3.8 % per transistor) accounts for most of the
+    spread, and emitter-resistance variation (5.5 %) accounts for the rest. Monte Carlo
+    re-evaluates each placement in every sample.
     """
     given = [
         variable
@@ -455,7 +451,7 @@ def test_sg13g2s_mismatch_spreads_as_monte_carlo_finds(
 
 @pytest.fixture(scope="session")
 def mim(kept: Settings) -> Library:
-    """SKY130 at its typical corner, drawing its mismatch."""
+    """Loads the SKY130 typical-corner library configured to draw mismatch."""
     section = f"{sky130.TYPICAL}{sky130.MISMATCH}"
     return kits.read(sky130.KIT, ((sky130.LIBRARY, section),), settings=kept)
 
@@ -465,7 +461,7 @@ MIM: Final = "sky130_fd_pr__cap_mim_m3_1"
 
 
 def capacitor(library: Library, index: int | None) -> Component:
-    """A 10 µm by 10 µm MIM capacitor, nominal or in the sample `index`."""
+    """Builds a 10 µm by 10 µm MIM capacitor drawing nominal or indexed mismatch."""
     if index is None:
         return library.component(MIM, w=10, l=10)
     return library.drawn(MIM, Sample(9, index), "C1", w=10, l=10)
@@ -473,7 +469,7 @@ def capacitor(library: Library, index: int | None) -> Component:
 
 @component
 def mim_low_pass(c: Builder, library: Library, index: int | None) -> None:
-    """A 10 kΩ resistor into a MIM capacitor of about 0.2 pF, a pole near 80 MHz."""
+    """Builds a 10 kΩ resistor into an ~0.2 pF MIM capacitor with a pole near 80 MHz."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(0 * V), name="V1")
     resistor = c.place(devices.resistor(10 * kohm), name="R1")
@@ -486,11 +482,11 @@ def mim_low_pass(c: Builder, library: Library, index: int | None) -> None:
 def test_sky130s_mim_capacitor_spreads_a_response_as_monte_carlo_finds(
     mim: Library,
 ) -> None:
-    """A low-pass's magnitude and phase over its pole, from the capacitor's mismatch.
+    """Verifies MIM low-pass AC magnitude and phase spread against Monte Carlo.
 
-    The kit spreads the capacitance by 2.8 % over the square root of its area in
-    square micrometers, its one random variable, whose derivative is that of the
-    capacitance `czero` the subcircuit's parameters compute.
+    The kit spreads capacitance by 2.8 % divided by the square root of area in square
+    micrometers. The single random variable acts through the `czero` capacitance
+    computed by the subcircuit parameters.
     """
     (variable,) = mim.random_variables(MIM, "C1", w=10, l=10)
     assert (variable.instance, variable.name) == ("C1", "czero#0")
@@ -515,7 +511,7 @@ NFET: Final = "sky130_fd_pr__nfet_01v8"
 
 
 def sky130_nfet(library: Library, path: str, index: int | None) -> Component:
-    """A 1 µm by 0.15 µm SKY130 BSIM4 MOSFET, nominal or in the sample `index`."""
+    """Builds a 1 µm by 0.15 µm SKY130 BSIM4 MOSFET with nominal or indexed mismatch."""
     if index is None:
         return library.component(NFET, w=1.0, l=0.15)
     return library.drawn(NFET, Sample(11, index), path, w=1.0, l=0.15)
@@ -523,9 +519,9 @@ def sky130_nfet(library: Library, path: str, index: int | None) -> Component:
 
 @component
 def sky130_nfet_pair(c: Builder, library: Library, index: int | None) -> None:
-    """A differential pair of SKY130 BSIM4 MOSFETs, both gates at 1.0 V.
+    """Builds a SKY130 BSIM4 differential pair with both gates biased at 1.0 V.
 
-    Its output is its drains' difference: its input offset times its voltage gain.
+    The differential drain output equals the input offset times the voltage gain.
     """
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
@@ -547,7 +543,7 @@ def sky130_nfet_pair(c: Builder, library: Library, index: int | None) -> None:
 
 @component
 def sky130_nfet_mirror(c: Builder, library: Library, index: int | None) -> None:
-    """A current mirror of SKY130 BSIM4 MOSFETs, 100 µA in, output held at 1.2 V."""
+    """Builds a SKY130 BSIM4 current mirror with 100 µA input and 1.2 V output."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
     driven = c.place(devices.current_source(100 * uA), name="IIN")
@@ -571,7 +567,7 @@ def test_sky130s_bsim4_mosfet_mismatch_spreads_as_monte_carlo_finds(
     circuit: Callable[[Library, int | None], Component],
     output: str,
 ) -> None:
-    """SKY130's BSIM4 pair and mirror, from the kit's own mismatch of each transistor.
+    """Verifies SKY130 BSIM4 pair and mirror mismatch spread against Monte Carlo.
 
     Each placement draws three independent mismatch variables (`toxe`, `vth0`, `voff`)
     inside bin 71; first-order adjoint sensitivities agree with Monte Carlo over

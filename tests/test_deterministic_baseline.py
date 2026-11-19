@@ -18,7 +18,7 @@ ADVICE_WORDS = re.compile(
 
 
 def _sample_record() -> deterministic.PlatformRecord:
-    """Minimal self-contained baseline record exercising precision and speed checks."""
+    """Builds a minimal baseline record exercising precision and speed checks."""
     return deterministic.PlatformRecord(
         precision={
             "rc_step": deterministic.PrecisionRecord(
@@ -67,14 +67,14 @@ def _sample_record() -> deterministic.PlatformRecord:
 
 
 def test_exact_match_passes() -> None:
-    """Identical records produce zero mismatches in both exact and bounded modes."""
+    """Verifies identical records produce zero mismatches in exact and bounded modes."""
     record = _sample_record()
     assert deterministic.compare_records(record, record, exact=True) == []
     assert deterministic.compare_records(record, record, exact=False) == []
 
 
 def test_exact_mismatch_reports_all_facts_without_advice() -> None:
-    """Every count, digit, digest and missing-entry difference is reported."""
+    """Verifies every count, digit, digest, and missing-entry mismatch is reported."""
     expected = _sample_record()
     actual = expected.model_copy(deep=True)
     actual.precision["rc_step"].counts["iterations"] += 1
@@ -104,7 +104,7 @@ def test_exact_mismatch_reports_all_facts_without_advice() -> None:
 
 
 def test_cross_platform_rules_distinguish_linear_and_nonlinear_fixtures() -> None:
-    """Unrecorded platforms enforce exact linear counts and bounded nonlinear shifts."""
+    """Verifies unrecorded platforms apply exact linear and bounded nonlinear rules."""
     expected = _sample_record()
     within = expected.model_copy(deep=True)
     # Different libm digest is ignored on unrecorded platforms, while linear
@@ -149,7 +149,7 @@ def test_cross_platform_rules_distinguish_linear_and_nonlinear_fixtures() -> Non
 
 
 def test_select_reference_prefers_exact_then_same_os() -> None:
-    """Platform selection prefers exact key, then same OS, then lexicographic first."""
+    """Verifies platform selection prefers exact key, same OS, then lexicographic."""
     record = _sample_record()
     empty = deterministic.DeterministicBaseline()
     assert deterministic.select_reference(empty, "linux-x86_64-glibc2.43") is None
@@ -175,7 +175,7 @@ def test_select_reference_prefers_exact_then_same_os() -> None:
 
 
 def test_save_and_load_baseline_round_trip(tmp_path: Path) -> None:
-    """Baseline JSON saves deterministically with sorted keys and reloads cleanly."""
+    """Verifies baseline JSON saves deterministically with sorted keys and reloads."""
     path = tmp_path / "baseline.json"
     record = _sample_record()
     baseline = deterministic.DeterministicBaseline(
@@ -190,7 +190,7 @@ def test_save_and_load_baseline_round_trip(tmp_path: Path) -> None:
 
 
 def test_periodic_steady_state_digest_includes_period() -> None:
-    """`PeriodicSteadyStateResult` digests its period, unlike `TransientResult`."""
+    """Verifies `PeriodicSteadyStateResult` digests its period, unlike transients."""
     node = (unknowns.Unknown("out", "voltage"),)
     times = np.array([0.0, 1e-6], dtype=np.float64)
     values = np.array([[0.0], [1.0]], dtype=np.float64)
@@ -230,7 +230,7 @@ def test_periodic_steady_state_digest_includes_period() -> None:
 def test_cli_strict_platform_refuses_unrecorded_platform(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`--strict-platform` exits with a factual message when the key is absent."""
+    """Verifies `--strict-platform` exits with a factual error on unrecorded keys."""
     path = tmp_path / "baseline.json"
     record = _sample_record()
     deterministic.save_baseline(
@@ -251,7 +251,7 @@ def test_cli_strict_platform_refuses_unrecorded_platform(
 
 
 def test_committed_baseline_covers_every_declared_fixture() -> None:
-    """`benchmarks/deterministic/baseline.json` holds every declared fixture."""
+    """Verifies `benchmarks/deterministic/baseline.json` includes every fixture."""
     baseline = deterministic.load_baseline()
     assert baseline.version == 2
     assert baseline.platforms, "baseline must hold at least one platform entry"

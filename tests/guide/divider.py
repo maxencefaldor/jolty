@@ -7,7 +7,7 @@ from jolty.units import V, ohm
 
 @component
 def divider(c: Builder) -> None:
-    """4.8 kΩ over 4.7 kΩ, fed 5 V."""
+    """Builds a 4.8 kΩ over 4.7 kΩ divider driven by 5 V."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(5 * V), name="V1")
     upper = c.place(devices.resistor(4800 * ohm), name="R1")
@@ -18,5 +18,5 @@ def divider(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The divider."""
+    """Returns the non-standard-value divider component."""
     return divider()

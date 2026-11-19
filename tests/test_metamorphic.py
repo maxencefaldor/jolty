@@ -1,18 +1,16 @@
 # Copyright 2026 Maxence Faldor
-"""The same circuit, written differently, simulates the same.
+"""Metamorphic tests verifying that equivalent circuit rewrites simulate identically.
 
-Renaming its nets, reordering its instances, splitting a resistor into two in series
-and placing a source of 0 V in series with a terminal, as an ammeter, change how a
-circuit is written and not what it is: jolty finds the same operating point, frequency
-response and transient for each, on the random circuits of `strategies`, and the
-ammeter reads the current into the terminal. Each circuit is its own reference, so
-these tests need no other simulator.
+Renaming nets, reordering instances, splitting a resistor in series, and inserting a
+0 V ammeter source preserve circuit semantics. Across random circuits from
+`strategies`, jolty must find identical operating points, frequency responses, and
+transients, while the ammeter reads the terminal current. Each circuit serves as a
+self-contained reference requiring no external simulator.
 
-Transients are those of the circuits with capacitance at their nets, as real nets have,
-which `strategies.parasitic` places: without it, a regenerative loop of devices that
-hold no charge can fold into a point past which no solution continues, where a
-transient stops, or leaps by chance to another solution, in one spelling and not in
-another.
+Transient comparisons add net capacitance via `strategies.parasitic` to model physical
+wiring. Without parasitic capacitance, regenerative loops of charge-free devices can
+hit fold singularities where a transient halts or jumps between solutions differently
+across equivalent netlists.
 """
 
 import dataclasses
@@ -60,7 +58,7 @@ def _instances(circuit: ir.Circuit) -> tuple[ir.Instance, ...]:
 
 
 def _source(circuit: ir.Circuit) -> str:
-    """The pulsed source, the first voltage source the circuit places."""
+    """Returns the name of the pulsed source, the circuit's first voltage source."""
     return next(
         instance.name
         for instance in _instances(circuit)
@@ -71,7 +69,7 @@ def _source(circuit: ir.Circuit) -> str:
 def _transient(
     simulation: Simulation, step: float, options: Options = TIGHT
 ) -> dict[str, Values]:
-    """The waveform of every unknown with `step` the longest, read at `TIMES`."""
+    """Simulates waveforms of every unknown at `TIMES` with maximum step `step`."""
     plan = Transient(
         stop=STOP * s, max_step=step * s, breakpoints=[time * s for time in TIMES[1:]]
     )
@@ -91,11 +89,11 @@ def _simulated(
     source: str,
     options: Options = TIGHT,
 ) -> Simulated:
-    """The operating point, the response to `source` and the transient of `circuit`.
+    """Computes operating point, AC response, and loaded transient for `circuit`.
 
-    The transient is that of `loaded`, the same circuit with capacitance at its nets.
-    A transient that grows away from an unstable operating point is left out: it
-    amplifies rounding, and two ways of writing the circuit round differently.
+    The transient runs on `loaded`, which adds parasitic net capacitance. Divergent
+    transients from unstable operating points are excluded because they amplify
+    rounding differences between equivalent circuit encodings.
     """
     simulation = Simulation(circuit)
     point = simulation.run(OperatingPoint(), options)
@@ -116,14 +114,14 @@ def _simulated(
 
 
 def _settled(circuit: ir.Circuit, simulated: Simulated) -> bool:
-    """Whether the transient jolty found does not move as its steps shrink fourfold."""
+    """Returns whether the transient stays unchanged under a fourfold smaller step."""
     waveforms = simulated["transient"]
     shorter = _transient(Simulation(circuit), STEP / 4)
     return not differing(shorter, waveforms, _quantities(circuit), 1e-3)
 
 
 def _rounded_up(instance: ir.Instance) -> ir.Instance:
-    """The instance, a resistor's resistance the next floating-point number up."""
+    """Returns `instance` with any resistor value bumped by one floating-point ULP."""
     resistor = instance.of == ir.DeviceOf(model="resistor")
     resistance = instance.parameters.get("resistance")
     if not resistor or not isinstance(resistance, float):
@@ -136,11 +134,10 @@ def _rounded_up(instance: ir.Instance) -> ir.Instance:
 
 
 def _determined(circuit: ir.Circuit, simulated: Simulated) -> bool:
-    """Whether the transient jolty found does not move as each resistance rounds up.
+    """Returns whether the transient stays stable when resistances bump by 1 ULP.
 
-    Where a rounding decides the steps a transient takes, and those steps move the
-    waveform by more than its tolerance, two spellings, which round differently, find
-    different waveforms however alike they are.
+    When rounding alters transient step selection beyond tolerance, equivalent netlist
+    encodings produce distinct waveforms despite representing identical circuits.
     """
     waveforms = simulated["transient"]
     rounded = placing(circuit, map(_rounded_up, _instances(circuit)))
@@ -153,9 +150,10 @@ def _quantities(circuit: ir.Circuit) -> dict[str, str]:
 
 
 TOLERANCES = {"operating point": 1e-6, "frequency response": 1e-6, "transient": 1e-3}
-"""How closely each analysis of two spellings agrees, as a fraction of the largest
-value of each quantity: Newton iteration stops within a millionth, and a transient's
-steps, rounded differently, land within a thousandth of the swing."""
+"""Relative agreement bounds per analysis between equivalent circuit encodings.
+
+Normalized by each quantity's peak magnitude: Newton iteration converges to 1e-6, and
+transient steps with different rounding land within 1e-3 of waveform swing."""
 
 
 def _assert_same(
@@ -163,15 +161,14 @@ def _assert_same(
     written: ir.Circuit,
     name: Callable[[str], str] = lambda name: name,
 ) -> Simulated:
-    """Asserts both circuits simulate the same, and returns what `written` found.
+    """Asserts both circuits simulate identically and returns results for `written`.
 
-    Each unknown of `original` is found in `written` by its `name` there. Their
-    transients are those of both with capacitance at each net of `original` and at its
-    namesake in `written`, so that a net the writing adds, such as an ammeter's, holds
-    none, and both remain one circuit. A transient that jolty's own shorter steps still
-    move, as a chaotic one's, has not settled at these steps, and is left out too, as is
-    one that differs but moves as each resistance rounds up: how the circuit rounds
-    decides it, and two spellings round differently.
+    Each unknown in `original` maps into `written` via `name`. Transients add
+    capacitance only to nets of `original` and their counterparts in `written`, leaving
+    extra rewrite nets (such as ammeter nodes) unloaded so both circuits stay
+    equivalent. Unsettled transients that shift under smaller steps (such as chaotic
+    runs) and rounding-sensitive transients that shift under 1-ULP resistance bumps are
+    excluded.
     """
     source = _source(original)
     nets = capacitive(original)
@@ -338,10 +335,10 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
 
 
 def _currents(point: results.OperatingPointResult) -> Iterable[float]:
-    """Every current the operating point holds: through branches and into terminals.
+    """Yields every recorded current in `point`: branch currents and terminal currents.
 
-    The terminals are those of every device it recorded, whose currents come before
-    the sums of the component instances' ports.
+    Recorded device terminal currents precede summed port currents of component
+    instances.
     """
     yield from (
         float(value)

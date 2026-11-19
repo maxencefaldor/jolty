@@ -1,10 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""An inverter characterized as a logic cell, driving a load far past its domain.
+"""An inverter characterized as a logic cell driving a load beyond its domain.
 
-The cell is characterized over loads up to four of its own fanouts, some 20 fF, and
-drives 470 fF here, so it reads its tables outside their domain, `outside-validity`,
-and the time its output falls through half the supply depends on whether the inverter
-is its cell or its circuit, `fidelity-dependence`.
+The cell is characterized up to four standard fanouts (~20 fF) and drives
+470 fF here, triggering `outside-validity` table extrapolation. The falling
+delay through half-supply then diverges between the characterized cell and
+transistor-level circuit (`fidelity-dependence`).
 """
 
 from common import SUPPLY, inverter
@@ -18,7 +18,7 @@ from jolty.waveforms import Piecewise
 
 @component
 def bench(c: Builder) -> None:
-    """The inverter, its input stepping up at 1 ns, its output on 470 fF."""
+    """Builds the inverter driven by a 1 ns step into a 470 fF load."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(SUPPLY * V), name="VDD")
     step = Piecewise([(1 * ns, 0 * V), (1 * ns + 100 * ps, SUPPLY * V)])
@@ -32,12 +32,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The inverter on its bench."""
+    """Returns the overloaded-inverter bench component."""
     return bench()
 
 
 def plan() -> Plan:
-    """The step, the inverter a characterized cell, and its circuit in a spot check."""
+    """Returns the characterized transient plan with one circuit spot check."""
     return Plan(
         {"step": Transient(stop=8 * ns)},
         fidelity={"X1": Characterized(SUPPLY * V, spot_checks=1)},
@@ -45,5 +45,5 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """The output's fall through half the supply, by 2.37 ns."""
+    """Returns the 2.37 ns falling half-supply crossing specification."""
     return Specs([crossing("step", "mid", SUPPLY / 2 * V, edge="falling") <= 2.37 * ns])

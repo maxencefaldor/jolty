@@ -7,7 +7,7 @@ from jolty.units import Quantity, V, kohm, nF
 
 @component
 def low_pass(c: Builder, capacitance: Quantity) -> None:
-    """A series resistor of 1 kΩ, then the capacitance to the ground."""
+    """Builds a 1 kΩ series resistor with `capacitance` to ground."""
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
     resistor = c.place(devices.resistor(1 * kohm), name="R1")
@@ -19,7 +19,7 @@ def low_pass(c: Builder, capacitance: Quantity) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """The filter of -1 nF, fed 1 V."""
+    """Builds the -1 nF filter bench driven by 1 V."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
     stage = c.place(low_pass(-1 * nF), name="X1")
@@ -29,5 +29,5 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The filter on its bench."""
+    """Returns the invalid-filter bench component."""
     return bench()

@@ -67,7 +67,7 @@ def _write_npz(
 
 
 def _sample_results() -> dict[str, results.AnalysisResult]:
-    """Representative results across multiple analysis kinds."""
+    """Returns representative results across multiple analysis kinds."""
     unknowns = (results.Unknown("out", "voltage"),)
     point = results.OperatingPointResult(unknowns, np.array([2.5]), "direct", 3)
     statistics = results.Statistics(
@@ -106,7 +106,7 @@ def _sample_results() -> dict[str, results.AnalysisResult]:
 
 
 def _sample_batch() -> results.BatchResult:
-    """Minimal valid two-sample `BatchResult`."""
+    """Returns a minimal valid two-sample `BatchResult`."""
     return results.BatchResult(
         analyses=("operating_point",),
         parameters=(),
@@ -123,7 +123,7 @@ def _sample_batch() -> results.BatchResult:
 def _sample_shard(
     start: int = 0, stop: int = 2, samples: int = 2, digest: str | None = None
 ) -> files.Shard:
-    """Minimal valid `Shard` for mutation testing."""
+    """Returns a minimal valid `Shard` for mutation testing."""
     return files.Shard(
         start=start,
         stop=stop,
@@ -166,7 +166,7 @@ def _zip_corruptions(draw: st.DrawFn) -> _ZipCorruption:
 
 @pytest.fixture(scope="module")
 def baseline_archives(scratch_directory: Path) -> _BaselineArchives:
-    """Baseline valid results, batches, and shard archive dictionaries."""
+    """Builds baseline valid results, batches, and shard archive dictionaries."""
     results_path = scratch_directory / "base.results.npz"
     files.save_results(results_path, _sample_results())
     batches_path = scratch_directory / "base.batches.npz"

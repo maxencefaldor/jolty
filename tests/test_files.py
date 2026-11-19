@@ -418,7 +418,7 @@ def test_a_results_file_names_each_recording_once(tmp_path: Path) -> None:
 
 
 def _loaded(resistance: float) -> ir.Circuit:
-    """A source driving a resistor of `resistance` ohms."""
+    """Builds a voltage source driving a resistor of `resistance` ohms."""
 
     @component
     def load(c: Builder) -> None:

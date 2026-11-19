@@ -1,16 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""Writes the circuits of the differential corpus and the examples, with their runs.
+"""Records the differential corpus and example circuits with their analysis runs.
 
-The engine evaluates every device as a kernel's instance, together with the others of
-its kernel and shape in a group, and checks at every evaluation of a run that the groups
-assemble the circuit's equations as the instances do evaluated one by one, each alone,
-in the order of the devices, and that what the recorder reads of each is what the
-instance alone gives. It checks them on the circuits this script writes, to
-``crates/jolty-engine/tests/data/kernels.json``: every circuit of the differential
-corpus, ``tests/test_ngspice.py``, and of the examples, each with the analyses its tests
-or its plan run on it. Run it from the repository root after changing either,
-``uv run python tests/kernel_corpus.py``; with ``--check``, it writes nothing, and fails
-when the file is not what it would write, as ``tests/test_kernel_corpus.py`` runs it.
+The engine evaluates devices in kernel-and-shape groups and verifies that group
+assembly matches single-instance evaluation in device order. Recorder outputs
+from each grouped device are also verified against single-instance evaluation.
+The Rust test suite runs those checks on the corpus saved to
+``crates/jolty-engine/tests/data/kernels.json``, covering every circuit in
+``tests/test_ngspice.py`` and ``examples/`` with its executed analyses. Run
+``uv run python tests/kernel_corpus.py`` from the repository root after editing
+either corpus; passing ``--check`` verifies the file without writing, as
+invoked by ``tests/test_kernel_corpus.py``.
 """
 
 import importlib
@@ -28,13 +27,13 @@ from pydantic_settings import SettingsConfigDict
 from jolty import Simulation, _core, cli, simulate
 
 ROOT: Final = Path(__file__).resolve().parent.parent
-"""The repository."""
+"""Repository root path."""
 
 WRITTEN: Final = ROOT / "crates/jolty-engine/tests/data/kernels.json"
-"""Where the circuits are written."""
+"""Destination file for recorded kernel-corpus circuits and runs."""
 
 type Record = dict[str, object]
-"""A circuit, what it is elaborated in, and the analyses run on it, as written."""
+"""Serialized circuit record containing elaboration inputs and executed runs."""
 
 
 class _Simulator:
@@ -114,7 +113,7 @@ def _examples(records: list[Record]) -> None:
 
 
 def _models(circuit: object) -> set[str]:
-    """The models of every device instance of `circuit`, as written."""
+    """Returns the set of device model names present in serialized `circuit`."""
     assert isinstance(circuit, dict)
     components = circuit["components"]
     assert isinstance(components, dict)
@@ -127,7 +126,7 @@ def _models(circuit: object) -> set[str]:
 
 
 def recorded() -> str:
-    """Each circuit recorded with a device, once, with its runs, as written."""
+    """Returns serialized JSON of unique circuits with devices and their runs."""
     records: list[Record] = []
     _corpus(records)
     _examples(records)
@@ -150,16 +149,17 @@ def recorded() -> str:
 
 
 class Corpus(cli.CommandLine):
-    """Write the circuits of the corpus and the examples, with their runs."""
+    """Command-line interface for writing or checking the kernel-corpus file."""
 
     model_config = SettingsConfigDict(cli_prog_name="tests/kernel_corpus.py")
 
     check: bool = Field(
-        default=False, description="Fail unless the file holds the circuits."
+        default=False,
+        description="Fails unless the recorded file matches the generated corpus.",
     )
 
     def cli_cmd(self) -> None:
-        """Writes the circuits, or with ``--check`` fails unless the file holds them."""
+        """Writes the recorded corpus, or fails with ``--check`` on any mismatch."""
         written = recorded()
         if not self.check:
             WRITTEN.write_text(written, encoding="utf-8")

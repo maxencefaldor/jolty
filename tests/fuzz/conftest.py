@@ -8,5 +8,5 @@ import pytest
 
 @pytest.fixture(scope="module")
 def scratch_directory(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Shared temporary directory reused across fuzz iterations to avoid churn."""
+    """Returns a shared temporary directory reused across fuzz iterations."""
     return tmp_path_factory.mktemp("fuzz_parsers")

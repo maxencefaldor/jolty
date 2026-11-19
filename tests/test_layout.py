@@ -49,12 +49,12 @@ STAGE = ir.Component(
         ir.Port(name="ground", role=Role.GROUND),
     )
 )
-"""A component the random circuits place as a box, its insides left out."""
+"""Component placed as an opaque block by random layout circuits."""
 
 
 @st.composite
 def circuits(draw: st.DrawFn) -> ir.Circuit:
-    """A circuit whose top places devices and boxes between a few random nets."""
+    """Generates a top-level circuit placing devices and boxes across random nets."""
     nets = ["ground", "vdd", *(f"n{index}" for index in range(draw(st.integers(1, 5))))]
     models = draw(st.lists(st.sampled_from([*TERMINALS, "stage"]), max_size=9))
     instances = []
@@ -78,7 +78,7 @@ def circuits(draw: st.DrawFn) -> ir.Circuit:
 
 
 def points(segment: Segment) -> list[Point]:
-    """Every grid point a segment runs through, its ends included."""
+    """Returns every grid point traversed by `segment`, including both endpoints."""
     (x1, y1), (x2, y2) = segment
     if x1 == x2:
         return [(x1, y) for y in range(min(y1, y2), max(y1, y2) + 1)]
@@ -86,7 +86,7 @@ def points(segment: Segment) -> list[Point]:
 
 
 def steps(net: Net) -> set[frozenset[Point]]:
-    """The unit steps a net's wires take."""
+    """Returns the set of unit grid edges traversed by wires of `net`."""
     return {
         frozenset(pair)
         for segment in net.segments
@@ -95,12 +95,12 @@ def steps(net: Net) -> set[frozenset[Point]]:
 
 
 def ends(net: Net) -> set[Point]:
-    """Where a net's wires end, bend or branch, and its pins."""
+    """Returns pin positions and wire endpoints, bends, or branch points of `net`."""
     return {end for segment in net.segments for end in segment} | set(net.pins)
 
 
 def ways(net: Net, point: Point) -> set[str]:
-    """Whether the net's wires run across (h) or up (v) through `point`."""
+    """Returns orientations (`h`, `v`) of wires in `net` passing through `point`."""
     return {
         "h" if segment[0][1] == segment[1][1] else "v"
         for segment in net.segments
@@ -109,7 +109,7 @@ def ways(net: Net, point: Point) -> set[str]:
 
 
 def connected(net: Net) -> bool:
-    """Whether the net's wires join all its pins."""
+    """Returns whether the wires of `net` form one connected component over all pins."""
     parent = {point: point for segment in net.segments for point in points(segment)}
     parent.update({pin: pin for pin in net.pins})
 
@@ -165,7 +165,7 @@ def test_every_layout_keeps_its_nets_apart(drawn: ir.Circuit) -> None:
 
 @component
 def stage(c: Builder) -> None:
-    """A low-pass stage pulled up to its supply."""
+    """Builds a low-pass filter stage pulled up to its supply rail."""
     source = c.port("input")
     output = c.port("output")
     supply = c.port("vdd", Role.SUPPLY)
@@ -181,7 +181,7 @@ def stage(c: Builder) -> None:
 
 @component
 def chain(c: Builder) -> None:
-    """Two stages in a row, fed from a source, on a rail of their own."""
+    """Builds two cascaded stages driven by a source on a dedicated supply rail."""
     ground = c.port("ground", Role.GROUND)
     rail = c.place(devices.voltage_source(5 * V), name="VDD")
     source = c.place(devices.voltage_source(1 * V), name="V1")
@@ -235,7 +235,7 @@ def test_without_sources_signal_flows_from_the_first_port() -> None:
 
 @component
 def transconductor(c: Builder) -> None:
-    """A source driving a load through a transconductance from the ground."""
+    """Builds a source driving a load through a ground-referenced transconductance."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
     gain = c.place(devices.voltage_controlled_current_source(500 * uS), name="G1")

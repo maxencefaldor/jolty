@@ -1,9 +1,8 @@
 # Copyright 2026 Maxence Faldor
-"""The Rust workspace as `cargo metadata` describes it, for the tests that read it.
+"""Rust workspace metadata read from `cargo metadata` for repository tests.
 
-The workspace's own crates, read from their manifests alone, or every crate of
-`Cargo.lock` with them: the dependencies of every platform, for development and builds
-among them, whose manifests cargo downloads if it has not yet.
+Returns either workspace member crates from local manifests alone or all crates
+in `Cargo.lock` across platforms, including build and development dependencies.
 """
 
 import shutil
@@ -16,18 +15,18 @@ from pydantic import TypeAdapter
 __all__ = ["ROOT", "Crate", "Dependency", "crates"]
 
 ROOT: Final = Path(__file__).resolve().parent.parent
-"""The repository's root, the workspace's."""
+"""Repository and Cargo workspace root directory."""
 
 
 class Dependency(TypedDict):
-    """A crate a crate depends on, and for what, if not for its own code."""
+    """Dependency entry of a Cargo crate, with optional non-normal kind."""
 
     name: str
     kind: str | None
 
 
 class Crate(TypedDict):
-    """A crate, as its manifest describes it."""
+    """Metadata fields extracted from a Cargo crate manifest."""
 
     name: str
     version: str
@@ -44,7 +43,7 @@ _METADATA: Final = TypeAdapter(_Metadata)
 
 
 def crates(*, dependencies: bool) -> list[Crate]:
-    """The workspace's crates, and, if `dependencies`, every crate of `Cargo.lock`."""
+    """Returns workspace crates, and `Cargo.lock` crates when `dependencies` is true."""
     cargo = shutil.which("cargo")
     assert cargo is not None, "cargo, which builds the engine, is not on the PATH"
     described = subprocess.run(  # noqa: S603 - cargo, reading the workspace's manifests

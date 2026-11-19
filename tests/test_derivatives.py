@@ -1,10 +1,9 @@
 # Copyright 2026 Maxence Faldor
-"""A circuit's analyses as functions of its parameters, and their JVPs and VJPs.
+"""Differentiable circuit functions, forward-mode JVPs, and reverse-mode VJPs.
 
-The engine's tests check the two against each other at every analysis to the rounding
-of their solves, and against closed forms and finite differences; these check that
-`jolty.function`, `jolty.jvp` and `jolty.vjp` carry them as `jax.jvp` and `jax.vjp`
-are called, and that a function's batches find what its calls do.
+Engine tests check JVPs against VJPs across all analyses to solver rounding, plus closed
+forms and finite differences. The Python suite verifies `jolty.function`, `jolty.jvp`,
+and `jolty.vjp` match `jax.jvp`/`jax.vjp` calling conventions and batched evaluation.
 """
 
 from collections.abc import Mapping
@@ -21,11 +20,11 @@ from jolty.units import MHz, V, kHz, ns, us
 from sample_circuits import CROSSBAR_WEIGHTS, crossbar
 
 TRANSPOSED = 1e-11
-"""The largest disagreement of the JVP and the VJP relative to the magnitudes of the
-terms they sum: the engine's dot-product test measures 7.4e-16 of the terms of each
-derivative, `crates/jolty-engine/tests/sensitivity.rs`; here the terms are each
-output's and each parameter's, a coarser scale, so that a cotangent's or a tangent's
-value lost in its way through Python shows by its own size."""
+"""Relative JVP/VJP transpose tolerance against the sum of term magnitudes.
+
+The engine dot-product test measures 7.4e-16 per derivative
+(`crates/jolty-engine/tests/sensitivity.rs`). Across every output and parameter, this
+coarser scale still exposes any tangent or cotangent dropped across Python."""
 
 NAMES = [(path, "resistance") for path in CROSSBAR_WEIGHTS]
 """The weights' parameters, in the order a batch's rows give them."""
@@ -49,10 +48,7 @@ BATCHED = [
 def inner(
     left: Mapping[str, npt.ArrayLike], right: Mapping[str, npt.ArrayLike]
 ) -> tuple[complex, float]:
-    """The sum of the products of `left` and `right` over every output, and its terms'.
-
-    The second is the sum of the products' magnitudes.
-    """
+    """Computes the inner product of `left` and `right` plus its term-magnitude sum."""
     total, magnitude = 0j, 0.0
     for name, values in left.items():
         products = np.asarray(values) * np.asarray(right[name])
@@ -153,7 +149,7 @@ def test_a_parameter_is_a_number_the_circuit_writes() -> None:
 
 
 def parameters(row: npt.ArrayLike) -> Parameters:
-    """The weights of a row of a batch, as a call takes them."""
+    """Converts one batch weight row into a scalar-call parameter mapping."""
     return {
         path: {name: float(value)}
         for (path, name), value in zip(NAMES, np.asarray(row).tolist(), strict=True)

@@ -16,7 +16,7 @@ _PNG_LINK: Final = re.compile(r"!\[[^\]]*\]\(([^)\s]+\.png)\)")
 
 
 def _gain(value: float) -> Verdict:
-    """A gain read in decibels that passed its bounds."""
+    """Builds a passing gain verdict in decibels for `value`."""
     return Verdict(requirement="gain", status="passed", value=value, unit="dB")
 
 

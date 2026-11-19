@@ -77,11 +77,10 @@ def test_power_mosfets_meet_their_datasheets(name: str) -> None:
     sign = 1.0 if sheet.channel == "n" else -1.0
 
     def bench(gate: float | None, drain: Quantity) -> Simulation:
-        """The transistor, its gate at `gate` volts, its drain held or fed.
+        """Builds a transistor bench with `gate` bias and voltage or current `drain`.
 
-        The drain takes a voltage or a current, both signed as its channel conducts.
-        Without a gate voltage, the gate is tied to the drain, which leaves the
-        symmetric channel off whichever way the current flows.
+        Drain polarity follows channel conduction. Omitting `gate` ties gate to drain,
+        keeping the symmetric channel off for either current direction.
         """
 
         @component
@@ -144,7 +143,7 @@ def test_power_mosfets_meet_their_datasheets(name: str) -> None:
 
 @component
 def switched(c: Builder, *, rated_power: float) -> None:
-    """An IRF511 fully on, fed 6 A, beyond its 5.6, its power rated anew."""
+    """Builds an on IRF511 driven at 6 A (above 5.6 A) with custom power rating."""
     ground = c.port("ground", Role.GROUND)
     switch = c.place(parts.irf511().rated("power", rated_power * W), name="X1")
     gate = c.place(devices.voltage_source(10 * V), name="VG")
@@ -186,7 +185,7 @@ def test_a_component_is_held_to_its_ratings_at_its_ports() -> None:
 
 @component
 def wrapped(c: Builder) -> None:
-    """A resistor of 1 Ω between two ports, rated to dissipate 0.1 W."""
+    """Builds a 1 Ω two-port resistor subcomponent rated at 0.1 W."""
     a, b = c.port("a"), c.port("b")
     inner = c.place(devices.resistor(1 * ohm).rated("power", 0.1 * W), name="R1")
     c.connect(inner.a, a)
@@ -195,7 +194,7 @@ def wrapped(c: Builder) -> None:
 
 @component
 def across(c: Builder) -> None:
-    """1 V across the wrapped resistor, rated as a whole to dissipate 2 W."""
+    """Builds 1 V across `wrapped`, rated as a subcomponent for 2 W."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
     placed = c.place(wrapped().rated("power", 2 * W), name="X1")
@@ -219,7 +218,7 @@ def test_a_substituted_component_is_held_to_its_own_ratings_alone() -> None:
 
 @component
 def gated(c: Builder) -> None:
-    """An electrical inverter on 1.8 V, its supply rated to 1.5 V."""
+    """Builds an electrical inverter on 1.8 V with its supply rated at 1.5 V."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
     gate = c.place(

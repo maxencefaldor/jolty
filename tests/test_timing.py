@@ -18,10 +18,10 @@ from jolty.simulate import pool
 
 
 def coverage(count: int, k: int) -> float:
-    """How often the `k`-th smallest and largest of `count` runs hold their median.
+    """Computes the binomial coverage probability between the `k`-th order statistics.
 
-    Summed over every count of runs below the median, each with its binomial
-    probability, in floating point: a second computation beside `rank`'s exact one.
+    Sums binomial probabilities in floating point as an independent check alongside
+    `rank`'s exact rational computation.
     """
     outside = sum(math.comb(count, below) for below in range(k)) / (1 << count)
     return 1 - 2 * outside
@@ -86,7 +86,7 @@ def test_intervals_apart_are_separated_and_a_resolution_is_their_inner_widths() 
 
 
 def noisy(level: float, seed: int, calls: list[str], name: str) -> Callable[[], Run]:
-    """A work whose runs take `level` seconds within 1%, drawn from `seed`."""
+    """Builds a seeded mock workload with runtimes within 1 % of `level` seconds."""
     generator = np.random.default_rng(seed)
 
     def ran() -> Run:

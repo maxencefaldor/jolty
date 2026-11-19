@@ -47,10 +47,10 @@ type Real = npt.NDArray[np.float64]
 def _spice_point(
     simulation: Simulation, start: results.OperatingPointResult | None = None
 ) -> dict[str, float] | None:
-    """The operating point ngspice finds, by the name of each unknown both report.
+    """Returns ngspice's operating point keyed by shared unknown names, or `None`.
 
-    ngspice searches from the node voltages of `start`, if given; there is none when
-    it finds none.
+    Seeds ngspice from node voltages in `start` when provided; returns `None` if
+    ngspice fails to converge.
     """
     circuit = simulation.circuit
     lines = netlist(circuit)
@@ -73,7 +73,7 @@ def _spice_point(
 
 
 def _agrees(point: results.OperatingPointResult, spice: dict[str, float]) -> bool:
-    """Whether jolty's operating point is ngspice's."""
+    """Returns whether jolty's operating point matches ngspice's within tolerance."""
     natures = {unknown.name: unknown.nature for unknown in point.unknowns}
     values = dict(zip(natures, point.values, strict=True))
     return not differing(values, spice, natures)
@@ -103,9 +103,9 @@ def test_operating_points_agree(circuit: ir.Circuit) -> None:
 
 
 def _resting(simulation: Simulation) -> results.OperatingPointResult | None:
-    """The operating point both engines find, around which both linearize the circuit.
+    """Returns the shared linearization operating point for both engines, or `None`.
 
-    There is none when ngspice finds none, or rests in another state than jolty.
+    Returns `None` if ngspice fails to converge or settles on a different equilibrium.
     """
     spice = _spice_point(simulation)
     if spice is None:
@@ -144,7 +144,7 @@ NGSPICE_TIMEOUT: Final = 20
 
 
 def _jolty(simulation: Simulation, step: float, times: Real) -> Waveforms:
-    """The waveforms jolty finds with `step` the longest, read at `times`."""
+    """Simulates jolty transient waveforms with max step `step`, sampled at `times`."""
     plan = Transient(
         stop=STOP * s, max_step=step * s, breakpoints=[time * s for time in times[1:]]
     )
@@ -161,11 +161,10 @@ def _jolty(simulation: Simulation, step: float, times: Real) -> Waveforms:
 def _transients(
     simulation: Simulation, step: float
 ) -> tuple[Waveforms, Waveforms, Real] | None:
-    """The waveforms both engines find with `step` the longest, at ngspice's times.
+    """Runs both engines at ngspice's time points with max step `step`, or `None`.
 
-    jolty steps onto every time ngspice took, so that both are read where each solved,
-    not between their points, where a waveform may bend. There are none when ngspice
-    stops short.
+    jolty forces breakpoints at every ngspice time point so both waveforms compare at
+    solved steps rather than interpolated bends. Returns `None` if ngspice stops early.
     """
     circuit = simulation.circuit
     try:
@@ -190,13 +189,11 @@ def _excused(
     times: Real,
     natures: Mapping[str, str],
 ) -> str | None:
-    """Why the engines' waveforms at `times`, jolty's being `jolty`, may differ, if so.
+    """Explains any excused transient mismatch between jolty and ngspice, or `None`.
 
-    Both take steps a quarter as long, then a sixteenth and a sixty-fourth, each
-    shrinking an error of the second order sixteenfold: they agree then if one had not
-    settled. A waveform that
-    jolty's own shorter steps still move, as a chaotic one's, has not settled at these
-    steps, and is no reference for either engine.
+    Shrinking max step by 4x, 16x, and 64x cuts second-order error sixteenfold per
+    stage to check convergence. Waveforms that still shift under tighter jolty steps
+    (such as chaotic runs) have not settled and provide no valid reference.
     """
     for divisor in SHORTENED:
         step = STEP / divisor
@@ -219,17 +216,16 @@ def _excused(
 
 
 def _stopped_short(circuit: ir.Circuit, step: float) -> str:
-    """Why jolty may stop short of ngspice with `step` the longest: none continues.
+    """Checks whether a transient fold explains why jolty stopped before ngspice.
 
-    Without capacitance, the equations of a net that only resistive devices hold can
-    fold, as their solution moves, into a point past which none continues: ngspice
-    may leap past it, or stop, whatever the step. With 10 fF from every net to the
-    ground, as real nets have, the solution continues, and jolty must finish wherever
-    ngspice does, at the same step.
+    Without capacitance, resistive loops can hit a fold singularity past which no
+    solution continues; ngspice may jump past the fold or halt at any step size. Adding
+    10 fF from every net to ground restores continuation, so jolty must finish whenever
+    ngspice does at the same step.
 
-    jolty runs first, on steps of its own: when it finishes, so does the solution,
-    whatever ngspice does. Only when it stops short too is ngspice asked, which on
-    such circuits can crawl for minutes at these tolerances.
+    jolty runs first with free step sizes: if jolty finishes, the solution continues
+    regardless of ngspice. Only when jolty also stops early is ngspice queried,
+    avoiding minute-long ngspice stalls on ill-conditioned circuits at tight limits.
     """
     charged = Simulation(parasitic(circuit))
     try:

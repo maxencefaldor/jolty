@@ -1,26 +1,22 @@
 # Copyright 2026 Maxence Faldor
-"""Every Python block of the guide and the README runs, and every output they quote.
+"""Verification that every Python block and quoted output in the guide and README runs.
 
-A page's Python blocks run in order in one namespace, so a block may build on those
-before it. A block is an excerpt of a script, as rumdl lints it: its namespace
-starts with what its script would import, the names of `jolty` and of its modules
-`units`, `plan` and `specs`, and with what the body of a component holds, its builder
-`c` and its ground port `ground`. A block that defines a script's `plan` or `specs`
-calls it, as the runner does; a script's `build` builds the script's own circuit, which
-an excerpt leaves out. An expression whose comment is a Python literal, such as
-`neighbors("E96", 1234.0)  # (1210.0, 1240.0)`, quotes its value.
+Python blocks on a page execute sequentially in one shared namespace, allowing later
+blocks to build on earlier ones. Each block is a script excerpt (as rumdl lints it)
+pre-populated with `jolty`, `units`, `plan`, `specs`, a component builder `c`, and
+`ground`. A block defining `plan` or `specs` invokes it like the CLI runner, whereas
+excerpts omit `build` functions that construct standalone circuits. A trailing comment
+containing a Python literal, such as `neighbors("E96", 1234.0)  # (1210.0, 1240.0)`,
+asserts the expression's value.
 
-A block that cannot run says why on the line before it, `<!-- not run: why -->`. A
-quoted output, a text block, names on the line before it the commands that print it,
-`<!-- output of: commands -->`, each a `jolty` command or `python` and a script, `;`
-between them, run one after another in a directory of copies of the examples and of
-the scripts of `tests/guide`. The quote is an excerpt of what they print: its lines are
-consecutive lines of the output, where a line `...` stands for any lines, and a `...`
-within a line for any text, such as a digest that changes with every build. Results
-agree across machines to rounding, not to the bit, so a number the quote writes with a
-decimal point or an exponent, a rounded value, matches a printed one within one unit in
-its last quoted digit and `ULPS` units in the last place of a float; every other
-character, counts and names included, is exact.
+Skipped blocks document the reason on the preceding line (`<!-- not run: why -->`).
+Quoted output blocks list their shell commands on the preceding line
+(`<!-- output of: commands -->`), separated by `;` and executed sequentially in a
+staging directory holding copies of examples and `tests/guide` scripts. Quoted text
+matches consecutive output lines, with standalone `...` matching any lines and inline
+`...` matching arbitrary substrings such as build digests. Numeric values printed with
+a decimal point or exponent match within one unit in the last quoted digit plus `ULPS`
+floating-point ULPs, while all other characters match verbatim.
 """
 
 import ast
@@ -67,13 +63,13 @@ NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+(?:e[+-]?\d+)?|e[+-]?\d+)(?![\d.])"
 """A number written with a decimal point or an exponent: a rounded value."""
 
 ULPS = 4
-"""How many of a float's units in the last place two platforms' values may differ by.
+"""Maximum floating-point ULP difference tolerated across platforms.
 
-Their libm functions round apart by a few units, which a computation carries. A value
-printed to some digits then differs from the quoted one only where it sits near a
-rounding boundary, by one unit in the last printed digit, so a quoted number matches
-within that unit plus `ULPS` units in the last place of its value: at a report's 4
-digits about the unit alone, at the 17 digits a float prints in full about the units.
+Platform libm implementations can round a few ULPs apart and propagate through later
+arithmetic. A formatted number therefore differs from a quoted value only near a
+rounding boundary, by one unit in its last printed digit. Matching allows one unit in
+the last quoted digit plus `ULPS` floating-point ULPs (dominated by the digit unit at
+4-digit report precision and by `ULPS` at full 17-digit float precision).
 """
 
 SCRIPT_FUNCTIONS = ("plan", "specs")
@@ -98,7 +94,7 @@ class Block:
 
 
 def blocks(page: Path) -> Iterator[Block]:
-    """The Python blocks and the quoted outputs of a page, in order."""
+    """Yields the Python blocks and quoted output blocks of `page` in order."""
     text = page.read_text(encoding="utf-8")
     for found in BLOCK.finditer(text):
         fence = found.start("language") - len("```")
@@ -117,7 +113,7 @@ BLOCKS = tuple(block for page in PAGES for block in blocks(page))
 
 
 def namespace() -> dict[str, object]:
-    """What a block's script holds before it: jolty's names, and a component's body."""
+    """Returns the initial execution namespace for a guide block."""
     names: dict[str, object] = {}
     for module in (jolty, units, plan, specs):
         public = getattr(module, "__all__", None) or [
@@ -130,7 +126,7 @@ def namespace() -> dict[str, object]:
 
 
 def quoted_values(block: Block) -> dict[int, object]:
-    """The values the comments of a block quote, by the line of the block they end."""
+    """Extracts literal values quoted in trailing comments of `block`, by line."""
     values: dict[int, object] = {}
     for token in tokenize.generate_tokens(io.StringIO(block.body).readline):
         if token.type == tokenize.COMMENT:
@@ -184,7 +180,7 @@ def test_each_python_block_of_a_page_runs(
 
 
 def output(commands: str, directory: Path, capsys: pytest.CaptureFixture[str]) -> str:
-    """What the commands print, run one after another in `directory`."""
+    """Runs semicolon-separated `commands` in `directory` and returns stdout."""
     printed = []
     for command in commands.split(";"):
         program, *arguments = shlex.split(command)
@@ -210,10 +206,9 @@ def output(commands: str, directory: Path, capsys: pytest.CaptureFixture[str]) -
 
 
 def tolerance(number: str) -> float:
-    """How far a printed number may lie from a quoted one.
+    """Computes the allowed difference between a printed and quoted `number`.
 
-    One unit in the quote's last printed digit, and `ULPS` units in the last place of
-    its value.
+    Combines one unit in the last printed digit with `ULPS` floating-point ULPs.
     """
     mantissa, _, exponent = number.partition("e")
     decimals = len(mantissa.partition(".")[2])
@@ -222,9 +217,9 @@ def tolerance(number: str) -> float:
 
 
 def excerpt(quote: str) -> tuple[re.Pattern[str], list[str]]:
-    """The pattern of the outputs a quote is an excerpt of, and the numbers it quotes.
+    """Builds a regex matching outputs containing `quote` and lists quoted numbers.
 
-    Each number the pattern captures is the printed one in place of a quoted one.
+    Each captured group corresponds to a printed number paired with a quoted value.
     """
     lines: list[str] = []
     numbers: list[str] = []
@@ -242,7 +237,7 @@ def excerpt(quote: str) -> tuple[re.Pattern[str], list[str]]:
 
 
 def agrees(quote: str, printed: str) -> bool:
-    """Whether the quote is an excerpt of the printed text, its numbers to rounding."""
+    """Returns whether `quote` matches an excerpt of `printed` within rounding."""
     pattern, numbers = excerpt(quote)
     return any(
         all(

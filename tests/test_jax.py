@@ -1,14 +1,14 @@
 # Copyright 2026 Maxence Faldor
 """Tests for the JAX bridge (`jolty.jax.function`).
 
-Checks bit-for-bit parity with `jolty.vjp`, agreement with central finite differences
-across all five differentiable analyses, `jax.jit`, `jax.grad`, `jax.value_and_grad`,
-`jax.vjp`, `jax.jacrev`, `jax.remat`, `jax.vmap` as one engine batch matching a loop bit
-for bit, empty batches, nested `vmap`, mixed `in_axes`, pullbacks kept from the forward
-pass, structural unknown changes (both added and dropped unknowns), unsorted and
-duplicate breakpoints, both `jax_enable_x64=True` and `False`, input and analysis
-validation, runtime failure messages, optional import error handling, and free-threaded
-`3.15t` execution without re-enabling the GIL.
+Verifies bit-for-bit parity with `jolty.vjp` and central finite-difference agreement
+across all five differentiable analyses. Covers `jax.jit`, `jax.grad`,
+`jax.value_and_grad`, `jax.vjp`, `jax.jacrev`, `jax.remat`, and batched `jax.vmap`
+matching scalar loops bit for bit. Exercises empty batches, nested `vmap`, mixed
+`in_axes`, pullbacks retained from forward passes, and structural unknown changes.
+Validates unsorted and duplicate breakpoints, `jax_enable_x64` modes, input checks,
+runtime errors, optional import handling, and free-threaded `3.15t` execution without
+re-enabling the GIL.
 """
 
 import builtins
@@ -20,6 +20,7 @@ import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Final
 from unittest.mock import patch
 
 import jax
@@ -61,12 +62,18 @@ from jolty.waveforms import Pulse, Sine
 from sample_circuits import CROSSBAR_WEIGHTS as WEIGHTS
 from sample_circuits import crossbar
 
+CENTRAL_DIFF_RTOL: Final = 1e-6
+"""Relative tolerance for `step=1e-4` central differences (O(step^2) + rounding)."""
+
+TRANSIENT_CENTRAL_DIFF_RTOL: Final = 1e-5
+"""Relative tolerance for `step=1e-4` transient differences with step-shift noise."""
+
 FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
 
 
 @component
 def driven_rc_filter(c: Builder) -> None:
-    """Sinusoidally driven RC low-pass filter for driven periodic steady state."""
+    """Builds a sinusoidally driven RC low-pass filter for periodic steady state."""
     ground = c.port("ground", Role.GROUND)
     drive = Sine(offset=0 * V, amplitude=1 * V, frequency=1 * MHz)
     source = c.place(devices.voltage_source(drive), name="V1")
@@ -79,7 +86,7 @@ def driven_rc_filter(c: Builder) -> None:
 
 @component
 def van_der_pol_tank(c: Builder) -> None:
-    """Autonomous LC tank oscillator with smooth cubic negative conductance."""
+    """Builds an autonomous LC tank oscillator with smooth cubic conductance."""
     ground = c.port("ground", Role.GROUND)
     inductance, capacitance = 1e-6, 1e-9
     impedance = math.sqrt(inductance / capacitance)
@@ -96,7 +103,7 @@ def van_der_pol_tank(c: Builder) -> None:
 
 @component
 def delayed_line_circuit(c: Builder) -> None:
-    """Pulse into a lossless transmission line whose transient VJP is refused."""
+    """Builds a pulse-driven lossless line whose transient VJP is refused."""
     ground = c.port("ground", Role.GROUND)
     drive = Pulse(
         initial=0 * V,
@@ -120,7 +127,7 @@ def delayed_line_circuit(c: Builder) -> None:
 
 @component
 def quadratic_fold_circuit(c: Builder) -> None:
-    """Quadratic behavioral load: real DC root exists iff resistance <= 500 ohm."""
+    """Builds a quadratic load with a real DC root when resistance <= 500 ohm."""
     ground = c.port("ground", Role.GROUND)
     resistor = c.place(devices.resistor(100 * ohm), name="R1")
     current = c.place(
@@ -173,7 +180,7 @@ def _assert_matches_central_difference(
     *,
     relative_tolerance: float,
 ) -> None:
-    """Compare gradient to central difference (O(step^2) truncation and rounding)."""
+    """Asserts gradient agreement with central differences within tolerance."""
     finite_difference = _central_difference(
         lambda current: float(
             loss_function(_as_jax_parameters(current, dtype=jnp.float64))
@@ -242,9 +249,8 @@ def test_operating_point_matches_jolty_vjp_bit_for_bit_and_finite_differences() 
                     float(jitted_gradient[instance][name]), expected_value
                 )
 
-        # Central difference at step=1e-4: O(step^2)=1e-8 truncation plus rounding.
         _assert_matches_central_difference(
-            loss, eager_gradient, WEIGHTS, relative_tolerance=1e-6
+            loss, eager_gradient, WEIGHTS, relative_tolerance=CENTRAL_DIFF_RTOL
         )
 
 
@@ -317,12 +323,17 @@ def test_ac_complex_wirtinger_sign_matches_jolty_vjp_and_finite_differences() ->
                 float(gradient_magnitude[instance]["resistance"]),
                 float(np.real(expected_magnitude[instance]["resistance"])),
             )
-        # Central difference at step=1e-4: O(step^2)=1e-8 truncation plus rounding.
         _assert_matches_central_difference(
-            loss_asymmetric, gradient_asymmetric, WEIGHTS, relative_tolerance=1e-6
+            loss_asymmetric,
+            gradient_asymmetric,
+            WEIGHTS,
+            relative_tolerance=CENTRAL_DIFF_RTOL,
         )
         _assert_matches_central_difference(
-            loss_magnitude_squared, gradient_magnitude, WEIGHTS, relative_tolerance=1e-6
+            loss_magnitude_squared,
+            gradient_magnitude,
+            WEIGHTS,
+            relative_tolerance=CENTRAL_DIFF_RTOL,
         )
 
         # Direct jax.vjp with a purely imaginary cotangent.
@@ -375,10 +386,8 @@ def test_transient_breakpoints_match_public_jolty_vjp_and_finite_differences() -
                 float(gradient[instance]["resistance"]), expected_value
             )
 
-        # Central difference at step=1e-4 over adaptive transient steps (O(step^2) +
-        # time-step shift noise, bounded by 1e-5 of largest gradient).
         _assert_matches_central_difference(
-            loss, gradient, WEIGHTS, relative_tolerance=1e-5
+            loss, gradient, WEIGHTS, relative_tolerance=TRANSIENT_CENTRAL_DIFF_RTOL
         )
 
 
@@ -407,10 +416,11 @@ def test_unsorted_and_duplicate_breakpoints_work_single_and_vmapped() -> None:
             return jnp.sum(weights_vector * wrapped_transient(parameters)["out0"])
 
         gradient = jax.grad(transient_loss)(jax_weights)
-        # Central difference at step=1e-4 over adaptive transient steps (O(step^2) +
-        # time-step shift noise, bounded by 1e-5 of largest gradient).
         _assert_matches_central_difference(
-            transient_loss, gradient, WEIGHTS, relative_tolerance=1e-5
+            transient_loss,
+            gradient,
+            WEIGHTS,
+            relative_tolerance=TRANSIENT_CENTRAL_DIFF_RTOL,
         )
 
         batched_resistances = jnp.array([1000.0, 1800.0, 2500.0], dtype=jnp.float64)
@@ -478,7 +488,7 @@ def test_driven_periodic_steady_state_gradient() -> None:
 
 
 def test_autonomous_periodic_steady_state_period_gradient_and_scaling_law() -> None:
-    """L * dT/dL + C * dT/dC = T on the van der Pol tank."""
+    """Verifies the scaling law L * dT/dL + C * dT/dC = T on the van der Pol tank."""
     options = Options(relative_tolerance=1e-6)
     analysis = PeriodicSteadyState()
     wrapped = jax_function(van_der_pol_tank(), analysis, options)

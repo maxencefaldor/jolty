@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""Memristors, VTEAM's and HP's, against the pinched loops their equations solve to.
+"""VTEAM and HP memristor models verified against closed-form pinched hysteresis loops.
 
 Driven by a sine, each memristor's state follows a closed form while its window is far
 from either bound. VTEAM's state integrates the voltage's excess over its threshold,
@@ -46,7 +46,7 @@ type Real = npt.NDArray[np.float64]
 ON, OFF = 1e3, 10e3
 """The VTEAM memristor's on and off resistances, in ohms."""
 THRESHOLD = 0.5
-"""Its off voltage, and its on voltage's magnitude, in volts."""
+"""Off threshold voltage and negative magnitude of the on threshold, in volts."""
 AMPLITUDE = 1.0
 """The sine's amplitude across each memristor, in volts: twice the threshold."""
 FREQUENCY = 1e3
@@ -54,18 +54,17 @@ FREQUENCY = 1e3
 START = 0.3
 """The state each memristor is made in."""
 SWING = 0.4
-"""How far each lobe of the sine moves a state."""
+"""State excursion produced by each sinusoidal half-cycle lobe."""
 
 MEMRISTOR = ("M1",)
 """The memristor, recorded, whose current, charge and variables the tests read."""
 
 TIGHT = Options(relative_tolerance=1e-7)
-"""Options under which the integration's error is far below the comparisons', which
-record the memristor ``M1`` the tests read."""
+"""Tight solver options keeping integration error far below comparison tolerances."""
 
 
 def _driven(memristor: devices.Device, frequency: float = FREQUENCY) -> Component:
-    """`memristor` across a sine of `AMPLITUDE` at `frequency`."""
+    """Builds a circuit driving `memristor` with an `AMPLITUDE` sine at `frequency`."""
 
     @component
     def driven(c: Builder, memristor: devices.Device, frequency: float) -> None:
@@ -80,11 +79,11 @@ def _driven(memristor: devices.Device, frequency: float = FREQUENCY) -> Componen
 
 
 def _run(memristor: devices.Device, periods: float = 2) -> results.TransientResult:
-    """The memristor's waveforms over `periods` of the sine, in fine steps.
+    """Simulates `memristor` waveforms over `periods` sine cycles with fine time steps.
 
-    VTEAM's state turns as the sine crosses a threshold, where no step need land; a
-    ten-thousandth of a period from it, the integration's error there is a few parts
-    in 10⁸ of its swing.
+    VTEAM state transitions occur at threshold crossings where no step need land. At a
+    ten-thousandth of a period, the resulting integration error is a few parts in 10⁸
+    of the state swing.
     """
     simulation = Simulation(_driven(memristor))
     stop, step = periods / FREQUENCY, 1e-4 / FREQUENCY
@@ -94,7 +93,7 @@ def _run(memristor: devices.Device, periods: float = 2) -> results.TransientResu
 
 
 def _resistance(state: Real, law: str, on: float = ON, off: float = OFF) -> Real:
-    """The resistance the state sets, by `law`."""
+    """Computes memristor resistance from `state` according to `law`."""
     if law == "linear":
         return on + (off - on) * state
     return on * (off / on) ** state
@@ -115,14 +114,14 @@ CROSSING = math.asin(THRESHOLD / AMPLITUDE)
 
 
 def _lobe(phase: Real, exponent: int) -> Real:
-    """``∫ (a·sin θ - 1)^n dθ`` from the sine's crossing of the threshold to `phase`."""
+    """Evaluates ``∫ (a·sin θ - 1)^n dθ`` from the threshold crossing to `phase`."""
     a = AMPLITUDE / THRESHOLD
     antiderivative = _ANTIDERIVATIVES[exponent]
     return antiderivative(a, phase) - antiderivative(a, np.array(CROSSING))
 
 
 def _vteam_rate(exponent: int, frequency: float = FREQUENCY) -> float:
-    """The rate, at twice the threshold, at which a lobe moves the state by `SWING`."""
+    """Computes the VTEAM switching rate that moves state by `SWING` per sine lobe."""
     lobe = float(_lobe(np.array(math.pi - CROSSING), exponent))
     return SWING * 2 * math.pi * frequency / lobe
 
@@ -130,7 +129,7 @@ def _vteam_rate(exponent: int, frequency: float = FREQUENCY) -> float:
 def _vteam(
     exponent: int = 1, law: str = "linear", rate: float | None = None
 ) -> devices.Device:
-    """A VTEAM memristor symmetric in its thresholds and its rates."""
+    """Builds a VTEAM memristor with symmetric thresholds and switching rates."""
     rate = _vteam_rate(exponent) if rate is None else rate
     return devices.voltage_controlled_memristor(
         on_resistance=ON * ohm,
@@ -147,11 +146,11 @@ def _vteam(
 
 
 def _vteam_state(times: Real, exponent: int) -> Real:
-    """The VTEAM memristor's state under the sine, its window far from either bound.
+    """Computes closed-form VTEAM state under sinusoidal drive away from window bounds.
 
-    Above the off voltage, the state rises at ``k·(a·sin θ - 1)^n``; below the on
-    voltage, it falls at the same rate of the sine's negative lobe; between them, it
-    holds. Each lobe moves it by `SWING`, the negative one back.
+    Above the off voltage, state rises as ``k·(a·sin θ - 1)^n``; below the on voltage,
+    state falls symmetrically on the negative lobe; between thresholds, state holds
+    constant. Each lobe shifts state by `SWING` and returns on the opposite half-cycle.
     """
     omega = 2 * math.pi * FREQUENCY
     speed = _vteam_rate(exponent) / omega
@@ -212,11 +211,11 @@ def test_below_its_thresholds_vteams_memristor_is_a_resistor() -> None:
 
 
 def test_a_periodic_steady_state_keeps_a_state_its_drive_leaves_alone() -> None:
-    """Below its thresholds, every state of VTEAM's memristor repeats each period.
+    """Verifies that sub-threshold VTEAM states repeat under periodic shooting.
 
-    Its steady state is not unique: shooting keeps the state it starts from, as a
-    transient would, and the capacitor it charges settles as through the resistance
-    that state sets.
+    The periodic steady state is non-unique: shooting preserves the initial memristor
+    state just like transient integration, and the series capacitor settles through the
+    corresponding fixed resistance.
     """
     quiet = devices.voltage_controlled_memristor(
         on_resistance=ON * ohm,
@@ -254,10 +253,10 @@ def test_a_periodic_steady_state_keeps_a_state_its_drive_leaves_alone() -> None:
 
 
 def _lobe_area(waveforms: results.TransientResult, period: float) -> float:
-    """The area of the loop's positive lobe in the second period, ``∫ i dv``.
+    """Computes the positive-lobe hysteresis area ``∫ i dv`` in the second period.
 
-    The lobes of a pinched loop turn opposite ways, so over a whole period their areas
-    cancel; the lobe over the sine's positive half closes at the origin on its own.
+    Opposite lobes of a pinched loop wind in opposite directions, so full-period areas
+    cancel. The positive half-cycle lobe closes independently at the origin.
     """
     times = waveforms.times
     within = (times >= period) & (times <= 1.5 * period)
@@ -267,11 +266,11 @@ def _lobe_area(waveforms: results.TransientResult, period: float) -> float:
 
 
 def test_a_pinched_loop_shrinks_as_the_frequency_rises() -> None:
-    """Chua's fingerprints of a memristor, for VTEAM's and for HP's.
+    """Verifies Chua's memristor fingerprints for both VTEAM and HP models.
 
-    The loop of current against voltage passes through the origin, its lobes' area
-    falls as the frequency rises, and the loop closes to a line as it grows without
-    bound: the state, which integrates its drive, has ever less time to move.
+    The current-voltage loop passes through the origin, and lobe area decreases as
+    drive frequency increases. As frequency grows without bound, the loop collapses to
+    a line because the integrating state has progressively less time to move.
     """
     for cell in [_vteam(), _hp()]:
         areas = []
@@ -294,13 +293,13 @@ def test_a_pinched_loop_shrinks_as_the_frequency_rises() -> None:
 # HP's memristor.
 
 HP_ON, HP_OFF = 100.0, 16e3
-"""HP's memristor's on and off resistances, in ohms, as Strukov et al. give them."""
+"""On and off resistances of the HP memristor in ohms, from Strukov et al."""
 
 
 def _hp_charge() -> float:
-    """The charge across the whole range under which a lobe moves the state by `SWING`.
+    """Computes the full-range HP memristor charge producing `SWING` per sine lobe.
 
-    The resistance is ``√(r₀² + 2·Δr·φ/Q)`` at a flux `φ`, which a lobe of the sine
+    Resistance obeys ``√(r₀² + 2·Δr·φ/Q)`` at flux `φ`, which one sinusoidal lobe
     raises to ``2·V/ω``.
     """
     flux = 2 * AMPLITUDE / (2 * math.pi * FREQUENCY)
@@ -312,7 +311,7 @@ def _hp_charge() -> float:
 
 
 def _hp() -> devices.Device:
-    """HP's memristor, made at `START`."""
+    """Builds the HP memristor initialized at state `START`."""
     return devices.current_controlled_memristor(
         on_resistance=HP_ON * ohm,
         off_resistance=HP_OFF * ohm,
@@ -322,11 +321,11 @@ def _hp() -> devices.Device:
 
 
 def test_hps_resistance_is_the_square_root_of_a_line_in_the_flux() -> None:
-    """Strukov et al.'s closed form: ``M(φ) = √(r₀² + 2·Δr·φ/Q)``.
+    """Verifies Strukov et al.'s closed form ``M(φ) = √(r₀² + 2·Δr·φ/Q)``.
 
-    The state moves by the charge over `Q`, so the resistance is linear in the charge,
-    ``r₀ + Δr·q/Q``; the flux, the integral of ``r·dq``, is then quadratic in the
-    charge, and the resistance the square root of a line in the flux.
+    State varies linearly with charge divided by `Q`, making resistance linear in
+    charge (``r₀ + Δr·q/Q``). Integrating ``r·dq`` gives flux quadratic in charge, so
+    resistance equals the square root of a linear function of flux.
     """
     waveforms = _run(_hp())
     omega = 2 * math.pi * FREQUENCY
@@ -355,7 +354,7 @@ def test_hps_resistance_is_the_square_root_of_a_line_in_the_flux() -> None:
 
 
 def _fed(level: float, memristor: devices.Device | None = None) -> Component:
-    """`memristor`, the VTEAM memristor unless given, fed from `level` through 1 kΩ."""
+    """Builds a circuit driving `memristor` (default VTEAM) from `level` via 1 kΩ."""
 
     @component
     def fed(c: Builder, level: float, memristor: devices.Device) -> None:
@@ -371,10 +370,10 @@ def _fed(level: float, memristor: devices.Device | None = None) -> Component:
 
 
 def test_an_operating_point_holds_the_state_and_shows_its_rate() -> None:
-    """Only time moves a state: at DC it is the one the memristor was made in.
+    """Verifies that DC operating points preserve initial state and report state rate.
 
-    Its rate there says how fast a transient would move it: zero between its
-    thresholds, and VTEAM's law past them.
+    The reported derivative matches the instantaneous transient rate: zero between
+    thresholds and VTEAM's switching law beyond them.
     """
     simulation = Simulation(_fed(0.0))
     levels = [-3.0, -0.2, 0.2, 3.0]
@@ -427,11 +426,10 @@ def test_its_small_signal_resistance_is_the_one_its_state_sets() -> None:
 
 
 def test_a_transients_sensitivities_carry_the_state_it_starts_from() -> None:
-    """The state's derivatives over a transient match differences of whole runs.
+    """Verifies that transient state sensitivities match finite differences of runs.
 
-    An operating point holds the state, and a transient's charges start from it, so the
-    derivative of the switched state with respect to the state the memristor was made
-    in is carried from the operating point into the transient.
+    The operating point holds the initial state and seeds transient charges,
+    propagating sensitivity with respect to initial state from DC into the transient.
     """
     transient = Transient(20e-6 * s, max_step=0.1e-6 * s, record=MEMRISTOR)
     simulation = Simulation(_fed(3.0))

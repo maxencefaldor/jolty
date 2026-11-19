@@ -30,7 +30,7 @@ EXAMPLES: Final = Path(__file__).parent.parent / "examples"
 
 
 def _example(name: str) -> ModuleType:
-    """The example `name`, imported as the examples import each other."""
+    """Imports example module `name` using the examples import path."""
     sys.path.insert(0, str(EXAMPLES))
     try:
         return importlib.import_module(name)
@@ -39,10 +39,10 @@ def _example(name: str) -> ModuleType:
 
 
 def _steady_ring() -> Component:
-    """The examples' ring oscillator on its supply, without the pulse that kicks it.
+    """Builds the example ring oscillator without its startup kick pulse.
 
-    A transient from its balanced operating point stays there; a periodic steady state
-    starts it along its fastest-growing mode.
+    A transient from the balanced operating point remains stuck there, whereas periodic
+    steady-state analysis excites the fastest-growing unstable mode.
     """
     common, example = _example("common"), _example("ring_oscillator")
 
@@ -59,7 +59,7 @@ def _steady_ring() -> Component:
 
 
 def _rising(waveforms: results.TransientResult, net: str, level: float) -> np.ndarray:
-    """The times `net` rises through `level`, interpolated linearly between steps."""
+    """Computes linearly interpolated rising crossings of `net` through `level`."""
     times, values = waveforms.times, waveforms.voltage(net)
     below = np.flatnonzero((values[:-1] <= level) & (values[1:] > level))
     fraction = (level - values[below]) / (values[below + 1] - values[below])
@@ -67,11 +67,10 @@ def _rising(waveforms: results.TransientResult, net: str, level: float) -> np.nd
 
 
 def _periods(relative_tolerance: float, longest: float) -> tuple[float, float, float]:
-    """The ring's period by shooting and by a long transient, its scatter beside.
+    """Returns ring periods from shooting and transient runs plus transient scatter.
 
-    The steps are at most `longest` seconds. The transient is the example's, kicked;
-    its period is the mean of its last 20, after 17 to settle, and its scatter how far
-    the longest and the shortest of them lie apart, a fraction of that mean.
+    Time steps cap at `longest` seconds. The kicked transient settles for 17 cycles,
+    averages the last 20 cycles, and reports peak-to-peak scatter divided by that mean.
     """
     options = Options(relative_tolerance=relative_tolerance)
     longest_step = longest * 1e12 * ps
@@ -88,14 +87,12 @@ def _periods(relative_tolerance: float, longest: float) -> tuple[float, float, f
 
 
 def test_a_ring_oscillator_runs_at_a_long_transients_settled_period() -> None:
-    """Shooting finds the period a long transient settles into, within its error.
+    """Verifies shooting period matches a settled transient within its error bound.
 
-    The transient's error at each setting is its settled period's distance from the
-    same transient's at a relative tolerance of 1e-9 and steps of at most 1 ps, the
-    reference, together with the scatter of its own periods; at the reference's
-    setting, its scatter alone. The scatter alone does not bound it: at 1e-7, the
-    steps fall into a pattern each period repeats, and its periods agree to 1e-11
-    while their mean lies 2e-5 off the reference.
+    At each setting, transient error combines deviation from the tight reference
+    (`reltol=1e-9`, max step 1 ps) with period scatter; at the reference itself,
+    scatter alone applies. Scatter alone understates bias: at 1e-7, periodic step
+    locking keeps scatter near 1e-11 while the mean sits 2e-5 off the reference.
     """
     found, reference, scatter = _periods(1e-9, 1e-12)
     assert abs(found / reference - 1) <= scatter
@@ -106,13 +103,12 @@ def test_a_ring_oscillator_runs_at_a_long_transients_settled_period() -> None:
 
 
 def test_an_oscillators_period_moves_with_its_tank_as_it_scales() -> None:
-    """A tank's period scales with time, L and C alike: L ∂T/∂L + C ∂T/∂C = T.
+    """Verifies tank period scaling `L ∂T/∂L + C ∂T/∂C = T` for an autonomous LC tank.
 
-    Its conductance feeds it inside the circle of radius 1 V, in volts and its impedance
-    times its current, and drains it outside, so the equations, with that impedance
-    held, are unchanged when time, L and C scale alike. The derivatives meet it as far
-    as Newton's iterates meet each step's equations: to 7e-10 at the default relative
-    tolerance, 1e-3, and to 1.8e-13 at 1e-6, held to 1e-12.
+    Active conductance supplies energy inside the 1 V radius (measured in voltage and
+    scaled current) and drains it outside, keeping equations invariant when time, L,
+    and C scale together. Derivatives satisfy the scaling law to Newton convergence:
+    7e-10 at default `reltol=1e-3` and 1.8e-13 at `1e-6`, asserted within 1e-12.
     """
     inductance, capacitance = 1e-6, 1e-9
     impedance = math.sqrt(inductance / capacitance)

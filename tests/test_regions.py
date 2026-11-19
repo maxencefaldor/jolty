@@ -1,11 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""Each transistor's region of operation at an operating point, as its model states it.
+"""Operating-region classification and boundary margin checks for library transistors.
 
-Every transistor of the library, each model a part of IEEE 315's letter Q is made of,
-is biased into each region its model's equations distinguish, and an operating point
-that records it reads that region back by its path; the margins that place it there
-are its variables, and the report lists them, those nearest a boundary first, at the
-plan's own operating points that `jolty simulate` runs.
+Every transistor model (IEEE 315 letter Q) is biased into each region distinguished by
+its model equations, and operating-point recording reads back the region by path.
+Boundary margins appear as device variables and sort closest-to-boundary first in
+`jolty simulate` operating-point reports.
 """
 
 import pytest
@@ -81,7 +80,7 @@ BIASES: dict[str, tuple[Bias, ...]] = {
 def biased(
     model: str, parameters: dict[str, JsonValue], voltages: dict[str, float]
 ) -> Component:
-    """A transistor `T1` of `model` with each terminal held at its voltage."""
+    """Builds a circuit biasing `T1` of `model` at fixed terminal voltages."""
     c = Builder("biased")
     ground = c.port("ground", Role.GROUND)
     device = devices.device(model, parameters)
@@ -108,7 +107,7 @@ def test_every_transistor_reaches_each_region_its_model_distinguishes() -> None:
             assert point.region("T1") == region, (model, voltages)
             (device,) = point.recording.devices
             distinguished.update(device.regions)
-            # Its region recorded alone reads as recorded with all of its numbers.
+            # Region-only recording returns the same region as full device recording.
             alone = simulation.run(OperatingPoint(regions=True))
             assert alone.region("T1") == region, (model, voltages)
             for margin in device.margins:
@@ -155,9 +154,9 @@ def test_the_report_lists_each_transistor_nearest_a_boundary_first() -> None:
     point = simulation.run(OperatingPoint(record=simulation.transistors))
     summary = report.report("op", point, max_unknowns=40)
     assert isinstance(summary, report.OperatingPointReport)
-    # Above a threshold of 1 V, M1's gate at 3 V and drain at 5 V leave it 2 V of
-    # overdrive and 3 V past saturation; M2, a p-channel of threshold -1 V, its gate and
-    # drain at -2 V, 1 V of each, positive as for every transistor on and saturated.
+    # With threshold 1 V, M1 (Vg=3 V, Vd=5 V) has 2 V overdrive and 3 V saturation
+    # margin. P-channel M2 (Vth=-1 V, Vg=Vd=-2 V) has 1 V of each, both positive for
+    # saturated transistors.
     assert [transistor.path for transistor in summary.transistors] == ["M2", "M1"]
     (m1_overdrive, m1_margin) = summary.transistors[1].margins
     assert (m1_overdrive.variable, m1_margin.variable) == (

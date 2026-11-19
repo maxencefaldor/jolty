@@ -112,7 +112,7 @@ def test_a_number_beyond_the_tolerance_disagrees() -> None:
 
 
 def test_tline_agrees_with_closed_form() -> None:
-    """Lossless transmission line probes via Transient and agrees with closed form."""
+    """Verifies that lossless transmission line transient probes match closed form."""
     fixture = FIXTURES["tline"]
     cell = matrix.run(fixture, Simulator.JOLTY)
     assert cell.found is not None
@@ -123,7 +123,7 @@ def test_tline_agrees_with_closed_form() -> None:
 
 
 def test_ngspice_only_reads_declared_names() -> None:
-    """An `ngspice_only` row reads its declared keys instead of returning empty `{}`."""
+    """Verifies that an `ngspice_only` row reads its declared keys instead of `{}`."""
     row = ngspice_only(
         "probe",
         "Probe divider",
@@ -142,7 +142,7 @@ def test_ngspice_only_reads_declared_names() -> None:
 
 
 def test_vbic_agrees_with_exact_closed_form() -> None:
-    """VBIC 1.2 agrees with its exact closed form (RBI=RCI=RBP=0.1 ohm, q1 floor).
+    """Verifies VBIC 1.2 against its exact closed form (RBI=RCI=RBP=0.1 ohm, q1 floor).
 
     Explains the prior 2.11e-6 miss against naive Ebers-Moll (default RBI=0.1 ohm
     drops I_b * RBI ~= 5.67e-8 V -> -2.19e-6 shift, plus q1 smoothing -2.50e-9 and
@@ -235,7 +235,7 @@ def test_vbic_agrees_with_exact_closed_form() -> None:
 
 
 def test_bsim3_probe_is_in_strong_inversion_saturation() -> None:
-    """BSIM3v3.3 probe runs in strong-inversion saturation, well above gmin leakage."""
+    """Verifies that the BSIM3v3.3 probe operates in strong-inversion saturation."""
     transistor = devices.bsim3(channel="n", width=10e-6 * m_, length=1e-6 * m_)
     built = circuit(
         forced(
@@ -270,7 +270,7 @@ def test_bsim3_probe_is_in_strong_inversion_saturation() -> None:
     ],
 )
 def test_v2_jolty_rows_agree_with_closed_form(key: str) -> None:
-    """Every new v2 row that jolty executes agrees with its closed form offline."""
+    """Verifies every executable v2 coverage row matches its closed form offline."""
     fixture = FIXTURES[key]
     cell = matrix.run(fixture, Simulator.JOLTY)
     assert cell.found is not None, f"{key}: {cell.status} ({cell.evidence})"
@@ -281,7 +281,7 @@ def test_v2_jolty_rows_agree_with_closed_form(key: str) -> None:
 
 
 def test_v2_unsupported_and_documented_rows_work_offline() -> None:
-    """Unsupported v2 analyses and external PDK kit rows report statically offline."""
+    """Verifies unsupported v2 analyses and external PDK rows report offline."""
     for key in ("disto", "sp", "trnoise"):
         cell = matrix.run(FIXTURES[key], Simulator.JOLTY)
         assert cell.status is matrix.Status.UNSUPPORTED
@@ -352,7 +352,7 @@ def test_v2_unsupported_and_documented_rows_work_offline() -> None:
 
 
 def test_printed_reads_equals_and_colon_formats() -> None:
-    """Printed-value parser handles both `.meas` (`=`) and `four` (`THD:`) lines."""
+    """Verifies the parser handles both `.meas` (`=`) and `four` (`THD:`) lines."""
     measure_text = "tcross          =  1.693147e-06 targ= ..."
     fourier_text = (
         "No. Harmonics: 10, THD: 5.000000 %, Gridsize: 200, Interpolation Degree: 1"
@@ -376,7 +376,7 @@ def test_printed_reads_equals_and_colon_formats() -> None:
 def test_ngspice_column_is_what_its_fixture_finds(
     simulator: Simulator, key: str
 ) -> None:
-    """When ngspice is installed, its committed column matches live runs."""
+    """Verifies that the committed ngspice column matches live runs when installed."""
     assert ngspice.EXECUTABLE is not None, (
         "ngspice is not installed (required by JOLTY_REQUIRE_NGSPICE=1)"
     )

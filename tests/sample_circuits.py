@@ -24,7 +24,7 @@ def divider(
     *,
     source_name: str = "V1",
 ) -> None:
-    """Build a resistive voltage divider driving net `out` from `source_name`."""
+    """Builds a resistive voltage divider driving net `out` from `source_name`."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(level), name=source_name)
     top = c.place(devices.resistor(upper), name="R1")
@@ -36,7 +36,7 @@ def divider(
 
 @component
 def low_pass(c: Builder) -> None:
-    """Build a unit-step 1 kohm / 1 nF RC low-pass filter."""
+    """Builds a unit-step 1 kohm / 1 nF RC low-pass filter."""
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(0 * us, 0 * V), (1e-3 * us, 1 * V)])
     source = c.place(devices.voltage_source(step), name="V1")
@@ -49,7 +49,7 @@ def low_pass(c: Builder) -> None:
 
 @component
 def crossbar(c: Builder, first_weight: Quantity = 1 * kohm) -> None:
-    """Build a two-input, two-output loaded resistive crossbar."""
+    """Builds a two-input, two-output loaded resistive crossbar."""
     ground = c.port("ground", Role.GROUND)
     for row, level in enumerate((0.3 * V, -0.2 * V)):
         source = c.place(devices.voltage_source(level), name=f"V{row}")

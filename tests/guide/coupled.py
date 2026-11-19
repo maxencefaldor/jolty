@@ -7,7 +7,7 @@ from jolty.units import V, kohm, nF
 
 @component
 def coupled(c: Builder) -> None:
-    """A source, then a capacitor, a resistor and a capacitor to the ground."""
+    """Builds a source driving a capacitor, a resistor, and a capacitor to ground."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
     first = c.place(devices.capacitor(10 * nF), name="C1")
@@ -20,5 +20,5 @@ def coupled(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The coupled stage."""
+    """Returns the AC-coupled stage component."""
     return coupled()

@@ -1,8 +1,8 @@
 # Copyright 2026 Maxence Faldor
-"""A tank of 1 mH and 1 nF that a negative conductance of 100 µS undamps.
+"""A 1 mH / 1 nF tank undamped by a 100 µS negative conductance.
 
-Its poles are `5e4 ± j·√(10¹² - 2.5·10⁹)` rad/s, a mode near 159 kHz that grows from
-the operating point: `unstable-pole`.
+The linearized poles sit at `5e4 ± j·√(10¹² - 2.5·10⁹)` rad/s, creating a
+growing mode near 159 kHz (`unstable-pole`).
 """
 
 from jolty import Builder, Component, Plan, Role, component, devices
@@ -12,7 +12,7 @@ from jolty.units import S, mH, nF
 
 @component
 def oscillator(c: Builder) -> None:
-    """The tank across `n` and the ground, and a source feeding its voltage back."""
+    """Builds the tank across `n` and ground with positive-feedback transconductance."""
     ground = c.port("ground", Role.GROUND)
     inductor = c.place(devices.inductor(1 * mH), name="L1")
     capacitor = c.place(devices.capacitor(1 * nF), name="C1")
@@ -25,10 +25,10 @@ def oscillator(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The tank and its feedback."""
+    """Returns the unstable-tank test circuit."""
     return oscillator()
 
 
 def plan() -> Plan:
-    """The operating point."""
+    """Returns the operating-point simulation plan."""
     return Plan({"op": OperatingPoint()})

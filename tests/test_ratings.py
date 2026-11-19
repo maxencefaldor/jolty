@@ -75,7 +75,7 @@ def test_a_rating_names_the_devices_terminals_in_its_unit() -> None:
 
 @component
 def supply(c: Builder, *, rated_power: float, rated_voltage: float) -> None:
-    """10 V that pulses to 20 V for 2 µs, across 100 Ω and 1 µF, each rated."""
+    """Builds a 10 V to 20 V 2 µs pulse across a rated 100 Ω resistor and 1 µF cap."""
     ground = c.port("ground", Role.GROUND)
     pulse = Pulse(
         initial=10 * V,
@@ -106,10 +106,10 @@ def raised(built: Component) -> list[tuple[str, str]]:
 
 
 def stated(pattern: str, message: str) -> float:
-    """The stress `message` states where `pattern` holds `{}`.
+    """Extracts the stress value from `message` at the `{}` slot in `pattern`.
 
-    A transient's stress carries the rounding of its Newton iteration in its last
-    digits, which the message states exactly.
+    Transient stress values carry Newton rounding in trailing digits, which the message
+    prints verbatim.
     """
     head, tail = (re.escape(part) for part in pattern.split("{}"))
     found = re.fullmatch(rf"{head}(\S+){tail}", message)
@@ -194,7 +194,7 @@ def test_by_default_results_record_the_instances_rated_for_a_current_or_power() 
 
 @component
 def divided(c: Builder) -> None:
-    """Two resistors of 100 Ω in series, a component rated for 0.5 W."""
+    """Builds two 100 Ω resistors in series inside a 0.5 W rated subcomponent."""
     top, bottom = c.port("top"), c.port("bottom")
     upper = c.place(devices.resistor(100 * ohm), name="R1")
     lower = c.place(devices.resistor(100 * ohm), name="R2")

@@ -80,7 +80,7 @@ def call(name: str, arguments: Mapping[str, object]) -> CallToolResult:
 
 
 def text_of(result: CallToolResult) -> str:
-    """The text of a tool result's first content, which is always text."""
+    """Extracts the text payload from the first content item of `result`."""
     content = result.content[0]
     assert isinstance(content, TextContent)
     return content.text

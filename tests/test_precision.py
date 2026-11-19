@@ -27,8 +27,8 @@ def test_phi_agrees_with_mpmath_on_both_sides_of_its_series() -> None:
         z = mpmath.mpc(argument)
         exact_first = (mpmath.exp(z) - 1) / z
         exact_second = (mpmath.exp(z) - 1 - z) / z**2
-        # Each is within its rounding: seven of a direct form's cancellation, and a
-        # few roundings beside, as ROUNDINGS counts them.
+        # Each stays within rounding: seven ULPs from direct cancellation plus extra
+        # roundings counted by ROUNDINGS.
         assert abs(one - complex(exact_first)) <= 16 * exact.EPSILON * abs(exact_first)
         assert abs(two - complex(exact_second)) <= (
             16 * exact.EPSILON * abs(exact_second)
@@ -45,7 +45,7 @@ def test_an_rc_follows_its_closed_form_within_its_bound() -> None:
     values, bound = modal.at(times)
 
     def ramp(time: object) -> object:
-        """The response to a unit ramp from zero, ``t - τ(1 - e^{-t/τ})``, in mpmath."""
+        """Evaluates the unit-ramp response ``t - τ(1 - e^{-t/τ})`` in mpmath."""
         at = mpf(time)
         return at - tau * (1 - mpmath.exp(-at / tau)) if at > 0 else mpf(0)
 
@@ -93,7 +93,7 @@ def test_the_tree_solver_agrees_with_the_general_one() -> None:
     times = np.concatenate([np.linspace(0, 2e-9, 9), np.geomspace(3e-9, 1e-4, 30)])
     ours, our_bound = solved.at(times)
     theirs, their_bound = general.at(times)
-    # Each is within its own bound of the exact answer, so within both of the other.
+    # Each solution stays within its bound of the exact value, bounding the difference.
     assert np.all(np.abs(ours - theirs) <= our_bound + their_bound)
 
 
@@ -283,8 +283,8 @@ def test_xyce_runs_a_fixture_and_scores_it() -> None:
     mixed = suite.score(prepared.fixture.compare(ran.found)[output.name], output)[
         "mixed"
     ]
-    # Xyce's trapezoidal steps, its default, are at most a fiftieth of the run, as
-    # jolty's and ngspice's are: an error of at most about 8e-4 of the 1 V swing.
+    # Xyce default trapezoidal steps cap at one-fiftieth of the run like jolty and
+    # ngspice, keeping error below about 8e-4 of the 1 V swing.
     assert 3 < mixed.digits < mixed.limit
 
 
@@ -320,7 +320,7 @@ def test_a_stopped_run_says_each_kind_of_trouble_once_and_how_far_it_came() -> N
 
 
 def test_ladder_100_exact_root_pivot_does_not_divide_by_zero() -> None:
-    """`exact._Elimination` handles exact 50-digit roots (`pivots[0] == 0`) cleanly."""
+    """Verifies `exact._Elimination` handles exact 50-digit zero pivots cleanly."""
     with mp.workdps(exact.DIGITS):
         # 3-node path A = [[2, -1, 0], [-1, 3, -1], [0, -1, 2]] has exact eigenvalue
         # mu = 1 where d_2 = 1, d_1 = 1, and root pivot d_0 = 0 identically.

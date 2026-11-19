@@ -29,7 +29,7 @@ from jolty.units import Mohm, Quantity, S, V, W, kohm, mA, mH, nA, nF, ns, ohm, 
 
 
 def raised(top: Component) -> list[str]:
-    """The rules the structural checks raise on the circuit with `top` at its top."""
+    """Returns structural-check rule names raised on a circuit with root `top`."""
     return [diagnostic.rule for diagnostic in Simulation(top).check()]
 
 
@@ -37,7 +37,7 @@ def raised(top: Component) -> list[str]:
 def divider(
     c: Builder, *, floating: bool = False, upper_resistance: Quantity = 1 * kohm
 ) -> None:
-    """A source across two resistors, the lower one's end left floating if asked."""
+    """Builds a source across two resistors, optionally leaving the lower end open."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
     upper = c.place(devices.resistor(upper_resistance), name="R1")
@@ -52,7 +52,7 @@ def divider(
 
 @component
 def shorted(c: Builder, model: str) -> None:
-    """A source, a resistor and a capacitor in parallel; `model` names one to short."""
+    """Builds a source, resistor, and capacitor in parallel with `model` shorted."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
     resistor = c.place(devices.resistor(1 * kohm), name="R1")
@@ -72,7 +72,7 @@ def shorted(c: Builder, model: str) -> None:
 
 @component
 def parallel_sources(c: Builder, *, inductor: bool) -> None:
-    """A source in parallel with a second source, or with an inductor."""
+    """Builds a voltage source in parallel with a second source or an inductor."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
     other = devices.inductor(1 * mH) if inductor else devices.voltage_source(2 * V)
@@ -85,7 +85,7 @@ def parallel_sources(c: Builder, *, inductor: bool) -> None:
 
 @component
 def coupled(c: Builder, *, grounded: bool) -> None:
-    """A source coupled into a resistor, grounded or through a second capacitor."""
+    """Builds a capacitively coupled resistor, grounded or behind a second capacitor."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
     coupling = c.place(devices.capacitor(1 * nF), name="C1")
@@ -103,7 +103,7 @@ def coupled(c: Builder, *, grounded: bool) -> None:
 
 @component
 def charged(c: Builder, *, load: bool) -> None:
-    """A current source into a capacitor, loaded by a resistor if asked."""
+    """Builds a current source driving a capacitor, optionally with a shunt resistor."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.current_source(1 * mA), name="I1")
     capacitor = c.place(devices.capacitor(1 * nF), name="C1")
@@ -117,9 +117,9 @@ def charged(c: Builder, *, load: bool) -> None:
 
 @component
 def latch(c: Builder, *, sources: int) -> None:
-    """A NAND of the net ``a`` and the inverse of its own output.
+    """Builds a NAND gate combining net ``a`` with its inverted output.
 
-    `sources` logic sources drive ``a``; with none, a second such NAND reads it too.
+    `sources` logic sources drive ``a``; with none, a second identical NAND reads it.
     """
     c.port("ground", Role.GROUND)
     a = c.net("a")
@@ -227,7 +227,7 @@ def test_every_rule_has_a_case_that_raises_it() -> None:
 
 @component
 def burning(c: Builder) -> None:
-    """10 V across two 100 Ω resistors, one rated 0.5 W and the other 1.2 W."""
+    """Builds 10 V across two 100 Ω resistors rated at 0.5 W and 1.2 W."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(10 * V), name="V1")
     for id, rating in (("R1", 0.5), ("R2", 1.2)):
@@ -342,7 +342,7 @@ def test_explain_states_each_rule_and_its_level(
 
 @component
 def tank(c: Builder, feedback: Quantity) -> None:
-    """1 nF and 1 mH losing 0.1 mS through 10 kΩ, and `feedback` fed back as current."""
+    """Builds a 1 nF / 1 mH tank damped by 10 kΩ with `feedback` current injection."""
     ground = c.port("ground", Role.GROUND)
     resistor = c.place(devices.resistor(10 * kohm), name="R1")
     capacitor = c.place(devices.capacitor(1 * nF), name="C1")
@@ -381,7 +381,7 @@ def test_unstable_pole() -> None:
 
 @component
 def leaking(c: Builder, load: Quantity | None) -> None:
-    """1 nA into `n` across a reverse-biased diode; `load` to the ground, if any."""
+    """Builds 1 nA into `n` across a reverse-biased diode with optional `load`."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.current_source(1 * nA), name="I1")
     diode = c.place(devices.diode(), name="D1")
@@ -408,9 +408,9 @@ def test_gmin_dependence() -> None:
 
 @component
 def cubic(c: Builder) -> None:
-    """1 V through 10 kΩ into a load drawing 1 mA/V³ · v (v - 1)(v - 2).
+    """Builds 1 V through 10 kΩ into a load drawing 1 mA/V³ · v (v - 1)(v - 2).
 
-    Its load line crosses three times: at 1 V and at 1 ± √0.9 V.
+    The load line intersects three operating points: 1 V and 1 ± √0.9 V.
     """
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(1 * V), name="V1")

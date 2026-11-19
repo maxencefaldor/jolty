@@ -13,7 +13,7 @@ from jolty.units import ns
 
 
 def plan() -> Plan:
-    """Eight combinations of the inputs, two gates spot-checked at a tenth."""
+    """Returns a plan testing eight input combinations with two spot-checked gates."""
     return Plan(
         {"count": Transient(stop=16 * ns)},
         fidelity={"adder/*": Characterized(SUPPLY, spot_checks=2)},

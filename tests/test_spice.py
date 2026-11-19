@@ -88,6 +88,18 @@ from jolty.units import (
 )
 from jolty.waveforms import Exponential, Piecewise, Pulse, Sine
 
+DECIMAL_SCALE_RTOL: Final = 1e-6
+"""Relative tolerance (`1e-6`) for decimal scale-suffix and round-trip rounding."""
+
+KELVIN_ROUNDING_RTOL: Final = 1e-6
+"""Relative tolerance (`1e-6`) for Celsius-to-Kelvin addition rounding."""
+
+LINEAR_DC_RTOL: Final = 1e-6
+"""Relative tolerance (`1e-6`) for linear DC LU solve rounding."""
+
+LU_ROUNDING_RTOL: Final = 1e-12
+"""Relative tolerance (`1e-12`) for exact linear LU and IEEE-754 scaling rounding."""
+
 
 def library(text: str) -> spice.Library:
     read = spice.Library()
@@ -96,7 +108,7 @@ def library(text: str) -> spice.Library:
 
 
 def driven(part: Component, level: float, pins: tuple[str, str]) -> Component:
-    """`part` driven at its first pin by `level` volts, its second pin `out`."""
+    """Builds a bench driving `part`'s first pin at `level` V with second pin `out`."""
     c = Builder("bench")
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(level * V), name="V1")
@@ -175,8 +187,7 @@ def test_tokens_keep_groups_whole() -> None:
     ],
 )
 def test_numbers_take_scale_suffixes(text: str, value: float) -> None:
-    # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal scale-suffix rounding.
-    assert number(text) == pytest.approx(value)
+    assert number(text) == pytest.approx(value, rel=DECIMAL_SCALE_RTOL)
 
 
 @pytest.mark.parametrize(
@@ -237,9 +248,10 @@ def test_a_subcircuit_becomes_a_component_with_its_parameters() -> None:
     )
     part = parts.component("Divider")
     assert [port.name for port in part.definition.ports] == ["in", "out", "ground"]
-    # Linear DC divider solve; default pytest.approx (rel=1e-6) covers LU rounding.
-    assert output(part, 3.0) == pytest.approx(1.0)
-    assert output(parts.component("divider", top=1e3), 3.0) == pytest.approx(1.5)
+    assert output(part, 3.0) == pytest.approx(1.0, rel=LINEAR_DC_RTOL)
+    assert output(parts.component("divider", top=1e3), 3.0) == pytest.approx(
+        1.5, rel=LINEAR_DC_RTOL
+    )
 
 
 def test_subcircuits_place_one_another() -> None:
@@ -248,8 +260,9 @@ def test_subcircuits_place_one_another() -> None:
         ".subckt quarter in out\nX1 in mid half\nX2 mid out half\n.ends"
     )
     # The second divider loads the first: 4 V across 1k + (1k ∥ 2k).
-    # Linear DC solve; default pytest.approx (rel=1e-6) covers LU rounding.
-    assert output(parts.component("quarter"), 5.0) == pytest.approx(1.0)
+    assert output(parts.component("quarter"), 5.0) == pytest.approx(
+        1.0, rel=LINEAR_DC_RTOL
+    )
 
 
 def test_controlled_sources_read_polynomials_values_and_currents() -> None:
@@ -276,7 +289,7 @@ def test_controlled_sources_read_polynomials_values_and_currents() -> None:
 
 
 def waveforms(text: str) -> dict[str, JsonValue]:
-    """The waveform of each source of the one subcircuit `text` defines, by its id."""
+    """Returns source waveforms from the single subcircuit in `text`, keyed by name."""
     read = library(text)
     (name,) = read.subcircuits
     return {
@@ -306,7 +319,7 @@ def test_sources_read_their_waveforms_over_time() -> None:
     once |= {"fall": 1e-9, "width": 1e-9}
     sine = {"offset": 1e-3, "amplitude": 2e-3, "frequency": 1e6, "delay": 5e-9}
     sine |= {"damping": 1e6, "phase": math.pi / 2}
-    # Its DC level is its level at zero, the sine's offset at no phase.
+    # The DC level of a zero-phase sine equals the offset value at t = 0.
     level = {"offset": 1e-3, "amplitude": 1e-3, "frequency": 1e3, "delay": 0.0}
     level |= {"damping": 0.0, "phase": 0.0}
     assert read == {
@@ -410,12 +423,19 @@ def test_an_area_scales_the_defaults_a_card_leaves_out() -> None:
     # by the area (bjttemp.c:168), and a diode's 1e-14 A, a JFET's 1e-14 A and its
     # transconductance parameter, 1e-4 A/V², alike. Explicit abs=0 prevents default
     # abs=1e-12 from masking sub-picoampere values; rel=1e-12 covers scaling rounding.
-    assert read["Q1"]["saturation_current"] == pytest.approx(1e-15, rel=1e-12, abs=0)
-    assert read["Q2"]["saturation_current"] == pytest.approx(2e-16, rel=1e-12, abs=0)
+    assert read["Q1"]["saturation_current"] == pytest.approx(
+        1e-15, rel=LU_ROUNDING_RTOL, abs=0
+    )
+    assert read["Q2"]["saturation_current"] == pytest.approx(
+        2e-16, rel=LU_ROUNDING_RTOL, abs=0
+    )
     assert "saturation_current" not in read["Q3"]
-    # Explicit abs=0 with rel=1e-12 covers area-scaled IEEE-754 products.
-    assert read["D1"]["saturation_current"] == pytest.approx(3e-14, rel=1e-12, abs=0)
-    assert read["J1"]["saturation_current"] == pytest.approx(4e-14, rel=1e-12, abs=0)
+    assert read["D1"]["saturation_current"] == pytest.approx(
+        3e-14, rel=LU_ROUNDING_RTOL, abs=0
+    )
+    assert read["J1"]["saturation_current"] == pytest.approx(
+        4e-14, rel=LU_ROUNDING_RTOL, abs=0
+    )
     assert read["J1"]["transconductance_parameter"] == pytest.approx(
         4e-4, rel=1e-12, abs=0
     )
@@ -436,11 +456,10 @@ def test_a_diode_is_sized_by_its_area_perimeter_and_copies_as_ngspice_sizes_it()
         instance.name: instance.parameters
         for instance in parts.component("parts").definition.instances
     }
-    # Level 3: an area of (1.5 + 0.5)(3.5 + 0.5) µm², a perimeter of 2·2 + 2·4 µm,
-    # each times the copies once (`diosetup.c`, lines 336 and 337, where ngspice
-    # multiplies them again, as the guide's departures state); `IKR` of 0 is off, and
-    # the breakdown current scales with the area. Explicit abs=0 prevents default
-    # abs=1e-12 from masking femtocurrent/femtofarad entries; rel=1e-12 covers rounding.
+    # Level 3 area (1.5+0.5)(3.5+0.5) µm² and perimeter (2*2+2*4) µm scale
+    # once by `m` (ngspice `diosetup.c` lines 336 to 337 double-multiplies).
+    # `IKR=0` disables high-injection knee, and breakdown current scales with
+    # area; explicit `abs=0` avoids masking femtocurrent/femtofarad entries.
     area, perimeter = 8e-12 * 2, 12e-6 * 2
     assert read["D1"] == pytest.approx(
         {
@@ -457,12 +476,11 @@ def test_a_diode_is_sized_by_its_area_perimeter_and_copies_as_ngspice_sizes_it()
             "temperature_model": 2,
             "capacitance_temperature_model": 1,
         },
-        rel=1e-12,
+        rel=LU_ROUNDING_RTOL,
         abs=0,
     )
-    # Level 1: the card's area and perimeter where the element gives no size, and 1 and
-    # 0 where it gives a width; the breakdown current scales with the copies alone.
-    # Explicit abs=0 with rel=1e-12 covers float scaling rounding at sub-pA scale.
+    # Level 1 uses card area/perimeter when unsized, or 1/0 when width is set;
+    # breakdown current scales with `m` alone.
     assert read["D2"] == pytest.approx(
         {
             "saturation_current": 1e-14 * 6,
@@ -470,17 +488,16 @@ def test_a_diode_is_sized_by_its_area_perimeter_and_copies_as_ngspice_sizes_it()
             "breakdown_current": 2e-3,
             "breakdown_voltage": 5.0,
         },
-        rel=1e-12,
+        rel=LU_ROUNDING_RTOL,
         abs=0,
     )
-    # Same explicit abs=0 with rel=1e-12 for area/copies scaling rounding.
     assert read["D3"] == pytest.approx(
         {
             "saturation_current": 1e-14,
             "breakdown_current": 1e-3,
             "breakdown_voltage": 5.0,
         },
-        rel=1e-12,
+        rel=LU_ROUNDING_RTOL,
         abs=0,
     )
 
@@ -505,11 +522,11 @@ def test_a_bipolar_parameter_infinite_at_zero_reads_as_infinite(name: str) -> No
 
 
 def test_a_bipolar_card_reads_hspices_temperature_terms_as_ngspice_does() -> None:
-    """`TREF`, `TLEV`, `TLEVC`, `NKF` and the coefficients, and what ngspice reads past.
+    """Verifies BJT cards parse HSPICE temperature terms identically to ngspice.
 
-    ngspice reads `TREF` as `TNOM`, a lone `IBC` not at all, HSPICE's `DCAP` and kin
-    nowhere, and `TLEV` 3's coefficients only at `TLEV` 3 (`bjttemp.c:166-197`); it
-    limits `NKF` to 1 (`bjtsetup.c:332-338`), and takes an `ISS` of 0 as none.
+    ngspice treats `TREF` as `TNOM`, ignores standalone `IBC` and HSPICE `DCAP`
+    variants, applies `TLEV=3` terms only at `TLEV=3` (`bjttemp.c:166-197`),
+    clamps `NKF` to 1 (`bjtsetup.c:332-338`), and treats `ISS=0` as absent.
     """
     parts = library(
         ".model q pnp tref=25 tlev=1 tlevc=1 nkf=1.2 trc1=-0.01 trc2=3e-5 tbf1=6e-3\n"
@@ -522,8 +539,7 @@ def test_a_bipolar_card_reads_hspices_temperature_terms_as_ngspice_does() -> Non
         "substrate": "lateral",
         "temperature_model": 1,
         "capacitance_temperature_model": 1,
-        # Default pytest.approx (rel=1e-6) covers Celsius-to-Kelvin addition rounding.
-        "nominal_temperature": pytest.approx(298.15),
+        "nominal_temperature": pytest.approx(298.15, rel=KELVIN_ROUNDING_RTOL),
         "high_injection_exponent": 1.0,
         "collector_resistance_temperature_coefficient": -0.01,
         "collector_resistance_quadratic_temperature_coefficient": 3e-5,
@@ -551,7 +567,7 @@ def test_a_bipolar_card_jolty_does_not_model_is_refused_by_name(
 
 
 def test_a_bipolar_transistors_temperature_terms_are_written_back() -> None:
-    """The exporter writes `TLEV`, `TLEVC` and the coefficients, which read back."""
+    """Verifies BJT `TLEV`, `TLEVC`, and temperature terms round-trip through SPICE."""
     given = {
         "temperature_model": 1,
         "capacitance_temperature_model": 1,
@@ -579,10 +595,7 @@ def test_a_bipolar_transistors_temperature_terms_are_written_back() -> None:
 
 
 def admittance(part: Component, bias: float, frequency: float) -> complex:
-    """The current into `part`'s first pin, its second grounded, per volt at AC.
-
-    The first pin is held at `bias` volts.
-    """
+    """Returns AC admittance into pin 0 of `part` at `bias` V with pin 1 grounded."""
 
     @component
     def bench(c: Builder) -> None:
@@ -613,19 +626,20 @@ CHARGED: Final = {
         lambda v: 1e-12 * (math.exp(v) + math.cosh(v / 2) - math.sin(3 * v))
     ),
 }
-"""Capacitors of a charge and of a value that reads their voltage, by what their lines
-give, and the capacitance each should have at a voltage: the charge's derivative, or
-the value, times the copies `m`; `k` is the subcircuit's parameter, 2."""
+"""Charge- and voltage-defined capacitors paired with expected capacitance formulas.
+
+Expected capacitance equals the charge derivative or voltage expression times
+multiplier `m`, with subcircuit parameter `k = 2`.
+"""
 
 
 @pytest.mark.parametrize("given", CHARGED)
 def test_a_capacitor_of_a_charge_holds_it_as_a_behavioral_capacitor(given: str) -> None:
-    """Its admittance at a bias is `jωC` of the capacitance there, its charge's slope.
+    """Verifies AC admittance equals `jωC` for charge- and voltage-defined capacitors.
 
-    A value that reads the capacitor's voltage is integrated in closed form into its
-    charge, so its slope is the value itself; at DC no current flows. The tolerance,
-    1e-9 of the admittance, is the engine's Newton tolerance at most, far above the
-    closed forms' rounding.
+    Voltage-dependent capacitances integrate analytically into charge expressions
+    with zero DC current. The `1e-9` relative tolerance matches tight Newton
+    convergence, well above closed-form rounding.
     """
     parts = library(f".subckt cap p n k=2\nC1 p n {given}\n.ends")
     part = parts.component("cap")
@@ -638,7 +652,7 @@ def test_a_capacitor_of_a_charge_holds_it_as_a_behavioral_capacitor(given: str) 
 
 
 def test_a_grounded_capacitors_value_reads_its_node_as_its_voltage() -> None:
-    """`V(p)` of a capacitor from `p` to the ground is its voltage, as `V(p, 0)`."""
+    """Verifies grounded capacitors treat `V(p)` identically to `V(p, 0)`."""
     parts = library(".subckt cap p\nC1 p 0 c='1e-12 * (2 + v(p))'\n.ends")
     part = parts.component("cap")
     expected = 2j * math.pi * 1e6 * 1e-12 * (2 + 0.5)
@@ -663,7 +677,7 @@ def test_a_capacitor_jolty_cannot_charge_is_refused(given: str, refusal: str) ->
 
 
 def test_a_behavioral_capacitor_is_written_back_as_a_charge() -> None:
-    """The exporter writes its charge `Q=`, which reads back as the same capacitor."""
+    """Verifies behavioral capacitors export `Q=` and reload identically."""
     charge = "1e-12 * v(positive, negative) + 5e-13 * tanh(2 * v(positive, negative))"
 
     @component
@@ -689,9 +703,8 @@ def test_a_behavioral_capacitor_is_written_back_as_a_charge() -> None:
 def test_a_table_source_holds_beyond_its_ends() -> None:
     parts = library(".subckt clamp in out\nE1 out 0 TABLE {V(in)} = (0,0) (1,2)\n.ends")
     part = parts.component("clamp")
-    # Piecewise-linear DC solve; default pytest.approx (rel=1e-6) covers LU rounding.
-    assert output(part, 0.5) == pytest.approx(1.0)
-    assert output(part, 3.0) == pytest.approx(2.0)
+    assert output(part, 0.5) == pytest.approx(1.0, rel=LINEAR_DC_RTOL)
+    assert output(part, 3.0) == pytest.approx(2.0, rel=LINEAR_DC_RTOL)
 
 
 def test_models_inherit_through_ako_and_scale_by_area() -> None:
@@ -904,11 +917,10 @@ def test_a_current_controlled_switch_senses_its_source_in_series() -> None:
 
 
 def test_a_vdmos_card_reads_as_ngspice_reads_it() -> None:
-    """Its polarity from `pchan` or its type, its parameters, and three to five nodes.
+    """Verifies VDMOS cards parse polarity, parameters, and 3 to 5 nodes like ngspice.
 
-    ngspice reads past a card's annotations of its part, its `PHI` and its thermal
-    network, and an element's fourth and fifth nodes, its thermal ones, where it does
-    not heat.
+    Ignores part annotations, `PHI`, thermal network parameters, and optional
+    4th and 5th thermal nodes when self-heating is disabled.
     """
     parts = library(
         ".model PX VDMOS(pchan Rg=3 Vto=-4 mfg=Some-Maker_Inc. Vds=-60 Ron=10m Qg=20n\n"
@@ -969,11 +981,10 @@ def test_a_vdmos_is_written_for_ngspice_as_its_card_reads_back() -> None:
 
 
 def test_a_vbic_card_reads_as_ngspice_reads_it() -> None:
-    """Its levels 4 and 9, within its parentheses or before, and three to five nodes.
+    """Verifies VBIC levels 4 and 9 parse parameters and 3 to 5 nodes like ngspice.
 
-    ngspice raises an intrinsic collector resistance below 10 mΩ to 10 mΩ, and reads
-    past `VERS` and `VREF`; an element's fifth node, its thermal one, is left unjoined
-    where its card does not heat.
+    Clamps intrinsic collector resistance to at least 10 mΩ, ignores `VERS` and
+    `VREF`, and leaves an unused fifth thermal node unconnected when unheated.
     """
     parts = library(
         ".model QN NPN(level=4 rcx=10 rbx=5 is=1e-16 vef=50 tf=10p rci=0\n"
@@ -1003,11 +1014,11 @@ def test_a_vbic_card_reads_as_ngspice_reads_it() -> None:
 
 
 def test_a_vbic_whose_card_heats_reads_with_its_thermal_network() -> None:
-    """A positive `RTH` heats it on its fifth node, unless `SELFT` is 0.
+    """Verifies heated VBIC cards attach a thermal network when `RTH > 0`.
 
-    Its thermal resistance and capacitance hold that node to the ground, the area times
-    the copies dividing the resistance and multiplying the capacitance, as they multiply
-    its currents; ngspice raises a capacitance below 1 pJ/K to 1 pJ/K.
+    Requires `SELFT != 0`. Thermal resistance and capacitance connect the fifth
+    node to ground, scaled by area times multiplier `m`; ngspice floors thermal
+    capacitance at 1 pJ/K.
     """
     parts = library(
         ".model QH NPN(level=4 is=1e-16 rth=200 cth=1n)\n"
@@ -1023,9 +1034,8 @@ def test_a_vbic_whose_card_heats_reads_with_its_thermal_network() -> None:
     joined = {"collector": "c", "base": "b", "emitter": "e", "substrate": "s"}
     vbic, resistance = ir.DeviceOf(model="vbic"), "thermal_resistance"
     capacitance = "thermal_capacitance"
-    # The area times the copies multiplies the currents the card leaves out at their
-    # defaults too, and divides the resistances, as ngspice multiplies every current of
-    # a VBIC by it (vbicload.c:4017-4052).
+    # `area * m` scales defaulted currents and inverse resistances alike,
+    # matching ngspice VBIC scaling (`vbicload.c:4017-4052`).
     scaled = {
         "saturation_current": 4e-16,
         "ideal_base_emitter_current": 4e-18,
@@ -1071,7 +1081,7 @@ def test_a_vbic_whose_card_heats_reads_with_its_thermal_network() -> None:
 
 
 def test_a_bipolar_card_of_another_level_is_refused() -> None:
-    """A bipolar card of a level but 1, Gummel-Poon's, and VBIC's 4 and 9 is refused."""
+    """Verifies BJT cards outside levels 1, 4, and 9 are rejected."""
     parts = library(
         ".model QX NPN(level=2 is=1e-16)\n.subckt a c b e\nQ1 c b e QX\n.ends"
     )
@@ -1202,9 +1212,10 @@ def test_bsim_cards_read_in_si_units_as_ngspice_reads_them(
     deck: str,
     expected_instances: tuple[tuple[Mapping[str, object], bool], ...],
 ) -> None:
-    """BSIM3 (levels 8/49) and BSIM4 (levels 14/54) cards read into SI units.
+    """Verifies BSIM3 (8/49) and BSIM4 (14/54) cards convert into SI units.
 
-    Default pytest.approx (rel=1e-6, abs=1e-12) covers SI unit scaling rounding.
+    Default `pytest.approx` (`rel=1e-6`, `abs=1e-12`) covers SI unit scaling
+    rounding.
     """
     instances = library(deck).component("a").definition.instances
     assert len(instances) == len(expected_instances)
@@ -1366,12 +1377,11 @@ def test_bsim_is_written_for_ngspice_as_its_card_reads_back(
         f"{card}\n.subckt a d\n{element.replace('MM1 d d', 'M1 d d', 1)}\n.ends"
     )
     (instance,) = read.component("a").definition.instances
-    # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal round-trip rounding.
-    assert instance.parameters == pytest.approx(expected_params)
+    assert instance.parameters == pytest.approx(expected_params, rel=DECIMAL_SCALE_RTOL)
 
 
 def test_a_bsim3_held_at_its_own_temperature_cannot_be_exported() -> None:
-    """A BSIM3 held at 85 °C is refused on export: ngspice has no own temperature."""
+    """Verifies BSIM3 instances with per-instance temperature are refused on export."""
     with pytest.raises(JoltyError, match="at its own temperature"):
         _diode_connected_netlist(devices.bsim3().held_at(celsius(85)), 3.0)
 
@@ -1384,11 +1394,10 @@ def _assert_matches_engine_schema(model: str, named: set[str]) -> None:
 
 @pytest.mark.parametrize("model", models.BSIMS)
 def test_a_bsims_tables_name_the_engines_parameters(model: str) -> None:
-    """The reader's tables of a BSIM model name the parameters the engine's model has.
+    """Verifies BSIM parser tables cover all engine model parameters.
 
-    Its card's, its bins' and its instance's parameters, and its choices and settings,
-    are every parameter of the engine's model but its own temperature and its heating,
-    which no card gives.
+    Card, bin, and instance parameters plus choices and settings match every
+    engine BSIM parameter except per-instance temperature and self-heating.
     """
     bsim = models.BSIMS[model]
     named = {
@@ -1499,12 +1508,12 @@ def test_a_bsims_tables_name_the_engines_parameters(model: str) -> None:
 def test_compact_switch_and_passive_tables_match_engine_schema(
     model: str, named: set[str]
 ) -> None:
-    """Every compact, switch, and passive table names the engine schema's properties."""
+    """Verifies compact, switch, and passive tables match engine schema properties."""
     _assert_matches_engine_schema(model, named)
 
 
 def test_model_tables_have_canonical_entries_and_valid_scaling_subsets() -> None:
-    """Every model table holds valid SI factors and consistent scaling subsets."""
+    """Verifies model tables define valid SI factors and consistent scaling subsets."""
     tables = (
         models.DIODE,
         models.JFET,
@@ -1532,10 +1541,10 @@ def test_model_tables_have_canonical_entries_and_valid_scaling_subsets() -> None
 
 
 def test_an_element_takes_the_bin_of_its_length_and_width() -> None:
-    """As ngspice's INPgetModBin takes a bin, the last defined that holds them.
+    """Verifies binned model selection matches ngspice `INPgetModBin` (last match).
 
-    A bin is a card named after its model and a dot and a number, whose ranges hold the
-    length and the width given on the element, each within 1 nm of a bound counted in.
+    Each bin is a numbered card whose length and width ranges include the
+    element dimensions within a 1 nm boundary tolerance.
     """
     parts = library(
         ".model nch.1 nmos(level=49 lmin=0.1u lmax=1u wmin=1u wmax=10u vth0=0.4)\n"
@@ -1583,9 +1592,9 @@ in two fingers."""
 def test_a_bin_holds_one_fingers_width_where_ngspice_divides_it(
     compatibility: Compatibility | None, option: str, threshold: float
 ) -> None:
-    """A bin holds the width over `nf` as INPgetModBin selects it.
+    """Verifies bin selection uses per-finger width `W / nf` like `INPgetModBin`.
 
-    It does in HSPICE's compatibility, or where the option `wnflag` asks.
+    Applies under HSPICE compatibility mode or when the `wnflag` option is set.
     """
     parts = spice.Library(compatibility=compatibility)
     parts.read(option + FINGERED, "fingers.lib")
@@ -1594,12 +1603,11 @@ def test_a_bin_holds_one_fingers_width_where_ngspice_divides_it(
 
 
 def test_the_scale_option_scales_a_bsim4s_sizes_and_distances() -> None:
-    """The option `scale` multiplies a BSIM4's lengths, and its areas by its square.
+    """Verifies `scale` multiplies BSIM4 lengths linearly and areas quadratically.
 
-    A BSIM4's length, width and perimeters, and its distances to its diffusion's edges
-    and between its fingers, as `b4v5par.c` scales them, all in micrometers here.
-    `rel=1e-15, abs=0` (~4.5 eps) covers single `scale` and `scale**2` rounding without
-    default `abs=1e-12` masking `drain_area=1e-12`.
+    Scales length, width, perimeters, and diffusion distances like `b4v5par.c`.
+    `rel=1e-15, abs=0` (~4.5 eps) covers `scale` and `scale**2` rounding
+    without default `abs=1e-12` masking `drain_area=1e-12`.
     """
     parts = spice.Library()
     parts.read(
@@ -1691,8 +1699,7 @@ def test_temperature_parameters_come_in_kelvins() -> None:
         "saturation_current": 1e-14,
         "saturation_current_temperature_exponent": 2.0,
         "energy_gap": 1.2,
-        # Default pytest.approx (rel=1e-6) covers Celsius-to-Kelvin addition rounding.
-        "nominal_temperature": pytest.approx(323.15),
+        "nominal_temperature": pytest.approx(323.15, rel=KELVIN_ROUNDING_RTOL),
     }
     assert first.parameters == {
         "resistance": 1e3,
@@ -1720,10 +1727,13 @@ def test_devices_take_their_own_temperatures() -> None:
     quiet, warm, hot, capacitor, transistor = parts.component("a").definition.instances
     assert quiet.parameters == {"resistance": 1e3, "temperature": 0.0}
     assert warm.parameters == {"temperature_offset": 15.0}
-    # Default pytest.approx (rel=1e-6) covers Celsius-to-Kelvin addition rounding.
-    assert hot.parameters == {"temperature": pytest.approx(353.15)}
+    assert hot.parameters == {
+        "temperature": pytest.approx(353.15, rel=KELVIN_ROUNDING_RTOL)
+    }
     assert capacitor.parameters == {"capacitance": 1e-9, "temperature_offset": -10.0}
-    assert transistor.parameters["temperature"] == pytest.approx(323.15)
+    assert transistor.parameters["temperature"] == pytest.approx(
+        323.15, rel=KELVIN_ROUNDING_RTOL
+    )
     assert transistor.parameters["width"] == 2e-6
 
 
@@ -1757,10 +1767,10 @@ def test_a_netlist_writes_each_devices_own_temperature() -> None:
 
 
 def test_a_behavioral_expression_is_written_as_jolty_computes_it() -> None:
-    """Each operation in parentheses, a power, a limit and a table as jolty reads them.
+    """Verifies exported behavioral expressions match jolty operator and call semantics.
 
-    ngspice groups `^` to the left, raises a negative base's magnitude and reads
-    another `limit`, and its behavioral sources hold no table.
+    Handles parentheses, `^` associativity, negative-base powers, `limit`, and
+    piecewise tables where ngspice differs from jolty.
     """
 
     @component
@@ -1781,11 +1791,10 @@ def test_a_behavioral_expression_is_written_as_jolty_computes_it() -> None:
 
 
 def test_a_resistor_of_a_voltage_is_ngspices_behavioral_current() -> None:
-    """As `inpcom.c` makes `R = {f(V)}` a current `m V / (f(V) (1 + TC1 dT))`.
+    """Verifies voltage-dependent resistors translate to `m*V / (f(V)*(1 + TC1*dT))`.
 
-    Two copies of 1 kΩ that grow by 10% a volt, a temperature coefficient of 1e-3 per
-    kelvin, read at 77 °C, 50 K above ngspice's 27 °C: at 2 V, 2 · 2 V / (1.2 kΩ ·
-    1.05).
+    Matches `inpcom.c` on two 1 kΩ copies rising 10% per volt with `TC1=1e-3/K`
+    evaluated at 77 °C (50 K above 27 °C) and 2 V.
     """
     parts = spice.Library(celsius(77).value)
     parts.read(
@@ -1816,28 +1825,28 @@ def test_resistors_and_capacitors_read_voltage_coefficients() -> None:
         ".subckt a x\nR1 x 0 1k VC1=2u VC2=3n\nC1 x 0 CX 1n VC2=4u\n.ends"
     )
     resistor, capacitor = parts.component("a").definition.instances
-    # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal scale-suffix rounding.
     assert resistor.parameters == pytest.approx(
         {
             "resistance": 1e3,
             "voltage_coefficient": 2e-6,
             "quadratic_voltage_coefficient": 3e-9,
-        }
+        },
+        rel=DECIMAL_SCALE_RTOL,
     )
-    # Default pytest.approx (rel=1e-6, abs=1e-12) covers decimal scale-suffix rounding.
     assert capacitor.parameters == pytest.approx(
         {
             "capacitance": 1e-9,
             "voltage_coefficient": -1e-3,
             "quadratic_voltage_coefficient": 4e-6,
-        }
+        },
+        rel=DECIMAL_SCALE_RTOL,
     )
     with pytest.raises(SpiceError, match="jolty reads no `VC1` here"):
         library(".subckt a x\nL1 x 0 1u VC1=1m\n.ends").component("a")
 
 
 def _every_model() -> list[devices.Device]:
-    """A device of every model the engine holds, as a script places it."""
+    """Builds a circuit containing one instance of every device model in the engine."""
     rate = 1e6 / s
     return [
         devices.behavioral_capacitor("1e-12 * tanh(v(positive, negative))"),
@@ -1896,7 +1905,7 @@ def _every_model() -> list[devices.Device]:
 
 
 def _within(given: JsonValue, defaulted: JsonValue) -> bool:
-    """Whether `defaulted` holds `given`, each object within it with defaults added."""
+    """Returns whether `defaulted` contains `given` after applying nested defaults."""
     match given, defaulted:
         case dict(), dict():
             return all(
@@ -1990,7 +1999,7 @@ def test_downloads_are_kept_in_the_configured_cache(
 
 
 def _devices(part: Component) -> dict[str, tuple[str, dict[str, JsonValue]]]:
-    """Each device `part` holds, by name: its model and its parameters."""
+    """Returns `(model, parameters)` for every device instance in `part`, by name."""
     return {
         instance.name: (instance.of.model, dict(instance.parameters))
         for instance in part.definition.instances
@@ -2038,14 +2047,13 @@ MULTIPLIED: Final = (
 
 
 def test_a_subcircuits_multiplier_multiplies_every_element_it_holds() -> None:
-    """As ngspice's `inp_fix_subckt_multiplier` adds `m` to each element.
+    """Verifies subcircuit multiplier `m` propagates like `inp_fix_subckt_multiplier`.
 
-    Three copies of `cell` divide its resistors and its inductor by 3 and multiply its
-    capacitor and its diode by 3, its resistor's own 2 copies times 3, whose flicker
-    noise is `m KF (I / m)^AF` (`resnoise.c`), and its instance's 2 copies of `inner`
-    times 3; a subcircuit with a parameter `m` reads it as its own, and a current
-    source under a multiplier is refused. `rel=1e-12, abs=0` covers IEEE-754 multiplier
-    scaling rounding without default `abs=1e-12` masking `1e-12 / 6` or `3e-14`.
+    Three copies of `cell` divide resistances and inductance by 3, multiply
+    capacitance and diode parameters by 3, and combine nested multipliers
+    (`resnoise.c` flicker scaling `m*KF*(I/m)^AF`). A subcircuit declaring
+    parameter `m` binds it locally, and current sources reject `m`.
+    `rel=1e-12, abs=0` covers IEEE-754 scaling rounding without masking `3e-14`.
     """
     parts = library(MULTIPLIED)
     cell = parts.component("cell", m=3)
@@ -2083,12 +2091,12 @@ GEOMETRIC: Final = (
 
 
 def test_spice3_cards_size_resistors_and_capacitors_as_ngspice_does() -> None:
-    """As `restemp.c` and `captemp.c` take their values, the element's sizes scaled.
+    """Verifies SPICE3 resistor and capacitor geometry sizing matches ngspice.
 
-    A resistor is `(L - 2 SHORT) / (W - 2 NARROW) RSH`, of 10 µm by 10 µm unless given,
-    or else its card's `R`, or else 1 mΩ; a capacitor `CJ (W - NARROW) (L - SHORT) + 2
-    CJSW (L - SHORT + W - NARROW)`, `DEL` the default of `SHORT` halved, `CJ` of `THICK`
-    and `DI` where the card gives them, 0 long unless given, or its card's `CAP`.
+    Resistors compute `(L - 2*SHORT) / (W - 2*NARROW) * RSH` (defaulting to
+    10 µm square, card `R`, or 1 mΩ). Capacitors compute
+    `CJ*(W - NARROW)*(L - SHORT) + 2*CJSW*(L - SHORT + W - NARROW)` with `DEL`
+    halved for `SHORT` and `CJ` derived from `THICK` and `DI`.
     """
     parts = library(GEOMETRIC)
     found = {
@@ -2099,8 +2107,9 @@ def test_spice3_cards_size_resistors_and_capacitors_as_ngspice_does() -> None:
     # rel=1e-14 (~45 eps) covers geometry-formula floating-point arithmetic rounding.
     assert resistances == pytest.approx([2e3 / 3, 900 / 9.5, 5e3, 7, 1e-3], rel=1e-14)
     assert found["R1"]["temperature_coefficient"] == 1e-3
-    # Default pytest.approx (rel=1e-6) covers Celsius-to-Kelvin addition rounding.
-    assert found["R1"]["nominal_temperature"] == pytest.approx(303.15)
+    assert found["R1"]["nominal_temperature"] == pytest.approx(
+        303.15, rel=KELVIN_ROUNDING_RTOL
+    )
     epsilon = 7.8 / (4e-7 * math.pi * 299792458.0**2)
     capacitances = [found[f"C{index}"]["capacitance"] for index in range(1, 4)]
     expected = [
@@ -2140,9 +2149,8 @@ def test_an_instance_gives_its_subcircuits_own_parameters() -> None:
 def test_temper_is_the_temperature_a_library_reads_at() -> None:
     hot = spice.Library(celsius(127).value)
     hot.read(".subckt warm a b\nR1 a b {1k * (1 + temper / 100)}\n.ends", "kit.lib")
-    # Default pytest.approx (rel=1e-6) covers Celsius conversion and float rounding.
     assert _devices(hot.component("warm"))["R1"][1]["resistance"] == pytest.approx(
-        2.27e3
+        2.27e3, rel=KELVIN_ROUNDING_RTOL
     )
 
 
@@ -2299,7 +2307,7 @@ type _RoundTripOutcome = _AsItself | _AsMapped | _AsSubcircuit | _Refused
 
 @dataclass(frozen=True, slots=True)
 class _TerminalDrive:
-    """How a bench terminal is connected: ground, resistor load, or biased source."""
+    """Bench terminal connection specification: ground, load resistor, or source."""
 
     kind: str
     value: float = 0.0
@@ -2553,7 +2561,7 @@ _SPICE_ROUND_TRIP: Final[dict[str, _RoundTripCase]] = {
 
 
 def _isolated_circuit(case: _RoundTripCase) -> tuple[ir.Circuit, list[str]]:
-    """Minimal circuit holding one instance of `case.device` and its port nets."""
+    """Builds a minimal circuit holding one instance of `case.device` and port nets."""
     c = Builder("isolated")
     ground = c.port("ground", Role.GROUND)
     placed = c.place(case.device, name="U1")
@@ -2621,13 +2629,13 @@ def _driven_bench(
 
 
 def test_every_model_has_a_spice_round_trip_case() -> None:
-    """Every model in `Library::standard()` is accounted for in `_SPICE_ROUND_TRIP`."""
+    """Verifies every model in `Library::standard()` appears in `_SPICE_ROUND_TRIP`."""
     assert set(_SPICE_ROUND_TRIP) == set(_core.models())
 
 
 @pytest.mark.parametrize("model_name", sorted(_SPICE_ROUND_TRIP))
 def test_every_model_spice_round_trip(model_name: str) -> None:
-    """Every model round-trips electrically, maps by design, or refuses by name."""
+    """Verifies every model round-trips electrically, maps by design, or refuses."""
     case = _SPICE_ROUND_TRIP[model_name]
     built, ports = _isolated_circuit(case)
     outcome = case.outcome
@@ -2730,7 +2738,7 @@ def test_every_model_spice_round_trip(model_name: str) -> None:
 
 
 def test_library_caches_invalidate_on_mutations_and_temperature() -> None:
-    """Global parameter plan, drawn scopes and built components stay coherent.
+    """Verifies library caches stay coherent across mutations and temperatures.
 
     Every `rel=1e-15` (~4.5 eps) check covers exact expression arithmetic rounding.
     """
@@ -2791,7 +2799,7 @@ def test_library_caches_invalidate_on_mutations_and_temperature() -> None:
 
 
 def test_ako_local_models_are_not_crosstalked_by_model_cache() -> None:
-    """Derived AKO: `.model` cards resolve against the active local base card.
+    """Verifies derived `AKO:` cards resolve against the active local base card.
 
     `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 decimal literal parsing rounding
     without default `abs=1e-12` masking `1e-14` or `1e-12`.
@@ -2816,7 +2824,7 @@ def test_ako_local_models_are_not_crosstalked_by_model_cache() -> None:
 
 
 def test_model_card_parameters_are_read_only() -> None:
-    """Cached ModelCard parameter mappings are immutable MappingProxyType views."""
+    """Verifies cached `ModelCard` parameter mappings are read-only proxy views."""
     (statement,) = statements(".model d1 D(IS=1e-14)", "card.lib")
     card = models.read(statement, {})
     assert isinstance(card.parameters, MappingProxyType)
@@ -2825,7 +2833,7 @@ def test_model_card_parameters_are_read_only() -> None:
 
 
 def test_drawn_is_thread_safe_and_bit_identical_under_contention() -> None:
-    """Concurrent `drawn` calls sharing a Library cache produce identical results."""
+    """Verifies concurrent `drawn` calls sharing a `Library` cache match bit-for-bit."""
     lib = library(
         ".param g={agauss(1k, 100, 1)}\n"
         ".subckt stage a\n"
@@ -2858,7 +2866,7 @@ def test_drawn_is_thread_safe_and_bit_identical_under_contention() -> None:
 
 
 def test_evaluate_fast_path_handles_literals_unary_and_shadowed_constants() -> None:
-    """Fast path matches `_core.constant` semantics including non-finite shadows."""
+    """Verifies fast-path evaluation matches `_core.constant` on all edge cases."""
     assert evaluate(Number(3.5), {}) == 3.5
     assert evaluate(Unary("-", Number(2.25)), {}) == -2.25
     assert evaluate(Unary("+", Number(2.25)), {}) == 2.25
@@ -2871,9 +2879,7 @@ def test_evaluate_fast_path_handles_literals_unary_and_shadowed_constants() -> N
         evaluate(Number(float("nan")), {})
 
 
-# ---------------------------------------------------------------------------
-# Item 1: .include and .lib inside subcircuits
-# ---------------------------------------------------------------------------
+# `.include` and `.lib` expansion inside subcircuits.
 
 
 def test_include_and_lib_expand_inside_subcircuits_from_file_and_text(
@@ -2926,12 +2932,11 @@ def test_include_and_lib_expand_inside_subcircuits_from_file_and_text(
     via_read = spice.Library()
     via_read.read(deck.read_text(encoding="utf-8"), str(deck))
     for loaded in (via_include, via_read):
-        # Exact closed-form linear divider ratios within LU rounding (rel=1e-12, abs=0).
         assert output(loaded.component("fast_div"), 4.0) == pytest.approx(
-            3.0, rel=1e-12, abs=0
+            3.0, rel=LU_ROUNDING_RTOL, abs=0
         )
         assert output(loaded.component("slow_div"), 4.0) == pytest.approx(
-            2.0, rel=1e-12, abs=0
+            2.0, rel=LU_ROUNDING_RTOL, abs=0
         )
 
 
@@ -2951,12 +2956,11 @@ def test_include_inside_if_block_within_subcircuit(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     lib = spice.load(deck)
-    # Exact closed-form linear divider ratios within LU rounding (rel=1e-12, abs=0).
     assert output(lib.component("stage", mode=0), 4.0) == pytest.approx(
-        2.0, rel=1e-12, abs=0
+        2.0, rel=LU_ROUNDING_RTOL, abs=0
     )
     assert output(lib.component("stage", mode=1), 4.0) == pytest.approx(
-        3.0, rel=1e-12, abs=0
+        3.0, rel=LU_ROUNDING_RTOL, abs=0
     )
 
 
@@ -3031,17 +3035,14 @@ def test_coverage_lib_and_include_probe_decks_solve_in_subcircuit() -> None:
             "fixture.cir",
         )
         point = Simulation(circuit(lib.component("deck"))).run(OperatingPoint())
-        # Exact 1:1 divider (4 V * 3k / 6k = 2 V) within LU rounding (rel=1e-12, abs=0).
-        assert point.voltage("out") == pytest.approx(2.0, rel=1e-12, abs=0)
+        assert point.voltage("out") == pytest.approx(2.0, rel=LU_ROUNDING_RTOL, abs=0)
 
 
-# ---------------------------------------------------------------------------
-# Item 2: .func inside subcircuits and model cards
-# ---------------------------------------------------------------------------
+# `.func` definitions inside subcircuits and model cards.
 
 
 def test_local_func_scopes_in_subcircuits_and_elements() -> None:
-    """Local `.func` definitions shadow globals within their subcircuit without leaking.
+    """Verifies local `.func` scopes shadow globals without leaking out.
 
     `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 expression scaling rounding.
     """
@@ -3088,7 +3089,7 @@ def test_local_func_scopes_in_subcircuits_and_elements() -> None:
 
 
 def test_conditional_local_func_overrides_unconditional_in_any_order() -> None:
-    """Conditional `.func` overrides unconditional definitions.
+    """Verifies conditional `.func` definitions override unconditional ones.
 
     `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 scaling rounding.
     """
@@ -3111,7 +3112,7 @@ def test_conditional_local_func_overrides_unconditional_in_any_order() -> None:
 
 
 def test_model_cards_evaluate_global_and_local_func_and_bare_calls() -> None:
-    """Global and local `.func` calls in `.model` cards evaluate cleanly.
+    """Verifies global, local, and bare `.func` calls evaluate in `.model` cards.
 
     `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 scaling rounding at sub-pA scale.
     """
@@ -3156,7 +3157,7 @@ def test_model_cards_evaluate_global_and_local_func_and_bare_calls() -> None:
 
 
 def test_passive_geometric_binned_and_vbic_model_cards_use_func() -> None:
-    """Passive, geometric, binned, and VBIC `.model` cards evaluate `.func`.
+    """Verifies passive, geometric, binned, and VBIC `.model` cards evaluate `.func`.
 
     `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 scaling rounding.
     """
@@ -3230,7 +3231,7 @@ def test_recursive_local_func_and_wrong_arity_are_refused(
 
 
 def test_local_func_model_cache_has_no_crosstalk() -> None:
-    """Subcircuit-local `.func` calls do not crosstalk via the model cache.
+    """Verifies subcircuit-local `.func` calls do not crosstalk across model caches.
 
     `rel=1e-15, abs=0` (~4.5 eps) covers IEEE-754 scaling rounding at sub-pA scale.
     """
@@ -3269,9 +3270,7 @@ def test_local_func_model_cache_has_no_crosstalk() -> None:
     ] == pytest.approx(9e-14, rel=1e-15, abs=0)
 
 
-# ---------------------------------------------------------------------------
-# Item 3: .ic / .nodeset inside subcircuits and device IC= under UIC
-# ---------------------------------------------------------------------------
+# `.ic` / `.nodeset` inside subcircuits and device `IC=` under UIC.
 
 
 def test_ic_and_nodeset_inside_subcircuits_remap_ports_and_hierarchy() -> None:
@@ -3452,7 +3451,7 @@ def test_contradictory_and_malformed_ic_are_refused(
 
 
 def test_inductor_ic_currents_multiplier_and_coupled_windings() -> None:
-    """Inductor `IC=` currents scale by `m` (`rel=1e-15, abs=0` for IEEE-754)."""
+    """Verifies inductor `IC=` currents scale by `m` (`rel=1e-15, abs=0` IEEE-754)."""
     lib = library(
         ".subckt coil a b\n"
         "L1 a b 1m M=2 IC=0.25\n"
@@ -3570,7 +3569,7 @@ def _assert_pss_fields(
 
 
 def test_library_reads_driven_pss_statements() -> None:
-    """Driven `.pss` card values parse within IEEE-754 rounding (`rel=1e-12, abs=0`)."""
+    """Verifies driven `.pss` cards parse within IEEE-754 rounding (`rel=1e-12`)."""
     read = library(
         ".param f0=1meg\n"
         ".func half(x) {x / 2}\n"
@@ -3618,7 +3617,7 @@ def test_library_reads_driven_pss_statements() -> None:
 
 
 def test_library_reads_autonomous_pss_statements() -> None:
-    """Autonomous `.pss` cards parse within IEEE-754 rounding (`rel=1e-12, abs=0`)."""
+    """Verifies autonomous `.pss` cards parse within IEEE-754 rounding (`rel=1e-12`)."""
     read = library(
         ".pss\n"
         ".pss 1meg 10u out\n"
@@ -3677,12 +3676,12 @@ def test_library_reads_autonomous_pss_statements() -> None:
 
 
 def test_pss_from_spice_simulates_driven_and_autonomous_decks() -> None:
-    """`.pss` card conversion and shooting integration on driven and autonomous decks.
+    """Verifies `.pss` card conversion and shooting on driven and autonomous decks.
 
-    Driven `period` and `max_step` match exact decimal parsing within IEEE-754 rounding
-    (`rel=1e-12, abs=0`); autonomous regulated tank period matches `2*pi*sqrt(L*C)` to
-    within 1% (`rel=1e-2`, matching `crates/jolty-engine/tests/periodic.rs` trapezoidal
-    limit-cycle discretization tolerance).
+    Driven `period` and `max_step` match exact decimal parsing within IEEE-754
+    rounding (`rel=1e-12, abs=0`). The autonomous tank period matches
+    `2*pi*sqrt(L*C)` within 1% (`rel=1e-2`, matching the trapezoidal
+    limit-cycle tolerance in `crates/jolty-engine/tests/periodic.rs`).
     """
     driven_deck = library(
         ".subckt rc_driven\n"
@@ -3780,10 +3779,8 @@ def test_malformed_pss_statements_raise_factual_spice_errors(
         assert word not in lowered, f"advice word {word!r} in {message}"
 
 
-# ---------------------------------------------------------------------------
-# Phase A regression tests: netlist, library, expressions, models, export,
-# download, sky130, ngspice, and xyce
-# ---------------------------------------------------------------------------
+# Regression tests for netlist, library, expressions, models, export, download,
+# sky130, ngspice, and xyce.
 
 
 def test_netlist_preserves_tabs_as_separators() -> None:

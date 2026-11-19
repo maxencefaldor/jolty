@@ -1,15 +1,11 @@
 # Copyright 2026 Maxence Faldor
-"""The same circuits simulate the same however many threads run them.
+"""Determinism tests ensuring circuits produce identical bits at any thread count.
 
-On the random circuits of `strategies`, an operating point, a frequency response, the
-noise at a net and the sensitivities at the operating point find the same bits on 1, 2,
-3 and 8 threads, as the engine spreads each analysis's frequencies, right-hand sides,
-device instances and unknowns over them, as on one thread unspread; and the same bits
-again on each, their factorizations ordered for interiors of one unknown, which
-dissects each block whose elimination that makes cheaper, as on one thread; so does
-``ac_wide``'s response at 10,000 frequencies, run from Python. A Monte Carlo sample is
-a function of its seed, its index and the names of its parts alone, so it is the same
-drawn alone or among others, and a part added leaves every other part's draws alone.
+Across random circuits from `strategies`, operating points, frequency responses, noise,
+and sensitivities match bit for bit on 1, 2, 3, and 8 threads when spreading work across
+threads or enabling single-unknown nested dissection. The 10,000-point `ac_wide`
+response matches from Python as well. Monte Carlo draws depend solely on seed, sample
+index, and instance name, so adding instances leaves all other draws unchanged.
 """
 
 import dataclasses
@@ -50,7 +46,7 @@ SPREAD = Options(
         min_solves_per_task=1, min_instances_per_task=1, min_unknowns_per_task=1
     )
 )
-"""Options that spread every kind of a run's work over its threads, however small."""
+"""Options spreading every parallelizable analysis phase across threads at any size."""
 
 DISSECTED = Options(
     parallelism=dataclasses.replace(SPREAD.parallelism, max_unknowns_per_interior=1)
@@ -63,7 +59,7 @@ FIXTURES = Path(__file__).parent.parent / "benchmarks" / "speed" / "circuits"
 
 
 def _bits(found: object) -> object:
-    """Every number a result holds, as bytes, and the rest of it as text."""
+    """Converts numeric fields in `found` to raw bytes and other fields to text."""
     if isinstance(found, np.ndarray):
         return (str(found.dtype), found.shape, found.tobytes())
     if dataclasses.is_dataclass(found) and not isinstance(found, type):
@@ -79,7 +75,7 @@ def _bits(found: object) -> object:
 
 
 def _simulated(built: ir.Circuit, options: Options) -> list[object]:
-    """What each analysis finds on `built` with `options`, as bits, or why it fails."""
+    """Runs analyses on `built` with `options`, returning bit patterns or errors."""
     simulation = Simulation(built)
     top = built.components[built.top]
     source = next(
@@ -193,10 +189,10 @@ def test_a_seed_is_64_bits() -> None:
 def test_a_decade_sweeps_frequencies_are_the_floats_nearest_their_exact_values() -> (
     None
 ):
-    """Each is the float nearest `start · (stop / start)^(k / n)`, on every platform.
+    """Verifies each decade-sweep frequency is the nearest float to its exact value.
 
-    Computed again here to 80 digits, a power for each, where a platform's own `pow` of
-    a rounded exponent misses most of the 10,000 by a few units in their last place.
+    Values are recomputed to 80 digits for `start · (stop / start)^(k / n)`; platform
+    `pow` on rounded exponents misses most of the 10,000 points by several ULPs.
     """
     swept = decade(1 * Hz, 1 * GHz, 1111)
     with decimal.localcontext(prec=80):

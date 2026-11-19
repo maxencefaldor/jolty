@@ -41,7 +41,7 @@ def transistor(channel: str) -> devices.Device:
 
 @component
 def inverter(c: Builder) -> None:
-    """A CMOS inverter."""
+    """Builds a CMOS inverter."""
     a, y = c.port("a", Role.INPUT), c.port("y", Role.OUTPUT)
     vdd, gnd = c.port("vdd", Role.SUPPLY), c.port("gnd", Role.GROUND)
     up, down = c.place(transistor("p"), name="P"), c.place(transistor("n"), name="N")
@@ -53,7 +53,7 @@ def inverter(c: Builder) -> None:
 
 @component
 def chain(c: Builder, *, load: float = 0.0) -> None:
-    """A pulse through two inverters, the first loaded by `load` femtofarads."""
+    """Builds a two-inverter pulse chain with `load` femtofarads on the first stage."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(SUPPLY), name="VDD")
     pulse = Pulse(
@@ -136,9 +136,9 @@ def runs(
 ) -> tuple[
     fidelity.Fidelity, Simulation, dict[str, AnalysisResult], dict[str, AnalysisResult]
 ]:
-    """The fidelity of `top`, and its simulation and results with every model.
+    """Simulates `top` at every fidelity model and returns the resolved fidelity data.
 
-    Last come its results with X1 at its circuit's fidelity.
+    Places results with `X1` at the circuit default fidelity last.
     """
     chosen = fidelity.resolve(circuit(top), PLAN, None, {})
     simulation = chosen.simulation()

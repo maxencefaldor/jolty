@@ -12,7 +12,7 @@ from jolty.units import us
 from sample_circuits import low_pass
 
 FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
-"""Whether this interpreter is a free-threaded build, which may run without its GIL."""
+"""Flag indicating a free-threaded Python build capable of running without the GIL."""
 
 THREADS = 8
 """Python threads that simulate at once, as many as the performance cores."""
@@ -20,10 +20,10 @@ THREADS = 8
 
 @pytest.mark.skipif(not FREE_THREADED, reason="the interpreter has a GIL to keep")
 def test_the_engine_leaves_a_free_threaded_interpreter_without_its_gil() -> None:
-    """The extension declares it needs no GIL, so importing it keeps the GIL off.
+    """Verifies importing the Rust extension keeps the GIL disabled on 3.15t builds.
 
-    A module that does not declare so turns the GIL back on as it loads, and warns,
-    which these tests make an error.
+    An extension without free-threading support re-enables the GIL on import and emits
+    a warning, which pytest treats as an error.
     """
     from jolty import _core  # noqa: PLC0415 - the import is what is tested
 
@@ -32,10 +32,10 @@ def test_the_engine_leaves_a_free_threaded_interpreter_without_its_gil() -> None
 
 
 def test_simulations_from_many_python_threads_find_what_one_finds() -> None:
-    """Each thread's simulation finds the bits one thread finds alone.
+    """Verifies multithreaded Python runs match single-threaded results bit for bit.
 
-    The engine releases the interpreter while it runs, so with a GIL the threads take
-    turns in Python and run at once in Rust; without one, they run at once throughout.
+    The engine releases the GIL during Rust execution, so threads run concurrently in
+    Rust under GIL builds and concurrently throughout on free-threaded builds.
     """
     circuit = low_pass()
 

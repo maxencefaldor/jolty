@@ -1,16 +1,14 @@
 # Copyright 2026 Maxence Faldor
-"""The architecture AGENTS.md states, checked against the code.
+"""Architecture layering checks validating the codebase against `AGENTS.md`.
 
-AGENTS.md lists the Rust workspace's crates in order, and the Python package's modules
-in order, several to a line. A crate depends only on the crates listed before it, and a
-module imports only from the modules listed before it, and from those listed before it
-on its own line. These tests read both lists from AGENTS.md, which stays the one
-definition of the order.
+`AGENTS.md` lists Rust workspace crates and Python package modules in dependency order,
+several per line. Each crate depends only on earlier crates, and each module imports
+only from earlier lines or earlier entries on the same line. The tests parse both lists
+directly from `AGENTS.md` as the single source of truth.
 
-Three modules of the package sit outside its list: `jolty._core`, the extension the
-crate `jolty-python` builds, below every listed module; and, above them all, the
-package's `__init__`, which gathers what the modules define, and its `__main__`, which
-runs the command line.
+Three modules sit outside the module list: `jolty._core`, built by `jolty-python`, lies
+below every listed module. Above all listed modules sit the public-API `__init__` and
+the CLI entry point `__main__`.
 """
 
 import ast
@@ -31,7 +29,7 @@ type Order = Mapping[str, tuple[int, int]]
 
 
 def _lists() -> list[list[list[str]]]:
-    """The ordered lists of AGENTS.md's architecture: each line's names, in order."""
+    """Parses the ordered crate and module layer lists from `AGENTS.md`."""
     text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     section = text.split("\n## Architecture\n", 1)[1].split("\n## ", 1)[0]
     found: list[list[list[str]]] = [[]]
@@ -70,7 +68,7 @@ MODULES: Final = {
 
 
 def _layer(name: str, order: Order) -> str:
-    """A crate or module, and the line of AGENTS.md's list it is on."""
+    """Formats `name` together with its layer line number in `AGENTS.md`."""
     if name == CORE:
         return "`jolty._core`, the engine's extension below every line"
     if name == PACKAGE_ITSELF:
@@ -83,7 +81,7 @@ def _layer(name: str, order: Order) -> str:
 
 
 def _breaks(order: Order, user: str, used: str) -> bool:
-    """Whether `user` using `used` breaks the order, or either is on no line."""
+    """Returns whether `user` depending on `used` violates `order` or omits either."""
     if user == used:
         return False
     if user not in order or used not in order:
@@ -113,7 +111,7 @@ def test_each_crate_depends_only_on_the_crates_listed_before_it() -> None:
 
 
 def _listed(path: Path) -> str:
-    """The listed module that the file at `path` belongs to, or the package itself."""
+    """Returns the listed module containing `path`, or the package root name."""
     parts = path.relative_to(PACKAGE).with_suffix("").parts
     return PACKAGE_ITSELF if parts == ("__init__",) else parts[0]
 
@@ -125,11 +123,11 @@ NAMES: Final = {_listed(path) for path in FILES} | {CORE}
 
 
 def _imported(path: Path) -> list[tuple[int, str]]:
-    """Each listed module the file at `path` imports, by the line that imports it.
+    """Lists `(line, module)` pairs imported by `path` among listed modules.
 
-    Every import counts, those within functions and under `TYPE_CHECKING` too. A name
-    imported from the package itself, as `ir` is in ``from jolty import ir``, is the
-    module of that name if there is one, and the package's `__init__` otherwise.
+    Includes function-scoped and `TYPE_CHECKING` imports. A name imported from the
+    package root, such as `ir` in ``from jolty import ir``, resolves to that submodule
+    when present and to `__init__` otherwise.
     """
     within = ["jolty", *path.relative_to(PACKAGE).parent.parts]
     found: list[tuple[int, str]] = []

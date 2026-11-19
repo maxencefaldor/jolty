@@ -3,7 +3,7 @@
 
 Exhaustive property-based charge conservation across random floating capacitive islands
 and loose-vs-tight tolerance convergence live in Rust
-(`crates/jolty-engine/tests/invariants.rs`). This module covers the Python data model,
+(`crates/jolty-engine/tests/invariants.rs`). The Python suite covers the data model,
 PyO3 FFI array marshaling, `.results.npz` serialization, and report formatting.
 """
 
@@ -40,7 +40,7 @@ MACHINE_EPSILON: Final = float(np.finfo(np.float64).eps)
 
 
 def _closed_nonlinear_island() -> ir.Circuit:
-    """Two-node floating capacitive island with polynomial capacitors, R, and diode."""
+    """Builds a floating two-node island with polynomial capacitors, R, and diode."""
 
     @component
     def floating(builder: Builder) -> None:

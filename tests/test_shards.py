@@ -1,12 +1,11 @@
 # Copyright 2026 Maxence Faldor
-"""A Monte Carlo analysis run in shards finds what one run of every sample finds.
+"""Determinism tests verifying sharded Monte Carlo runs match single-run execution.
 
-Merging the shards of 1, 3 and 7 ranges of a plan's samples, run on three threads,
-gives the report and the batch file of one run of every sample on one thread, bit for
-bit, and the same batches at every condition. Shards of one circuit built by scripts
-in two places merge. Shards of other digests, and shards whose samples leave a gap
-or overlap, do not merge, and the error names them. A shard
-killed while it runs leaves no file, and run again writes the same file each time.
+Merging shards across 1, 3, and 7 sample ranges executed on three threads yields the
+exact same report, batch file, and per-condition batches bit for bit as one
+single-threaded run. Shards built by identical scripts in different directories merge
+cleanly. Mismatched digests, gaps, and overlapping ranges fail with named errors. An
+interrupted shard leaves no output file, and re-running writes identical bytes.
 """
 
 import importlib.util
@@ -194,7 +193,7 @@ def test_merging_1_3_and_7_shards_finds_one_run_s_bits(tmp_path: Path) -> None:
         assert saved.read_bytes() == (alone / runner.BATCHES).read_bytes()
         merged.append(shard)
     first, *others = merged
-    # Some runs read nothing of the measure Python reads, each for its own reason.
+    # Some runs leave the Python measure unread for distinct failure reasons.
     plan_s = first.conditions[0]
     assert plan_s is not None
     assert len(plan_s.reasons) > 3
@@ -225,7 +224,7 @@ def test_shards_of_one_circuit_built_in_two_places_merge(tmp_path: Path) -> None
     for name in ("one", "two"):
         (tmp_path / name).mkdir()
         places.append(_script(tmp_path / name))
-    # Each instance's source names the script that placed it, in its own directory.
+    # Each instance records the path of the script that built it.
     built = [circuit(runpy.run_path(str(place))["build"]()) for place in places]
     resistors = [each.find("R1") for each in built]
     assert [

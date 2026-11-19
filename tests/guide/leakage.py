@@ -8,7 +8,7 @@ from jolty.units import nA
 
 @component
 def leakage(c: Builder) -> None:
-    """1 nA into the cathode of a diode whose anode is the ground."""
+    """Builds a 1 nA source driving the cathode of a grounded-anode diode."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.current_source(1 * nA), name="I1")
     diode = c.place(devices.diode(), name="D1")
@@ -17,10 +17,10 @@ def leakage(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The diode and its current."""
+    """Returns the reverse-biased diode test circuit."""
     return leakage()
 
 
 def plan() -> Plan:
-    """The operating point."""
+    """Returns the operating-point simulation plan."""
     return Plan({"op": OperatingPoint()})

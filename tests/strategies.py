@@ -1,14 +1,13 @@
 # Copyright 2026 Maxence Faldor
-"""Random circuits drawn by Hypothesis, for the tests that simulate them.
+"""Hypothesis strategies generating random circuits for simulation tests.
 
-Each circuit joins every node to the ground through a tree of resistors, so it always
-has a DC path, then places sources and devices at random: capacitors, inductors and
-pairs of coupled windings each in series with a resistor, so that no loop of inductors
-and voltage sources forms, diodes, bipolar and MOS transistors with series resistances
-that bound their currents, each MOSFET's body on its source, some of them at
-temperatures of their own, transconductances, and current-controlled switches whose
-control port is in series with a resistor too. Sizes run past the 32 unknowns where
-hand-written circuits stop.
+Each generated circuit connects every node to ground through a spanning tree of
+resistors to guarantee a DC path, then adds random sources and devices.
+Inductors, coupled windings, and current-controlled switch control ports include
+series resistors to prevent voltage-source/inductor loops. Diodes, BJTs, and
+MOSFETs include current-limiting series resistances, with MOSFET bodies tied to
+sources and optional per-instance temperature offsets. Circuit sizes extend
+beyond the 32-unknown scale of hand-written tests.
 """
 
 import os
@@ -38,7 +37,7 @@ __all__ = [
 ]
 
 SEARCH: Final = os.environ.get("JOLTY_RANDOM_CIRCUITS")
-"""How many circuits each test draws afresh, if a search is asked for."""
+"""Optional fresh-example count read from `JOLTY_RANDOM_CIRCUITS`."""
 
 SETTINGS: Final = settings(
     max_examples=40 if SEARCH is None else int(SEARCH),
@@ -46,12 +45,11 @@ SETTINGS: Final = settings(
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.filter_too_much],
 )
-"""How each test of random circuits runs: on the same 40 circuits every time, or on as
-many as `JOLTY_RANDOM_CIRCUITS` sets, drawn afresh."""
+"""Hypothesis settings for random-circuit tests (40 derandomized or `SEARCH` fresh)."""
 
 
 def _decades(low: float, high: float) -> st.SearchStrategy[float]:
-    """Values spread evenly over the decades from `low` to `high`."""
+    """Returns a strategy for values distributed log-uniformly from `low` to `high`."""
     return st.floats(np.log10(low), np.log10(high)).map(lambda exponent: 10**exponent)
 
 
@@ -68,7 +66,7 @@ def _current(draw: st.DrawFn) -> devices.Device:
 
 
 def _apart(draw: st.DrawFn, device: devices.Device) -> devices.Device:
-    """`device`, or the same at a temperature of its own, offset from the circuit's."""
+    """Returns `device` unchanged or with a random per-instance temperature offset."""
     if draw(st.booleans()):
         return device
     return device.warmer_by(draw(st.floats(-40, 80)) * K)
@@ -193,18 +191,20 @@ DEVICES: Final = {
     "P": _photocell,
     "X": _memristor,
 }
-"""What each device placed at random between existing nodes is, by its prefix; an
-inductor, a pair of coupled windings and a switch's control port go in series with a
-resistor besides, and a behavioral source reads the voltage of a control terminal."""
+"""Mapping from SPICE prefix to device generator for direct placements.
+
+Inductors, coupled windings, and current-controlled switch control ports add a
+series resistor in `_placements`, and behavioral sources sense a control net.
+"""
 
 
 def _placements(
     draw: st.DrawFn, prefix: str, ends: list[str], fresh: str
 ) -> list[tuple[str, devices.Device, list[str]]]:
-    """What a device of `prefix` placed between `ends` places.
+    """Returns `(prefix, device, nets)` entries for a random placement between `ends`.
 
-    Each is a prefix, a device and its nets: the device, and a resistor in series where
-    it needs one, `fresh` naming a net of its own.
+    Inserts a series resistor and intermediate net `fresh` when the device
+    requires series impedance.
     """
     match prefix:
         case "L":
@@ -226,20 +226,20 @@ def _placements(
                 ("R", _resistor(draw, 10, 1e5), [fresh, ends[3]]),
             ]
         case "B":
-            # A transconductance as an expression of its own control terminal.
+            # Transconductance written as an expression of the control terminal voltage.
             gain = draw(_decades(1e-6, 1e-3))
             source = devices.behavioral_current_source(f"{gain!r}*v(control)")
             return [("B", source, ends[:3])]
         case "M":
-            # Its body on its source, as a discrete MOSFET's is, so that no junction to
-            # it lies across a source with nothing to bound its current.
+            # Tie the MOSFET body to the source (like a discrete MOSFET) so no
+            # bulk junction spans a voltage source without current limiting.
             return [("M", _mosfet(draw), [*ends[:3], ends[2]])]
     return [(prefix, DEVICES[prefix](draw), ends)]
 
 
 @st.composite
 def circuits(draw: st.DrawFn) -> ir.Circuit:
-    """A random circuit with a DC path from every node to the ground."""
+    """Generates a random valid circuit with a DC path from every node to ground."""
     count = draw(st.integers(1, 40))
     nodes = ["0", *(f"n{index}" for index in range(1, count + 1))]
     instances: list[ir.Instance] = []
@@ -263,8 +263,8 @@ def circuits(draw: st.DrawFn) -> ir.Circuit:
         level = draw(st.floats(-5, 5)) * V
         place("V", devices.voltage_source(level), [nodes[node], "0"])
     for _ in range(draw(st.integers(0, 2 * count))):
-        # Two distinct nodes first, so that no source drives its current through
-        # nothing, then any two, for a transistor's or a control's other terminals.
+        # Pick two distinct nodes first to avoid shorted two-terminal sources,
+        # then two arbitrary nodes for extra transistor or control terminals.
         node = st.sampled_from(nodes)
         ends = [
             *draw(st.lists(node, min_size=2, max_size=2, unique=True)),
@@ -296,19 +296,17 @@ def circuits(draw: st.DrawFn) -> ir.Circuit:
 
 
 STOP: Final = 2e-6
-"""How long each random transient runs, in seconds: a pulse of 1 V on the first source,
-rising after 0.2 µs, for 0.8 µs."""
+"""Duration of each random transient in seconds (1 V pulse from 0.2 µs for 0.8 µs)."""
 
 STEP: Final = STOP / 200
-"""The longest step of each random transient."""
+"""Maximum time step of each random transient in seconds."""
 
 PARASITIC: Final = 10e-15
-"""The capacitance every net holds to the ground where a transient asks for it, in
-farads."""
+"""Default shunt capacitance to ground added for transient tests, in farads."""
 
 
 def pulsed(circuit: ir.Circuit) -> ir.Circuit:
-    """The circuit with its first voltage source pulsed 1 V above its level and back."""
+    """Returns `circuit` with the first voltage source pulsed 1 V above DC and back."""
     instances = list(circuit.components[circuit.top].instances)
     index = next(
         index
@@ -334,14 +332,13 @@ def pulsed(circuit: ir.Circuit) -> ir.Circuit:
 
 
 def capacitive(circuit: ir.Circuit) -> list[str]:
-    """The nets that hold `PARASITIC`, sorted.
+    """Returns sorted net names in `circuit` that receive `PARASITIC` shunt capacitors.
 
-    They are every net but the ground, and but the negative one of each
-    current-controlled switch's control port. The port holds its two nets at one
-    voltage, as one net, which holds one capacitance, on the port's positive net. With
-    one on each, the port would carry the current that charges the second, which the
-    switch's own output can drive through the first: its control would still move with
-    no charge to slow it, and its equations could fold.
+    Includes every net except ground and the negative terminal of each
+    current-controlled switch control port. A control port forces both
+    terminals to the same potential, so placing capacitance on both nets lets
+    the switch output drive the second capacitor through the port without
+    slowing the control current and allows the equations to fold.
     """
     instances = circuit.components[circuit.top].instances
     joined = {
@@ -354,14 +351,12 @@ def capacitive(circuit: ir.Circuit) -> list[str]:
 
 
 def parasitic(circuit: ir.Circuit, nets: Iterable[str] | None = None) -> ir.Circuit:
-    """The circuit with `PARASITIC` from each of `nets` to the ground, as nets have.
+    """Returns `circuit` with `PARASITIC` capacitance from each net in `nets` to ground.
 
-    Without `nets`, it is each net that `capacitive` names, as in a real circuit.
-    Without capacitance, a regenerative loop of devices that hold no charge, such as a
-    switch whose output moves its own control, can fold as its solution moves, into a
-    point past which none continues: a transient's equations then have no solution, and
-    an engine stops there, or leaps by chance to another. With it, every loop charges a
-    capacitance, and the solution continues.
+    Defaults to the nets returned by `capacitive`. Without shunt capacitance, a
+    memoryless regenerative loop (such as a switch driving the switch control)
+    can fold to a singular point where a transient stalls or jumps branches.
+    Adding shunt capacitance ensures every feedback loop integrates charge.
     """
     instances = circuit.components[circuit.top].instances
     if nets is None:
@@ -385,7 +380,7 @@ def parasitic(circuit: ir.Circuit, nets: Iterable[str] | None = None) -> ir.Circ
 
 
 def placing(circuit: ir.Circuit, instances: Iterable[ir.Instance]) -> ir.Circuit:
-    """The circuit with its top placing `instances` instead of its own."""
+    """Returns a copy of `circuit` with the top component's instances replaced."""
     top = circuit.components[circuit.top].model_copy(
         update={"instances": tuple(instances)}
     )

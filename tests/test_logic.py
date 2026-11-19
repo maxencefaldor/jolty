@@ -18,7 +18,7 @@ from jolty.waveforms import Pulse
 
 @component
 def chain(c: Builder) -> None:
-    """A source into a NAND with a 1, into an inverter."""
+    """Builds a logic source feeding a NAND tied high, followed by an inverter."""
     c.port("ground", Role.GROUND)
     a = c.place(devices.logic_source(0, [(1 * ns, 1)], transition=10 * ps), name="A")
     b = c.place(devices.logic_source(1, transition=10 * ps), name="B")
@@ -38,7 +38,7 @@ def chain(c: Builder) -> None:
 
 @component
 def inverter(c: Builder) -> None:
-    """An electrical inverter between an analog edge and a capacitor."""
+    """Builds an electrical inverter between an analog edge source and a capacitor."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
     edge = Pulse(

@@ -1,14 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""The extension's stub, ``_core.pyi``, says what the extension module is.
+"""Consistency tests verifying that `_core.pyi` accurately describes the Rust extension.
 
-ty reads the stub, never the module, so nothing else holds the two together. The stub
-declares every name the module has and no other, each class with the methods the
-module's has, final where the module's cannot be subclassed. It also types the
-dictionaries the extension builds, which no type checker sees built: a key renamed in
-the Rust code and not in the stub would type a value that is never there. Its
-TypedDicts exist for the type checker alone, so the tests run the stub as Python to get
-them, run every kind of analysis through `Simulation.run`, and read each outcome the
-extension returned against them.
+`ty` reads the stub rather than the compiled extension, so these checks keep both in
+sync. Every runtime symbol, class method, and `@final` annotation must match between
+`_core.pyi` and `_core`. The stub also types every dictionary returned by the Rust
+extension so renamed keys cannot drift silently. Tests execute the stub as Python to
+inspect its `TypedDict` definitions, run every analysis kind via `Simulation.run`, and
+validate every returned dictionary against those annotations.
 """
 
 import ast
@@ -51,9 +49,10 @@ TREE: typing.Final = ast.parse(STUB_PATH.read_text(encoding="utf-8"))
 
 
 def _type_only(statement: ast.stmt) -> bool:
-    """Whether `statement` declares a type the module has no object for.
+    """Returns whether `statement` declares a typing-only construct absent at runtime.
 
-    A TypedDict types a dictionary the extension builds, and a type alias names a type.
+    `TypedDict` classes describe extension-built dictionaries, and type aliases name
+    static types.
     """
     if isinstance(statement, ast.TypeAlias):
         return True
@@ -63,7 +62,7 @@ def _type_only(statement: ast.stmt) -> bool:
 
 
 def _declared(statements: list[ast.stmt]) -> dict[str, ast.stmt]:
-    """The names `statements` declare, by name, but the types for the checker alone."""
+    """Maps declared names in `statements` to AST nodes, skipping typing-only items."""
     found: dict[str, ast.stmt] = {}
     for statement in statements:
         if _type_only(statement):
@@ -78,7 +77,7 @@ def _declared(statements: list[ast.stmt]) -> dict[str, ast.stmt]:
 
 
 def _public(names: typing.Iterable[str]) -> set[str]:
-    """Of `names`, those a user reads, `__new__` and `__version__` among them."""
+    """Filters `names` to public attributes plus `__new__` and `__version__`."""
     return {
         name
         for name in names
@@ -100,8 +99,8 @@ def test_each_class_of_the_stub_is_the_module_s(name: str) -> None:
     assert isinstance(statement, ast.ClassDef)
     runtime = getattr(_core, name)
     methods = _public(_declared(statement.body)) - {"__new__"}
-    # Every name the stub gives the class it has, its own or inherited, such as an
-    # exception's `args`, and every name of its own the stub gives.
+    # Every stubbed attribute exists on the runtime class (own or inherited, such as
+    # exception `args`), and every own runtime attribute appears in the stub.
     assert methods <= _public(dir(runtime)), name
     assert _public(vars(runtime)) - {"__new__"} <= methods, name
     final = any(
@@ -118,19 +117,19 @@ def test_each_class_of_the_stub_is_the_module_s(name: str) -> None:
 
 
 def _hints(typed: object) -> dict[str, object]:
-    """The keys of the TypedDict `typed` and their types, the stub's names resolved."""
+    """Returns resolved field type hints for `TypedDict` class `typed`."""
     # The hints of a TypedDict are types, which `get_type_hints` gives as `Any`.
     return typing.cast("dict[str, object]", typing.get_type_hints(typed, globalns=STUB))
 
 
 def _kind(typed: object) -> object:
-    """The kind a TypedDict's ``kind`` key names, if it has one."""
+    """Returns the literal `kind` discriminator of `typed`, if declared."""
     hint = _hints(typed).get("kind")
     return None if hint is None else typing.get_args(hint)[0]
 
 
 def _mismatches(value: object, hint: object, where: str) -> list[str]:
-    """Where `value`'s dictionaries hold other keys than `hint`'s TypedDicts name."""
+    """Collects key mismatches between runtime `value` and `TypedDict` `hint`."""
     if typing.is_typeddict(hint):
         return _keys(value, hint, where)
     if isinstance(hint, typing.TypeAliasType):
@@ -151,7 +150,7 @@ def _mismatches(value: object, hint: object, where: str) -> list[str]:
 
 
 def _keys(value: object, typed: object, where: str) -> list[str]:
-    """Where `value` holds other keys than the TypedDict `typed` names, or within."""
+    """Collects missing or extra keys in `value` relative to `TypedDict` `typed`."""
     if not isinstance(value, Mapping):
         return [f"{where} is a {type(value).__name__}, not a dictionary"]
     named = _hints(typed)
@@ -169,7 +168,7 @@ def _keys(value: object, typed: object, where: str) -> list[str]:
 
 @component
 def _probed(c: Builder) -> None:
-    """A source, a probe and an RC low-pass."""
+    """Builds a voltage source, current probe, and RC low-pass filter."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
     probe = c.place(devices.voltage_source(0 * V), name="VP")

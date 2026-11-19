@@ -1,15 +1,13 @@
 # Copyright 2026 Maxence Faldor
-"""The CMC's models, compiled from their published sources, are their closed forms.
+"""Closed-form validation of compiled CMC Verilog-A compact models.
 
-R3_CMC 1.1.2, the CMC's three-terminal resistor, MOSVAR 1.3.0, its MOS varactor, and
-PSP 103.8.2, its surface-potential MOSFET with JUNCAP 200.6.2, are as IHP's open
-process kit publishes them, R3_CMC under the Educational Community License 2.0 and the
-others under the notices their sources carry. DIODE_CMC 2.0.0, the CMC's junction
-diode, is as the VA-Models collection publishes it, under the CMC's in-code statement.
-Neither the sources nor the kernels compiled from them are in the repository: each
-source is fetched by its digests and compiled by jolty's Verilog-A compiler into
-``crates/jolty-veriloga/tests/fetched/kernels/``, which git ignores, and the crate's
-``fetched`` tests, built then, check each kernel against closed forms of the model.
+R3_CMC 1.1.2 (three-terminal resistor), MOSVAR 1.3.0 (MOS varactor), and PSP 103.8.2
+(surface-potential MOSFET with JUNCAP 200.6.2) come from IHP's open PDK under ECL-2.0
+and each file's source license. DIODE_CMC 2.0.0 comes from the VA-Models collection
+under the CMC in-code license. Neither source files nor compiled kernels live in git.
+Tests fetch each source by SHA digest, compile it with jolty's Verilog-A compiler into
+the gitignored ``crates/jolty-veriloga/tests/fetched/kernels/`` directory, and run the
+crate's ``fetched`` tests against analytical formulas.
 """
 
 import shutil
@@ -28,13 +26,13 @@ IHP: Final = (
     "https://raw.githubusercontent.com/IHP-GmbH/IHP-Open-PDK/"
     "e73adb4045731ddec21634146d536380057f6a26/ihp-sg13g2/libs.tech/verilog-a/"
 )
-"""Where IHP publishes its kit's Verilog-A models, at a commit of the kit."""
+"""Pinned IHP open-PDK repository URL hosting CMC Verilog-A model sources."""
 
 VA_MODELS: Final = (
     "https://raw.githubusercontent.com/dwarning/VA-Models/"
     "f04299a330591a591f309f4be1e208f83883ba2a/code/"
 )
-"""Where VA-Models publishes its models, at a commit of the collection."""
+"""Pinned VA-Models repository URL hosting the DIODE_CMC Verilog-A source."""
 
 SOURCES: Final = {
     "r3_cmc": (
@@ -131,7 +129,7 @@ SOURCES: Final = {
 and each file of it with the SHA-256 digest of its contents, the model's own first."""
 
 KERNELS: Final = ROOT / "crates/jolty-veriloga/tests/fetched/kernels"
-"""Where the kernels compiled from the sources go, for the crate's ``fetched`` tests."""
+"""Output directory for compiled kernels consumed by crate ``fetched`` tests."""
 
 CARGO: Final = ("cargo", "--quiet")
 """Cargo, quietly, on the repository's own crates."""
@@ -139,7 +137,7 @@ CARGO: Final = ("cargo", "--quiet")
 
 @pytest.fixture(scope="session")
 def downloads(pytestconfig: pytest.Config) -> Path:
-    """Where the sources' files are kept between runs."""
+    """Returns the pytest cache directory storing fetched Verilog-A source files."""
     assert pytestconfig.cache is not None
     return pytestconfig.cache.mkdir("downloads")
 
@@ -147,7 +145,7 @@ def downloads(pytestconfig: pytest.Config) -> Path:
 def test_each_model_compiles_and_is_its_closed_forms(
     downloads: Path, tmp_path: Path
 ) -> None:
-    """Each source, fetched by its digests, compiles into a kernel its tests pass."""
+    """Verifies each fetched Verilog-A source compiles and passes closed-form tests."""
     KERNELS.mkdir(exist_ok=True)
     for name, (url, files) in SOURCES.items():
         source = tmp_path / name

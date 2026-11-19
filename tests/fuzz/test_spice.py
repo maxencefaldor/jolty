@@ -216,7 +216,7 @@ def _random_spice_card(draw: st.DrawFn, index: int) -> str:
 
 @st.composite
 def _spice_netlists(draw: st.DrawFn) -> str:
-    """Grammar-guided adversarial SPICE netlists mixing cards and directives."""
+    """Generates grammar-guided adversarial SPICE netlists with cards and directives."""
     lines = draw(
         st.lists(st.sampled_from(_SPICE_CARD_TEMPLATES), min_size=1, max_size=12)
     )

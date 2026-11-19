@@ -1,19 +1,19 @@
 # Copyright 2026 Maxence Faldor
-"""Every engine constant and test tolerance names its source.
+"""Verifies that every numeric engine constant and test tolerance cites a source.
 
 Enforces two policies from `AGENTS.md`:
 
-1. Every named `const` declaration in `crates/jolty-engine/src/`,
-   `crates/jolty-numerics/src/`, and `crates/jolty-checks/src/` must carry a
-   `///` doc comment explaining where its value comes from: a literature or
-   standard reference, a verified source file line, a mathematical derivation,
-   a measured machine benchmark, or an explicit jolty design origin.
-2. Every tolerance comparison site across `tests/**/*.py` (`pytest.approx`,
-   `assert_allclose`, `assert_almost_equal`, `assert_array_almost_equal`,
-   `isclose`, `allclose`, `compare(..., tolerance=...)`, `_agree(...)`, and
-   direct `assert` error bounds against a positive float literal below 1.0 or
-   a named tolerance constant) must have a genuine local rationale explaining
-   why that tolerance has its value.
+1. Numeric scalar `const` items in `crates/jolty-engine/src/`,
+   `crates/jolty-numerics/src/`, and `crates/jolty-checks/src/` carry a `///`
+   doc comment naming their origin. Valid origins include a literature or
+   standard reference, a source file line, a derivation, a benchmark, or a
+   documented design choice. Non-scalar types, `::MAX`/`::MIN` sentinels, and
+   `Self` algebraic identities are excluded.
+2. Tolerance assertions across `tests/**/*.py` carry a local rationale,
+   enclosing docstring rationale, or documented `ALL_CAPS` tolerance constant.
+   Audited sites include `pytest.approx`, `assert_allclose`,
+   `assert_almost_equal`, `assert_array_almost_equal`, `isclose`, `allclose`,
+   `compare(..., tolerance=...)`, `_agree(...)`, and direct error bounds.
 """
 
 import ast
@@ -32,10 +32,40 @@ CONSTANT_CRATES: Final[tuple[str, ...]] = (
     "jolty-numerics",
     "jolty-checks",
 )
-"""Workspace crates whose `src/` `const` items must document their origin."""
+"""Workspace crates whose numeric scalar `const` items must document their origin."""
 
 _CONSTANT_DECLARATION: Final = re.compile(
-    r"^\s*(?:pub(?:\([^)]*\))?\s+)?const\s+(?!fn\b|unsafe\b)([A-Za-z_][A-Za-z0-9_]*)\s*:",
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?const\s+(?!fn\b|unsafe\b)"
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*:(.*)$",
+)
+
+_NUMERIC_SCALAR_TYPES: Final[frozenset[str]] = frozenset(
+    {
+        "f64",
+        "f32",
+        "usize",
+        "isize",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "u128",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "i128",
+        "Self",
+    }
+)
+
+_SENTINEL_VALUE: Final = re.compile(
+    r"^(?:usize|isize|u8|u16|u32|u64|u128|i8|i16|i32|i64|i128|f32|f64)::(?:MAX|MIN)$",
+)
+
+_ALGEBRAIC_IDENTITY: Final = re.compile(
+    r"^(?:(?:0(?:\.0+)?|1(?:\.0+)?)(?:_f(?:32|64))?"
+    r"|Self::new\(\s*(?:0(?:\.0+)?|1(?:\.0+)?)\s*,\s*0(?:\.0+)?\s*\))$",
 )
 
 _CONSTANT_SOURCE_PATTERN: Final = re.compile(
@@ -120,7 +150,7 @@ _TOLERANCE_RATIONALE_PATTERN: Final = re.compile(
 
 
 def _documentation_lines_before(lines: list[str], declaration_index: int) -> list[str]:
-    """Collect the contiguous `///` doc comment attached to a `const` declaration."""
+    """Collects the contiguous `///` doc comment attached to a `const` declaration."""
     cursor = declaration_index - 1
     while cursor >= 0 and lines[cursor].strip().startswith("#["):
         cursor -= 1
@@ -132,16 +162,53 @@ def _documentation_lines_before(lines: list[str], declaration_index: int) -> lis
     return collected
 
 
+def _parse_rust_constant(
+    lines: list[str],
+    line_index: int,
+) -> tuple[str, str, str | None] | None:
+    """Parses `(name, type_name, initializer)` from a Rust `const` declaration."""
+    match = _CONSTANT_DECLARATION.match(lines[line_index])
+    if match is None:
+        return None
+    name = match.group(1)
+    parts = [match.group(2).split("//", 1)[0].strip()]
+    cursor = line_index + 1
+    while ";" not in parts[-1] and cursor < len(lines) and cursor < line_index + 8:
+        parts.append(lines[cursor].split("//", 1)[0].strip())
+        cursor += 1
+    statement = " ".join(part for part in parts if part).split(";", 1)[0].strip()
+    if "=" in statement:
+        type_name, initializer = (piece.strip() for piece in statement.split("=", 1))
+        return name, type_name, initializer
+    return name, statement, None
+
+
+def _is_audited_rust_constant(
+    name: str,
+    type_name: str,
+    initializer: str | None,
+) -> bool:
+    """Returns whether a Rust `const` item is an audited numeric scalar constant."""
+    if name == "_" or type_name not in _NUMERIC_SCALAR_TYPES:
+        return False
+    if initializer is not None and _SENTINEL_VALUE.match(initializer) is not None:
+        return False
+    return not (
+        type_name == "Self"
+        and (initializer is None or _ALGEBRAIC_IDENTITY.match(initializer) is not None)
+    )
+
+
 def find_uncited_rust_constants(source: str, label: str) -> list[str]:
-    """Return descriptions of named Rust `const` items lacking a documented source."""
+    """Returns descriptions of numeric scalar Rust `const` items lacking a source."""
     lines = source.splitlines()
     violations: list[str] = []
-    for line_index, line in enumerate(lines):
-        match = _CONSTANT_DECLARATION.match(line)
-        if match is None:
+    for line_index in range(len(lines)):
+        parsed = _parse_rust_constant(lines, line_index)
+        if parsed is None:
             continue
-        name = match.group(1)
-        if name == "_":
+        name, type_name, initializer = parsed
+        if not _is_audited_rust_constant(name, type_name, initializer):
             continue
         documentation = " ".join(_documentation_lines_before(lines, line_index))
         line_number = line_index + 1
@@ -156,7 +223,7 @@ def find_uncited_rust_constants(source: str, label: str) -> list[str]:
 
 
 def _rust_source_files() -> list[Path]:
-    """Return every `.rs` source file under the audited crates."""
+    """Returns every `.rs` source file under the audited crates."""
     files: list[Path] = []
     for crate_name in CONSTANT_CRATES:
         source_root = ROOT / "crates" / crate_name / "src"
@@ -165,7 +232,7 @@ def _rust_source_files() -> list[Path]:
 
 
 def _callable_short_name(function: ast.expr) -> str | None:
-    """Return the unqualified function or attribute name of a call target."""
+    """Returns the unqualified function or attribute name of a call target."""
     if isinstance(function, ast.Name):
         return function.id
     if isinstance(function, ast.Attribute):
@@ -174,7 +241,7 @@ def _callable_short_name(function: ast.expr) -> str | None:
 
 
 def _extract_comments(source: str) -> dict[int, str]:
-    """Map 1-based line numbers to non-suppression comment text."""
+    """Maps 1-based line numbers to non-suppression comment text."""
     comments: dict[int, str] = {}
     for token in tokenize.generate_tokens(StringIO(source).readline):
         if token.type != tokenize.COMMENT:
@@ -188,7 +255,7 @@ def _extract_comments(source: str) -> dict[int, str]:
 def _extract_constant_documentation(
     module: ast.Module, comments: dict[int, str]
 ) -> dict[str, str]:
-    """Collect preceding comments and attached docstrings for `ALL_CAPS` constants."""
+    """Collects preceding comments and attached docstrings for `ALL_CAPS` constants."""
     documented: dict[str, str] = {}
     statements = module.body
     for index, statement in enumerate(statements):
@@ -228,7 +295,7 @@ def _extract_constant_documentation(
 
 
 def _has_error_metric(expression: ast.expr) -> bool:
-    """Return whether `expression` computes an absolute magnitude or named error."""
+    """Returns whether `expression` computes an absolute magnitude or named error."""
     for child in ast.walk(expression):
         if isinstance(child, ast.Call):
             if _callable_short_name(child.func) in _MAGNITUDE_CALL_NAMES:
@@ -249,7 +316,7 @@ def _has_error_metric(expression: ast.expr) -> bool:
 
 
 def _has_small_float_literal(expression: ast.expr) -> bool:
-    """Return whether `expression` contains a float literal in `(0, 1)` outside `**`."""
+    """Returns whether `expression` holds a float literal in `(0, 1)` outside `**`."""
     if isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.Pow):
         return _has_small_float_literal(expression.left)
     if isinstance(expression, ast.Constant) and isinstance(expression.value, float):
@@ -262,7 +329,7 @@ def _has_small_float_literal(expression: ast.expr) -> bool:
 
 
 def _referenced_uppercase_names(node: ast.AST) -> set[str]:
-    """Return all `ALL_CAPS` identifier names referenced inside `node`."""
+    """Returns all `ALL_CAPS` identifier names referenced inside `node`."""
     return {
         child.id
         for child in ast.walk(node)
@@ -271,7 +338,7 @@ def _referenced_uppercase_names(node: ast.AST) -> set[str]:
 
 
 def _is_tolerance_call(call: ast.Call) -> str | None:
-    """Return the matched call kind if `call` is a tolerance comparison, else None."""
+    """Returns the matched call kind if `call` is a tolerance comparison, else None."""
     name = _callable_short_name(call.func)
     if name in _TOLERANCE_CALL_NAMES:
         return name
@@ -286,7 +353,7 @@ def _is_tolerance_bound(
     expression: ast.expr,
     constant_documentation: dict[str, str],
 ) -> bool:
-    """Return whether `expression` is a literal `< 1` bound or documented constant."""
+    """Returns whether `expression` is a literal `< 1` bound or documented constant."""
     return _has_small_float_literal(expression) or any(
         name in constant_documentation
         for name in _referenced_uppercase_names(expression)
@@ -324,7 +391,7 @@ def _extract_compare_sites(
     comparison: ast.Compare,
     constant_documentation: dict[str, str],
 ) -> list[_ToleranceSite]:
-    """Return direct `assert` comparison tolerance sites inside `comparison`."""
+    """Returns direct `assert` comparison tolerance sites inside `comparison`."""
     sites: list[_ToleranceSite] = []
     span_start = comparison.lineno
     span_end = comparison.end_lineno or comparison.lineno
@@ -356,7 +423,7 @@ def _collect_statement_sites(
     statement: ast.stmt,
     constant_documentation: dict[str, str],
 ) -> list[_ToleranceSite]:
-    """Return tolerance sites directly belonging to `statement`."""
+    """Returns tolerance sites directly belonging to `statement`."""
     sites: list[_ToleranceSite] = []
 
     def walk_expression(node: ast.AST) -> None:
@@ -386,7 +453,7 @@ def _block_group_start_line(
     lines: list[str],
     comments: dict[int, str],
 ) -> int:
-    """Walk upward across contiguous `assert`/call lines sharing a header comment."""
+    """Walks upward across contiguous `assert`/call lines sharing a header comment."""
     top_line = statements[index].lineno
     cursor = index - 1
     while cursor >= 0:
@@ -411,7 +478,7 @@ def _forwards_helper_parameter(
     node: ast.AST,
     scope: _ScopeContext,
 ) -> bool:
-    """Return whether a helper call forwards one of its own tolerance parameters."""
+    """Returns whether a helper call forwards a tolerance parameter of `scope`."""
     if not isinstance(node, ast.Call) or not _has_rationale_text(scope.docstring):
         return False
     return any(
@@ -425,7 +492,7 @@ def _forwards_helper_parameter(
 
 
 def _sub_statement_blocks(statement: ast.stmt) -> list[list[ast.stmt]]:
-    """Return nested statement lists owned by a compound AST statement."""
+    """Returns nested statement lists owned by a compound AST statement."""
     blocks: list[list[ast.stmt]] = []
     for attribute in ("body", "orelse", "finalbody"):
         child_block = getattr(statement, attribute, None)
@@ -439,7 +506,7 @@ def _sub_statement_blocks(statement: ast.stmt) -> list[list[ast.stmt]]:
 
 
 def _has_rationale_text(text: str) -> bool:
-    """Return whether `text` contains genuine tolerance rationale terminology."""
+    """Returns whether `text` contains genuine tolerance rationale terminology."""
     return bool(text) and _TOLERANCE_RATIONALE_PATTERN.search(text) is not None
 
 
@@ -448,7 +515,7 @@ def _comments_in_range(
     start_line: int,
     end_line: int,
 ) -> list[str]:
-    """Return all non-suppression comments within `[start_line, end_line]`."""
+    """Returns all non-suppression comments within `[start_line, end_line]`."""
     return [
         comments[line_number]
         for line_number in range(max(1, start_line), end_line + 1)
@@ -462,7 +529,7 @@ def _site_is_cited(
     module_context: _ModuleContext,
     scope: _ScopeContext,
 ) -> bool:
-    """Return whether a tolerance site has a documented local source/rationale."""
+    """Returns whether a tolerance site has a documented local source or rationale."""
     group_start, statement_end = statement_span
     nearby = _comments_in_range(module_context.comments, group_start - 3, statement_end)
     node_local = _comments_in_range(
@@ -485,7 +552,7 @@ def find_uncited_test_tolerances(
     source: str,
     label: str,
 ) -> tuple[int, list[str]]:
-    """Return `(total_sites, violations)` for Python test tolerance sites."""
+    """Returns `(total_sites, violations)` for Python test tolerance sites."""
     module = ast.parse(source, filename=label)
     lines = source.splitlines()
     comments = _extract_comments(source)
@@ -547,7 +614,7 @@ def find_uncited_test_tolerances(
 
 
 def _python_test_files() -> list[Path]:
-    """Return every `.py` file under `tests/` except this guard module itself."""
+    """Returns every `.py` file under `tests/` except this guard module itself."""
     tests_root = ROOT / "tests"
     return sorted(
         path for path in tests_root.rglob("*.py") if path.name != "test_tolerances.py"
@@ -572,6 +639,8 @@ def test_constant_guard_flags_undocumented_and_uncited_constants() -> None:
         const BARE: f64 = 0.25;
         /// The damping factor.
         const UNCITED: f64 = 0.5;
+        /// Scaling factor for iterative relaxation.
+        const CUSTOM_SELF: Self = 0.25;
         /// Safe anonymous compile-time assertion.
         const _: () = {};
         /// Step shrink factor after non-convergence.
@@ -579,14 +648,27 @@ def test_constant_guard_flags_undocumented_and_uncited_constants() -> None:
         const CITED: f64 = 0.125;
         /// Internal helper constant function, not a value constant.
         const fn helper() -> bool { true }
+        const LABEL: &str = "pole-zero analysis";
+        const SHORTED_SOURCE: Rule = Rule {
+            name: "shorted-source",
+        };
+        pub const RULES: &[Rule] = &[SHORTED_SOURCE];
+        const ABSENT: usize = usize::MAX;
+        pub const UNMAPPED: u32 = u32::MAX;
+        const ZERO: Self;
+        const ZERO: Self = 0.0;
+        const ONE: Self = 1.0;
+        const ZERO: Self = Self::new(0.0, 0.0);
         """
     )
     findings = find_uncited_rust_constants(sample, "synthetic.rs")
-    assert len(findings) == 2
+    assert len(findings) == 3, "\n".join(findings)
     assert "BARE" in findings[0]
     assert "no `///` doc" in findings[0]
     assert "UNCITED" in findings[1]
     assert "names no source" in findings[1]
+    assert "CUSTOM_SELF" in findings[2]
+    assert "names no source" in findings[2]
 
 
 def test_every_test_tolerance_names_its_source() -> None:
@@ -645,7 +727,7 @@ def test_tolerance_guard_accepts_cited_tolerance_sites() -> None:
         \"\"\"Twice ngspice relative tolerance (reltol=1e-6) for DC solves.\"\"\"
 
         def check_close(left, right, tolerance):
-            \"\"\"Compare arrays within `tolerance` covering Newton convergence.\"\"\"
+            \"\"\"Compares arrays within `tolerance` covering Newton convergence.\"\"\"
             np.testing.assert_allclose(left, right, rtol=tolerance)
 
         def test_preceding_and_inline(x, a, b, scale):

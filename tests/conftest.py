@@ -1,13 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""Loads, before any test runs, every module whose constants Hypothesis could draw on.
+"""Preloads local modules whose constants Hypothesis may draw during tests.
 
-Now and then Hypothesis draws a constant it found in the source of a local module
-loaded so far, one neither of the standard library nor installed as a package: every
-module of jolty, installed from its source, and the benchmarks' scripts. Its constants
-only grow as modules load, so the same choices would make another random circuit after
-other tests loaded more modules, and a module loaded while a test runs would make
-Hypothesis find the test's data generation flaky. Loaded here, they are the same in
-every run, whichever tests it runs, so the random circuits are too.
+Hypothesis occasionally draws constants discovered in the source of loaded
+local modules (non-stdlib modules outside site-packages, namely every `jolty`
+module and benchmark script). Delayed imports would alter generated circuits
+across test orders and trigger Hypothesis flakiness checks because the constant
+pool grows as modules load. Preloading every local module here keeps the
+constant pool identical across runs regardless of which tests execute.
 """
 
 import importlib
@@ -35,8 +34,10 @@ settings.register_profile(
 )
 
 collect_ignore = ["guide"]
-"""The scripts behind the guide's quoted outputs, which import the examples as they run
-beside them in `test_guide.py`, and which pytest's doctests would import without them.
+"""Guide output scripts executed alongside examples by `test_guide.py`.
+
+Excluded from pytest collection so doctest discovery does not import them
+without the example directory on `sys.path`.
 """
 
 for found in pkgutil.walk_packages(jolty.__path__, f"{jolty.__name__}."):
@@ -73,5 +74,5 @@ for script in (
 
 @pytest.fixture
 def in_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run a test in its own temporary directory."""
+    """Runs a test in a dedicated temporary working directory."""
     monkeypatch.chdir(tmp_path)

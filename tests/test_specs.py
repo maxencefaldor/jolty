@@ -98,13 +98,13 @@ def response(frequencies: results.Real, out: results.Complex) -> results.AcResul
 
 
 def first_order() -> results.TransientResult:
-    """A unit step through a time constant of 1 µs, held for 20 time constants."""
+    """Builds a 1 µs time-constant unit-step transient held for 20 time constants."""
     times = np.linspace(0, 20 * TAU, 200_001)
     return waveforms(times, 1 - np.exp(-times / TAU))
 
 
 def low_pass() -> results.AcResult:
-    """A first-order low pass with its corner at 1 kHz, densely sampled."""
+    """Builds a densely sampled first-order low-pass AC response with a 1 kHz corner."""
     frequencies = np.logspace(0, 6, 6001)
     transfer = np.asarray(1 / (1 + 1j * frequencies / 1e3), dtype=np.complex128)
     return response(frequencies, transfer)
@@ -144,12 +144,12 @@ def test_a_value_reads_a_sweep_whose_levels_fall() -> None:
 
 
 def test_windowed_statistics_match_a_sine_over_whole_periods() -> None:
-    """Windowed stats on 3 periods of 1 kHz sine at dt = 1e-4*T (10,000 pts/period).
+    """Verifies windowed statistics on 3 periods of a 1 kHz sine at dt = 1e-4*T.
 
     Integer quarter-periods hit exact extrema within float rounding (`rel=1e-6`),
     full-cycle trapezoidal mean cancels to rounding (`abs=1e-9`), and half-cycle
-    trapezoidal quadrature
-    has O((omega*dt)^2 / 12) ~= 3.3e-8 error (bounded by rel=1e-6).
+    trapezoidal quadrature has O((omega*dt)^2 / 12) ~= 3.3e-8 error (bounded by
+    `rel=1e-6`).
     """
     times = np.linspace(0, 3 * ms.value, 30_001)
     sine = waveforms(times, 2 * np.sin(2 * np.pi * 1e3 * times))
@@ -165,12 +165,12 @@ def test_windowed_statistics_match_a_sine_over_whole_periods() -> None:
 
 
 def test_edges_match_a_first_order_step() -> None:
-    """Edge timings on first_order() sampled at dt = 1e-4 * TAU.
+    """Verifies edge timings on `first_order()` sampled at dt = 1e-4 * TAU.
 
     Linearly interpolated crossings (`rise_time`, `crossing`) have `O(dt^2) ~= 1e-8`
-    chord error (within `pytest.approx` `rel=1e-6`); uninterpolated `settling_time`
-    quantizes to `dt`,
-    relative error <= dt / (TAU * ln(50)) ~= 2.55e-5 (bounded by rel=1e-4).
+    chord error (within `pytest.approx` `rel=1e-6`). Uninterpolated `settling_time`
+    quantizes to `dt`, giving relative error <= dt / (TAU * ln(50)) ~= 2.55e-5
+    (bounded by `rel=1e-4`).
     """
     step = first_order()
     rise = rise_time("t", "out").read(step)
@@ -208,10 +208,11 @@ def test_overshoot_matches_an_underdamped_second_order_step() -> None:
 
 
 def test_a_first_order_response_falls_3_db_at_its_corner() -> None:
-    """On low_pass() (1000 pts/decade log grid), 1 kHz and 1 Hz are exact grid points.
+    """Verifies 3 dB roll-off and phase at the 1 kHz corner of `low_pass()`.
 
-    Default pytest.approx (rel=1e-6) and abs=1e-6 cover dB/atan2 float rounding and
-    log-linear bandwidth interpolation.
+    On the 1000-point/decade log grid, 1 kHz and 1 Hz are exact grid points; default
+    `pytest.approx` (`rel=1e-6`) and `abs=1e-6` cover dB/atan2 rounding and log-linear
+    bandwidth interpolation.
     """
     corner = low_pass()
     assert gain("ac", "out", at=1 * kHz).read(corner).value == pytest.approx(
@@ -225,10 +226,10 @@ def test_a_first_order_response_falls_3_db_at_its_corner() -> None:
 
 
 def test_a_response_of_exactly_nothing_reads_minus_infinite_decibels() -> None:
-    """A twin T at its notch, or a balanced bridge, passes nothing: -inf dB, a number.
+    """Verifies that a zero-transmission notch reads -inf dB as a valid numeric value.
 
-    Its verdict passes an upper bound with infinite slack and fails a lower one, and
-    JSON, which has no infinity, writes it as a string its schema names.
+    The verdict passes an upper bound with infinite slack and fails a lower bound; JSON
+    serialization writes infinity using the schema's string representation.
     """
     frequencies = np.array([1e2, 1e3, 1e4])
     silent = response(frequencies, np.array([1e-3, 0, 1e-3], dtype=np.complex128))
@@ -336,10 +337,10 @@ def test_a_loop_gain_is_read_without_an_output_and_a_response_at_one() -> None:
 
 
 def test_distortion_reads_the_harmonics_of_the_last_period() -> None:
-    """Linear resampling onto 1024 pts/period from dt=1e-4*T bounds THD error.
+    """Verifies that `distortion()` reads last-period harmonics within error bounds.
 
-    Chord sag `O((k*w*dt)^2)` attenuates harmonics by `< 1e-6` linear, well below
-    `abs=1e-3` dB for all three `distortion()` assertions below.
+    Linear resampling onto 1024 pts/period from `dt=1e-4*T` produces chord sag
+    `O((k*w*dt)^2) < 1e-6` linear, well below `abs=1e-3` dB for all three assertions.
     """
     times = np.linspace(0, 3e-3, 30_001)
     angle = 2 * math.pi * 1e3 * times
@@ -633,9 +634,10 @@ def test_a_verdict_is_the_worst_of_every_run() -> None:
 
 
 def hiss(*, referred: bool = True) -> results.NoiseResult:
-    """White noise of 16e-18 V²/Hz from 10 Hz to 100 kHz, plus flicker noise.
+    """Builds a noise result with 16e-18 V²/Hz white noise and 1/f flicker noise.
 
-    The flicker noise is 1e-15 V²/Hz at 1 Hz, falling as 1/f, and the input's gain 2.
+    Frequencies span 10 Hz to 100 kHz, flicker noise equals 1e-15 V²/Hz at 1 Hz, and
+    input gain is 2.
     """
     frequencies = np.logspace(1, 5, 41)
     white = np.full(frequencies.size, 16e-18)
@@ -715,9 +717,10 @@ def test_noise_reads_a_noise_analysis_within_its_band() -> None:
 
 
 def test_a_yield_of_nothing_or_everything_has_an_exact_end() -> None:
-    """No sample passing puts the Wilson interval's lower end at 0, not at rounding.
+    """Verifies exact Wilson interval endpoints at 0% and 100% passing yield.
 
-    Its ends otherwise agree with the textbook formula to within rounding.
+    Zero passing samples clamp the lower endpoint to exact 0 rather than rounding
+    noise; interior endpoints match the textbook Wilson formula within rounding.
     """
     requirement = value("op", "out") <= 2 * V
     failed, passed = (
@@ -740,9 +743,9 @@ def test_a_yield_of_nothing_or_everything_has_an_exact_end() -> None:
 
 
 def test_the_wilson_interval_is_the_yield_s_and_refuses_what_is_no_proportion() -> None:
-    """`wilson` is the interval a yield states, of any proportion of samples.
+    """Verifies that `wilson` matches yield intervals and rejects invalid proportions.
 
-    Its ends agree with the textbook formula to within rounding, as the yield's do.
+    Both interval endpoints match the textbook formula within floating-point rounding.
     """
     requirement = value("op", "out") <= 2 * V
     failed, passed = (
@@ -818,11 +821,11 @@ type Readings = list[list[list[float | None]]]
 
 @st.composite
 def judged_runs(draw: st.DrawFn) -> tuple[Specs, list[bool], Readings]:
-    """Specs, and what each of their requirements read on each run at each condition.
+    """Generates specs and per-condition readings across runs for property tests.
 
-    Each reading is a number, possibly not finite, or None where the analysis failed;
-    a condition whose circuit does not elaborate, as `elaborates` says, reads none. A
-    bound in amperes is not in the reading's unit, which leaves it unmeasured.
+    Each reading is a float (possibly non-finite) or `None` when analysis fails; a
+    condition whose circuit fails elaboration (`elaborates` false) yields no reading.
+    An ampere bound on a voltage reading leaves the requirement unmeasured.
     """
     numbers = st.floats(-3.0, 3.0, allow_nan=False)
     requirements = []
@@ -858,7 +861,7 @@ def judged_runs(draw: st.DrawFn) -> tuple[Specs, list[bool], Readings]:
 
 
 def _batch(readings: Sequence[Sequence[float | None]]) -> results.BatchResult:
-    """A batch of a measure per requirement that read `readings`, by requirement."""
+    """Builds a `BatchResult` with one measure per requirement reading `readings`."""
     measured = np.array(
         [[math.nan if read is None else read for read in each] for each in readings]
     ).T
@@ -886,10 +889,10 @@ def _batch(readings: Sequence[Sequence[float | None]]) -> results.BatchResult:
 def test_verdicts_on_a_batch_are_those_on_each_run(
     drawn: tuple[Specs, list[bool], Readings],
 ) -> None:
-    """The spreads and the yield of a batch's columns are those of its runs' verdicts.
+    """Verifies that batch column spreads and yields match per-run verdicts bit for bit.
 
-    Each run's verdict on a requirement is its worst over the conditions, as `evaluate`
-    judges a Monte Carlo sample, and the columns' are the same numbers, bit for bit.
+    Each run's verdict on a requirement equals the worst verdict across conditions,
+    matching `evaluate` on Monte Carlo samples.
     """
     specs, elaborates, readings = drawn
     runs = len(readings[0][0])

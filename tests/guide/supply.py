@@ -13,7 +13,7 @@ from jolty.waveforms import Piecewise
 
 @component
 def supply(c: Builder) -> None:
-    """The ramp across the capacitor, and the transistor on 10 V."""
+    """Builds the ramped capacitor and heated 10 V bipolar transistor bench."""
     ground = c.port("ground", Role.GROUND)
     ramp = Piecewise([(0 * us, 0 * V), (2 * us, 20 * V)])
     source = c.place(devices.voltage_source(ramp), name="V1")
@@ -34,10 +34,10 @@ def supply(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The capacitor and the transistor."""
+    """Returns the over-rating test circuit."""
     return supply()
 
 
 def plan() -> Plan:
-    """The operating point, then the ramp."""
+    """Returns the operating-point and transient ramp plan."""
     return Plan({"op": OperatingPoint(), "tran": Transient(stop=4 * us)})

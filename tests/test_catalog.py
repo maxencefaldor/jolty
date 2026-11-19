@@ -162,7 +162,7 @@ NUMBERED = Catalog(
 
 @component
 def switched(c: Builder) -> None:
-    """Numbered parts: a transistor, a power MOSFET, a diode and resistors."""
+    """Builds a numbered-part circuit with BJT, power MOSFET, diode, and resistors."""
     ground = c.port("ground", Role.GROUND)
     transistor = c.place(parts.q2n3904(), name="Q1")
     switch = c.place(parts.irf511(), name="X1")

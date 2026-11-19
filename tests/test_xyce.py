@@ -1,45 +1,40 @@
 # Copyright 2026 Maxence Faldor
 """Differential tests against Xyce: jolty and Xyce simulate the same circuits and agree.
 
-The circuits are `test_ngspice.py`'s that Xyce's dialect of jolty's export writes, each
-simulated by jolty and written as a SPICE netlist in Xyce's dialect, whose values
-come back as the CSV Xyce prints. Both engines run with tight tolerances. Operating
-points, DC sweeps and AC responses must agree to the Newton tolerance, noise densities
-to the noise comparison's 1e-5, and transients, interpolated onto Xyce's time points,
-to a small fraction of their swing: `test_ngspice.py`'s tolerances, since a reference
-simulator's equations are the same.
+Each circuit from `test_ngspice.py` that Xyce's export dialect supports is simulated by
+jolty and exported as a Xyce SPICE netlist, whose results return as CSV. Both engines
+run with tight tolerances matching `test_ngspice.py`. Operating points, DC sweeps, and
+AC responses must agree to the Newton tolerance, noise densities to 1e-5, and transients
+(interpolated onto Xyce time points) to a small fraction of their swing.
 
-Xyce is a reference for agreement, never for accuracy, as ngspice is. The tests that run
-it skip where it is not installed, unless the environment sets ``JOLTY_REQUIRE_XYCE=1``;
-those of the dialect's refusals run everywhere.
+Like ngspice, Xyce serves as a reference for agreement rather than ground truth. Tests
+that invoke Xyce skip when it is not installed unless ``JOLTY_REQUIRE_XYCE=1`` is set.
+Dialect-refusal tests always run.
 
-Where Xyce's models depart from jolty's, which are ngspice's, the tests compare
-everything but the departure, each named where it is left out:
+Where Xyce models diverge from jolty and ngspice, the tests compare all remaining
+analyses and document each exclusion:
 
-- Xyce's MOSFETs of levels 1 and 3 keep SPICE3f5's reverse-biased bulk junction, a
-  conductance ``Is/vt`` (``N_DEV_MOSFET1.C``, lines 2921 to 2936), where jolty's current
-  settles on ``-Is``: at 3 V of reverse bias each junction of ``mosfet_curves`` carries
-  4.16 pA in Xyce and 3.01 pA in jolty and ngspice, gmin's 3 pA included, which
-  `_allowance` admits.
-- Xyce's JFET makes no noise: ``N_DEV_JFET.C`` defines no noise source.
-- Xyce's JFET keeps SPICE3f5's temperature dependence (``N_DEV_JFET.C``, lines
-  1792 to 1822): at 125 °C, ``jfet_curves``'s gate leakage is 774.6 pA in Xyce, which
-  that formula gives, and 774.3 pA in jolty and ngspice, and ``jfet_stage``'s drain
-  current differs by 1.7e-3. JFETs are left out of the comparison across temperatures.
-- Xyce's bipolar transistor adds gmin to each junction's current before its beta divides
-  it (``N_DEV_BJT.C``, lines 3040 to 3095), where jolty's, as ngspice's, adds it to the
-  base current undivided: its currents may differ by gmin times each junction's
-  voltage, at -40 °C 1.3 pA of ``bjt_stage``'s 204 nA of base current, which
-  `_allowance` admits too.
+- Level-1 and level-3 MOSFETs in Xyce keep SPICE3f5's reverse-biased bulk junction
+  conductance ``Is/vt`` (``N_DEV_MOSFET1.C``, lines 2921 to 2936), whereas jolty settles
+  at ``-Is``. At 3 V reverse bias, each junction in ``mosfet_curves`` carries 4.16 pA in
+  Xyce versus 3.01 pA in jolty and ngspice (including 3 pA from gmin), as `_allowance`
+  accounts for.
+- Xyce JFETs produce no noise: ``N_DEV_JFET.C`` defines no noise source.
+- Xyce JFETs keep SPICE3f5 temperature scaling (``N_DEV_JFET.C``, lines 1792 to 1822).
+  At 125 °C, ``jfet_curves`` gate leakage is 774.6 pA in Xyce versus 774.3 pA in jolty
+  and ngspice, and ``jfet_stage`` drain current differs by 1.7e-3. JFETs are excluded
+  from cross-temperature comparisons.
+- Xyce bipolar transistors add gmin to each junction current before dividing by beta
+  (``N_DEV_BJT.C``, lines 3040 to 3095), whereas jolty and ngspice add gmin directly to
+  base current. Currents can differ by gmin times junction voltage (1.3 pA of 204 nA
+  base current in ``bjt_stage`` at -40 °C), which `_allowance` accounts for.
 
-Xyce finds no operating point of ``negative_load``, its DC solve failing after 7,692
-Newton iterations, where jolty's and ngspice's agree; it is left out.
-Two disagreements, both of MOSFETs of level 1, are not explained yet, and are left out
-too: at 125 °C, ``nmos_stage``'s and ``cmos_inverter``'s outputs lie 1.4e-4 and 7.6e-6
-of their values from jolty's, which agrees with ngspice's; and swept across its
-threshold at 27 °C, ``cmos_inverter``'s output lies up to 55 µV, 3.0e-5 of its swing,
-from jolty's where its gain is steepest, with its junctions' leakage made negligible as
-well, so not by that departure.
+Xyce fails to find a DC operating point for ``negative_load`` after 7,692 Newton
+iterations while jolty and ngspice agree, so that circuit is excluded. Two unexplained
+level-1 MOSFET disagreements are also excluded. At 125 °C, ``nmos_stage`` and
+``cmos_inverter`` outputs differ by 1.4e-4 and 7.6e-6 relative to jolty (which agrees
+with ngspice). Swept across threshold at 27 °C, ``cmos_inverter`` differs by up to 55 µV
+(3.0e-5 of swing) at steepest gain even with negligible junction leakage.
 """
 
 import json
@@ -119,12 +114,12 @@ default ``GMIN``, Xyce's (``N_DEV_DeviceOptions.C``, line 455) and jolty's."""
 
 
 def _allowance(simulation: Simulation, values: np.ndarray, temperature: float) -> float:
-    """What the departures of Xyce's junctions may move a current by, in amperes.
+    """Returns the current offset in amperes caused by Xyce junction model differences.
 
-    Each bulk junction of a MOSFET of level 1 or 3 conducts ``Is/vt`` reversed in Xyce,
-    where jolty's settles on ``-Is``, so they differ by ``Is · (|v|/vt + 1)`` at most;
-    each junction of a bipolar transistor by gmin times its voltage. Either junction's
-    voltage is at most the largest node voltage in `values`, a run's at `temperature`.
+    Level-1 and level-3 MOSFET bulk junctions conduct ``Is/vt`` in reverse bias in Xyce
+    versus ``-Is`` in jolty, differing by at most ``Is · (|v|/vt + 1)``. Bipolar
+    junctions differ by gmin times junction voltage. Both voltages are bounded by the
+    maximum node voltage in `values` at `temperature`.
     """
     top = simulation.circuit.components[simulation.circuit.top]
     voltages = [
@@ -154,7 +149,7 @@ def _allowance(simulation: Simulation, values: np.ndarray, temperature: float) -
 def _lines(
     simulation: Simulation, *, excited: str | None = None, transient: bool = False
 ) -> list[str]:
-    """The simulation's circuit in Xyce's dialect."""
+    """Returns the circuit netlist formatted in the Xyce SPICE dialect."""
     return netlist(
         simulation.circuit, excited=excited, transient=transient, dialect=XYCE
     )
@@ -265,10 +260,10 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
     ],
 )
 def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
-    """The noise at the output, and referred to the input, as Xyce finds them.
+    """Verifies output and input-referred noise density agreement against Xyce.
 
-    Xyce prints the densities themselves, in V²/Hz and the input's unit squared per
-    hertz, where ngspice prints their square roots.
+    Xyce reports power spectral densities directly (V²/Hz and input unit squared per
+    hertz), whereas ngspice prints their square roots.
     """
     simulation = Simulation(top())
     spectrum = simulation.run(
@@ -323,18 +318,19 @@ def test_transients_agree(
 def test_what_xyce_lacks_is_refused_by_name(
     top: Callable[[], Component], named: str
 ) -> None:
-    """What Xyce lacks or defines otherwise is never dropped.
+    """Verifies that unsupported Xyce features raise errors naming the feature.
 
-    Writing a device or a parameter of that kind fails, naming it.
+    Exporting an unsupported device or parameter fails and names the offending item.
     """
     with pytest.raises(JoltyError, match=named):
         netlist(circuit(top()), dialect=XYCE)
 
 
 def test_a_varying_source_states_its_level_at_time_zero() -> None:
-    """The dialect states a varying source's DC level, its waveform's at time zero.
+    """Verifies that Xyce export emits a varying source's time-zero DC level.
 
-    Xyce takes 0 where none is stated, where jolty's operating point reads that level.
+    Xyce defaults to 0 V when no DC level is printed, whereas jolty evaluates the
+    waveform at time zero for the operating point.
     """
     simulation = Simulation(rectifier())
     point = simulation.run(OperatingPoint(), TIGHT)
@@ -345,10 +341,10 @@ def test_a_varying_source_states_its_level_at_time_zero() -> None:
 
 @SKIP_XYCE
 def test_a_timeout_keeps_what_xyce_printed() -> None:
-    """A run stopped by its timeout says how far Xyce's transient came.
+    """Verifies that a timed-out Xyce run preserves partial transient progress output.
 
-    A transient whose longest step is a picosecond takes ten million steps over
-    10 µs, far longer than two seconds, and Xyce reports each percent it completes.
+    A 10 µs transient capped at 1 ps steps requires ten million steps, far exceeding
+    two seconds, and Xyce logs each completed percentage before termination.
     """
     lines = ["rc", "R1 in out 1k", "C1 out 0 1n", "V1 in 0 PULSE(0 1 0 1n 1n 1u 2u)"]
     with pytest.raises(

@@ -100,7 +100,7 @@ def _assert_fact_only(text: str) -> None:
 
 
 def _validation_messages(error: ValidationError) -> list[str]:
-    """Every error message in `error`, audited for fact-only wording."""
+    """Returns every error message in `error`, audited for fact-only wording."""
     messages = [entry["msg"] for entry in error.errors()]
     for message in messages:
         _assert_fact_only(message)
@@ -113,7 +113,7 @@ def _expect_plan_error(
     count: int | None = None,
     min_count: int | None = None,
 ) -> str:
-    """Assert `action` raises a fact-only `PlanError` matching counts and fragments."""
+    """Asserts `action` raises a fact-only `PlanError` matching counts and fragments."""
     with pytest.raises(PlanError) as raised:
         action()
     if count is not None:
@@ -133,7 +133,7 @@ def _expect_validation_errors(
     count: int | None = None,
     min_count: int | None = None,
 ) -> None:
-    """Assert `action` raises a fact-only `ValidationError` with expected counts."""
+    """Asserts `action` raises a fact-only `ValidationError` with expected counts."""
     with pytest.raises(ValidationError) as raised:
         action()
     if count is not None:
@@ -147,7 +147,7 @@ def _expect_validation_errors(
 
 @component
 def amplifier_stage(c: Builder) -> None:
-    """Subcomponent with two resistors, for testing hierarchy and fidelity scopes."""
+    """Builds a two-resistor subcomponent for hierarchy and fidelity scope tests."""
     input_port = c.port("input", Role.SIGNAL)
     output_port = c.port("output", Role.SIGNAL)
     ground = c.port("ground", Role.GROUND)
@@ -160,7 +160,7 @@ def amplifier_stage(c: Builder) -> None:
 
 @component
 def bench_circuit(c: Builder) -> None:
-    """Divider with a floating probe, inductor, capacitor, and two subcomponents."""
+    """Builds a divider with a floating probe, passive elements, and subcomponents."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(5 * V), name="V1")
     probe = c.place(devices.voltage_source(0 * V), name="VP")
@@ -188,7 +188,7 @@ def bench_circuit(c: Builder) -> None:
 
 @component
 def logic_circuit(c: Builder) -> None:
-    """Circuit with a logic gate and a logic source."""
+    """Builds a circuit with a logic gate and a logic source."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(1.8 * V), name="V1")
     resistor = c.place(devices.resistor(1 * kohm), name="R1")
@@ -208,9 +208,6 @@ def _build_simulation() -> Simulation:
     return Simulation(bench_circuit())
 
 
-# --- close_names matching ---
-
-
 def test_close_names_matches_standard_case_insensitive_and_short_typos() -> None:
     assert close_names(["bode", "op", "tran"], "trna") == "; close names: tran"
     assert close_names(["bode", "op", "tran"], "bdoe") == "; close names: bode"
@@ -221,9 +218,6 @@ def test_close_names_matches_standard_case_insensitive_and_short_typos() -> None
     assert close_names(["out", "in"], "OUT") == "; close names: out"
     assert close_names(["op"], "dc") == ""
     assert close_names([], "anything") == ""
-
-
-# --- Upfront validation runs ZERO analyses ---
 
 
 def test_misspelled_analysis_in_spec_fails_before_simulating(
@@ -473,9 +467,6 @@ def specs():
     assert "'Z*' matches no component instance" in outcome.message
     assert "process corner ss" in outcome.message
     assert "'po'; close names: op" in outcome.message
-
-
-# --- Per-analysis upfront name checks ---
 
 
 def test_record_reports_all_missing_paths_and_patterns_at_once() -> None:
@@ -881,8 +872,6 @@ def test_plot_missing_analyses_includes_close_names(tmp_path: Path) -> None:
         count=2,
     )
 
-
-# --- Item 9: Multi-error Pydantic validation for Plan / Options / Specs ---
 
 _BAD_RANDOM_VARIABLE = ir.RandomVariable(
     name="bad",

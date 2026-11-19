@@ -4,6 +4,7 @@ import math
 import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Final
 
 import numpy as np
 import pytest
@@ -69,6 +70,12 @@ from jolty.units import (
 from jolty.waveforms import Sine
 from sample_circuits import divider, low_pass
 
+LINEAR_SOLVE_RTOL: Final = 1e-6
+"""Relative tolerance covering linear LU rounding across DC, AC, and sensitivities."""
+
+QZ_EIGENVALUE_RTOL: Final = 1e-9
+"""Relative tolerance covering dense generalized-eigenvalue (QZ) rounding."""
+
 
 @component
 def diode_load(c: Builder) -> None:
@@ -91,10 +98,11 @@ def test_an_operating_point_solves_kirchhoffs_laws() -> None:
     ]
     point = simulation.run(OperatingPoint())
     assert point.strategy == "direct"
-    # Linear DC divider solve; default pytest.approx (rel=1e-6) covers LU rounding.
-    assert point.voltage("out") == pytest.approx(4.0)
-    assert point.voltage("in", reference="out") == pytest.approx(1.0)
-    assert point.current("V1") == pytest.approx(-1e-3)
+    assert point.voltage("out") == pytest.approx(4.0, rel=LINEAR_SOLVE_RTOL)
+    assert point.voltage("in", reference="out") == pytest.approx(
+        1.0, rel=LINEAR_SOLVE_RTOL
+    )
+    assert point.current("V1") == pytest.approx(-1e-3, rel=LINEAR_SOLVE_RTOL)
 
 
 @settings(max_examples=50, deadline=None)
@@ -114,7 +122,7 @@ def test_a_divider_divides_at_any_scale(
 
 
 def test_sensitivities_are_the_derivatives_of_a_divider() -> None:
-    """Linear divider sensitivities match closed-form partial derivatives.
+    """Verifies that linear divider sensitivities match closed-form partial derivatives.
 
     `rel=1e-6` / `rtol=1e-6` and default `pytest.approx` cover linear LU rounding.
     """
@@ -155,9 +163,9 @@ pole, in hertz."""
 
 @component
 def follower(c: Builder) -> None:
-    """An amplifier fed back whole to its inverting input through the probe ``VP``.
+    """Builds a unity-feedback amplifier closed through voltage probe ``VP``.
 
-    Three stages of 1 mS each drive a load and a capacitor, then a buffer the output.
+    Three stages of 1 mS each drive a load and capacitor, followed by an output buffer.
     """
     ground = c.port("ground", Role.GROUND)
     level = c.place(devices.voltage_source(1 * V), name="VIN")
@@ -186,7 +194,7 @@ def follower(c: Builder) -> None:
 
 
 def open_loop(frequency: float) -> complex:
-    """The amplifier's gain, which the loop gain is."""
+    """Returns the open-loop gain of the three-stage amplifier at `frequency`."""
     gain = complex(1.0)
     for load, pole in STAGES:
         gain *= 1e-3 * load.value / (1 + 1j * frequency / pole)
@@ -194,7 +202,7 @@ def open_loop(frequency: float) -> complex:
 
 
 def solved(function: Callable[[float], float], low: float, high: float) -> float:
-    """Where `function`, of opposite signs at `low` and `high`, crosses zero."""
+    """Returns the zero crossing of `function` between opposite-sign endpoints."""
     for _ in range(200):
         middle = math.sqrt(low * high)
         if (function(middle) > 0) == (function(low) > 0):
@@ -237,11 +245,11 @@ def test_a_probe_is_a_voltage_source_off_the_ground() -> None:
 
 
 FOUR_KT = 4 * _core.BOLTZMANN * _core.REFERENCE_TEMPERATURE
-"""`4kT` at 27 °C, in joules."""
+"""Thermal noise energy `4kT` at 27 °C, in joules."""
 
 
 def test_a_noise_analysis_finds_each_resistors_noise_and_refers_it_back() -> None:
-    """White thermal noise across a resistive divider agrees with `4kT * R_parallel`.
+    """Verifies that resistive-divider white thermal noise matches `4kT * R_parallel`.
 
     Every `rtol=1e-9` / `rel=1e-9` bound covers linear adjoint-solve and flat-spectrum
     power-law quadrature rounding.
@@ -297,7 +305,7 @@ def test_a_noise_analysis_rejects_what_it_cannot_measure() -> None:
 
 @component
 def latch(c: Builder) -> None:
-    """Two CMOS inverters, each driving the other's input."""
+    """Builds two cross-coupled CMOS inverters."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(3.3 * V), name="VDD")
     c.connect(supply.negative, ground)
@@ -326,7 +334,7 @@ def latch(c: Builder) -> None:
 
 
 def test_a_latch_has_two_states_and_a_balance_between_them() -> None:
-    """Symmetric CMOS latch states match default Newton `voltage_tolerance` (1e-6 V)."""
+    """Verifies symmetric CMOS latch states within Newton `voltage_tolerance`."""
     found = Simulation(latch()).run(OperatingPoints())
     assert len(found.points) == 3
     assert sorted(found.voltages("a").tolist()) == [
@@ -346,8 +354,7 @@ def test_a_latch_has_two_states_and_a_balance_between_them() -> None:
 def test_a_low_pass_has_one_real_pole_and_no_zero() -> None:
     simulation = Simulation(low_pass())
     found = simulation.run(PoleZero(source="V1", output="out"))
-    # Dense generalized-eigenvalue (QZ) rounding; rtol=1e-9 well above ~1e-15.
-    np.testing.assert_allclose(found.poles, [-1e6], rtol=1e-9)
+    np.testing.assert_allclose(found.poles, [-1e6], rtol=QZ_EIGENVALUE_RTOL)
     assert found.zeros is not None
     assert found.zeros.size == 0
     assert results.dampings(found.poles).tolist() == [1.0]
@@ -372,10 +379,11 @@ def test_dense_matrices_past_the_memory_fail_before_they_are_made() -> None:
 
 
 def test_an_excess_phase_delays_the_collector_current_through_two_poles() -> None:
-    """With its terminals held, a transistor's only dynamics are its delay's filter.
+    """Verifies that excess phase delays collector current through a two-pole filter.
 
-    Its two poles are the roots of s² td² + 3 s td + 3, and the collector current's
-    response to the base is the transconductance through 3 / (s² td² + 3 s td + 3).
+    With terminals fixed, only the excess-phase filter governs transistor dynamics. The
+    two poles are the roots of s² td² + 3 s td + 3, and collector current responds to
+    base voltage through the transconductance times 3 / (s² td² + 3 s td + 3).
     """
     delay = 30 * math.pi / 180 * 0.4e-9
 
@@ -399,8 +407,9 @@ def test_an_excess_phase_delays_the_collector_current_through_two_poles() -> Non
     simulation = Simulation(held())
     poles = simulation.run(PoleZero()).poles
     expected = (-3 + np.array([-1, 1]) * 1j * math.sqrt(3)) / (2 * delay)
-    # Dense generalized-eigenvalue (QZ) rounding; rtol=1e-9 well above machine eps.
-    np.testing.assert_allclose(np.sort_complex(poles), expected, rtol=1e-9)
+    np.testing.assert_allclose(
+        np.sort_complex(poles), expected, rtol=QZ_EIGENVALUE_RTOL
+    )
     point = simulation.run(OperatingPoint())
     thermal_voltage = 1.380649e-23 * 300.15 / 1.602176634e-19
     transconductance = -point.current("VC") / thermal_voltage
@@ -421,11 +430,10 @@ def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
         Sensitivity(["out"], of=DcSweep("V1", levels))
     )
     assert isinstance(swept.result, results.DcSweepResult)
-    # Linear DC sweep sensitivity solve; rtol=1e-6 covers linear LU rounding.
     np.testing.assert_allclose(
         swept.derivative("out", "R1", "resistance"),
         -swept.result.swept * lower / (upper + lower) ** 2,
-        rtol=1e-6,
+        rtol=LINEAR_SOLVE_RTOL,
     )
     # Exact zero sensitivity to overridden swept DC value; atol=1e-12 covers rounding.
     np.testing.assert_allclose(
@@ -439,11 +447,10 @@ def test_sensitivities_follow_a_sweep_a_response_and_a_transient() -> None:
     assert isinstance(filtered.result, results.AcResult)
     omega = 2 * np.pi * filtered.result.frequencies
     corner = 1 + 1j * omega * resistance * capacitance
-    # Linear AC sensitivity solve; rtol=1e-6 covers complex LU rounding.
     np.testing.assert_allclose(
         filtered.derivative("out", "C1", "capacitance"),
         -1j * omega * resistance / corner**2,
-        rtol=1e-6,
+        rtol=LINEAR_SOLVE_RTOL,
     )
     charging = Simulation(low_pass()).run(
         Sensitivity(["out"], of=Transient(5 * us, max_step=1e-3 * us))
@@ -481,10 +488,11 @@ def test_results_read_the_current_into_every_terminal() -> None:
         "R2.a",
         "R2.b",
     )
-    # Linear DC divider terminal currents; default pytest.approx covers LU rounding.
-    assert point.current("R1", "a") == pytest.approx(1e-3)
-    assert point.current("R2", "b") == pytest.approx(-1e-3)
-    assert point.current("V1", "positive") == pytest.approx(-1e-3)
+    assert point.current("R1", "a") == pytest.approx(1e-3, rel=LINEAR_SOLVE_RTOL)
+    assert point.current("R2", "b") == pytest.approx(-1e-3, rel=LINEAR_SOLVE_RTOL)
+    assert point.current("V1", "positive") == pytest.approx(
+        -1e-3, rel=LINEAR_SOLVE_RTOL
+    )
     assert point.charge("R1", "a") == 0
     with pytest.raises(
         KeyError,
@@ -521,7 +529,7 @@ def common_source(c: Builder) -> None:
 
 
 def test_results_read_each_device_s_small_signal_model_and_variables() -> None:
-    """Small-signal entries and device variables match analytical Level-1 MOSFET values.
+    """Verifies small-signal entries and variables against Level-1 MOSFET equations.
 
     Default `pytest.approx` (`rel=1e-6`) and `assert_allclose` (`rtol=1e-7`,
     `atol=1e-12` at cutoff zero) cover default Newton convergence (`vntol=1e-6 V`).
@@ -590,9 +598,8 @@ def test_a_component_instance_s_terminals_sum_the_currents_inside_it() -> None:
         "X2.bottom",
     )
     assert point.recording.devices == ()
-    # Linear DC parallel dividers; default pytest.approx (rel=1e-6) covers LU rounding.
-    assert point.current("X1", "top") == pytest.approx(2e-3)
-    assert point.current("X2", "bottom") == pytest.approx(-2e-3)
+    assert point.current("X1", "top") == pytest.approx(2e-3, rel=LINEAR_SOLVE_RTOL)
+    assert point.current("X2", "bottom") == pytest.approx(-2e-3, rel=LINEAR_SOLVE_RTOL)
     with pytest.raises(
         KeyError, match=r"'X1', which the result recorded, has no terminal named 'X1\.t"
     ):
@@ -605,8 +612,7 @@ def test_a_result_records_nothing_beyond_the_unknowns_by_default() -> None:
         point = simulation.run(OperatingPoint(record=record))
         assert point.recording == results.Recording()
         assert point.currents.size == point.conductances.size == 0
-        # Linear DC divider; default pytest.approx (rel=1e-6) covers LU rounding.
-        assert point.current("V1") == pytest.approx(-1e-3)
+        assert point.current("V1") == pytest.approx(-1e-3, rel=LINEAR_SOLVE_RTOL)
         with pytest.raises(
             KeyError,
             match=(
@@ -638,9 +644,8 @@ def test_a_record_names_instances_and_patterns_of_their_paths() -> None:
     point = simulation.run(OperatingPoint(record=["X1/**", "X2"]))
     assert [device.path for device in point.recording.devices] == ["X1/R1", "X1/R2"]
     assert point.recording.summed_terminals == ("X2.top", "X2.bottom")
-    # Linear DC parallel dividers; default pytest.approx (rel=1e-6) covers LU rounding.
-    assert point.current("X1/R1", "a") == pytest.approx(2e-3)
-    assert point.current("X2", "top") == pytest.approx(2e-3)
+    assert point.current("X1/R1", "a") == pytest.approx(2e-3, rel=LINEAR_SOLVE_RTOL)
+    assert point.current("X2", "top") == pytest.approx(2e-3, rel=LINEAR_SOLVE_RTOL)
     starred = simulation.run(OperatingPoint(record=["X?/R1"]))
     assert [device.path for device in starred.recording.devices] == ["X1/R1", "X2/R1"]
     # A pattern after ! takes back what the patterns before it named, the last to match
@@ -846,7 +851,7 @@ def test_the_ac_response_of_a_low_pass_filter() -> None:
 
 @component
 def stepped(c: Builder, primary: float, secondary: float, coupling: float) -> None:
-    """A transformer of `primary` and `secondary` henries, fed by 50 Ω, into 1 kΩ."""
+    """Builds a transformer with `primary` and `secondary` henries, 50 Ω to 1 kΩ."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(0 * V), name="V1")
     windings = c.place(
@@ -973,8 +978,8 @@ def test_a_small_signal_response_is_the_slope_of_the_dc_transfer(
     )
     simulation = Simulation(common_emitter(transistor))
     tight = Options(relative_tolerance=1e-11, voltage_tolerance=1e-15)
-    # A central difference over 0.1 mV, small beside the thermal voltage, errs by about
-    # 1e-5; leaving out how the base resistance falls would err by a percent.
+    # A central difference over 0.1 mV, small relative to the thermal voltage, errs by
+    # about 1e-5; omitting base-resistance drop would err by about 1%.
     step = 1e-4
     levels = [(0.75 - step) * V, (0.75 + step) * V]
     sweep = simulation.run(DcSweep("V1", levels), tight)
@@ -1074,7 +1079,7 @@ def test_a_current_source_sweeps_in_amperes() -> None:
 
 @pytest.fixture
 def analysis_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """The log the settings name for each analysis run while the test runs."""
+    """Yields the temporary analysis log path configured in settings for the test."""
     log = tmp_path / "analyses.jsonl"
     monkeypatch.setenv("JOLTY_ANALYSIS_LOG", str(log))
     simulate._settings.cache_clear()  # noqa: SLF001 - read once per process, as here

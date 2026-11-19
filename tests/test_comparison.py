@@ -124,8 +124,8 @@ def test_a_session_holds_nothing_of_the_runner_s_environment(
     monkeypatch.setenv("LANG", "en_GB.UTF-8")
     prepared = agent_run.environment(Arm.JOLTY, tmp_path)
     variables = prepared.variables
-    # Its home, Claude Code's configuration in it, and its temporary directory are its
-    # own, and empty; its path is the arm's then the system's.
+    # Isolated home, Claude Code configuration, and temporary directories start empty;
+    # PATH puts the arm directory ahead of the system path.
     home = tmp_path / "home"
     assert (variables["HOME"], variables["CLAUDE_CONFIG_DIR"], variables["TMPDIR"]) == (
         str(home),
@@ -150,7 +150,7 @@ def test_a_session_holds_nothing_of_the_runner_s_environment(
 
 
 def _assistant(id: str, *blocks: dict[str, object], parent: str | None = None) -> str:
-    """A line of an assistant event: blocks of the model's message `id`."""
+    """Returns a JSONL assistant event line containing blocks for message `id`."""
     message = {"id": id, "role": "assistant", "content": list(blocks)}
     event = {"type": "assistant", "message": message, "parent_tool_use_id": parent}
     return json.dumps(event)
@@ -353,21 +353,20 @@ STUB_CALLS = {
     "jolty": {"Bash": 2, "Write": 2, "mcp__jolty__simulate_circuit": 1},
     "ngspice": {"Bash": 1, "Write": 2},
 }
-"""The stub's tool calls in each arm, by name, a turn each.
+"""Tool calls made by the stub in each arm, one turn per call.
 
-It writes design.py and the plan it simulates it with, then simulates it through each of
-jolty's front ends: the command line's and the MCP server's operating points, and a
-script's transient. Or it writes design.cir and tolerances.json, then runs ngspice once.
+The jolty arm writes `design.py` and its simulation plan, then exercises the CLI, MCP
+server, and a transient script. The ngspice arm writes `design.cir` and
+`tolerances.json`, then invokes ngspice once.
 """
 
 STUB_COUNTED = {
     "jolty": ({"jolty simulate": 1}, 3, 3, {"OperatingPoint": 2, "Transient": 1}, 3),
     "ngspice": ({"ngspice --version": 1}, None, None, {}, 1),
 }
-"""What the stub's session counts in each arm: the runs of its simulator's command line
-by command, its analyses, their runs and kinds, and its simulations.
+"""Counts recorded by the stub session per arm across CLI runs, analyses, and sims.
 
-jolty logs every analysis, whatever runs it; ngspice none."""
+jolty logs every analysis regardless of entry point; ngspice logs none."""
 
 
 @SKIP
@@ -398,8 +397,8 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
     assert report.runs[0].report == "I wrote the known good design, design.py."
     for run in report.runs:
         configuration = run.configuration
-        # Each session ran in a home of its own, in the sandbox wherever there is one,
-        # writing its working directory and its own places alone.
+        # Each session ran in a dedicated home inside the sandbox when available,
+        # writing only to its working directory and isolated paths.
         assert configuration.variables["HOME"].endswith("/home")
         assert configuration.command[1] == str(BENCHMARKS / "stub.py")
         if mechanism() is not None:
@@ -497,8 +496,8 @@ def test_the_comparison_runs_no_session_without_its_programs(
 def test_each_session_is_scored_in_a_process_of_its_own(tmp_path: Path) -> None:
     bias = (COST_DOWN / "given" / "bias.py").read_text(encoding="utf-8")
     verdicts = []
-    # Each design imports its resistors' tolerance from a module of the same name
-    # beside it: scored in one process, the second would find the first's.
+    # Each design imports resistor tolerance from a sibling module of the same name;
+    # scoring both in one process would leak the first module into the second.
     for name, tolerance in (("cheap", 0.01), ("loose", 0.05)):
         work = tmp_path / name
         work.mkdir()
@@ -642,8 +641,8 @@ found = {
 }
 pathlib.Path("probe.json").write_text(json.dumps(found))
 """
-"""An agent that tries to read and write in and out of its directory, and says how
-it went, in ``probe.json``."""
+"""Agent script that attempts reads and writes inside and outside its working
+directory and reports outcomes in ``probe.json``."""
 
 
 def sandboxed() -> pytest.MarkDecorator:
@@ -727,10 +726,10 @@ def test_the_runner_stops_a_session_and_what_it_left_running(tmp_path: Path) -> 
 
 
 def _claude(directory: Path, *, logged_in: bool) -> None:
-    """Writes a stand-in for Claude Code into `directory`, that answers for free.
+    """Writes a free local stand-in for Claude Code into `directory`.
 
-    It states its version, and its authentication as logged in or not, exiting with 1
-    when not, as Claude Code does.
+    The stub prints a version string and authentication status, exiting with code 1
+    when logged out to match Claude Code.
     """
     status = json.dumps(
         {"loggedIn": logged_in, "authMethod": "api_key", "apiProvider": "firstParty"}
@@ -801,8 +800,8 @@ def test_bubblewrap_hides_the_private_places_but_what_a_session_is_given(
         reads=(str(program),),
         writes=(str(work),),
     )
-    # The system read-only, the private places that exist emptied, then what the
-    # session reads there, read-only, and what it writes; processes of its own.
+    # Mount the host read-only, mask existing private paths, expose read-only inputs
+    # and writable workspace paths, and isolate session processes.
     assert bubblewrap(within, work) == [
         *("bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"),
         *("--tmpfs", str(tmp_path)),

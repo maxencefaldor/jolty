@@ -22,7 +22,7 @@ def low_pass(c: Builder, resistance: Quantity, capacitance: Quantity) -> None:
 
 
 def line_of(text: str) -> int:
-    """The number of the line of this file that holds `text`."""
+    """Returns the 1-based line number of `text` in this file."""
     lines = Path(__file__).read_text(encoding="utf-8").splitlines()
     return next(number for number, line in enumerate(lines, 1) if text in line)
 

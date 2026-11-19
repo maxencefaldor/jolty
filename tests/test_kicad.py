@@ -84,7 +84,7 @@ the band, and the IRF511's TO-220AB."""
 
 @component
 def driver(c: Builder) -> None:
-    """A transistor that sinks a load, clamped, and a power MOSFET beside it."""
+    """Builds a clamped transistor load driver paired with a power MOSFET."""
     supply = c.port("supply", Role.SUPPLY)
     control = c.port("control", Role.INPUT)
     ground = c.port("ground", Role.GROUND)
@@ -114,7 +114,7 @@ def bench(c: Builder) -> None:
 
 
 def _pads(netlist: kicad.Netlist) -> dict[str, set[tuple[str, str, str]]]:
-    """Each net's pads, as their footprints' references, numbers and terminals."""
+    """Maps each net name to its set of `(reference, pin_number, terminal)` tuples."""
     return {
         net.name: {
             (node.reference, node.pad, "/".join(node.terminals)) for node in net.nodes
@@ -204,7 +204,7 @@ def test_a_footprint_keeps_its_identifier_from_one_netlist_to_the_next() -> None
 
 @component
 def pair(c: Builder, bulk: str) -> None:
-    """A MOSFET whose source and bulk share a pin, its bulk on the net `bulk`."""
+    """Builds a MOSFET sharing a source-bulk pin with its bulk tied to net `bulk`."""
     ground = c.port("ground", Role.GROUND)
     gate = c.port("gate", Role.INPUT)
     drain = c.port("drain")
@@ -232,7 +232,7 @@ def test_terminals_on_one_pin_share_its_pad_and_its_net() -> None:
 
 @component
 def flawed(c: Builder) -> None:
-    """Every way an instance can stay off a board."""
+    """Builds a circuit covering every reason an instance cannot map onto a PCB."""
     ground = c.port("ground", Role.GROUND)
     node = c.port("node")
     ideal = c.place(devices.resistor(1 * kohm), name="R1")
@@ -274,7 +274,7 @@ def test_every_problem_keeping_an_instance_off_the_board_is_named() -> None:
 
 @component
 def floating(c: Builder) -> None:
-    """A resistor between two ports, neither the ground."""
+    """Builds a resistor between two non-ground ports."""
     resistor = c.place(devices.resistor(4.7 * kohm, tolerance=0.01), name="R1")
     c.connect(c.port("a"), resistor.a)
     c.connect(c.port("b"), resistor.b)
@@ -380,7 +380,7 @@ class _Expression:
 
     @staticmethod
     def parsed(text: str) -> _Expression:
-        """The one S-expression `text` holds, every list begun by a bare keyword."""
+        """Parses one S-expression from `text` where each list starts with a keyword."""
         pieces = re.findall(r'\(|\)|"(?:[^"\\]|\\.)*"|[^\s()"]+', text)
         opened: list[list[str | _Expression]] = []
         found: list[_Expression] = []
@@ -399,7 +399,7 @@ class _Expression:
         return expression
 
     def lists(self, keyword: str | None = None) -> list[_Expression]:
-        """Its items that are lists, those `keyword` begins if given."""
+        """Returns child list expressions, filtered by leading `keyword` when given."""
         return [
             item
             for item in self.items
@@ -407,7 +407,7 @@ class _Expression:
         ]
 
     def field(self, keyword: str) -> str:
-        """The string of its one item that `keyword` begins."""
+        """Returns the string value of the unique child list headed by `keyword`."""
         (found,) = self.lists(keyword)
         (text,) = found.items
         assert isinstance(text, str)

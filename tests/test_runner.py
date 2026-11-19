@@ -161,7 +161,7 @@ def test_an_analysis_records_its_own_record_or_else_the_plan_s(
 
 
 def _recorded(directory: Path) -> list[tuple[str, ...]]:
-    """The terminals each saved result in `directory` recorded."""
+    """Returns recorded terminal tuples from every saved result in `directory`."""
     found = load_results(directory / RESULTS).values()
     return [
         result.recording.terminals

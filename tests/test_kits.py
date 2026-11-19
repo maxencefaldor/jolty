@@ -1,9 +1,9 @@
 # Copyright 2026 Maxence Faldor
-"""The open process kits, read at every corner, and their devices jolty runs natively.
+"""Tests open process design kits across corners and against ngspice.
 
-The tests fetch each kit's pinned files into pytest's cache the first time. A device
-whose models jolty has runs natively, read from the kit, against ngspice reading the
-same kit at the same corner, which those tests skip where ngspice is not installed.
+Each kit's pinned files are cached inside pytest's cache on first use. Devices
+supported natively by jolty are simulated against ngspice at the same corner,
+skipping when ngspice is unavailable.
 """
 
 import math
@@ -53,14 +53,16 @@ GUIDE: Final = Path(__file__).resolve().parents[1] / "docs" / "guide" / "foundry
 """The guide's page whose tables state each kit's devices."""
 
 AGREEMENT: Final = 2 * ngspice.RELATIVE_TOLERANCE
-"""How closely jolty and ngspice agree, relative to a signal's size: each engine's
-Newton iteration stops once its step lies within its relative tolerance, so each lies
-about that far from the solution, and the two within twice it."""
+"""Relative agreement bound between jolty and ngspice (twice `reltol`).
+
+Each engine's Newton iteration stops within one relative tolerance of the
+solution, so the two solutions agree within twice that relative tolerance.
+"""
 
 
 @pytest.fixture(scope="session")
 def kept(pytestconfig: pytest.Config) -> Settings:
-    """Settings whose cache, pytest's, holds each kit's pinned files."""
+    """Returns `Settings` pointing at pytest's persistent kit download cache."""
     assert pytestconfig.cache is not None
     settings = Settings(cache=pytestconfig.cache.mkdir("downloads"))
     for kit in KITS:
@@ -76,7 +78,7 @@ def kept(pytestconfig: pytest.Config) -> Settings:
 def test_a_kit_reads_at_each_of_its_sections(
     kept: Settings, kit: kits.Kit, section: kits.Section
 ) -> None:
-    """Each section, its files included, defines devices and parameters of values."""
+    """Verifies that every kit section parses finite parameters and devices."""
     library = kits.read(kit, (section,), settings=kept)
     values = library.values()
     assert library.subcircuits or library.models
@@ -86,13 +88,13 @@ def test_a_kit_reads_at_each_of_its_sections(
 
 
 def test_sky130_scales_its_sizes_to_micrometres(kept: Settings) -> None:
-    """SKY130's library sets ngspice's `scale` to the size its netlists write."""
+    """Verifies that SKY130 sets the SPICE `scale` option to micrometers."""
     library = kits.read(sky130.KIT, settings=kept)
     assert library.options["scale"] == sky130.SCALE
 
 
 def test_temper_is_the_temperature_a_kit_reads_at(kept: Settings) -> None:
-    """SG13G2's transit time reads `temper`, the temperature the reader reads at."""
+    """Verifies that SG13G2 transit time evaluates `temper` at read temperature."""
     hot = kits.read(sg13g2.KIT, settings=kept, temperature=celsius(85).value)
     # Celsius round-trip (85 + 273.15 - 273.15); default pytest.approx covers rounding.
     assert hot.values()["temper"] == pytest.approx(85.0)
@@ -106,14 +108,14 @@ def test_temper_is_the_temperature_a_kit_reads_at(kept: Settings) -> None:
 
 
 MISMATCH: Final = (sg13g2.DIRECTORY / "cornerHBT.lib", "hbt_typ_mismatch")
-"""SG13G2's bipolar transistors at their typical corner, drawing their mismatch."""
+"""SG13G2 bipolar typical-corner section with statistical mismatch enabled."""
 
 
 def test_a_samples_mismatch_is_the_same_bits_on_any_shard(kept: Settings) -> None:
-    """Two readings of the kit, as two shards make, draw a sample's mismatch alike.
+    """Verifies that mismatch draws are bit-identical across separate kit loads.
 
-    A placement draws apart from another, and a sample from another; without a sample,
-    each statistical function takes its nominal value.
+    Distinct placements and sample indices draw independently, while nominal
+    evaluation without a sample leaves statistical functions at nominal values.
     """
     first, second = (kits.read(sg13g2.KIT, (MISMATCH,), settings=kept) for _ in "ab")
 
@@ -135,10 +137,10 @@ SAMPLES: Final = 4000
 
 
 def test_statistical_functions_draw_as_ngspice_defines_them() -> None:
-    """Over many samples, each function spreads about its nominal value as it should.
+    """Verifies that SPICE statistical functions match expected means and spreads.
 
-    The bounds are five standard errors of the mean and of the variance over
-    `SAMPLES`; the draws are fixed by their seed, so the test is deterministic.
+    Checks sample means and standard deviations within five standard errors over
+    `SAMPLES` deterministic draws.
     """
     calls = {
         "agauss": (2.0, 0.3, 3.0),
@@ -171,7 +173,7 @@ def test_statistical_functions_draw_as_ngspice_defines_them() -> None:
 
 
 def _parameters(placed: Component, model: str) -> Mapping[str, object]:
-    """The parameters of the one device of `model` that `placed` holds."""
+    """Returns parameters of the single device of `model` inside `placed`."""
     (found,) = (
         instance.parameters
         for instance in placed.definition.instances
@@ -180,7 +182,7 @@ def _parameters(placed: Component, model: str) -> Mapping[str, object]:
     return found
 
 
-# The kits' devices and what jolty has of them, as the guide states them.
+# Kit device inventory compared against the foundry guide tables.
 
 
 STATUSES: Final = {
@@ -190,19 +192,19 @@ STATUSES: Final = {
     "unread": "unread",
     "unvalued": "unvalued",
 }
-"""How the guide's tables write each status."""
+"""Display labels used for kit inventory statuses in the foundry guide."""
 
 
 PROBLEM: Final = re.compile(r"^(?:[^:]+:\d+: )?(?P<problem>.*?)(?:: `[^`]*`)?$")
-"""A survey's problem, its file and line before it and its statement after it."""
+"""Pattern extracting the core diagnostic text without location or statement."""
 
 
 def table(devices: tuple[kits.Device, ...]) -> list[str]:
-    """The rows of a kit's table in the guide: its devices grouped by what they need.
+    """Formats Markdown table rows grouping kit devices by status and models.
 
-    Each row states a status, the models its devices need, the first problem of its
-    first device, one of a model before any other, its place and statement left out,
-    and the devices, in the order they are defined, a model marked as one.
+    Each row lists the status, required models, first diagnostic message
+    (omitting source location and statement, prioritizing model issues), and
+    defined devices in declaration order.
     """
     groups: dict[tuple[str, tuple[str, ...]], list[kits.Device]] = {}
     for device in devices:
@@ -231,7 +233,7 @@ def table(devices: tuple[kits.Device, ...]) -> list[str]:
 
 @pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
 def test_the_guide_states_each_kits_devices(kept: Settings, kit: kits.Kit) -> None:
-    """The guide's table of a kit's devices is what the inventory finds at typical."""
+    """Verifies that the foundry guide table matches the typical-corner inventory."""
     text = GUIDE.read_text(encoding="utf-8")
     marker = f"<!-- devices of: {kit.name} -->"
     assert marker in text, f"{GUIDE.name} has no `{marker}`"
@@ -241,12 +243,12 @@ def test_the_guide_states_each_kits_devices(kept: Settings, kit: kits.Kit) -> No
     assert len(written) == len(rows) or not written[len(rows)].startswith("|")
 
 
-# Devices jolty has the models of, against ngspice reading the same kit.
+# Native kit devices compared against ngspice reading the same kit.
 
 
 @component
 def gummel(c: Builder, part: Component) -> None:
-    """A bipolar transistor's base driven by `VB` and its collector held by `VC`."""
+    """Builds a Gummel bench with base source `VB` and collector source `VC`."""
     ground = c.port("ground", Role.GROUND)
     base = c.place(devices.voltage_source(0.8 * V), name="VB")
     collector = c.place(devices.voltage_source(1.5 * V), name="VC")
@@ -275,14 +277,12 @@ HBTS: Final = ("hbt_typ", "hbt_bcs", "hbt_wcs")
 def test_an_sg13g2_bipolar_transistor_agrees_with_ngspice(
     kept: Settings, corner: str
 ) -> None:
-    """IHP's `npn13G2`, a VBIC heated through its fifth node, read from the kit.
+    """Verifies IHP `npn13G2` self-heating VBIC DC sweep agreement with ngspice.
 
-    Its base sweeps from off to 1 V, where it warms by 60 to 130 K; its currents, its
-    substrate and its thermal node are compared with ngspice's, which reads the same
-    library at the same corner, at the same kelvins, as VBIC computes its thermal
-    voltage with constants of its own in both engines. It runs at its card's nominal
-    27 °C, where ngspice's mapping of a heated VBIC's parameters is the model's, as
-    the guide's departures state.
+    Sweeps the base from 0.4 V to 1 V (heating the device by 60 to 130 K) and
+    compares terminal currents, substrate voltage, and thermal node at matching
+    kelvins. Runs at the nominal 27 °C card temperature where ngspice maps
+    heated VBIC parameters identically.
     """
     section = (sg13g2.DIRECTORY / "cornerHBT.lib", corner)
     library = kits.read(sg13g2.KIT, (section,), settings=kept)
@@ -315,12 +315,11 @@ def test_an_sg13g2_bipolar_transistor_agrees_with_ngspice(
 def test_an_sg13g2_transistor_reads_its_transit_time_where_it_runs(
     kept: Settings,
 ) -> None:
-    """At 85 °C, the transistor's gain to 10 GHz, set by its transit time, as ngspice's.
+    """Verifies SG13G2 AC gain to 10 GHz at 85 °C with `temper`-evaluated `tf`.
 
-    The transit time reads `temper`; read at 27 °C instead, the gain lies a thousand
-    tolerances away. The transistor does not heat here: away from its card's nominal
-    temperature, ngspice maps a heated VBIC's parameters from the ambient rather than
-    from its card's, a departure the guide states.
+    Reading the library at 27 °C instead shifts the gain by more than 1000
+    tolerances. Self-heating is disabled (`selft=0`) because ngspice maps
+    heated VBIC parameters from ambient temperature away from the card nominal.
     """
     section = (sg13g2.DIRECTORY / "cornerHBT.lib", "hbt_typ")
     hot = celsius(85)
@@ -359,37 +358,39 @@ BIPOLARS: Final = (
     (gf180mcu.KIT, "vpnp_0p42x10", -1.0),
     (sg13g2.KIT, "pnpMPA", -1.0),
 )
-"""A Gummel-Poon transistor of each kit and polarity, and the sign of its polarity:
-SKY130's of `TLEV` 0 and `TLEVC` 0 with HSPICE's coefficients of nearly every
-parameter, its card's `TREF` 30 °C; GF180MCU's of `TLEVC` 1, `NKF` 0.4 and their own
-coefficients of `BF` and `IKF`, `TREF` 25 °C; SG13G2's of `TRM1` and `TRC1`."""
+"""Gummel-Poon BJTs `(kit, name, sign)` spanning SKY130, GF180MCU, and SG13G2.
+
+Covers SKY130 (`TLEV=0`, `TLEVC=0`, `TREF=30 °C`, HSPICE temperature terms),
+GF180MCU (`TLEVC=1`, `NKF=0.4`, `BF`/`IKF` coefficients, `TREF=25 °C`), and
+SG13G2 (`TRM1` and `TRC1`).
+"""
 
 BIPOLAR_TEMPERATURES: Final = (-40.0, 27.0, 125.0)
-"""The degrees Celsius each of `BIPOLARS` runs at: the ends of the kits' range and the
-reference between."""
+"""Temperatures in degrees Celsius covering kit range endpoints and nominal."""
 
 CONSTANTS: Final = 1 - ngspice.same_kelvins(1.0)
-"""How far ngspice's Boltzmann constant over the elementary charge, CODATA 2014's, lies
-below jolty's, relative to it, 3.4e-7: at the same kelvins, ngspice's thermal voltage
-lies that far below jolty's, so each exponent of a junction's current it computes, its
-voltage over the thermal voltage and its saturation current's `(T/Tn - 1)·Eg/Vt`, lies
-that far above jolty's, and the currents part by `CONSTANTS` times their sum."""
+"""Relative CODATA 2014 vs 2019 SI `k_B/q` offset (`3.4e-7`) vs ngspice.
+
+At matching kelvins, ngspice's thermal voltage sits `3.4e-7` below jolty's, so
+junction exponents (`V / Vt` and `(T/Tn - 1) * Eg / Vt`) differ by `CONSTANTS`
+times their sum.
+"""
 
 SPICE_THERMAL_VOLTAGE: Final = ("Gummel-Poon",)
-"""The models whose thermal voltage both engines compute with their own constants, so
-that at the same kelvins their currents part by `CONSTANTS` times their exponents, as
-`junction_tolerance` bounds them."""
+"""Device models computing thermal voltage with each engine's physical constants.
+
+At matching kelvins, junction currents diverge by `CONSTANTS` times their
+exponents, bounded by `junction_tolerance`.
+"""
 
 
 def junction_tolerance(voltage: float, temperature: float) -> float:
-    """How closely a junction's current agrees with ngspice's, relative to its size.
+    """Returns relative current tolerance vs ngspice at `voltage` and `temperature`.
 
-    Within `AGREEMENT`, beside `CONSTANTS` times the junction's exponents at the same
-    kelvins, `temperature`: its `voltage`, in volts, over the thermal voltage, and its
-    saturation current's, which stays below that wherever the energy gap times
-    `|T/Tn - 1|` stays below the voltage, as it does for the kits' gaps of 1.17 to
-    1.19 V and their `TREF`s of 25 to 30 °C, where it is at most 0.40 V from -40 to
-    125 °C and 0.012 V at 27 °C; so at most twice the first.
+    Adds `AGREEMENT` to `CONSTANTS` times twice the junction voltage exponent
+    `voltage / Vt`. For kit bandgaps (1.17 to 1.19 V) and `TREF` (25 to 30 °C),
+    the activation term `Eg * |T/Tn - 1|` stays below 0.40 V across -40 to
+    125 °C, keeping total exponent shift within `2 * voltage / Vt`.
     """
     thermal_voltage = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
     return AGREEMENT + CONSTANTS * 2 * voltage / thermal_voltage
@@ -402,13 +403,11 @@ def junction_tolerance(voltage: float, temperature: float) -> float:
 def test_a_kits_bipolar_transistor_follows_the_temperature_as_in_ngspice(
     kept: Settings, kit: kits.Kit, name: str, sign: float
 ) -> None:
-    """A kit's Gummel-Poon transistor, its base swept at each of `BIPOLAR_TEMPERATURES`.
+    """Verifies kit Gummel-Poon temperature tracking against ngspice across corners.
 
-    Its collector held 1.5 V from its emitter and its base swept from 0.4 to 0.9 V, its
-    other pins grounded, both in its polarity's sign, its collector's and its base's
-    currents are compared with ngspice's, which reads the same kit at the same corner,
-    at the same kelvins, within `junction_tolerance` of the drive's 0.9 V: every
-    temperature coefficient its card gives acts away from its card's `TREF`.
+    Holds the collector at 1.5 V, sweeps the base from 0.4 V to 0.9 V across
+    `BIPOLAR_TEMPERATURES` (signed by polarity), and checks collector and base
+    currents within `junction_tolerance` at 0.9 V.
     """
     library = kits.read(kit, settings=kept)
     part = library.component(name)
@@ -470,10 +469,10 @@ SKY130_CAPACITORS: Final = ("tt", "ll", "hh")
 def test_a_sky130_mim_capacitor_agrees_with_ngspice(
     kept: Settings, corner: str
 ) -> None:
-    """SKY130's MIM capacitor, 10 µm square, its plate and vias' resistances behind it.
+    """Verifies SKY130 10 µm MIM capacitor AC admittance against ngspice at 85 °C.
 
-    Its admittance from 1 MHz to 100 GHz, where its resistances take over, at 85 °C,
-    where they drift, is compared with ngspice's reading the kit at the same corner.
+    Compares admittance from 1 MHz to 100 GHz across corners, exercising
+    temperature-drifting plate and via series resistances.
     """
     library = kits.read(
         sky130.KIT,
@@ -534,13 +533,11 @@ SUPPLY: Final = 1.8
 def test_sky130_transistors_agree_with_ngspice_across_their_bins(
     kept: Settings, corner: str, channel: str
 ) -> None:
-    """SKY130's `nfet_01v8` and `pfet_01v8`, BSIM4 4.5 binned by size, read natively.
+    """Verifies SKY130 BSIM4 4.5 `nfet_01v8` and `pfet_01v8` DC sweeps across bins.
 
-    A transistor of each of `SKY130_SIZES` selects a bin of its own, its drain and gate
-    on two sources at the supply, its source and body grounded; the drain current of
-    each, sensed by a source of its own, swept by the drain at a gate at the supply and
-    by the gate at a drain at the supply, is compared with ngspice's, which reads the
-    same library at the same corner.
+    Places one transistor per `(width, length)` bin in `SKY130_SIZES` with
+    grounded source and body, sensing each drain current through a 0 V source.
+    Sweeps `VD` and `VG` to the supply and compares all bins against ngspice.
     """
     name = f"sky130_fd_pr__{channel}fet_01v8"
     sign = 1.0 if channel == "n" else -1.0
@@ -595,16 +592,13 @@ def test_sky130_transistors_agree_with_ngspice_across_their_bins(
 def test_sky130_transistors_admittances_agree_with_ngspice(
     kept: Settings, channel: str
 ) -> None:
-    """SKY130's `nfet_01v8` and `pfet_01v8`, read natively, from 1 MHz to 10 GHz.
+    """Verifies SKY130 `nfet_01v8` and `pfet_01v8` AC admittances to 10 GHz.
 
-    A transistor 1 µm wide and 0.15 µm long, its gate and drain at half the supply and
-    its body at its source, is driven at its gate and at its drain in turn; the
-    currents of its drain, gate and body are compared with ngspice's, which reads the
-    same library at `tt`. ngspice's capacitances with respect to the body are not its
-    charges' derivatives (`AC_DEPARTED`), and the kit's 50 Ω body resistances let the
-    body's nodes follow the drive by `ωRC`, about 2π · 10 GHz · 50 Ω · 2 fF = 0.6% at
-    10 GHz: the departure, 1e-4 of those capacitances, then moves the currents by under
-    1e-6 of themselves, within `AGREEMENT`; at 100 GHz, by 2e-6.
+    Biases a 1 µm by 0.15 µm device at half-supply with body tied to source,
+    drives gate and drain in turn, and compares drain, gate, and body currents
+    against ngspice at `tt`. Although ngspice body capacitances depart from
+    charge derivatives (`AC_DEPARTED`), the 50 Ω body resistance couples only
+    `ωRC ≈ 0.6%` at 10 GHz, keeping current differences within `AGREEMENT`.
     """
     name = f"sky130_fd_pr__{channel}fet_01v8"
     sign = 1.0 if channel == "n" else -1.0
@@ -657,20 +651,21 @@ RF_TRANSISTORS: Final = (
     "sky130_fd_pr__rf_nfet_01v8_lvt_bM04W5p00L0p25",
     "sky130_fd_pr__rf_nfet_g5v0d10v5_bM04W5p00L0p50",
 )
-"""SKY130's RF transistors compared: BSIM4 4.5 cards of `rgatemod` 3, the gate
-electrode's resistance and the bias-dependent intrinsic-input one, with `rdsmod` 1 and
-`rbodymod` 1, each laid out with a dummy beside it, of the 1.8 V n- and p-channels, the
-1.8 V n-channel of low threshold and the 5 V n-channel."""
+"""SKY130 RF BSIM4 4.5 transistors under test (`rgatemod=3`, `rdsmod=1`, `rbodymod=1`).
+
+Covers 1.8 V n-channel and p-channel, 1.8 V low-threshold n-channel, and 5 V
+n-channel cells laid out alongside dummy devices.
+"""
 
 RF_OUTPUT_DEPARTED: Final = frozenset({"sky130_fd_pr__rf_pfet_01v8_bM04W3p00L0p18"})
-"""The RF transistors whose output conductance in ngspice lies 2.1e-4 from the central
-difference of its own drain current, 0.1 mV each way, where jolty's is the derivative
-(the guide's departures)."""
+"""RF transistors whose ngspice output conductance differs from `dId/dVd` by 2.1e-4.
+
+Measured against 0.1 mV central differences of drain current, whereas jolty
+matches the exact derivative (documented in the foundry departures guide).
+"""
 
 RF_REVERSE: Final = 0.5
-"""The volts a compared RF transistor's body lies reversed from its source, where
-ngspice's capacitances with respect to the body depart least from its charges'
-derivatives (the guide's departures)."""
+"""Reverse body-to-source bias in volts minimizing ngspice body-capacitance drift."""
 
 
 @SKIP
@@ -678,24 +673,18 @@ derivatives (the guide's departures)."""
 def test_sky130_rf_transistors_admittances_agree_with_ngspice(
     kept: Settings, name: str
 ) -> None:
-    """An RF transistor of SKY130, read natively, at its operating point and to 10 GHz.
+    """Verifies SKY130 RF BSIM4 operating points and AC admittances to 10 GHz.
 
-    Its gate and drain lie at half the 1.8 V supply, its body `RF_REVERSE` reversed;
-    its currents at the operating point, relative to its drain's, then driven at its
-    gate and at its drain in turn from 1 MHz to 10 GHz, relative to each one's
-    largest, are compared with ngspice's, which reads the same library at `tt`. Its
-    body's current, a junction's leakage of picoamperes, is not resolved by either
-    engine: each places the body's nodes within its voltage tolerance, 1 nV, of the
-    solution, and their kilohm to the bulk then carry a picoampere either way.
+    Biases gate and drain at half-supply with body reversed by `RF_REVERSE`,
+    then compares operating-point currents (scaled by drain current) and AC
+    currents from 1 MHz to 10 GHz against ngspice at `tt`. Picoampere body
+    leakage lies below the 1 nV / kilohm resolution floor of both engines.
 
-    Its body network of `rbodymod` 1 lets the body follow the drive above a few GHz,
-    where ngspice's capacitances with respect to the body depart from its charges'
-    derivatives (the guide's departures), by 3.4e-5 of themselves with the body
-    reversed: they move a current by under 1e-6 of its largest up to 10 GHz, within
-    `AGREEMENT`, by up to 3.3e-6 at 30 GHz and 8.4e-6 at 100 GHz, as the square of the
-    frequency, and twice as much with the body 0.2 V forward. ngspice's output
-    conductance of `RF_OUTPUT_DEPARTED` is not its own current's derivative, and their
-    drain's current driven at the drain is left out.
+    With `rbodymod=1`, ngspice body-capacitance departures (`3.4e-5` under
+    reverse bias) perturb currents by less than `1e-6` up to 10 GHz, staying
+    within `AGREEMENT` (growing quadratically to `3.3e-6` at 30 GHz and
+    `8.4e-6` at 100 GHz). Drain-driven drain current is skipped for
+    `RF_OUTPUT_DEPARTED` where ngspice's output conductance is non-exact.
     """
     sign = -1.0 if "pfet" in name else 1.0
     library = kits.read(sky130.KIT, settings=kept)
@@ -768,16 +757,12 @@ def test_sky130_rf_transistors_admittances_agree_with_ngspice(
 def test_a_sky130_rf_transistor_makes_the_noise_of_ngspices(
     kept: Settings, name: str
 ) -> None:
-    """A common-source stage of an RF transistor and 1 kΩ, from 1 Hz to 100 MHz.
+    """Verifies SKY130 RF common-source output noise against ngspice up to 100 MHz.
 
-    Its output's noise, the channel's holistic thermal noise and flicker noise and the
-    thermal noise of its drain, source, body and gate electrode's resistances, is
-    compared with ngspice's within `AGREEMENT`, as
-    `test_a_kits_transistor_makes_the_noise_of_ngspices` compares it. Above 100 MHz
-    the body network's noise reaches the drain through the body's capacitances, whose
-    departure from ngspice's moves the density by up to 4.4e-6 at 10 GHz. The output
-    conductance of `RF_OUTPUT_DEPARTED`, whose departure moves the stage's gain by
-    1e-5, is left out.
+    Compares holistic channel thermal noise, flicker noise, and drain, source,
+    body, and gate electrode thermal noise within `AGREEMENT`. Above 100 MHz,
+    ngspice body-capacitance departures shift the density by up to `4.4e-6` at
+    10 GHz; `RF_OUTPUT_DEPARTED` is excluded due to a `1e-5` stage gain shift.
     """
     library = kits.read(sky130.KIT, settings=kept)
     half = SUPPLY / 2
@@ -822,10 +807,11 @@ NOISY: Final = {
     "gf180mcu-n": (gf180mcu.KIT, "nmos_3p3", "typical", 3.3, 1.2, (1e-6, 5e-7)),
     "gf180mcu-p": (gf180mcu.KIT, "pmos_3p3", "typical", -3.3, -1.4, (2e-6, 5e-7)),
 }
-"""BSIM4 transistors of the kits whose noise is compared, each with its kit, its
-corner, its stage's supply and gate, and its width and length as its kit writes them:
-SKY130's of the holistic thermal noise, `tnoimod` 1, GF180MCU's of the charge-based,
-`tnoimod` 0, both of BSIM4's flicker noise, `fnoimod` 1."""
+"""Kit BSIM4 transistors for noise parity `(kit, model, corner, Vdd, Vg, (w, l))`.
+
+Covers SKY130 holistic thermal noise (`tnoimod=1`), GF180MCU charge-based
+thermal noise (`tnoimod=0`), and BSIM4 flicker noise (`fnoimod=1`).
+"""
 
 
 @SKIP
@@ -833,13 +819,11 @@ SKY130's of the holistic thermal noise, `tnoimod` 1, GF180MCU's of the charge-ba
 def test_a_kits_transistor_makes_the_noise_of_ngspices(
     kept: Settings, name: str
 ) -> None:
-    """A common-source stage of a kit's BSIM4 transistor and 5 kΩ, from 1 Hz to 1 GHz.
+    """Verifies kit BSIM4 common-source output noise against ngspice up to 1 GHz.
 
-    Its output's noise, the channel's thermal and flicker noise and its resistances',
-    is compared with ngspice's, which reads the same library at the same corner, within
-    `AGREEMENT`: the operating point the noise is computed at agrees within it, and
-    the two engines' Boltzmann constants, ngspice's 1.38064852e-23 J/K, move the
-    densities by 3.4e-7 of themselves.
+    Compares channel thermal, flicker, and resistor noise within `AGREEMENT`.
+    The operating point agrees within `AGREEMENT`, and the Boltzmann constant
+    offset (`1.38064852e-23` J/K in ngspice) shifts densities by `3.4e-7`.
     """
     kit, model, corner, supply, gate, (width, length) = NOISY[name]
     if kit is sky130.KIT:
@@ -893,12 +877,11 @@ def test_a_kits_transistor_makes_the_noise_of_ngspices(
 @SKIP
 @pytest.mark.parametrize("corner", SKY130_MOSFET_CORNERS)
 def test_a_sky130_inverter_switches_as_in_ngspice(kept: Settings, corner: str) -> None:
-    """An inverter of SKY130's `nfet_01v8` and `pfet_01v8`, read natively, and its load.
+    """Verifies SKY130 CMOS inverter transient switching against ngspice.
 
-    Its input pulses from 0 to the supply in 50 ps; its output, which the transistors'
-    charges and 5 fF load, is compared over two periods with ngspice's, which reads the
-    same library at the same corner, within the tolerance of the engine's transients
-    against ngspice's (`test_ngspice.test_transients_agree`).
+    Drives a `nfet_01v8`/`pfet_01v8` inverter with a 50 ps rail-to-rail pulse
+    into a 5 fF load and compares two switching periods against ngspice within
+    the standard transient tolerance (`test_ngspice.test_transients_agree`).
     """
     library = kits.read(sky130.KIT, ((sky130.LIBRARY, corner),), settings=kept)
     pulse = Pulse(
@@ -960,20 +943,22 @@ def test_a_sky130_inverter_switches_as_in_ngspice(kept: Settings, corner: str) -
 
 
 NOMINAL: Final = {gf180mcu.KIT.name: (".param sw_stat_global=0 sw_stat_mismatch=0",)}
-"""The parameters that turn each kit's statistical draws off in ngspice, where its files
-turn them on, so ngspice computes at the nominal values jolty reads without a sample:
-GF180MCU's `design.ngspice` sets both switches to 1, drawing each instance's mismatch
-and the process's spread."""
+"""SPICE parameter lines disabling kit-default statistical draws in ngspice.
+
+GF180MCU's `design.ngspice` enables global and mismatch switches by default, so
+disabling them aligns ngspice with nominal evaluation in jolty.
+"""
 
 AC_DEPARTED: Final = ("BSIM4", "resistor whose value reads a voltage")
-"""The models whose frequency response departs from ngspice's: its BSIM4's capacitances
-with respect to the body are not the derivatives of its charges, as the guide's
-departures state, and a p-channel's drain at `DRIVE` biases its body forward, where
-they depart most; and its behavioral sources' derivative of `pow` of a negative base to
-an even power has the wrong sign, `pwr(a, b - 1) b` (`inpptree.c`, lines 613 to 632),
-which SKY130's `res_high_po` resistors raise.
-`test_sky130_transistors_admittances_agree_with_ngspice` compares BSIM4's with the body
-at the source."""
+"""Models whose AC response departs from ngspice at `DRIVE`.
+
+In ngspice, BSIM4 body capacitances are not exact charge derivatives (worst
+when a p-channel drain at `DRIVE` forward-biases the body). Behavioral `pow`
+derivatives of a negative base to an even power also have the wrong sign
+(`inpptree.c`, lines 613 to 632, affecting SKY130 `res_high_po`).
+`test_sky130_transistors_admittances_agree_with_ngspice` checks BSIM4 with the
+body tied to the source.
+"""
 
 DEPARTED: Final = {
     "pnpMPA": "its area, 2, by which ngspice multiplies its reverse saturation current "
@@ -994,30 +979,31 @@ DEPARTED: Final = {
         "expression",
     ),
 }
-"""The native devices whose currents at `DRIVE` depart from ngspice's, as the guide's
-departures state, and why: SG13G2's `pnpMPA`, whose collector at `DRIVE` biases its
-base-collector junction forward, and whose base sweep
-`test_a_kits_bipolar_transistor_follows_the_temperature_as_in_ngspice` compares; and
-GF180MCU's poly resistors, whose body, a resistor whose value reads a voltage, writes
-its length and width before its value, where ngspice takes the first expression in
-braces on the line as its resistance (`inpcom.c`, line 6841), its length in meters."""
+"""Native kit devices whose currents at `DRIVE` depart from ngspice.
+
+SG13G2 `pnpMPA` forward-biases the base-collector junction at `DRIVE` (checked
+by `test_a_kits_bipolar_transistor_follows_the_temperature_as_in_ngspice`).
+GF180MCU poly resistors place length and width before resistance, causing
+ngspice to parse the first braced expression (length in meters) as resistance
+(`inpcom.c`, line 6841).
+"""
 
 LAGGED: Final = "capacitor whose value reads a voltage"
-"""The capacitor whose current ngspice delays by `CAPACITANCE_LAG`."""
+"""Inventory label for voltage-dependent capacitors delayed by `CAPACITANCE_LAG`."""
 
 CAPACITANCE_LAG: Final = 1e-9 * 1e-6
-"""The time constant, in seconds, by which ngspice 47 delays the current of a
-capacitor whose value reads a voltage: it differentiates the capacitor's voltage
-through 1e-9 Ω into 1 µF (`inpcom.c`, lines 6968 to 6977), so its admittance is
-`jωC / (1 + jωτ)`, 6.3e-4 of itself away from `jωC` at 100 GHz, a departure the guide
-states."""
+"""Time constant in seconds by which ngspice 47 delays voltage-dependent capacitors.
+
+ngspice differentiates voltage through 1e-9 Ω into 1 µF (`inpcom.c`, lines 6968
+to 6977), yielding admittance `jωC / (1 + jωτ)` (offset by `6.3e-4` at 100 GHz).
+"""
 
 
 def lagged(part: Component) -> tuple[str, ...]:
-    """The behavioral capacitors `part` holds that ngspice delays, by name.
+    """Returns names of behavioral capacitors in `part` that ngspice delays.
 
-    Each joins the part's first pin to another, so that its current, which ngspice
-    delays, is part of the current into the first pin, unchanged in the rest.
+    Each capacitor connects the first pin to another pin so the delayed current
+    enters the first pin directly.
     """
     first, *rest = (port.name for port in part.definition.ports)
     names = []
@@ -1030,37 +1016,35 @@ def lagged(part: Component) -> tuple[str, ...]:
 
 
 DRIVE: Final = 0.5
-"""The volts each native device's first pin is held at, its others grounded, in
-`test_every_native_device_agrees_with_ngspice`: within every device's ratings, and
-enough to bias a junction."""
+"""Bias voltage applied to pin 0 of each native device (other pins grounded)."""
 
 FLOOR: Final = 2 * ngspice.CURRENT_TOLERANCE
-"""How far apart two currents the engines find may lie however small they are: each
-engine's Newton iteration stops once its step on a current lies within its absolute
-tolerance, so the two lie within twice it."""
+"""Absolute current agreement floor equal to twice ngspice `abstol`.
+
+Each engine's Newton iteration stops within one absolute current tolerance, so
+small currents agree within twice that floor regardless of magnitude.
+"""
 
 JUNCTION: Final = (1 - ngspice.same_kelvins(1.0)) * (
     DRIVE / (_core.BOLTZMANN * _core.REFERENCE_TEMPERATURE / _core.ELEMENTARY_CHARGE)
     + 1
 )
-"""How far apart a junction's current at `DRIVE` lies in the two engines at the same
-kelvins, relative to it, beyond `AGREEMENT`, 6.9e-6. The kits' tests run ngspice at the
-same kelvins, where BSIM4, which computes its thermal voltage with constants of its own,
-agrees; there the two engines' thermal voltages differ by 3.4e-7 of themselves, as their
-Boltzmann constants and elementary charges do (the guide's departures), and so does a
-junction's exponent, `v / (n·Vt)` less its saturation current's activation,
-`(T/Tn - 1) · Eg / (n·Vt)`: the first at most `DRIVE / Vt` at 27 °C, 19.3, and the
-second under 1, 0.5 at most at the kits' nominal temperatures of 25 °C to 30 °C."""
+"""Extra relative diode-current tolerance (`6.9e-6`) from CODATA `k_B/q` offset.
+
+At matching kelvins (required for BSIM4 agreement), thermal voltage differs by
+`3.4e-7` between jolty and ngspice. The junction exponent `v / (n*Vt)` reaches
+at most `19.3` at 27 °C, while activation stays under `0.5` for `TREF` in 25 to
+30 °C.
+"""
 
 
 def operating_point_departed(parameters: Mapping[str, JsonValue]) -> bool:
-    """Whether a diode of `parameters` departs from ngspice's at its operating point.
+    """Returns whether a diode with `parameters` departs from ngspice at DC.
 
-    A sidewall without its own emission coefficient shares the junction's, and so does
-    its saturation current's temperature scaling in jolty, where ngspice scales it by an
-    emission coefficient of 1, as the guide's departures state: the two part away from
-    the nominal temperature where the junction's is not 1, as GF180MCU's `nwp_3p3`,
-    measured at 25 °C, by 3.3e-4 of its current at 27 °C.
+    A sidewall without a dedicated emission coefficient shares the junction
+    emission coefficient in jolty, whereas ngspice scales sidewall saturation
+    current with emission coefficient 1. At 27 °C, devices such as GF180MCU
+    `nwp_3p3` (`TREF=25 °C`) therefore differ by `3.3e-4`.
     """
     nominal = parameters.get("nominal_temperature", _core.REFERENCE_TEMPERATURE)
     return (
@@ -1072,15 +1056,13 @@ def operating_point_departed(parameters: Mapping[str, JsonValue]) -> bool:
 
 
 def response_departed(parameters: Mapping[str, JsonValue]) -> bool:
-    """Whether a diode of `parameters` departs from ngspice's in its frequency response.
+    """Returns whether a diode with `parameters` departs from ngspice at AC.
 
-    It departs where its operating point does, `operating_point_departed`; where it
-    recombines, as ngspice computes the recombination's conductance inexactly, and from
-    it the diffusion capacitance, as SG13G2's `dperim`, whose susceptance it moves by
-    1.4%; and where its capacitance temperature model is 1 and its nominal temperature
-    not 27 °C, as SKY130's 30 °C and GF180MCU's 25 °C, as ngspice moves its junctions'
-    potentials and capacitances from 27 °C rather than from it, by 0.3% to 1.4% of
-    SKY130's diodes' admittances at 27 °C. The guide's departures state each.
+    Departures occur whenever `operating_point_departed` holds or recombination
+    is active (ngspice computes recombination conductance inexactly, shifting
+    SG13G2 `dperim` susceptance by 1.4%). When `capacitance_temperature_model`
+    is 1 with `TREF != 27 °C`, ngspice also shifts capacitances from 27 °C,
+    moving SKY130 admittances by 0.3% to 1.4%.
     """
     nominal = parameters.get("nominal_temperature", _core.REFERENCE_TEMPERATURE)
     return (
@@ -1094,7 +1076,7 @@ def response_departed(parameters: Mapping[str, JsonValue]) -> bool:
 
 
 def diodes(part: Component) -> list[Mapping[str, JsonValue]]:
-    """The parameters of every diode `part` holds, in any of its components."""
+    """Returns parameter dictionaries of every diode nested inside `part`."""
     found = [
         instance.parameters
         for instance in part.definition.instances
@@ -1106,19 +1088,14 @@ def diodes(part: Component) -> list[Mapping[str, JsonValue]]:
 @SKIP
 @pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
 def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) -> None:
-    """Each subcircuit the inventory finds native, at its typical corner, as ngspice's.
+    """Verifies DC and AC agreement with ngspice for every native kit subcircuit.
 
-    Each is placed with the parameters the inventory read it with. One source holds
-    every device's first pin at `DRIVE` and drives it at AC, through a source of no
-    volts of each device's own, which senses its current, its other pins grounded; each
-    device's current is compared at the operating point and from 1 kHz to 100 GHz with
-    ngspice's, which reads the same libraries and places the same subcircuits, at the
-    same kelvins, but for the frequency response of a device of `AC_DEPARTED`, the
-    devices `DEPARTED` names, and what of a diode's departs from ngspice's,
-    `operating_point_departed` and `response_departed`; a diode's within `JUNCTION`
-    more, a Gummel-Poon transistor's within `junction_tolerance`, and a device's of
-    `LAGGED` capacitors with their currents delayed by `CAPACITANCE_LAG`, as ngspice's
-    are.
+    Places each inventory subcircuit with pin 0 driven at `DRIVE` through a
+    dedicated 0 V sense source and remaining pins grounded. Compares DC and
+    1 kHz to 100 GHz AC currents against ngspice at matching kelvins, skipping
+    documented departures (`DEPARTED`, `AC_DEPARTED`, `operating_point_departed`,
+    `response_departed`). Applies `JUNCTION` to diodes, `junction_tolerance` to
+    Gummel-Poon BJTs, and `CAPACITANCE_LAG` compensation to `LAGGED` capacitors.
     """
     library = kits.read(kit, settings=kept)
     native = {
@@ -1182,10 +1159,9 @@ def test_every_native_device_agrees_with_ngspice(kept: Settings, kit: kits.Kit) 
         compatibility=kit.compatibility,
         temperature=ngspice.same_kelvins(celsius(27).value),
     )
-    # One node joins every device's current: ngspice's solve rounds each sensed
-    # current by as much as that sum rounds, at most (n - 1)·ε of its terms' sizes
-    # (Higham, Accuracy and Stability of Numerical Algorithms, 2002, §4.2), as a
-    # capacitor's, which carries none at DC, shows on x86: 2.4e-14 A.
+    # A shared drive node sums every device current in ngspice. Rounding of
+    # that sum perturbs each sensed current by at most (n - 1)*eps times the
+    # sum of magnitudes (Higham, 2002, §4.2), reaching 2.4e-14 A on x86.
     sensed = [abs(raw_point.real(f"i(va{number})")[0]) for number in range(len(driven))]
     summed = (len(sensed) - 1) * np.finfo(float).eps * sum(sensed)
     for number, name in enumerate(driven):
@@ -1241,13 +1217,11 @@ and 5 V devices' ratings, and across the varactors' 2.3 V."""
 def test_a_kits_charged_capacitors_follow_their_bias_as_in_ngspice(
     kept: Settings, kit: kits.Kit
 ) -> None:
-    """Each native device of a capacitor of `CHARGED`, its admittance at each bias.
+    """Verifies bias-dependent 1 MHz admittances of native kit capacitors.
 
-    A copy of each device at each of `BIASES` is driven at 1 MHz through a source of no
-    volts of its own, its other pins grounded, and its current compared with ngspice's,
-    which reads the same kit, a `LAGGED` capacitor's delayed by `CAPACITANCE_LAG`, as in
-    `test_every_native_device_agrees_with_ngspice`: so the capacitance across the bias,
-    the derivative of the charge jolty integrates, is ngspice's.
+    Drives one copy of each `CHARGED` device per bias in `BIASES` through a
+    dedicated 0 V sense source with remaining pins grounded, compensating
+    `LAGGED` capacitors by `CAPACITANCE_LAG` to match ngspice.
     """
     library = kits.read(kit, settings=kept)
     charged = {
@@ -1327,28 +1301,24 @@ def test_a_kits_charged_capacitors_follow_their_bias_as_in_ngspice(
 
 
 QUOTED: Final = re.compile(r"=\s*\"")
-"""A card's value in double quotes outside braces, which ngspice 47 drops, warning of a
-"model issue" and reading the parameter's default, where jolty evaluates it, as the
-guide's departures state: SKY130's `res_generic_po`'s narrowing, 0.56% of its
-resistance."""
+"""Pattern for double-quoted unbraced card values ignored by ngspice 47.
+
+ngspice warns of a model issue and falls back to defaults, whereas jolty
+evaluates the expression (e.g., SKY130 `res_generic_po` narrowing, 0.56%).
+"""
 
 CARDS: Final = {"r": "R", "c": "C", "d": "D"}
-"""The types of model cards a bare element places in
-`test_every_native_card_agrees_with_ngspice`, SPICE3's resistor's and capacitor's and
-the diode's: the letter of each one's element."""
+"""Mapping from SPICE model-card kind (`r`, `c`, `d`) to bare element prefix."""
 
 
 @SKIP
 @pytest.mark.parametrize("kit", KITS, ids=[kit.name for kit in KITS])
 def test_every_native_card_agrees_with_ngspice(kept: Settings, kit: kits.Kit) -> None:
-    """Each resistor's, capacitor's and diode's native card, as ngspice's.
+    """Verifies DC and AC agreement with ngspice for bare native kit model cards.
 
-    A bare element of each, which takes its value from its card's geometry and
-    defaults, is driven as `test_every_native_device_agrees_with_ngspice` drives a
-    device, at the operating point and from 1 kHz to 100 GHz; but for a card of a
-    value in double quotes outside braces, `QUOTED`, which ngspice drops, and what of a
-    diode's departs from ngspice's, `operating_point_departed` and
-    `response_departed`.
+    Instantiates each native resistor, capacitor, and diode model card using
+    card defaults and drives it from DC to 100 GHz. Excludes `QUOTED` cards
+    dropped by ngspice and documented diode departures.
     """
     library = kits.read(kit, settings=kept)
     cards = [
@@ -1449,34 +1419,31 @@ EVERY_PART: Final = (
         " ikr=1e-9 bv=8 ibv=1e-6"
     ),
 )
-"""Cards of every part of ngspice's diode: one of level 3 sized by its width and length,
-its sidewall beside its junction, with knees, tunneling, `TLEV` 2 and `TLEVC` 1 at the
-default nominal temperature, 27 °C, where ngspice's capacitances are the model's; one
-whose sidewall lies behind a resistance of its own, at `TLEV` 1; and one that
-recombines, whose conductance ngspice computes inexactly, and whose sidewall, without
-`NS`, ngspice breaks down at a voltage it never sets, as the guide's departures state,
-which breaks down beyond the sweep."""
+"""Diode cards exercising every ngspice diode feature across three models.
+
+Covers a level-3 geometry-sized diode with parallel sidewall, knees, tunneling,
+`TLEV=2`, and `TLEVC=1` at 27 °C; a diode with a dedicated sidewall series
+resistance at `TLEV=1`; and a recombining diode whose breakdown lies outside
+the sweep.
+"""
 
 EVERY_ELEMENT: Final = (
     "D0 n0 0 sized w=1u l=2u",
     "D1 n1 0 behind pj=1",
     "D2 n2 0 recombining pj=1",
 )
-"""An element of each card of `EVERY_PART`, on nodes `n0` to `n2`."""
+"""Element lines instantiating each `EVERY_PART` diode card on nodes `n0` to `n2`."""
 
 
 @SKIP
 @pytest.mark.parametrize("hot", [False, True], ids=["27C", "85C"])
 def test_a_diode_of_every_part_agrees_with_ngspice(hot: bool) -> None:  # noqa: FBT001 - a parameter of the test
-    """Each diode of `EVERY_PART`, read as ngspice reads it, as ngspice's.
+    """Verifies DC and AC agreement with ngspice for every `EVERY_PART` diode.
 
-    Each is driven as `test_every_native_device_agrees_with_ngspice` drives a device,
-    through a source of no volts of its own: its current swept from 6 V of reverse bias,
-    through its breakdown, to 0.75 V forward, each point within twice the relative
-    tolerance and the relative tolerance more, and its admittance from 1 kHz to 100 GHz
-    at 0.5 V, but for the recombining one's, whose conductance ngspice computes
-    inexactly; at 27 °C and at 85 °C, where ngspice's thermal voltage is jolty's, and so
-    its nominal temperature.
+    Drives each diode through a dedicated 0 V sense source at 27 °C and 85 °C,
+    sweeping from -6 V through breakdown to 0.75 V within `AGREEMENT + reltol`.
+    Compares 1 kHz to 100 GHz AC admittance at 0.5 V except for the recombining
+    diode, where ngspice computes recombination conductance inexactly.
     """
     temperature = celsius(85 if hot else 27)
     library = Library(temperature.value)
@@ -1533,5 +1500,5 @@ def test_a_diode_of_every_part_agrees_with_ngspice(hot: bool) -> None:  # noqa: 
 
 
 def test_the_tables_name_every_status() -> None:
-    """The guide's names of the statuses are those `kits.Status` holds."""
+    """Verifies that `STATUSES` covers every status defined by `kits.Status`."""
     assert set(STATUSES) == set(typing.get_args(kits.Status.__value__))

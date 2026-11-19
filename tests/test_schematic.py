@@ -29,7 +29,7 @@ from jolty.units import V, kohm, nF, us
 
 @component
 def divider(c: Builder) -> None:
-    """A source across two resistors, its output named."""
+    """Builds a voltage source driving a two-resistor divider with a named output."""
     ground = c.port("ground", Role.GROUND)
     top = c.port("top")
     middle = c.port("middle")
@@ -42,7 +42,7 @@ def divider(c: Builder) -> None:
 
 @component
 def bench(c: Builder) -> None:
-    """A divider fed from a source, loaded by a capacitor."""
+    """Builds a voltage-driven divider loaded by an output capacitor."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(4 * V), name="V1")
     halves = c.place(divider(), name="X1")
@@ -53,7 +53,7 @@ def bench(c: Builder) -> None:
 
 
 def texts(figure: Figure) -> dict[str, str]:
-    """Each text of the figure, with its color."""
+    """Maps each text label in `figure` to its rendered color."""
     return {text.get_text(): str(text.get_color()) for text in figure.axes[0].texts}
 
 
@@ -130,7 +130,7 @@ def run(*arguments: str) -> int:
 
 @pytest.fixture
 def drawn(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
-    """The arguments of each schematic the commands draw."""
+    """Captures keyword arguments passed to each schematic render call."""
     calls: list[dict[str, object]] = []
     original = schematic.draw
 

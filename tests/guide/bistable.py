@@ -13,7 +13,7 @@ from jolty.units import Mohm
 
 @component
 def bistable(c: Builder) -> None:
-    """The behavioral source and the resistor from `x` to the ground."""
+    """Builds the behavioral source and leak resistor from `x` to ground."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(
         devices.behavioral_current_source("v(x) * v(x) - 2 * v(x) + 0.1"), name="B1"
@@ -24,10 +24,10 @@ def bistable(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The node and its source."""
+    """Returns the bistable test circuit."""
     return bistable()
 
 
 def plan() -> Plan:
-    """The operating point."""
+    """Returns the operating-point simulation plan."""
     return Plan({"op": OperatingPoint()})

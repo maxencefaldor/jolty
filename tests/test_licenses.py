@@ -1,15 +1,12 @@
 # Copyright 2026 Maxence Faldor
-"""Every dependency's license, in Rust and in Python, held to one list.
+"""License compliance checks across all Rust and Python dependencies.
 
-A crate states its license in its manifest, an SPDX expression that `cargo metadata`
-reads, for every crate of `Cargo.lock`: the dependencies of every platform, for
-development and builds among them. A Python distribution states its license in its
-metadata, which `importlib.metadata` reads, for every distribution installed beside
-jolty from `uv.lock`: its dependencies and the development tools. The metadata holds an
-SPDX expression in `License-Expression` (PEP 639) or, written before that field, in
-`License`, a free text that most distributions fill with an SPDX expression too. A
-dependency whose metadata states none is clarified here, from the license file it
-ships.
+Each Rust crate declares an SPDX expression in its manifest, read via `cargo metadata`
+across all platform, dev, and build dependencies in `Cargo.lock`. Each Python package
+installed alongside jolty from `uv.lock` declares its license in distribution metadata
+read via `importlib.metadata`, using `License-Expression` (PEP 639) or legacy `License`.
+Dependencies without parseable SPDX metadata are documented explicitly below from their
+shipped license files.
 """
 
 import importlib.metadata
@@ -37,11 +34,11 @@ LICENSES: Final = frozenset(
         "Zlib",
     }
 )
-"""The licenses a dependency may carry, those jolty's Apache-2.0 can carry.
+"""Allowlist of dependency licenses compatible with jolty's Apache-2.0 license.
 
-They are permissive, but for the Mozilla Public License, whose copyleft stops at the
-files it covers. A dependency offering a choice of licenses passes when it offers one of
-them, and one carrying several at once when it carries only these.
+All listed licenses are permissive except the Mozilla Public License, whose copyleft
+scope stops at covered files. Disjunctive expressions pass when at least one option is
+allowed, and conjunctive expressions pass when every term is allowed.
 """
 
 CLARIFIED: Final = {
@@ -55,14 +52,12 @@ CLARIFIED: Final = {
     "sortedcontainers": "Apache-2.0",
     "ty": "MIT",
 }
-"""The licenses of the dependencies whose metadata states no SPDX expression, or one
-SPDX reads not.
+"""Explicit license mappings for dependencies lacking valid SPDX metadata.
 
-Each is read from the license file the dependency ships: cycler's, kiwisolver's,
-matplotlib's and scipy's metadata holds the file's text, sortedcontainers' says
-"Apache 2.0", and rumdl's and ty's say nothing but a classifier. bincode-next, a
-dependency of gungraun, writes its expression's `OR` in lowercase, which SPDX does not
-read.
+Each entry comes from the package's shipped license file. `cycler`, `kiwisolver`,
+`matplotlib`, and `scipy` embed raw license text in metadata, `sortedcontainers` writes
+`"Apache 2.0"`, and `rumdl` and `ty` provide classifiers only. `bincode-next` (a
+`gungraun` dependency) uses lowercase `or`, which SPDX rejects.
 """
 
 _TOKEN: Final = re.compile(r"[()/]|[^\s()/]+")
@@ -73,7 +68,7 @@ _OPERATORS: Final = frozenset({"AND", "OR", "WITH", "(", ")", "/"})
 
 
 def _any(tokens: list[str]) -> bool:
-    """Whether the alternatives at the start of `tokens` offer an allowed license."""
+    """Returns whether any OR-separated branch at the front of `tokens` is allowed."""
     met = _all(tokens)
     while tokens[:1] in (["OR"], ["/"]):
         del tokens[0]
@@ -82,7 +77,7 @@ def _any(tokens: list[str]) -> bool:
 
 
 def _all(tokens: list[str]) -> bool:
-    """Whether every license joined at the start of `tokens` is allowed."""
+    """Returns whether every AND-joined license at the front of `tokens` is allowed."""
     met = _one(tokens)
     while tokens[:1] == ["AND"]:
         del tokens[0]
@@ -91,7 +86,7 @@ def _all(tokens: list[str]) -> bool:
 
 
 def _one(tokens: list[str]) -> bool:
-    """Whether the license, or parenthesized expression, at the start is allowed."""
+    """Returns whether the leading license atom or parenthesized group is allowed."""
     if not tokens or tokens[0] in _OPERATORS - {"("}:
         message = "a license expected"
         raise ValueError(message)
@@ -114,7 +109,7 @@ def _one(tokens: list[str]) -> bool:
 
 
 def allowed(expression: str) -> bool:
-    """Whether an SPDX expression can be met with the listed licenses alone.
+    """Returns whether `expression` is satisfiable using allowlisted licenses alone.
 
     Raises:
         ValueError: If `expression` is not an SPDX expression.
@@ -132,7 +127,7 @@ type Package = tuple[str, str]
 
 
 def _refused(packages: dict[Package, str | None]) -> list[str]:
-    """Each package whose license is not allowed, with its license, or none stated."""
+    """Formats every package whose license is disallowed or missing."""
     refused = []
     for (name, version), stated in sorted(packages.items()):
         expression = CLARIFIED.get(name, stated)
@@ -178,7 +173,7 @@ def test_every_distribution_carries_an_allowed_license() -> None:
 
 
 def _expression(stated: str | None) -> bool:
-    """Whether a stated license is an SPDX expression."""
+    """Returns whether `stated` parses as a valid SPDX license expression."""
     if stated is None:
         return False
     try:

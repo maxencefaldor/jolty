@@ -10,7 +10,7 @@ from jolty.waveforms import Piecewise
 
 @component
 def bench(c: Builder) -> None:
-    """1 kΩ and 1 nF, driven by a 1 V step at 1 µs."""
+    """Builds a 1 kΩ / 1 nF RC filter driven by a 1 V step at 1 µs."""
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(1 * us, 0 * V), (1 * us + 1 * ns, 1 * V)])
     source = c.place(devices.voltage_source(step), name="V1")
@@ -24,12 +24,12 @@ def bench(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The filter on its bench."""
+    """Returns the temperature-drifting filter bench."""
     return bench()
 
 
 def plan() -> Plan:
-    """The step response at 27 °C, -40 °C and 125 °C."""
+    """Returns the transient plan across 27 °C, -40 °C, and 125 °C corners."""
     return Plan(
         {"step": Transient(stop=10 * us)},
         corners={
@@ -40,5 +40,5 @@ def plan() -> Plan:
 
 
 def specs() -> Specs:
-    """A rise within 2.3 µs."""
+    """Returns the 2.3 µs rise-time specification."""
     return Specs([rise_time("step", "out") <= 2.3 * us])

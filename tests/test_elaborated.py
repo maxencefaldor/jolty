@@ -1,18 +1,16 @@
 # Copyright 2026 Maxence Faldor
-"""A circuit elaborated once simulates at any numbers as one elaborated with them.
+"""Parity tests confirming a once-elaborated circuit matches fresh elaboration.
 
-A Monte Carlo sample, or a worst case's run, replaces some of a circuit's numbers. A
-simulation made by
-[`Simulation.from_elaborated`][jolty.simulate.Simulation.from_elaborated] from the
-circuit [`Elaborated`][jolty.simulate.Elaborated] once makes its devices again from
-them, where a `Simulation` elaborates the circuit with them. On the random circuits of
-`strategies`, pulsed and holding capacitance at their nets, at random numbers and
-temperatures, both find the same operating point, frequency response and transient, bit
-for bit, their transients' work alike, or the same problems.
+Monte Carlo and worst-case runs override numeric parameters on a fixed topology. A
+simulation built via
+[`Simulation.from_elaborated`][jolty.simulate.Simulation.from_elaborated] from an
+[`Elaborated`][jolty.simulate.Elaborated] circuit rebuilds devices from those values,
+whereas `Simulation` re-elaborates from scratch. Across pulsed random circuits with
+parasitic net capacitance at random overrides and temperatures, both produce bit-for-bit
+identical operating points, frequency responses, transients, work counts, and errors.
 
-The numbers replaced are those the circuits write as real numbers: an integer, such as a
-MOSFET's level, keeps the circuit's own form when a sample replaces it with a whole
-number, which an override written as a real number does not.
+Only floating-point device parameters are overridden. Integer fields such as MOSFET
+level preserve circuit structure under integer samples, whereas float overrides do not.
 """
 
 import dataclasses
@@ -48,7 +46,7 @@ type Number = tuple[str, str, float]
 
 
 def _numbers(circuit: ir.Circuit) -> list[Number]:
-    """Every real number the instances of `circuit`'s top write, by path."""
+    """Collects every floating-point parameter on top-level instances of `circuit`."""
 
     def within(path: str, value: JsonValue) -> Iterator[tuple[str, float]]:
         match value:
@@ -72,7 +70,7 @@ def _numbers(circuit: ir.Circuit) -> list[Number]:
 
 
 def _source(circuit: ir.Circuit) -> str:
-    """The pulsed source, the first voltage source the circuit places."""
+    """Returns the name of the pulsed source, the circuit's first voltage source."""
     return next(
         instance.name
         for instance in circuit.components[circuit.top].instances
@@ -81,10 +79,9 @@ def _source(circuit: ir.Circuit) -> str:
 
 
 def _found(simulation: Simulation, source: str) -> list[bytes | str]:
-    """Every number the simulation finds, as its bytes, or each analysis's error.
+    """Returns raw byte outputs or error strings across operating point, AC, and tran.
 
-    The analyses are the operating point, the frequency response to `source` and the
-    transient, whose work counts too.
+    Includes transient step work counts alongside numeric results.
     """
     found: list[bytes | str] = []
     analyses = (
@@ -161,8 +158,8 @@ def test_one_elaboration_serves_each_structure() -> None:
         Simulation.from_elaborated(elaborated, {"R1": {"resistance": r}})
         for r in (0.5, 0.25)
     ]
-    # A resistance below 1 Ω carries its current as an unknown of its own, so both run
-    # on the circuit elaborated once for that structure.
+    # A resistance below 1 Ω adds an explicit branch-current unknown, so both runs
+    # share the circuit elaborated once for that topology.
     assert all(
         "R1:current" in (unknown.name for unknown in each.unknowns) for each in below
     )

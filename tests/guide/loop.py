@@ -13,7 +13,7 @@ from jolty.units import GHz, Hz, V, kohm, nF
 
 @component
 def loop(c: Builder) -> None:
-    """The gain, the two sections and the probe, in a ring."""
+    """Builds the gain stage, two RC sections, and stability probe in a ring."""
     ground = c.port("ground", Role.GROUND)
     gain = c.place(devices.voltage_controlled_voltage_source(1000), name="E1")
     first = c.place(devices.resistor(1 * kohm), name="R1")
@@ -39,10 +39,10 @@ def loop(c: Builder) -> None:
 
 
 def build() -> Component:
-    """The loop."""
+    """Returns the feedback-loop test circuit."""
     return loop()
 
 
 def plan() -> Plan:
-    """The loop gain through the probe."""
+    """Returns the loop-gain stability simulation plan."""
     return Plan({"loop": Stability("VP", decade(1 * Hz, 1 * GHz, 20))})

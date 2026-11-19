@@ -1,18 +1,15 @@
 # Copyright 2026 Maxence Faldor
-"""The engine's measures read what numpy read, on specs' results and random signals.
+"""Parity tests comparing engine measures against NumPy on spec and random signals.
 
-Every measure of `jolty.specs` resolves itself against a result, and the engine
-reads it. `numpy_measures` holds the same measures as numpy computed them
-before the engine read them. Where this platform's numpy rounds as the engine does,
-every measure but a distortion reads the same float, bit for bit, in the same
-unit, or raises the same error with the same message: numpy then fuses the product and
-the sum of an interpolation, of Smith's complex division and of a complex magnitude
-into one rounding each, as the engine does and as arm64's numpy does, and takes its
-logarithms and angles from the platform's math library, as Python does. A distortion's
-amplitudes come from numpy's fast Fourier transform in one and from the discrete
-transform's sums in the other, so its readings agree within the two's rounding bounds,
-derived where the test checks them. On a platform whose numpy rounds otherwise, as an
-x86 processor's rounds an interpolation twice, the tests skip.
+Every measure in `jolty.specs` resolves against an analysis result and evaluates inside
+the engine. `numpy_measures` preserves the reference NumPy implementations. On platforms
+whose NumPy matches engine rounding, every non-distortion measure returns the exact same
+float and unit bit for bit, or raises the same error with the same message. Matching
+platforms fuse each interpolation, Smith complex division, and complex magnitude into a
+single rounding (matching arm64 NumPy) and delegate logarithms and angles to the
+platform math library. Distortion amplitudes come from NumPy's FFT versus pairwise DFT
+sums in the engine, so those checks use derived rounding bounds. Platforms whose NumPy
+rounds differently, such as double-rounded interpolation on x86, skip these tests.
 """
 
 import importlib.util
@@ -39,11 +36,11 @@ EXAMPLES: Final = Path(__file__).parent.parent / "examples"
 
 
 def _rounds_as_the_engine() -> bool:
-    """Whether numpy rounds here as the engine does.
+    """Returns whether NumPy on this platform matches the engine rounding behavior.
 
-    It does when it fuses an interpolation's product and sum, a complex division's and a
-    magnitude's, and takes its logarithms and angles from the platform's math library.
-    Each case is one whose fused and unfused results differ.
+    Parity holds when NumPy fuses the product and sum of linear interpolation, complex
+    division, and complex magnitude, and calls the platform math library for logarithms
+    and phase angles. Each probe uses values where fused and unfused results differ.
     """
     interpolated = float(np.interp(0.3, [0.0, 0.7], [0.1, 0.9]))
     a, b = complex(-0.084, -1.163), complex(-0.629, -0.488)
@@ -88,21 +85,22 @@ UNKNOWNS: Final = (
 )
 
 MATH_DOMAIN: Final = "expected a "
-"""How Python's `math` starts its message when an argument leaves its domain, as
+"""Prefix Python `math` uses for domain errors, as in
 ``expected a nonnegative input, got -1.0``."""
 
 MATH_RANGE: Final = {("OverflowError", "math range error")}
-"""What Python's `math` raises when a result of finite arguments overflows."""
+"""Exception type and message pair Python `math` raises on finite-argument overflow."""
 
 type Outcome = tuple[str, str]
 """What a measure read: its value's bits and its unit, or its error and message."""
 
 
 def outcome(measure: Measure, result: results.AnalysisResult) -> Outcome:
-    """What `measure` reads of `result`.
+    """Returns the evaluated value or error tuple of `measure` on `result`.
 
-    numpy's floating-point warnings, of an overflow or of minus infinity less itself,
-    which the tests would make errors, are off, as they change no number numpy reads.
+    NumPy floating-point warnings for overflow and indeterminate infinity arithmetic are
+    suppressed because they alter no returned value while test settings treat them as
+    errors.
     """
     try:
         with np.errstate(all="ignore"):
@@ -118,7 +116,7 @@ def alike(
     *args: Any,  # noqa: ANN401 - the measure's own arguments
     **kwargs: Any,  # noqa: ANN401 - the measure's own arguments
 ) -> Outcome:
-    """What the measure `name` reads of `result`, the engine's and numpy's alike."""
+    """Returns the shared outcome of measure `name` on `result` across both engines."""
     resolved = getattr(specs, name)(*args, **kwargs)
     numpy = getattr(reference, name)(*args, **kwargs)
     assert resolved.resolved is not None
@@ -126,10 +124,9 @@ def alike(
     if expected in MATH_RANGE or (
         expected[0] == "ValueError" and expected[1].startswith(MATH_DOMAIN)
     ):
-        # Python's `math` raised where its argument left its domain or its result its
-        # range, as the square root of a negative mean over a sweep that turns back, or
-        # the power law of an infinite density; the engine reads not a number or an
-        # infinity there, which leaves the requirement unmeasured.
+        # Python `math` raised on a domain or range error, such as the square root of
+        # a negative sweep mean or the power law of an infinite density. The engine
+        # returns NaN or infinity there, leaving the requirement unmeasured.
         assert read[0] in {"nan", "inf", "-inf"}, (str(resolved), args, kwargs)
         return read
     assert read == expected, (str(resolved), args, kwargs)
@@ -139,7 +136,7 @@ def alike(
 def waveforms(
     times: Iterable[float], *columns: Iterable[float]
 ) -> results.TransientResult:
-    """A transient of `out`, `ref` and `V1:current` at `times`, 0 where not given."""
+    """Builds a transient for `out`, `ref`, and `V1:current` at `times` (default 0)."""
     points = np.asarray(list(times), dtype=np.float64)
     values = np.zeros((points.size, len(UNKNOWNS)))
     for index, column in enumerate(columns):
@@ -373,11 +370,10 @@ def test_an_examples_results_read_alike() -> None:
 
 
 def test_a_resolution_error_precedes_a_reading_error() -> None:
-    """A window whose start lies past the axis and whose stop is no time.
+    """Verifies that measure resolution errors precede waveform reading errors.
 
-    numpy read the start against the times before it converted the stop, and said the
-    start lay outside; the engine's measure resolves the stop first, as a batch
-    resolves its measures before it runs.
+    A window with a start past the axis and a non-time stop triggers an axis error first
+    in NumPy, whereas the engine resolves all bounds upfront before evaluation.
     """
     step = waveforms(np.linspace(0, 1, 11), np.linspace(0, 1, 11))
     resolved = specs.maximum("t", "out", start=2 * s, stop=1 * V)
@@ -395,7 +391,7 @@ an overflow, which the tests' warnings would make an error."""
 
 @st.composite
 def transients(draw: st.DrawFn) -> results.TransientResult:
-    """A transient at increasing times, its signals random, flat or swinging."""
+    """Generates a transient with random, flat, or swinging waveforms."""
     times = sorted(
         draw(st.lists(st.floats(0, 100), min_size=1, max_size=24, unique=True))
     )
@@ -416,7 +412,7 @@ def transients(draw: st.DrawFn) -> results.TransientResult:
 
 
 def ends(points: Iterable[float], unit: Quantity) -> st.SearchStrategy[Quantity | None]:
-    """A window's end: none, a point of the axis, or anywhere about it."""
+    """Returns a strategy for a window endpoint: `None`, an axis point, or nearby."""
     values = list(points)
     low, high = min(values), max(values)
     span = high - low
@@ -455,14 +451,14 @@ def test_sweeps_read_alike(data: st.DataObject) -> None:
 
 
 DENSITIES: Final = st.just(0.0) | st.floats(1e-30, 1e-9)
-"""A noise density: none, or within 21 decades, as a circuit's are.
+"""Noise density strategy: zero, or spanning 21 decades like circuit noise.
 
-Densities 308 decades apart make a power law between them overflow, and Python's
-`math`, which numpy's noise took its logarithms with, raises there, where the engine's
-reads infinity or not a number, which leaves the requirement unmeasured."""
+Densities 308 decades apart overflow a power-law fit. Python `math`, used by NumPy for
+logarithms, raises an error there, whereas the engine produces infinity or NaN and
+leaves the requirement unmeasured."""
 
 NATURES: Final[tuple[results.Nature, ...]] = ("voltage", "current")
-"""What a sweep's source values can be."""
+"""Allowed source quantity kinds for a DC sweep."""
 
 PHASORS: Final = st.builds(complex, st.floats(-1e3, 1e3), st.floats(-1e3, 1e3))
 """A phasor, zero now and then."""
@@ -531,11 +527,7 @@ def amplitudes(
     harmonics: int,
     start: Quantity | None,
 ) -> tuple[results.Real, results.Real]:
-    """The samples a distortion reads, and numpy's amplitudes of its harmonics.
-
-    They are as `numpy_measures.distortion` takes them, of harmonics 1 to
-    `harmonics`.
-    """
+    """Returns distortion samples and NumPy harmonic amplitudes up to `harmonics`."""
     window = _Window(_Signal("out"), start, None)
     times, values, _ = window.transient(result, "a distortion")
     span = (times[-1] - times[0]) * fundamental
@@ -548,16 +540,16 @@ def amplitudes(
 
 
 def distortion_bound(sampled: results.Real) -> float:
-    """How far either's amplitude of a harmonic may lie from the exact transform's.
+    """Returns the worst-case harmonic amplitude difference between engine and NumPy.
 
-    The engine sums each part of the transform pairwise, over sums of 16 terms in each
-    of 8 accumulators, so each part is the exact sum of its rounded terms within
-    (19 + log2 N) roundings of their absolute sum, and each term, a sample times a
-    twiddle accurate within 5 units of the last place, within 6 more: at most
-    (25 + log2 N) ε ‖x‖₁ for each part, √2 times that for the magnitude. numpy's
-    transform lies within log2 N · η · ‖X‖₂ of the exact one, η about 8 ε for twiddles
-    accurate within a unit of the last place (Higham, "Accuracy and Stability of
-    Numerical Algorithms", 2nd ed., Theorem 24.2), and ‖X‖₂ = √N ‖x‖₂.
+    The engine sums each transform component pairwise across 8 accumulators of 16-term
+    blocks. Each component matches the exact sum of its rounded terms within
+    `(19 + log2 N)` roundings of the L1 norm. Each sample-by-twiddle term adds at most
+    6 more roundings (5 ULPs per twiddle plus multiplication), giving `(25 + log2 N) ε
+    ‖x‖₁` per component and `√2` times that for magnitude. NumPy's FFT lies within
+    `log2 N · η · ‖X‖₂` of the exact transform, with `η ≈ 8 ε` for 1-ULP twiddles
+    (Higham, "Accuracy and Stability of Numerical Algorithms", 2nd ed., Theorem 24.2)
+    and `‖X‖₂ = √N ‖x‖₂`.
     """
     count = sampled.size
     depth = math.log2(count)

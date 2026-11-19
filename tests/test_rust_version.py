@@ -1,9 +1,9 @@
 # Copyright 2026 Maxence Faldor
-"""Every crate claims the Rust it is built with, the one `rust-toolchain.toml` pins.
+"""Verification that every crate declares the MSRV pinned in `rust-toolchain.toml`.
 
-The pin is Rust's latest stable release, and `rust-version` in each crate's manifest,
-inherited from the workspace's, says what the crate's users need: a claim of an older
-Rust would be one that nothing builds or tests jolty with.
+The pin tracks the latest stable Rust release, and workspace-inherited `rust-version`
+declares the minimum toolchain required by downstream users. Claiming an older Rust
+version would advertise an untested toolchain.
 """
 
 import tomllib

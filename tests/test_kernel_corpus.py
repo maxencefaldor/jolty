@@ -20,7 +20,7 @@ SCRIPT: Final = Path(__file__).resolve().parent / "kernel_corpus.py"
 
 @SKIP
 def test_the_kernels_circuits_are_the_corpus_and_the_examples() -> None:
-    """Recorded again, the corpus's circuits and runs are those the file holds."""
+    """Verifies that re-recording the corpus and examples matches the committed JSON."""
     checked = subprocess.run(  # noqa: S603 - this interpreter, on the repository's script
         [sys.executable, str(SCRIPT), "--check"],
         capture_output=True,

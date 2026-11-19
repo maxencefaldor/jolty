@@ -1,12 +1,13 @@
 # Copyright 2026 Maxence Faldor
-"""Running ngspice or Xyce on jolty's circuits and comparing what the engines find.
+"""Differential test harness comparing jolty against ngspice and Xyce.
 
-A circuit is written as a SPICE netlist by `jolty.spice.export`, in ngspice's dialect or
-Xyce's; a component read from a SPICE library is written as an instance of its
-subcircuit, the library included. The engines run with tight tolerances, the simulator
-at the temperature where its thermal voltage is jolty's. The tests skip where the
-simulator is not installed, unless the environment sets ``JOLTY_REQUIRE_NGSPICE=1``, as
-CI does, or ``JOLTY_REQUIRE_XYCE=1``, when they fail.
+Each circuit is exported as a SPICE netlist by `jolty.spice.export` in the
+ngspice or Xyce dialect. Components loaded from a SPICE library are exported as
+subcircuit instances with their library included. Both engines run with tight
+tolerances, and the reference simulator runs at the temperature matching
+jolty's thermal voltage. Tests skip when the simulator is absent unless
+``JOLTY_REQUIRE_NGSPICE=1`` or ``JOLTY_REQUIRE_XYCE=1`` is set, in which case
+missing executables fail.
 """
 
 import os
@@ -49,22 +50,20 @@ __all__ = [
 ]
 
 REQUIRED: Final = os.environ.get("JOLTY_REQUIRE_NGSPICE") == "1"
-"""Whether ngspice must run, as CI says by setting ``JOLTY_REQUIRE_NGSPICE=1``."""
+"""Flag requiring ngspice tests to run, enabled by ``JOLTY_REQUIRE_NGSPICE=1``."""
 
 SKIP = pytest.mark.skipif(
     ngspice.EXECUTABLE is None and not REQUIRED, reason="ngspice is not installed"
 )
-"""Marks tests that need ngspice: skipped without it, unless it is required, when they
-run and fail."""
+"""Pytest mark skipping ngspice tests unless ngspice is installed or required."""
 
 REQUIRED_XYCE: Final = os.environ.get("JOLTY_REQUIRE_XYCE") == "1"
-"""Whether Xyce must run, as ``JOLTY_REQUIRE_XYCE=1`` in the environment says."""
+"""Flag requiring Xyce tests to run, enabled by ``JOLTY_REQUIRE_XYCE=1``."""
 
 SKIP_XYCE = pytest.mark.skipif(
     xyce.EXECUTABLE is None and not REQUIRED_XYCE, reason="Xyce is not installed"
 )
-"""Marks tests that need Xyce: skipped without it, unless it is required, when they
-run and fail."""
+"""Pytest mark skipping Xyce tests unless Xyce is installed or required."""
 
 type Real = npt.NDArray[np.float64]
 type Values = float | Real | npt.NDArray[np.complex128]
@@ -72,7 +71,7 @@ type SpiceResult = ngspice.Result | xyce.Result
 
 
 def _libraries(circuit: ir.Circuit) -> set[str]:
-    """The components the top places, read from SPICE libraries in these tests."""
+    """Returns names of SPICE-library subcircuits placed by the top component."""
     return {
         instance.of.component
         for instance in circuit.components[circuit.top].instances
@@ -87,9 +86,10 @@ def netlist(
     transient: bool = False,
     dialect: export.Dialect = export.NGSPICE,
 ) -> list[str]:
-    """The SPICE lines of a circuit whose top places devices and library subcircuits.
+    """Returns SPICE netlist lines for `circuit` in the requested simulator `dialect`.
 
-    They are in the `dialect` of a simulator, ngspice's unless given.
+    Defaults to the ngspice dialect and includes library subcircuits placed by
+    the top component.
     """
     return export.netlist(
         circuit,
@@ -105,15 +105,15 @@ def vector(
     unknown: results.Unknown,
     dialect: export.Dialect = export.NGSPICE,
 ) -> str:
-    """A simulator's vector of an unknown of such a circuit, by default ngspice's."""
+    """Returns the SPICE vector name for `unknown` in `dialect` (default ngspice)."""
     return export.vector(circuit, unknown, _libraries(circuit), dialect)
 
 
-# The tests.
+# Differential comparison helpers.
 
 
 def _dialect(raw: SpiceResult) -> export.Dialect:
-    """The SPICE dialect matching `raw`'s simulator."""
+    """Returns the SPICE dialect corresponding to the simulator that produced `raw`."""
     return export.XYCE if isinstance(raw, xyce.Result) else export.NGSPICE
 
 
@@ -123,7 +123,7 @@ def _vector_name(
     dialect: export.Dialect,
     vector_names: Mapping[str, str] | None = None,
 ) -> str:
-    """The simulator's vector name for `unknown`, applying any explicit override."""
+    """Returns the simulator vector name for `unknown`, applying explicit overrides."""
     if vector_names is not None and unknown.name in vector_names:
         return vector_names[unknown.name]
     return vector(simulation.circuit, unknown, dialect)
@@ -135,7 +135,7 @@ def dc_command(
     *,
     dialect: export.Dialect = export.NGSPICE,
 ) -> str:
-    """The SPICE DC sweep command matching `sweep` on voltage source `source`."""
+    """Returns the SPICE DC sweep command for `sweep` on voltage source `source`."""
     first, last = float(sweep.swept[0]), float(sweep.swept[-1])
     step = (last - first) / (len(sweep.swept) - 1)
     prefix = ".dc" if dialect == export.XYCE else "dc"
@@ -149,7 +149,7 @@ def transient_command(
     dialect: export.Dialect = export.NGSPICE,
     uic: bool = False,
 ) -> str:
-    """The SPICE transient command for `stop` and `step` in seconds."""
+    """Returns the SPICE transient command for `stop` and `step` in seconds."""
     prefix = ".tran" if dialect == export.XYCE else "tran"
     suffix = " uic" if uic else ""
     return f"{prefix} {step!r} {stop!r} 0 {step!r}{suffix}"
@@ -338,12 +338,12 @@ def assert_transient_agrees(
 
 
 def closest(times: Real, values: Real, at: Real, targets: Real, window: float) -> Real:
-    """The values of a waveform nearest `targets`, each within `window` of its time.
+    """Returns piecewise-linear waveform values nearest `targets` within `window`.
 
-    The waveform is linear between `values` at `times`, and each target's time is in
-    `at`. Two engines step through time differently, and a waveform interpolated
-    between one's steps cuts the other's corners and curves; within a window of a step,
-    the waveforms meet there.
+    The waveform is linearly interpolated over `values` at `times`, and each
+    target time is given in `at`. Linear interpolation cuts across corners when
+    two engines choose different time steps; allowing a time shift of `window`
+    aligns the waveforms at each target.
     """
     starts, stops = at - window, at + window
     ends = np.stack([np.interp(starts, times, values), np.interp(stops, times, values)])
@@ -359,17 +359,17 @@ def closest(times: Real, values: Real, at: Real, targets: Real, window: float) -
 
 
 def size(values: Values) -> float:
-    """The largest magnitude among `values`, or 1 when they are all zero."""
+    """Returns the largest magnitude in `values`, or 1.0 when all entries are zero."""
     return float(np.abs(np.asarray(values)).max()) or 1.0
 
 
 def compared(simulation: Simulation) -> list[tuple[int, results.Unknown]]:
-    """The unknowns both engines report, with their columns in jolty's results.
+    """Returns `(column, unknown)` pairs reported by both jolty and SPICE.
 
-    Both report the nets, the top's source currents, the currents sensed and devices'
-    states, which the netlist gives nodes of their own. ngspice names a device's other
-    internal nodes its own way, and has none of the nets jolty adds in series with a
-    source whose current a subcircuit reads.
+    Both engines report nets, top-level source currents, sensed currents, and
+    device states assigned dedicated netlist nodes. ngspice names other
+    internal device nodes differently and omits series sense nets that jolty
+    inserts for subcircuit current sensing.
     """
     return [
         (column, unknown)
@@ -379,7 +379,7 @@ def compared(simulation: Simulation) -> list[tuple[int, results.Unknown]]:
 
 
 def _shared(name: str) -> bool:
-    """Whether ngspice reports the unknown `name` too."""
+    """Returns whether ngspice also reports the unknown `name`."""
     *path, leaf = name.split("/")
     if ":" in leaf:
         return not path and leaf.endswith((":current", ":control"))
@@ -392,13 +392,12 @@ def differing(
     natures: Mapping[str, str],
     tolerance: float = 1e-6,
 ) -> list[str]:
-    """The unknowns, by name, whose values jolty and a reference disagree on.
+    """Returns names of unknowns where `jolty` disagrees with `reference`.
 
-    The values are at a point or over a sweep. Each agrees within `tolerance`, a
-    millionth by default, of the largest value of its quantity anywhere in the
-    reference: an engine resolves an equation to a millionth of its largest term, so a
-    small current beside large ones only that far. Values within twice the engines'
-    absolute tolerance of each other agree too.
+    Values may be scalars or sweep arrays. Each unknown agrees within
+    `tolerance` (default 1e-6) of the largest reference magnitude of its
+    physical nature, because a solver resolves each equation relative to its
+    largest term. Values within twice the engine absolute tolerance also agree.
     """
     scales: dict[str, float] = {}
     for name, values in reference.items():
@@ -413,15 +412,15 @@ def differing(
 
 
 def _noise(nature: str) -> float:
-    """The engines' absolute tolerance on an unknown of `nature`."""
+    """Returns the engine absolute tolerance for an unknown of `nature`."""
     return CURRENT_TOLERANCE if nature == "current" else VOLTAGE_TOLERANCE
 
 
 def nearest(times: Real, targets: Real) -> npt.NDArray[np.intp]:
-    """The index of the time nearest each target.
+    """Returns the index in `times` nearest each entry in `targets`.
 
-    jolty counts a time it was asked to step onto as reached once a step ends within
-    the shortest step allowed of it.
+    jolty treats a requested time point as reached once a time step lands
+    within the minimum allowed step size.
     """
     after = np.clip(np.searchsorted(times, targets), 1, len(times) - 1)
     before = after - 1
@@ -429,10 +428,10 @@ def nearest(times: Real, targets: Real) -> npt.NDArray[np.intp]:
 
 
 def unstable(simulation: Simulation) -> bool:
-    """Whether a mode of the circuit grows away from its operating point, under `TIGHT`.
+    """Returns whether any circuit mode grows away from the `TIGHT` operating point.
 
-    A transient from there amplifies rounding, so two simulations of it, by two engines
-    or of two ways of writing it, part however accurate each is.
+    Transients from an unstable operating point amplify rounding errors, so two
+    engines or equivalent spellings diverge regardless of accuracy.
     """
     return any(
         diagnostic.rule == "unstable-pole"

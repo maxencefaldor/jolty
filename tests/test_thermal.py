@@ -19,7 +19,7 @@ from jolty.units import J, K, V, W, ms, ohm
 
 @component
 def heated(c: Builder) -> None:
-    """1 W into 50 K/W to the ambient, beside 2 mJ/K."""
+    """Builds a 1 W heat source into 50 K/W thermal resistance and 2 mJ/K capacity."""
     ground = c.port("ground", Role.GROUND)
     heat = c.place(devices.heat_source(1 * W), name="P1")
     sink = c.place(devices.thermal_resistance(50 * K / W), name="RTH")

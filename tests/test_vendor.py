@@ -1,11 +1,10 @@
 # Copyright 2026 Maxence Faldor
-"""Differential tests on vendors' macromodels, read from their SPICE files.
+"""Differential tests on vendor macromodels loaded from SPICE subcircuit files.
 
-Each test bench places a part read by jolty's SPICE importer, and ngspice simulates the
-same bench with the same file included: in its PSpice compatibility mode for the files
-written for PSpice, whose syntax its default mode does not read. The files are ngspice's
-own examples, downloaded from a mirror of its repository at a fixed commit and checked
-against their digests.
+Each bench places a component parsed by jolty's SPICE importer and runs ngspice on the
+same netlist. PSpice-syntax models run ngspice in PSpice compatibility mode because
+default ngspice rejects their syntax. All model files come from ngspice's own examples,
+fetched from a pinned repository commit and verified against SHA digests.
 """
 
 import math
@@ -50,7 +49,7 @@ _MIRROR = (
     "https://raw.githubusercontent.com/imr/ngspice/"
     "a80f6e3e95d51534905b1f23410a951802666656/examples/"
 )
-"""ngspice's examples, at a fixed commit of a mirror of its repository."""
+"""Pinned ngspice examples repository mirror URL and commit."""
 
 
 @dataclass(frozen=True)
@@ -86,7 +85,7 @@ OPA171 = Part(
 
 @pytest.fixture(scope="session")
 def downloads(pytestconfig: pytest.Config) -> Path:
-    """Where the parts' files are kept between runs."""
+    """Returns the cache directory storing downloaded vendor model files."""
     assert pytestconfig.cache is not None
     return pytestconfig.cache.mkdir("downloads")
 
@@ -101,10 +100,9 @@ def _inverting(
     pins: tuple[str, str, str, str, str],
     signal: Sine,
 ) -> Component:
-    """An amplifier of gain -2 around `part`, its non-inverting input at mid-supply.
+    """Builds a gain -2 inverting amplifier around `part` with mid-supply reference.
 
-    The part's `pins` are its non-inverting and inverting inputs, its supplies and its
-    output.
+    The `pins` tuple orders non-inverting input, inverting input, supplies, and output.
     """
     plus, minus, positive, negative, output = pins
     c = Builder("inverting")
@@ -163,7 +161,7 @@ def _opa171(downloads: Path) -> tuple[Component, Path]:
 
 
 def _ad22057(downloads: Path) -> tuple[Component, Path]:
-    """The difference amplifier with its two stages joined, from a single supply."""
+    """Builds the single-supply AD22057 difference amplifier with both stages joined."""
     file = _file(AD22057, downloads)
     part = spice.load(file).component(AD22057.subcircuit)
     c = Builder("difference")
@@ -214,7 +212,7 @@ class Bench:
     compatibility: Compatibility | None = "ps"
 
     def runs(self, analysis: str) -> bool:
-        """Whether both engines run `analysis`, ``op``, ``dc``, ``ac`` or ``tran``."""
+        """Returns whether both simulators run `analysis` (`op`, `dc`, `ac`, `tran`)."""
         match analysis:
             case "dc":
                 return self.sweep is not None
@@ -226,8 +224,8 @@ class Bench:
 
 
 BENCHES = {
-    # SPICE2's syntax, which ngspice reads without PSpice's mode, in which it would give
-    # each diode without a series resistance one of 100 µΩ.
+    # Uses SPICE2 syntax, which ngspice parses outside PSpice mode; PSpice mode would
+    # add a 100 µΩ series resistor to every diode lacking one.
     "tl072": Bench(_tl072, (-10, 10, 81), (300 * us, 0.2 * us), compatibility=None),
     "mcp6041": Bench(_mcp6041, (1.5, 3.5, 81), (6 * ms, 2 * us)),
     # The amplifier's gains of a million leave its currents' last digits unresolved
@@ -241,16 +239,15 @@ BENCHES = {
             f".options reltol=1e-6 vntol={VOLTAGE_TOLERANCE!r} abstol=1e-12"
         ),
     ),
-    # ngspice finds this amplifier's operating point at its default tolerances only. It
-    # runs the amplifier's switches as XSPICE's, which stamp the negative of their
-    # conductance in an AC analysis.
+    # ngspice finds the operating point of this amplifier at default tolerances only.
+    # XSPICE switches in the model stamp negated conductance during AC analysis.
     "opa171": Bench(_opa171, None, None, ac=False, spice_options=""),
 }
 """The benches, by name."""
 
 
 def _benches(analysis: str) -> list[str]:
-    """The benches whose `analysis` both engines run."""
+    """Returns names of all benches enabled for `analysis` on both simulators."""
     return [name for name, bench in BENCHES.items() if bench.runs(analysis)]
 
 

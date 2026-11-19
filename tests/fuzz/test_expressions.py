@@ -238,7 +238,7 @@ def _expression_grammar(
 
 
 def _valid_spice_expressions(*, with_variables: bool) -> st.SearchStrategy[str]:
-    """Grammar-guided valid SPICE expression strings."""
+    """Generates grammar-guided valid SPICE expression strings."""
     base_leaves: list[st.SearchStrategy[str]] = [
         _spice_number_literals(),
         st.sampled_from(["pi", "e", "temp", "vt", "gmin", *_SPICE_PARAMETERS]),
@@ -287,7 +287,7 @@ def _valid_spice_expressions(*, with_variables: bool) -> st.SearchStrategy[str]:
 
 
 def _valid_core_expressions(*, with_variables: bool) -> st.SearchStrategy[str]:
-    """Grammar-guided valid expressions in jolty's Rust expression language."""
+    """Generates grammar-guided valid expressions in jolty's Rust syntax."""
     numbers = st.floats(
         min_value=0.0, max_value=1e3, allow_nan=False, allow_infinity=False
     ).map(lambda value: f"{value:.6g}")
@@ -306,7 +306,7 @@ def _valid_core_expressions(*, with_variables: bool) -> st.SearchStrategy[str]:
 
 
 def _expression_token_soup() -> st.SearchStrategy[str]:
-    """Adversarial sequences of expression tokens and punctuation."""
+    """Generates adversarial sequences of expression tokens and punctuation."""
     return st.lists(
         st.sampled_from(_EXPRESSION_SOUP_TOKENS), min_size=0, max_size=35
     ).map("".join)

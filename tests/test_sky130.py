@@ -42,7 +42,7 @@ from jolty.waveforms import Pulse
 
 @pytest.fixture(scope="session")
 def kit(pytestconfig: pytest.Config) -> Settings:
-    """Settings whose cache, pytest's, holds the kit's release."""
+    """Returns settings backed by the pytest cache directory holding the SKY130 kit."""
     assert pytestconfig.cache is not None
     settings = Settings(cache=pytestconfig.cache.mkdir("downloads"))
     kits.root(sky130.KIT, settings)
@@ -93,7 +93,7 @@ def test_a_netlist_estimates_the_diffusions_as_the_kits_symbols_do() -> None:
 
 @component
 def inverter(c: Builder) -> None:
-    """A SKY130 inverter, its p-channel transistor of two fingers, driven at `in`."""
+    """Builds a SKY130 inverter with a two-finger PMOS driven at `in`."""
     ground = c.port("0", Role.GROUND)
     supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
     drive = c.place(
@@ -140,7 +140,7 @@ def divider(c: Builder) -> None:
 
 @component
 def mixed(c: Builder) -> None:
-    """A SKY130 transistor beside a level-1 one."""
+    """Builds a SKY130 MOSFET alongside a level-1 MOSFET."""
     ground = c.port("0", Role.GROUND)
     foundry = c.place(sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um), name="M1")
     native = c.place(devices.mosfet(), name="M2")
@@ -210,7 +210,7 @@ def test_an_inverter_switches_in_ngspice() -> None:
 
 @component
 def amplifier(c: Builder) -> None:
-    """A common-source amplifier, its load a resistor."""
+    """Builds a resistor-loaded SKY130 common-source amplifier."""
     ground = c.port("0", Role.GROUND)
     supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
     bias = c.place(devices.voltage_source(0.7 * V), name="VIN")
@@ -334,7 +334,7 @@ def _run(*arguments: str) -> int:
 
 @component
 def holder(c: Builder) -> None:
-    """The amplifier within a component instance."""
+    """Builds a wrapper component containing the common-source amplifier."""
     ground = c.port("0", Role.GROUND)
     placed = c.place(amplifier(), name="X1")
     c.connect(placed["0"], ground)
@@ -363,7 +363,7 @@ def test_a_nested_source_is_swept_and_excited_with_overrides() -> None:
 
 @component
 def quiet(c: Builder) -> None:
-    """A divider beside a transistor that its noise does not reach."""
+    """Builds a divider paired with a decoupled transistor whose noise is isolated."""
     ground = c.port("0", Role.GROUND)
     supply = c.place(devices.voltage_source(1 * V), name="V1")
     upper = c.place(devices.resistor(1 * kohm), name="R1")

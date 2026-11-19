@@ -511,7 +511,7 @@ def test_a_converter_that_oscillates_does_not_settle(tmp_path: Path) -> None:
 
 @component
 def parallel(c: Builder) -> None:
-    """A design of a resistor beside a capacitor, which gives the resistor 20 %."""
+    """Builds a 20 %-toleranced resistor in parallel with a capacitor."""
     a, b = c.port("a"), c.port("b")
     resistor = c.place(devices.resistor(1 * kohm, tolerance=0.2), name="R1")
     capacitor = c.place(devices.capacitor(1 * nF), name="C1")
@@ -521,7 +521,7 @@ def parallel(c: Builder) -> None:
 
 @component
 def loaded(c: Builder) -> None:
-    """`parallel` on a bench that loads it with an exact resistor."""
+    """Builds a bench loading `parallel` with an exact resistor."""
     ground = c.port("ground", Role.GROUND)
     placed = c.place(parallel(), name="X1")
     load = c.place(devices.resistor(1 * kohm), name="RLOAD")
@@ -590,9 +590,9 @@ def test_the_given_transistors_stray_within_their_datasheets() -> None:
 
 
 def _extremes(tolerance: ir.Tolerance, wider: float) -> tuple[float, float]:
-    """The least and greatest factors `tolerance` and its lot draw.
+    """Returns minimum and maximum factors drawn by `tolerance` and its lot.
 
-    The lot's spread is widened by `wider`, relative to it.
+    Lot spread scales up by `wider` relative to its nominal range.
     """
     assert tolerance.lot is not None
     lot = tolerance.lot.relative * (1 + wider)
@@ -605,7 +605,7 @@ def _extremes(tolerance: ir.Tolerance, wider: float) -> tuple[float, float]:
 def _scaled(
     transistor: devices.Device, parameter: str, factor: float
 ) -> devices.Device:
-    """`transistor` with `parameter` scaled by `factor`."""
+    """Returns a copy of `transistor` with `parameter` scaled by `factor`."""
     value = transistor.parameters[parameter]
     assert isinstance(value, float)
     return replace(
@@ -614,7 +614,7 @@ def _scaled(
 
 
 def _saturation_voltage(transistor: devices.Device, sign: float) -> float:
-    """The base-emitter voltage of `transistor` in saturation, at 10 mA and 1 mA."""
+    """Computes base-emitter saturation voltage of `transistor` at 10 mA and 1 mA."""
 
     @component
     def fixture(c: Builder) -> None:
@@ -630,7 +630,7 @@ def _saturation_voltage(transistor: devices.Device, sign: float) -> float:
 
 
 def _gain_at_10_milliamperes(transistor: devices.Device, sign: float) -> float:
-    """The current gain of `transistor` at 10 mA of collector current and 1 V."""
+    """Computes current gain of `transistor` at 10 mA collector current and 1 V."""
 
     @component
     def fixture(c: Builder) -> None:
@@ -739,11 +739,11 @@ def test_the_ngspice_arm_gets_spice_in_place_of_scripts() -> None:
 
 
 def _spice_defaults(parameters: Mapping[str, object]) -> dict[str, object]:
-    """`parameters`, a jolty device's, with what SPICE states of the same device.
+    """Merges SPICE default fields into jolty device `parameters`.
 
-    SPICE gives a bipolar transistor a polarity and a substrate, vertical for an NPN
-    and lateral for a PNP, joined to node 0; a MOSFET's size is its element's, and its
-    level 1 the default the reader leaves out.
+    SPICE assigns bipolar transistors polarity and substrate geometry (vertical NPN or
+    lateral PNP tied to node 0); MOSFET geometry belongs to the element card, and the
+    reader omits default level 1.
     """
     if "forward_beta" in parameters:
         polarity = parameters.get("polarity", "npn")
@@ -1025,7 +1025,7 @@ def test_timing_server_drops_peak_memory_when_reused_for_second_fixture() -> Non
 
 
 def test_throughput_efficiency_math_and_edge_cases() -> None:
-    """Exact rational speedup ratios; default pytest.approx covers float rounding."""
+    """Verifies exact rational speedup ratios with default `pytest.approx` rounding."""
     # Baseline (N=1), throttled (8 copies), superlinear (>100%, unclamped), and hybrid.
     cases: list[
         tuple[int, float, float, float, list[float] | None, tuple[float | None, ...]]
@@ -1437,7 +1437,7 @@ def test_bench_cli_flags_and_python_single_shot_memory_probe() -> None:
 
 
 def test_interpolate_transient_removes_chord_sag_without_corner_overshoot() -> None:
-    """Huynh (1993) cubic Hermite eliminates sine-peak sag and avoids step overshoot."""
+    """Verifies Huynh (1993) cubic Hermite avoids sine-peak sag and step overshoot."""
     # 1. Synthetic 10 kHz sine sampled at 4 us straddling the midpoint peak at 125 us:
     # linear interpolation sags by A * omega^2 * h^2 / 8 = 3.94e-3 of the 2 V swing;
     # cubic Hermite cuts this error by >100x.
@@ -1511,7 +1511,7 @@ def test_interpolate_transient_removes_chord_sag_without_corner_overshoot() -> N
 
 
 def test_deviations_bjt_amp_transient_has_no_chord_sag() -> None:
-    """`deviations()` agrees on `bjt_amp` within 5e-5 vs 0.1 us fine reference."""
+    """Verifies `deviations()` on `bjt_amp` agrees within 5e-5 of 0.1 us reference."""
     loaded = timing.load_fixture(timing.planned()["bjt_amp"])
     plan_tran = loaded.plan.analyses["tran"]
     assert isinstance(plan_tran, Transient)

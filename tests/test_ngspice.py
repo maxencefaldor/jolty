@@ -1,18 +1,18 @@
 # Copyright 2026 Maxence Faldor
-"""Differential tests: jolty and ngspice simulate the same circuits and must agree.
+"""Differential tests verifying agreement between jolty and ngspice.
 
-Each circuit of the corpus is written once with the builder, simulated by jolty, and
-written as a SPICE netlist for ngspice, whose results come back as an ASCII raw file.
-Both engines run with `TIGHT` tolerances (`reltol=1e-6`, `vntol=1e-9`, `abstol=1e-14`).
-Operating points, DC sweeps, and AC responses agree to `1e-6` (matching `TIGHT` Newton
-`reltol=1e-6`); noise and `.tf` small-signal quantities agree to `1e-5` (covering
-operating-point linearization differences and CODATA 2014 vs 2019 SI `k_B` delta of
-`3.48e-7`); log-decade grids agree to `1e-9` (ngspice multiplies step-by-step); and
-transients agree to `1e-3` of swing (trapezoidal `O(h^2)` step error plus `closest()`
-windowed linear interpolation onto ngspice's time points).
+Each corpus circuit is built once, simulated by jolty, and exported as a SPICE
+netlist for ngspice, returning results via ASCII raw files. Both engines run
+with `TIGHT` tolerances (`reltol=1e-6`, `vntol=1e-9`, `abstol=1e-14`).
 
-The corpus is flat: hierarchy is jolty's own, tested on its own, while these tests check
-the devices, the waveforms and the numerics against the reference simulator.
+Operating points, DC sweeps, and AC responses agree to `1e-6` (`TIGHT` Newton
+`reltol`). Noise and `.tf` quantities agree to `1e-5` (covering operating-point
+spread and the `3.48e-7` CODATA `k_B` offset). Log-decade grids agree to `1e-9`
+(ngspice multiplies step-by-step), and transients agree to `1e-3` of swing
+(`O(h^2)` trapezoidal error plus `closest()` window interpolation).
+
+The corpus is flat so these tests isolate devices, waveforms, and numerics
+against the reference simulator; hierarchy is tested separately.
 """
 
 import math
@@ -103,7 +103,17 @@ from jolty.waveforms import Exponential, Piecewise, Pulse, Sine, Waveform
 
 pytestmark = SKIP
 
-# The corpus.
+FREQUENCY_GRID_RTOL: Final = 1e-9
+"""Relative tolerance (`1e-9`) for log-decade frequency grid rounding vs ngspice."""
+
+NOISE_DENSITY_RTOL: Final = 1e-5
+"""Relative tolerance (`1e-5`, 10x `TIGHT` `reltol`) for noise density vs ngspice.
+
+Covers operating-point spread and the CODATA 2014 vs 2019 SI `k_B` offset
+(`3.48e-7`).
+"""
+
+# Differential test corpus.
 
 
 def _wire_rc(c: Builder, waveform: Waveform) -> None:
@@ -172,7 +182,7 @@ def low_pass(c: Builder) -> None:
 
 @component
 def exponential(c: Builder) -> None:
-    """An RC driven by SPICE's ``EXP``: a rise at 1 µs and a fall back from 5 µs."""
+    """Builds an RC filter driven by SPICE ``EXP`` (rising 1 µs, falling 5 µs)."""
     _wire_rc(
         c,
         Exponential(
@@ -209,7 +219,7 @@ def resonator(c: Builder) -> None:
 
 @component
 def triangle(c: Builder) -> None:
-    """A pulse with no width, a triangle wave, which ngspice reads its own way."""
+    """Builds a zero-width triangle-wave pulse matching ngspice pulse semantics."""
     _wire_rc(
         c,
         Pulse(
@@ -261,13 +271,13 @@ def zener_clamp(c: Builder) -> None:
 
 @component
 def junction_parts(c: Builder) -> None:
-    """Two diodes of every part of ngspice's but its inexact recombination, on `out`.
+    """Builds two diodes covering ngspice diode features except recombination.
 
-    A source drives `out` through 1 kΩ. The recombination is left out, as ngspice
-    computes its conductance inexactly, as the guide's departures state. One's sidewall
-    sits beside its junction, with knees, tunneling, the band gap of Varshni's law and
-    linear capacitances measured at 30 °C, which the exporter writes from 27 °C, where
-    ngspice moves them from; the other's sidewall sits behind a resistance of its own.
+    A source drives `out` through 1 kΩ, omitting recombination where ngspice
+    computes conductance inexactly. The first diode pairs a parallel sidewall
+    with knees, tunneling, Varshni bandgap, and 30 °C linear capacitances
+    exported from 27 °C; the second places a dedicated resistance before the
+    sidewall.
     """
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(0.7 * V), name="V1")
@@ -415,7 +425,7 @@ def driven_tank(c: Builder) -> None:
 
 @component
 def transformer(c: Builder) -> None:
-    """A pulse into three coupled windings, the third wound backward, each loaded."""
+    """Builds a pulsed three-winding loaded transformer with reversed third winding."""
     ground = c.port("ground", Role.GROUND)
     drive = Pulse(
         initial=0 * V,
@@ -460,18 +470,16 @@ def transformer(c: Builder) -> None:
 
 @component
 def transmission_lines(c: Builder) -> None:
-    """A pulse down two lines in a row, into a resistor and a capacitor.
+    """Builds a pulse driving two cascaded transmission lines into an RC load.
 
-    The first line's source is of half its impedance, and the second line of another
-    impedance and delay: every edge rings back and forth along both, and every corner
-    arrives a delay after it leaves.
+    The source impedance is half the first line's impedance, and the second
+    line differs in impedance and delay so every edge reflects back and forth.
 
-    ngspice reads each delayed wave through three points whatever corner lies between
-    them (``traload.c``, lines 89 to 141): at steps of 20 ps, ``near`` peaks 3 mV high
-    at 11.5 ns, where the source's fall meets a reflection's corner, 0.4 mV at 2 ps and
-    0.08 mV at 0.5 ps, converging on jolty's 0.809548 V, which jolty reaches within
-    1e-5 V at 20 ps. The transient compares at 2 ps, where ngspice's error is within
-    the comparison's tolerance.
+    ngspice interpolates delayed waves across three points regardless of
+    corners (``traload.c``, lines 89 to 141). At 20 ps steps, ``near`` peaks
+    3 mV high at 11.5 ns (0.4 mV at 2 ps, 0.08 mV at 0.5 ps), converging on
+    jolty's 0.809548 V (reached within 1e-5 V at 20 ps). The transient runs at
+    2 ps so ngspice's interpolation error stays within comparison tolerance.
     """
     ground = c.port("ground", Role.GROUND)
     drive = Pulse(
@@ -582,13 +590,12 @@ def _bipolar(
     substrate: Literal["vertical", "lateral"] | None = None,
     excess_phase: float | None = None,
 ) -> devices.Device:
-    """A small-signal transistor with every effect of the model switched on.
+    """Returns a small-signal BJT exercising every Gummel-Poon model effect.
 
-    With a `substrate`, so are its substrate junction's, and with an `excess_phase`,
-    in degrees, its delay. Its base resistance falls with
-    the base current, with the base charge, or stays fixed. ngspice leaves a falling
-    base resistance out of its small-signal model, where jolty keeps it, so a frequency
-    response compares transistors with a fixed one.
+    Enables substrate-junction terms when `substrate` is true and excess phase
+    delay when `excess_phase` is given. Base resistance varies with base
+    current or charge, or stays fixed for AC comparisons because ngspice omits
+    current-dependent base-resistance derivatives from small-signal models.
     """
     junction = substrate is not None
     return devices.bipolar_transistor(
@@ -671,10 +678,10 @@ def bjt_amplifier(c: Builder) -> None:
 
 @component
 def delayed_stage(c: Builder) -> None:
-    """A common-emitter stage whose transistor delays its transport current.
+    """Builds a common-emitter stage with excess-phase transport-current delay.
 
-    An excess phase of 60° on a transit time of 0.4 ns delays it by 0.42 ns, through
-    the Bessel filter ngspice integrates in a transient, and edges of 1 ns show it.
+    An excess phase of 60° on a 0.4 ns transit time adds a 0.42 ns delay
+    through the Bessel filter integrated during 1 ns transient edges.
     """
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(5 * V), name="V2")
@@ -698,11 +705,11 @@ def delayed_stage(c: Builder) -> None:
 
 @component
 def feedback_pair(c: Builder) -> None:
-    """A common-emitter stage and a follower in a loop broken at the probe ``VP``.
+    """Builds a common-emitter stage and follower loop broken at probe ``VP``.
 
-    The follower feeds back through a resistor with a capacitor across it. The source
-    ``IP`` drives nothing until an AC analysis excites it, injecting a current from the
-    ground where the loop enters the feedback network.
+    The follower feeds back through a parallel resistor and capacitor. Source
+    ``IP`` stays idle until AC analysis excites it to inject current from
+    ground at the feedback entry node.
     """
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(12 * V), name="V1")
@@ -727,9 +734,9 @@ def feedback_pair(c: Builder) -> None:
 
 @component
 def integrated_stage(c: Builder) -> None:
-    """A vertical NPN loaded by a lateral PNP, on a substrate fed through a resistor.
+    """Builds a vertical NPN loaded by a lateral PNP on a resistor-fed substrate.
 
-    The source feeding the substrate drives the transistors' junctions to it forward.
+    The substrate supply forward-biases the substrate junctions of both BJTs.
     """
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(5 * V), name="V2")
@@ -796,12 +803,11 @@ def current_controlled(c: Builder) -> None:
 
 @component
 def negative_load(c: Builder) -> None:
-    """A transistor saturated into a negative resistance at its emitter.
+    """Builds a saturated BJT presenting a negative resistance at the emitter.
 
-    A transconductance from its emitter to itself pushes 97 µA per volt into it, and
-    another feeds back its collector's voltage; a diode keeps the emitter above the
-    ground. Newton iteration and gmin stepping from every node fail, in ngspice as in
-    jolty, and gmin stepping across the junctions finds it.
+    A 97 µA/V emitter transconductance and collector feedback drive the emitter
+    while a diode clamps it above ground. Direct Newton and node gmin stepping
+    fail in both engines, whereas junction gmin stepping converges.
     """
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(4.8 * V), name="V1")
@@ -865,7 +871,7 @@ def _level_three(
     saturation_field_factor: float = 0.4,
     lateral_diffusion: Quantity = 0.2 * um,
 ) -> devices.Device:
-    """A level 3 n-channel with every effect of its law, and velocity saturation."""
+    """Returns a level-3 n-channel MOSFET with full mobility and velocity saturation."""
     return devices.mosfet(
         level=3,
         width=50 * um,
@@ -961,10 +967,11 @@ def level_three_curves(
 
 @component
 def drifting(c: Builder, *, apart: bool = False) -> None:
-    """Every temperature coefficient jolty models, on every kind of device.
+    """Builds a circuit exercising temperature coefficients on every device type.
 
-    A zener reference biases a bipolar stage and a MOSFET, beside a JFET current source.
-    `apart`, the drifting devices run at their own temperatures, held or offset.
+    A Zener reference biases a BJT stage and MOSFET alongside a JFET current
+    source. When `apart` is true, temperature-drifting devices run at
+    per-instance temperatures or offsets.
     """
 
     def held(device: devices.Device, temperature: Quantity) -> devices.Device:
@@ -1096,7 +1103,7 @@ def drifting(c: Builder, *, apart: bool = False) -> None:
 
 
 def drifting_apart() -> Component:
-    """`drifting`, each of its drifting devices at a temperature of its own."""
+    """Builds `drifting` with per-instance temperatures on drifting devices."""
     return drifting(apart=True)
 
 
@@ -1194,10 +1201,10 @@ def cmos_inverter(c: Builder) -> None:
 
 @component
 def varactor(c: Builder) -> None:
-    """A sine through 1 kΩ onto a behavioral capacitor of a varactor's charge.
+    """Builds a sine wave driving a behavioral varactor capacitor through 1 kΩ.
 
-    Its charge, ``1 pC/V · v + 0.5 pC · tanh(2 v / V)``, holds a capacitance of 2 pF at
-    0 V, falling to 1 pF far from it; 100 kΩ across it gives its node a DC path.
+    The charge ``1 pC/V · v + 0.5 pC · tanh(2 v / V)`` gives 2 pF at 0 V,
+    falling to 1 pF at high bias; a 100 kΩ shunt provides a DC path.
     """
     ground = c.port("ground", Role.GROUND)
     signal = Sine(
@@ -1272,7 +1279,7 @@ def behavioral(c: Builder) -> None:
 
 @component
 def curved(c: Builder) -> None:
-    """Resistors and a capacitor whose values change with their voltages, either way."""
+    """Builds voltage-dependent resistors and a voltage-dependent capacitor."""
     ground = c.port("ground", Role.GROUND)
     sine = Sine(offset=0 * V, amplitude=2 * V, frequency=1 * kHz)
     source = c.place(devices.voltage_source(sine), name="V1")
@@ -1301,7 +1308,7 @@ def curved(c: Builder) -> None:
 
 @component
 def lit(c: Builder) -> None:
-    """A photocell under a divider, its light a pulse, its response lagging it."""
+    """Builds a voltage divider over a photocell driven by a pulsed light source."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(5 * V), name="V1")
     pulse = Pulse(
@@ -1342,7 +1349,7 @@ to `u(0)`, `limit` and the tables."""
 
 @component
 def expressions(c: Builder) -> None:
-    """Each of `EXPRESSIONS` of the voltage `x` and of a constant 2 V, through 1 kΩ."""
+    """Builds behavioral sources evaluating `EXPRESSIONS` on `x` and 2 V via 1 kΩ."""
     ground = c.port("ground", Role.GROUND)
     swept = c.place(devices.voltage_source(0.3 * V), name="V1")
     two = c.place(devices.voltage_source(2 * V), name="V2")
@@ -1363,10 +1370,10 @@ def expressions(c: Builder) -> None:
 
 @component
 def memristive(c: Builder) -> None:
-    """VTEAM's memristor under a sine, fed through a resistor.
+    """Builds a sine wave driving a VTEAM memristor through a series resistor.
 
-    Its state moves the voltage across it, and its thresholds, rates and exponents
-    differ in each direction.
+    The memristor state shifts the terminal voltage with asymmetric thresholds,
+    rates, and exponents.
     """
     ground = c.port("ground", Role.GROUND)
     sine = Sine(0 * V, 2 * V, 1 * kHz)
@@ -1394,7 +1401,7 @@ def memristive(c: Builder) -> None:
 
 @component
 def ion_drift(c: Builder) -> None:
-    """HP's memristor under a sine, fed through a resistor, driven into its window."""
+    """Builds a sine wave driving an HP memristor into its window through a resistor."""
     ground = c.port("ground", Role.GROUND)
     sine = Sine(0 * V, 1.5 * V, 1 * Hz)
     source = c.place(devices.voltage_source(sine), name="V1")
@@ -1475,7 +1482,7 @@ def switched(c: Builder) -> None:
 
 @component
 def current_switched(c: Builder) -> None:
-    """A switch the current through its control port moves, its parameters defaulted."""
+    """Builds a current-controlled switch with default parameters."""
     _wire_switched(
         c,
         devices.current_controlled_switch(
@@ -1492,10 +1499,10 @@ def _power(
     flicker_coefficient: float | None = None,
     flicker_exponent: float | None = None,
 ) -> devices.Device:
-    """An n-channel VDMOS after LTspice's IRF540, with every part of its model in play.
+    """Returns an n-channel VDMOS based on LTspice's IRF540 with full model terms.
 
-    It quasi-saturates only if asked, as ngspice's small-signal model leaves out the
-    slope of a quasi-saturating drain resistance.
+    Quasi-saturation is enabled only when requested because ngspice omits the
+    quasi-saturating drain-resistance slope from small-signal models.
     """
     return devices.vdmos(
         threshold_voltage=4 * V,
@@ -1581,12 +1588,11 @@ def power_curves(
     sign: Literal[1, -1] = 1,
     pins: tuple[str, str, str] = ("drain", "gate", "source"),
 ) -> None:
-    """A power MOSFET's output and transfer curves: its gate at `V1`, its drain at `V2`.
+    """Builds a power MOSFET curve tracer with gate `V1` and drain `V2`.
 
-    Its drain, gate and source are its `pins`, and `sign` its channel's, 1 for an
-    n-channel and -1 for a p-channel. The drain sweeps from where its body diode
-    conducts to where it breaks down, and the gate from below the threshold to the full
-    channel.
+    Connects drain, gate, and source per `pins` with channel polarity `sign`
+    (`1` for n-channel, `-1` for p-channel). Sweeps drain from body-diode
+    conduction to breakdown and gate from below threshold to full enhancement.
     """
     drain, gate, source = pins
     ground = c.port("ground", Role.GROUND)
@@ -1599,18 +1605,18 @@ def power_curves(
 
 
 def n_power_curves() -> Component:
-    """The quasi-saturating n-channel's curves."""
+    """Builds the quasi-saturating n-channel VDMOS curve tracer."""
     return power_curves(_QUASI_SATURATING)
 
 
 def p_power_curves() -> Component:
-    """The p-channel's curves."""
+    """Builds the p-channel VDMOS curve tracer."""
     return power_curves(_P_POWER, -1)
 
 
 @component
 def power_stage(c: Builder) -> None:
-    """A VDMOS amplifier: about an ampere through 10 Ω, its gate fed through 1 kΩ."""
+    """Builds a VDMOS amplifier drawing ~1 A through 10 Ω with a 1 kΩ gate resistor."""
     _wire_common_source_stage(
         c,
         _CommonSourceSpec(
@@ -1637,15 +1643,14 @@ def synchronous_buck(
     low: Switch,
     pins: tuple[str, str, str] = ("drain", "gate", "source"),
 ) -> None:
-    """A synchronous buck from 12 V: `high`, a p-channel VDMOS, and `low`, an n-channel.
+    """Builds a 12 V synchronous buck with p-channel `high` and n-channel `low` VDMOS.
 
-    Each switch's drain, gate and source are its `pins`, and its drain the switching
-    node, through 10 µH into 10 µF and 5 Ω. Sines at 250 kHz drive the gates, the high
-    side's source-gate voltage `3 + 7 sin` and the low side's gate-source voltage
-    `3 - 7 sin`, so each conducts in its half of the period and neither while the sine
-    crosses zero, when the low side's body diode carries the inductor's current.
-    Smooth drives keep ngspice converging at its tight tolerances, which it does not
-    where a pulse's corners switch a gate behind a resistance.
+    Connects each switch per `pins` with the drains forming the switching node
+    into 10 µH, 10 µF, and 5 Ω. Complementary 250 kHz sine gate drives
+    (`3 + 7 sin` and `3 - 7 sin`) create dead time around zero crossings where
+    the low-side body diode carries inductor current. Smooth drives maintain
+    tight-tolerance ngspice convergence where sharp pulses behind gate
+    resistance fail.
     """
     drain, gate, source = pins
     ground = c.port("ground", Role.GROUND)
@@ -1676,16 +1681,15 @@ def synchronous_buck(
 
 
 def vdmos_buck() -> Component:
-    """The buck of the corpus's two VDMOS."""
+    """Builds the synchronous buck using the corpus n-channel and p-channel VDMOS."""
     return synchronous_buck(_P_POWER, _QUASI_SATURATING)
 
 
 @component
 def flickering(c: Builder) -> None:
-    """Five devices with flicker noise, their currents meeting at the output.
+    """Builds five flicker-noise devices summing their currents at the output.
 
-    They are a diode, a bipolar transistor, a JFET, a MOSFET of two copies and a
-    resistor.
+    Combines a diode, a BJT, a JFET, a two-copy MOSFET, and a resistor.
     """
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(15 * V), name="V2")
@@ -1842,10 +1846,10 @@ def test_operating_points_agree(top: Callable[[], Component]) -> None:
 
 @component
 def bare_transistor(c: Builder, polarity: Literal["npn", "pnp"]) -> None:
-    """A transistor without a substrate, its base fed through 100 kΩ from the ground.
+    """Builds a substrate-free BJT with its base fed through 100 kΩ from ground.
 
-    Its emitter is held 1 V away, and its collector current is its beta times the
-    base's, so a picoampere into its base moves its collector a hundred times as much.
+    The emitter is held 1 V away, amplifying picoampere base currents by beta
+    into the collector.
     """
     ground = c.port("ground", Role.GROUND)
     level = 1 * V if polarity == "pnp" else -1 * V
@@ -1866,10 +1870,10 @@ def bare_transistor(c: Builder, polarity: Literal["npn", "pnp"]) -> None:
 def test_a_transistor_without_a_substrate_agrees_to_rounding(
     polarity: Literal["npn", "pnp"],
 ) -> None:
-    """A transistor without a substrate agrees with ngspice's to rounding.
+    """Verifies rounding-level agreement with ngspice for a substrate-free BJT.
 
-    ngspice grounds a missing substrate, whose junction conducts gmin; written on the
-    junction's own side, it carries nothing, as jolty's transistor has no junction.
+    ngspice grounds an omitted substrate so the junction carries gmin; tying
+    the substrate to the junction side suppresses that current to match jolty.
     """
     simulation = Simulation(bare_transistor(polarity))
     point = simulation.run(OperatingPoint(), TIGHT)
@@ -2021,7 +2025,7 @@ def test_ac_responses_agree_across_temperatures(
 
 
 def test_loop_gains_agree() -> None:
-    """Jolty's loop gain against Middlebrook's, from ngspice's two injections."""
+    """Verifies jolty loop gain against Middlebrook double-injection in ngspice."""
     simulation = Simulation(feedback_pair())
     loop = simulation.run(Stability("VP", decade(10 * Hz, 1 * GHz, 10)), TIGHT)
     circuit = simulation.circuit
@@ -2065,8 +2069,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
     response = simulation.run(Ac("V1", decade(10 * Hz, 10 * MHz, 20)), TIGHT)
     lines = netlist(simulation.circuit, excited="V1")
     raw = ngspice.run(lines, "ac dec 20 10 10meg")
-    # Log-decade frequency stepping rounding vs ngspice cumulative ratio (rtol=1e-9).
-    assert_ac_agrees(simulation, response, raw, frequency_tolerance=1e-9)
+    assert_ac_agrees(simulation, response, raw, frequency_tolerance=FREQUENCY_GRID_RTOL)
 
 
 @pytest.mark.parametrize(
@@ -2085,7 +2088,7 @@ def test_ac_responses_agree(top: Callable[[], Component]) -> None:
     ],
 )
 def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
-    """The noise at the output, and referred to the input, as ngspice finds them."""
+    """Verifies output and input-referred noise spectra agree with ngspice."""
     simulation = Simulation(top())
     spectrum = simulation.run(
         Noise("out", decade(1 * Hz, 100 * MHz, 5), source=source), TIGHT
@@ -2096,18 +2099,17 @@ def test_noise_agrees(top: Callable[[], Component], source: str) -> None:
 
 
 NGSPICE_INFINITE_RESISTANCE: Final = 1e20
-"""What ngspice's `.tf` writes for a resistance through which no current flows."""
+"""Sentinel resistance (`1e20`) reported by ngspice `.tf` for open circuits."""
 
 
 @pytest.mark.parametrize(
     "top", [divider, jfet_stage, bjt_amplifier, integrated_stage, nmos_stage]
 )
 def test_transfer_functions_agree(top: Callable[[], Component]) -> None:
-    """The gain at DC and both resistances, as ngspice's `.tf` finds them.
+    """Verifies DC transfer gain and port resistances agree with ngspice `.tf`.
 
-    Both linearize the circuit at operating points that agree within a millionth, so
-    the gain and the resistances agree within the noise comparison's 1e-5, and a
-    resistance ngspice writes as its 1e20 is infinite in jolty.
+    Both engines linearize at operating points matching within `1e-6`, so gains
+    and resistances agree within `1e-5`, and `1e20` maps to infinity in jolty.
     """
     simulation = Simulation(top())
     found = simulation.run(TransferFunction("V1", "out"), TIGHT)
@@ -2136,7 +2138,7 @@ def test_transfer_functions_agree(top: Callable[[], Component]) -> None:
 
 
 def _ordered(roots: results.Complex) -> results.Complex:
-    """`roots` by increasing magnitude, a conjugate pair's upper member first."""
+    """Returns `roots` sorted by ascending magnitude with upper conjugates first."""
     return roots[np.lexsort((-roots.imag, np.round(np.abs(roots), 6)))]
 
 
@@ -2144,7 +2146,7 @@ def _ordered(roots: results.Complex) -> results.Complex:
     "top", [low_pass, resonator, amplifier, jfet_stage, bjt_amplifier, nmos_stage]
 )
 def test_poles_and_zeros_agree(top: Callable[[], Component]) -> None:
-    """The poles, and the zeros from the input to the output, as ngspice finds them."""
+    """Verifies poles and input-to-output zeros agree with ngspice."""
     simulation = Simulation(top())
     found = simulation.run(PoleZero(source="V1", output="out"), TIGHT)
     lines = netlist(simulation.circuit, excited="V1")
@@ -2226,11 +2228,11 @@ def test_transients_from_initial_conditions_agree(
     *,
     operating_point: bool,
 ) -> None:
-    """Each circuit's capacitor starts at 0.5 V, as ngspice's ``.ic`` sets it.
+    """Verifies transients from 0.5 V capacitor initial conditions match ngspice.
 
-    It is held there while the operating point is solved, the resonator's inductor
-    carrying the current its resistor then passes, or, as ``uic``, set there alone,
-    every other unknown at zero.
+    The capacitor voltage is held at 0.5 V during the initial operating-point
+    solve (passing resistor current through the resonator inductor), or applied
+    alone under ``uic`` with all other unknowns at zero.
     """
     simulation = Simulation(top())
     initial = {"out": 0.5 * V}
@@ -2254,9 +2256,9 @@ def test_transients_from_initial_conditions_agree(
 
 @component
 def tanh_latch(c: Builder) -> None:
-    """A node fed ``2 mA·tanh(v)`` and loaded by 1 kΩ: three DC solutions.
+    """Builds a node driven by ``2 mA·tanh(v)`` into 1 kΩ with three DC solutions.
 
-    They are the roots of ``v = 2 tanh(v)``, 0 and ±1.915 V.
+    The operating points are the roots of ``v = 2 tanh(v)`` at 0 V and ±1.915 V.
     """
     ground = c.port("ground", Role.GROUND)
     feedback = c.place(
@@ -2269,7 +2271,7 @@ def tanh_latch(c: Builder) -> None:
 
 @pytest.mark.parametrize("nodeset", [None, 1.5, -1.5])
 def test_nodesets_lead_both_to_one_operating_point(nodeset: float | None) -> None:
-    """Both find the latch's solution at 0 V, or with a nodeset that of its sign."""
+    """Verifies nodesets steer both engines to the matching latch operating point."""
     simulation = Simulation(tanh_latch())
     nodesets = {} if nodeset is None else {"x": nodeset}
     options = replace(TIGHT, nodesets={net: v * V for net, v in nodesets.items()})
@@ -2292,11 +2294,11 @@ def test_nodesets_lead_both_to_one_operating_point(nodeset: float | None) -> Non
 
 @pytest.mark.parametrize("binary", [False, True], ids=["ascii", "binary"])
 def test_raw_files_read_back_as_ngspices_own(tmp_path: Path, *, binary: bool) -> None:
-    """Results written as SPICE's raw file read back as computed, and as ngspice's.
+    """Verifies SPICE raw files round-trip accurately and match ngspice output.
 
-    A divider's operating point and an RC's response and step read back exactly; the
-    response's file has the vectors ngspice's raw file of the same run has, written in
-    the same format, and agrees with them within 1e-6, the Newton tolerance.
+    Divider operating-point and RC response/step results read back identically.
+    The exported AC raw file contains the same vectors as ngspice and agrees
+    within the `1e-6` Newton tolerance.
     """
     rc = Simulation(low_pass())
     analyses = {
@@ -2356,7 +2358,7 @@ def test_raw_files_read_back_as_ngspices_own(tmp_path: Path, *, binary: bool) ->
 
 
 def ngspice_name(unknown: results.Unknown) -> str:
-    """The name ngspice's raw reader gives the vector of `unknown`."""
+    """Returns the vector name assigned to `unknown` by the ngspice raw reader."""
     if unknown.nature == "current":
         return f"i({unknown.name.removesuffix(':current').lower()})"
     return f"v({unknown.name.lower()})"
@@ -2399,7 +2401,7 @@ _PINS: Final = ("d", "g", "s")
 
 @pytest.fixture(scope="module")
 def vendor_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """The library of `VENDOR_CARDS`, as a file both engines read."""
+    """Writes `VENDOR_CARDS` to a temporary SPICE library file for both engines."""
     path = tmp_path_factory.mktemp("vendor") / "vdmos.lib"
     path.write_text(VENDOR_CARDS, encoding="utf-8")
     return path
@@ -2421,14 +2423,14 @@ def test_vendors_cards_sweep_as_in_ngspice(
     source: str,
     levels: list[Quantity],
 ) -> None:
-    """A vendor's VDMOS card, read by the SPICE reader, against ngspice reading it."""
+    """Verifies vendor VDMOS DC curves parsed by the SPICE reader match ngspice."""
     read = spice.load(vendor_cards).component(part)
     simulation = Simulation(power_curves(read, sign, _PINS))
     _run_and_compare_dc_sweep(simulation, source, levels, libraries=(vendor_cards,))
 
 
 def test_vendors_cards_switch_as_in_ngspice(vendor_cards: Path) -> None:
-    """The synchronous buck of the two parts, read by the SPICE reader, as ngspice."""
+    """Verifies a vendor-VDMOS synchronous buck transient matches ngspice."""
     library = spice.load(vendor_cards)
     top = synchronous_buck(
         library.component("ixth48p20p"), library.component("irfz48z"), _PINS
@@ -2463,14 +2465,14 @@ def _bsim3(  # noqa: PLR0913 - the transistor's channel, length and choices of m
     charge_partition: float | None = None,
     more: Mapping[str, Quantity | float] | None = None,
 ) -> devices.Device:
-    """A BSIM3 transistor 10 µm wide and `length` long of a 0.35 µm process.
+    """Returns a 0.35 µm BSIM3 MOSFET (`10 µm` wide by `length` long).
 
-    Its threshold, body effect, short-channel effects, poly depletion, parasitic
-    resistance, non-saturation, output resistance, substrate current and bias-dependent
-    overlaps are set off their defaults, and its diffusions and sheet resistance given;
-    a p-channel's threshold is negative and its mobility lower. Its models are
-    `mobility_model`, `capacitance_model`, `noise_model` and `charge_partition`, and its
-    other parameters `more`.
+    Configures threshold, body effect, short-channel terms, poly depletion,
+    parasitic resistance, non-saturation, output resistance, substrate current,
+    bias-dependent overlaps, diffusions, and sheet resistance (with negative
+    threshold and lower mobility for p-channel). Selects `mobility_model`,
+    `capacitance_model`, `noise_model`, `charge_partition`, and extra `more`
+    parameters.
     """
     sign = 1 if channel == "n" else -1
     card: dict[str, Quantity | float] = {
@@ -2533,10 +2535,10 @@ BSIM3_TRANSISTORS: Final = {
 
 
 def bsim_kelvins(temperature: Quantity) -> float:
-    """The temperature to run ngspice at so its BSIM runs at jolty's `temperature`.
+    """Returns the ngspice temperature matching jolty BSIM thermal voltage.
 
-    BSIM3 and BSIM4 compute with constants of their own, Boltzmann's over the electron's
-    charge among them, so ngspice's match jolty's at the same kelvins.
+    BSIM3 and BSIM4 compute physical constants internally (`k_B / q`), so both
+    engines align at matching kelvin temperatures.
     """
     return ngspice.same_kelvins(temperature.value)
 
@@ -2550,9 +2552,9 @@ def bsim_curves(
     pins: tuple[str, str, str, str] = ("gate", "drain", "bulk", "source"),
     instance_name: str = "M1",
 ) -> None:
-    """A BSIM3, BSIM4, or library transistor's curves: gate `V1`, drain `V2`, bulk `V3`.
+    """Builds a BSIM3, BSIM4, or library MOSFET curve tracer (`V1`, `V2`, `V3`).
 
-    Its bulk, at `V3`, lies 0.5 V behind its source in reverse.
+    The bulk source `V3` reverse-biases the body by 0.5 V relative to the source.
     """
     if sign is None:
         assert isinstance(transistor, devices.Device)
@@ -2570,10 +2572,10 @@ def bsim_curves(
 
 @component
 def bsim_stage(c: Builder, transistor: devices.Device) -> None:
-    """A common-source stage of a BSIM3 or BSIM4 n-channel, which steps up at 1 µs.
+    """Builds a BSIM3 or BSIM4 common-source stage stepping up at 1 µs.
 
-    Its gate is fed through 100 kΩ from `V1` at 1.2 V, and its drain loaded by 2 kΩ
-    from 3.3 V and by 0.5 pF.
+    The gate is driven through 100 kΩ from `V1` at 1.2 V, and the drain is
+    loaded by 2 kΩ to 3.3 V plus 0.5 pF.
     """
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(1 * us, 1.2 * V), (1 * us + 5 * ns, 1.4 * V)])
@@ -2599,10 +2601,7 @@ def bsim_stage(c: Builder, transistor: devices.Device) -> None:
 
 @component
 def bsim3_inverter(c: Builder, lower: devices.Device, upper: devices.Device) -> None:
-    """A CMOS inverter of BSIM3 transistors at 3.3 V, loaded by 20 fF.
-
-    A pulse drives its gates through 10 kΩ.
-    """
+    """Builds a 3.3 V BSIM3 CMOS inverter driving 20 fF through 10 kΩ gate input."""
     ground = c.port("ground", Role.GROUND)
     supply = c.place(devices.voltage_source(3.3 * V), name="V2")
     pulse = Pulse(
@@ -2674,12 +2673,13 @@ BSIM4_TRANSISTORS: Final = {
         card={"vth0": -0.5 * V, "ute": -1.3, "kt1": -0.2 * V, "tvoff": 1e-3 / K},
     ),
 }
-"""BSIM4 transistors written for ngspice: a short n-channel with its drain's sheet
-resistance, its body's network, its substrate current and gate-induced leakage, its
-velocity overshoot, its source end's limit and its junctions' tunneling, an n-channel
-whose bias-dependent drain and source resistances lie outside its channel, `rdsmod` 1,
-and a long p-channel of two fingers whose temperature scales its mobility and
-threshold."""
+"""BSIM4 test devices matching ngspice configurations.
+
+Includes a short n-channel with sheet drain resistance, body network, GIDL,
+velocity overshoot, source-end limit, and junction tunneling; an `rdsmod=1`
+external-resistance n-channel; and a two-finger long p-channel with temperature
+scaling.
+"""
 
 _BSIM_CURVES: Final[dict[str, tuple[devices.Device, float, int]]] = {
     **{
@@ -2701,10 +2701,10 @@ _BSIM_CURVES: Final[dict[str, tuple[devices.Device, float, int]]] = {
 @pytest.mark.parametrize("name", _BSIM_CURVES)
 @pytest.mark.parametrize("source", ["V1", "V2"])
 def test_bsim_curves_agree(name: str, source: str, temperature: Quantity) -> None:
-    """BSIM3 and BSIM4 output and transfer curves, in both modes, as ngspice's.
+    """Verifies BSIM3 and BSIM4 output and transfer DC sweeps match ngspice.
 
-    The drain sweeps from 1 V behind the source, the body junction forward and the
-    channel reversed, to 3.3 V (BSIM3) or 1.8 V (BSIM4); the gate from below threshold.
+    Sweeps drain from -1 V (forward body junction) to 3.3 V (BSIM3) or 1.8 V
+    (BSIM4), and sweeps gate from below threshold.
     """
     transistor, upper, points = _BSIM_CURVES[name]
     sign = 1 if name.endswith("-n") else -1
@@ -2718,15 +2718,13 @@ def test_bsim_curves_agree(name: str, source: str, temperature: Quantity) -> Non
 
 @pytest.mark.parametrize(("name", "decades"), [("short-n", 5), ("external-n", 8)])
 def test_bsim4_noise_agrees(name: str, decades: int) -> None:
-    """A BSIM4 stage's noise at its output, as ngspice's, from 1 Hz up `decades`.
+    """Verifies BSIM4 output noise agrees with ngspice from 1 Hz across `decades`.
 
-    The short n-channel's thermal noise is the charge-based model's, `tnoimod` 0, the
-    other's the holistic model's, `tnoimod` 1, which moves a share of it to the
-    resistance on its source side, there bias-dependent, `rdsmod` 1; both make BSIM4's
-    flicker noise, `fnoimod` 1. The short one's body network carries its resistances'
-    noise through the body's capacitances, which ngspice's are not the derivatives of
-    its charges (the guide's departures): above 100 kHz, where they carry it, its noise
-    departs from ngspice's, and is compared below.
+    The short n-channel uses charge-based thermal noise (`tnoimod=0`), while
+    the external-resistance device uses holistic thermal noise (`tnoimod=1`,
+    `rdsmod=1`); both enable BSIM4 flicker noise (`fnoimod=1`). Above 100 kHz,
+    body-network noise couples through body capacitances where ngspice departs
+    from charge derivatives, so the short device is compared below 100 kHz.
     """
     simulation = Simulation(bsim_stage(BSIM4_TRANSISTORS[name]))
     stop = 10.0**decades
@@ -2766,11 +2764,10 @@ intrinsic-input resistance, and 3, the two with the overlaps' charges between th
 
 @pytest.mark.parametrize("name", _GATED)
 def test_bsim4_gate_networks_agree(name: str) -> None:
-    """A BSIM4 stage's operating point and AC response to 10 GHz, as ngspice's.
+    """Verifies BSIM4 gate-network (`rgatemod` 1 to 3) DC and AC parity to 10 GHz.
 
-    Its transistor's gate lies behind each gate network, its body at its source, so
-    ngspice's capacitances with respect to the body, which are not its charges'
-    derivatives (the guide's departures), carry no current.
+    The transistor body is tied to the source so ngspice's non-derivative body
+    capacitances carry zero current.
     """
     _assert_op_and_ac_agree(bsim_stage(_GATED[name]), bsim_kelvins(celsius(27)))
 
@@ -2797,30 +2794,26 @@ _STAGES: Final = {
     )
     for capacitance_model, charge_partition in _PARTITIONED
 }
-"""The stage's transistor in each charge model and partition.
+"""Stage transistors spanning each BSIM3 charge model and charge partition.
 
-`capacitance_model` 0's has no poly depletion: ngspice's capacitances of
-`capacitance_model` 0 multiply by the depletion's slope of the gate voltage twice,
-which leaves its AC response 2.5e-4 of the signal from the derivative of its own
-charge, which jolty's is."""
+`capacitance_model=0` disables poly depletion because ngspice multiplies by
+the gate-depletion slope twice, shifting AC response by `2.5e-4` from the true
+charge derivative computed by jolty.
+"""
 
 
 @pytest.mark.parametrize("name", _STAGES)
 def test_bsim3_ac_responses_agree(name: str) -> None:
-    """A BSIM3 stage's operating point and AC response, as ngspice's.
+    """Verifies BSIM3 operating point and AC response across charge models.
 
-    Its transistor's charges follow each charge model and partition.
+    Exercises every charge model and partition in `_STAGES` against ngspice.
     """
     _assert_op_and_ac_agree(bsim_stage(_STAGES[name]), bsim_kelvins(celsius(27)))
 
 
 @pytest.mark.parametrize("noise_model", [1, 2, 3, 4, 5, 6])
 def test_bsim3_noise_agrees(noise_model: Literal[1, 2, 3, 4, 5, 6]) -> None:
-    """A BSIM3 stage's noise at its output and at its input, as ngspice's.
-
-    Its transistor's noise follows each noise model: SPICE2's or BSIM3's thermal and
-    flicker noise.
-    """
+    """Verifies BSIM3 output and input-referred noise across SPICE2 and BSIM3 models."""
     transistor = _bsim3(
         "n", 0.5 * um, noise_model=noise_model, more={"kf": 1e-26, "af": 1.2, "ef": 0.9}
     )
@@ -2851,7 +2844,7 @@ def test_bsim3_noise_agrees(noise_model: Literal[1, 2, 3, 4, 5, 6]) -> None:
 def test_bsim3_transients_agree(
     top: Callable[[], Component], stop: Quantity, step: Quantity
 ) -> None:
-    """A BSIM3 stage's step response and a CMOS inverter's switching, as ngspice's."""
+    """Verifies BSIM3 step response and CMOS inverter switching match ngspice."""
     simulation = Simulation(top())
     waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
     raw = ngspice.run(
@@ -2934,12 +2927,12 @@ M1 d g s b n1 W=1u L=0.35u Pd=1.5u Ps=1.5u ad=1.5p as=1.5p
 M1 d g s b p1 W=2.5u L=0.35u Pd=3u Ps=3u ad=2.5p as=2.5p
 .ends
 """
-"""A library of Berkeley's published cards, each transistor a subcircuit of its own."""
+"""Library of Berkeley published BSIM3 cards, one subcircuit per transistor."""
 
 
 @pytest.fixture(scope="module")
 def berkeley_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """The library of `BERKELEY_CARDS`, as a file both engines read."""
+    """Writes `BERKELEY_CARDS` to a temporary library file for both engines."""
     path = tmp_path_factory.mktemp("bsim3") / "berkeley.lib"
     path.write_text(BERKELEY_CARDS, encoding="utf-8")
     return path
@@ -2963,10 +2956,9 @@ def test_published_bsim3_cards_sweep_as_in_ngspice(
     source: str,
     temperature: Quantity,
 ) -> None:
-    """Berkeley's published BSIM3v3.3 cards, read by the reader, as ngspice reads them.
+    """Verifies Berkeley published BSIM3v3.3 cards match ngspice DC sweeps.
 
-    The drain sweeps from 1 V behind the source to 3.3 V, and the gate from below the
-    threshold.
+    Sweeps drain from -1 V to 3.3 V and gate from below threshold.
     """
     read = spice.load(berkeley_cards).component(part)
     top = bsim_curves(read, sign=sign, pins=_FOUR_PINS, instance_name="X1")
@@ -3009,7 +3001,7 @@ ngspice defines last."""
 
 @pytest.fixture(scope="module")
 def binned_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """The library of `BINNED_CARDS`, as a file both engines read."""
+    """Writes `BINNED_CARDS` to a temporary library file for both engines."""
     path = tmp_path_factory.mktemp("binned") / "binned.lib"
     path.write_text(BINNED_CARDS, encoding="utf-8")
     return path
@@ -3020,7 +3012,7 @@ def binned_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def test_binned_bsim3_cards_sweep_as_in_ngspice(
     binned_cards: Path, part: str, source: str
 ) -> None:
-    """A binned BSIM3 card's transistors, each of the bin it takes, as ngspice's."""
+    """Verifies binned BSIM3 transistors select the same bins and curves as ngspice."""
     read = spice.load(binned_cards).component(part)
     simulation = Simulation(
         bsim_curves(read, sign=1, pins=_FOUR_PINS, instance_name="X1")
@@ -3039,14 +3031,12 @@ def test_binned_bsim3_cards_sweep_as_in_ngspice(
 def _vbic(
     polarity: Literal["npn", "pnp"], *, excess_phase: bool = True
 ) -> devices.Device:
-    """A VBIC transistor of a small-signal process with every effect of the model on.
+    """Returns a small-signal VBIC BJT exercising all model effects.
 
-    Its quasi-saturation, its base, emitter, substrate and parasitic resistances, its
-    three junctions' depletion, the base-emitter one smoothed and the others extended
-    linearly past their forward bound, the weak avalanche, the parasitic substrate
-    transistor, the Early and knee effects, the transit times with their bias
-    dependence, the excess phase if `excess_phase`, and flicker noise are set off their
-    defaults.
+    Enables quasi-saturation, base/emitter/substrate/parasitic resistances,
+    three depletion junctions, weak avalanche, parasitic substrate transistor,
+    Early/knee effects, bias-dependent transit times, optional `excess_phase`,
+    and flicker noise.
     """
     return devices.vbic(
         polarity=polarity,
@@ -3107,21 +3097,20 @@ def _vbic(
 
 
 VBIC_TRANSISTORS: Final = {"npn": _vbic("npn"), "pnp": _vbic("pnp", excess_phase=False)}
-"""The VBIC transistor of each polarity, the pnp without excess phase.
+"""VBIC test transistors for NPN and PNP (PNP without excess phase).
 
-ngspice 47 reads its excess-phase network's nodes without the polarity (`vbicload.c`,
-lines 449 and 485 to 486, where every other branch voltage takes it, lines 419 to 443),
-and multiplies the delayed transport current by it (line 1139), so its pnp with a delay
-is not its npn's mirror: with `TD` alone set, its collector current at DC is 3.01 mA
-where the npn's mirror is 56.7 µA. jolty's pnp is its npn's mirror, bit for bit.
+ngspice 47 reads excess-phase nodes without the polarity sign (`vbicload.c`,
+lines 449 and 485 to 486) yet multiplies delayed transport current by polarity
+(line 1139). With `TD` set alone, ngspice PNP collector current reads 3.01 mA
+instead of 56.7 µA, whereas jolty's PNP mirrors NPN bit for bit.
 """
 
 
 @component
 def vbic_curves(c: Builder, transistor: devices.Device) -> None:
-    """A VBIC transistor's curves: its base at `V1`, its collector at `V2`.
+    """Builds a VBIC curve tracer with base `V1`, collector `V2`, and substrate `V3`.
 
-    Its substrate, at `V3`, lies 1 V behind its emitter in reverse.
+    Source `V3` reverse-biases the substrate by 1 V relative to the emitter.
     """
     ground = c.port("ground", Role.GROUND)
     sign = 1 if transistor.parameters.get("polarity", "npn") == "npn" else -1
@@ -3139,10 +3128,10 @@ def vbic_curves(c: Builder, transistor: devices.Device) -> None:
 
 @component
 def vbic_stage(c: Builder, transistor: devices.Device) -> None:
-    """A common-emitter stage of a VBIC npn, which steps up at 1 µs.
+    """Builds a VBIC NPN common-emitter stage stepping up at 1 µs.
 
-    Its base is fed through 10 kΩ from `V1` at 0.8 V, its collector loaded by 1 kΩ from
-    5 V and by 1 pF, and its substrate grounded.
+    The base is fed through 10 kΩ from `V1` at 0.8 V, the collector is loaded
+    by 1 kΩ to 5 V plus 1 pF, and the substrate is grounded.
     """
     ground = c.port("ground", Role.GROUND)
     step = Piecewise([(1 * us, 0.8 * V), (1 * us + 5 * ns, 0.85 * V)])
@@ -3167,10 +3156,10 @@ def vbic_stage(c: Builder, transistor: devices.Device) -> None:
 
 
 def vbic_kelvins(temperature: Quantity) -> float:
-    """The temperature to run ngspice at so its VBIC runs at jolty's `temperature`.
+    """Returns the ngspice temperature matching jolty VBIC thermal voltage.
 
-    VBIC computes its thermal voltage with constants of its own in both engines, so
-    they agree at the same kelvins.
+    VBIC evaluates thermal voltage using internal physical constants in both
+    engines, so they agree at matching kelvin temperatures.
     """
     return ngspice.same_kelvins(temperature.value)
 
@@ -3183,10 +3172,10 @@ def vbic_kelvins(temperature: Quantity) -> float:
 @pytest.mark.parametrize("polarity", ["npn", "pnp"])
 @pytest.mark.parametrize("source", ["V1", "V2"])
 def test_vbic_curves_agree(polarity: str, source: str, temperature: Quantity) -> None:
-    """A VBIC transistor's Gummel and output curves, in both modes, as ngspice's.
+    """Verifies VBIC Gummel and output DC sweeps agree with ngspice.
 
-    The base sweeps from 0.2 V to 1 V; the collector from 0.5 V behind the emitter,
-    the transistor reversed, to 3 V.
+    Sweeps base from 0.2 V to 1 V and collector from -0.5 V (reverse mode) to
+    3 V.
     """
     transistor = VBIC_TRANSISTORS[polarity]
     sign = 1 if polarity == "npn" else -1
@@ -3199,21 +3188,19 @@ def test_vbic_curves_agree(polarity: str, source: str, temperature: Quantity) ->
 
 
 def test_vbic_ac_response_agrees() -> None:
-    """A VBIC stage's operating point and AC response, as ngspice's."""
+    """Verifies VBIC stage operating point and AC response match ngspice."""
     _assert_op_and_ac_agree(
         vbic_stage(VBIC_TRANSISTORS["npn"]), vbic_kelvins(celsius(27))
     )
 
 
 def test_vbic_noise_agrees() -> None:
-    """A VBIC stage's noise at its output and its input, but one source's, as ngspice's.
+    """Verifies VBIC stage output and input-referred noise match ngspice.
 
-    Its transistor's resistances make thermal noise, its currents shot noise, and its
-    base currents flicker noise. ngspice 47 places the parasitic base resistance's
-    thermal noise across the emitter resistance (`vbicnoise.c`, between `emitEINode` and
-    `emitNode`), where jolty places it across the parasitic base resistance itself, so
-    each engine's spectra are compared without that source's contribution, which
-    ngspice gives apart when asked for every source's.
+    Includes thermal, shot, and base flicker noise. ngspice 47 places parasitic
+    base-resistance thermal noise across the emitter resistance (`vbicnoise.c`,
+    `emitEINode` to `emitNode`) instead of across the base resistance. The
+    misplaced source contribution is subtracted from both spectra before comparison.
     """
     simulation = Simulation(vbic_stage(VBIC_TRANSISTORS["npn"]))
     spectrum = simulation.run(
@@ -3230,21 +3217,22 @@ def test_vbic_noise_agrees() -> None:
     densities = spectrum.densities - spectrum.contributions[misplaced]
     spice = raw.real("onoise_spectrum") ** 2
     left = 1 - raw.real("onoise_qq1_rbp") ** 2 / spice
-    # Log-decade frequency stepping rounding vs ngspice cumulative ratio (rtol=1e-9).
-    np.testing.assert_allclose(spectrum.frequencies, raw.real("frequency"), rtol=1e-9)
-    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
-    np.testing.assert_allclose(np.sqrt(densities), np.sqrt(spice * left), rtol=1e-5)
+    np.testing.assert_allclose(
+        spectrum.frequencies, raw.real("frequency"), rtol=FREQUENCY_GRID_RTOL
+    )
+    np.testing.assert_allclose(
+        np.sqrt(densities), np.sqrt(spice * left), rtol=NOISE_DENSITY_RTOL
+    )
     gains = np.abs(spectrum.input.gains) ** 2 if spectrum.input else 1.0
-    # 10x TIGHT reltol (1e-5) covering operating-point spread and k_B diff (3.48e-7).
     np.testing.assert_allclose(
         np.sqrt(densities / gains),
         np.sqrt(raw.real("inoise_spectrum") ** 2 * left),
-        rtol=1e-5,
+        rtol=NOISE_DENSITY_RTOL,
     )
 
 
 def test_vbic_transient_agrees() -> None:
-    """A VBIC stage's step response, as ngspice's."""
+    """Verifies VBIC stage transient step response agrees with ngspice."""
     simulation = Simulation(vbic_stage(VBIC_TRANSISTORS["npn"]))
     stop, step = 2 * us, 1 * ns
     waveforms = simulation.run(Transient(stop=stop, max_step=step), TIGHT)
@@ -3270,7 +3258,7 @@ Q1 c b e 0 dt QHEAT
 
 @pytest.fixture(scope="module")
 def heated_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """The library of `HEATED_VBIC`, as a file both engines read."""
+    """Writes `HEATED_VBIC` to a temporary library file for both engines."""
     path = tmp_path_factory.mktemp("vbic") / "heated.lib"
     path.write_text(HEATED_VBIC, encoding="utf-8")
     return path
@@ -3278,9 +3266,10 @@ def heated_cards(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @component
 def heated_stage(c: Builder, part: Component) -> None:
-    """A library's transistor in a common-emitter stage, its substrate grounded.
+    """Builds a common-emitter stage using a library VBIC with grounded substrate.
 
-    Its base is fed through 10 kΩ from `V1`, its collector loaded by 100 Ω from 5 V.
+    The base is fed through 10 kΩ from `V1`, and the collector is loaded by
+    100 Ω from 5 V.
     """
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(0 * V), name="V1")
@@ -3296,12 +3285,12 @@ def heated_stage(c: Builder, part: Component) -> None:
 
 
 def test_a_heated_vbic_agrees(heated_cards: Path) -> None:
-    """A VBIC heated by its card's `RTH`, read by the reader, as ngspice heats it.
+    """Verifies self-heating VBIC (`RTH`) DC sweep agreement with ngspice.
 
-    Its base drive sweeps from off to saturation, so it warms from the ambient by up to
-    about 29 K. Its rise, ngspice's thermal node's voltage, is compared beside its nets;
-    unheated, its output at 1.5 V lies 4.7 mV, a thousand tolerances, from its heated
-    one.
+    Sweeping the base from off to saturation warms the device by up to 29 K.
+    The thermal-node temperature rise is compared alongside electrical nets;
+    disabling self-heating shifts output voltage by 4.7 mV (1000 tolerances) at
+    1.5 V drive.
     """
     read = spice.load(heated_cards).component("heated")
     simulation = Simulation(heated_stage(read))
@@ -3322,10 +3311,10 @@ def test_a_heated_vbic_agrees(heated_cards: Path) -> None:
 
 
 def test_a_run_states_its_time_and_stops_at_its_timeout() -> None:
-    """The results of a run of ngspice carry its time, and a timeout stops it.
+    """Verifies that ngspice runs report elapsed time and enforce timeouts.
 
-    A transient whose longest step is a picosecond takes ten million steps over
-    10 µs, far longer than a hundredth of a second.
+    A 10 µs transient capped at 1 ps steps requires ten million steps, far
+    exceeding the 0.01 s timeout.
     """
     lines = ["rc", "R1 in out 1k", "C1 out 0 1n", "V1 in 0 PULSE(0 1 0 1n 1n 1u 2u)"]
     (point,) = ngspice.runs(lines, ["op"])

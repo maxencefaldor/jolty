@@ -21,7 +21,7 @@ from jolty.units import V, kohm, mA
 
 @component
 def divider(c: Builder) -> None:
-    """1 V across 1 kΩ over 3 kΩ: 0.75 V/V, 4 kΩ in, 750 Ω out."""
+    """Builds a 1 V divider (1 kΩ over 3 kΩ): 0.75 V/V gain, 4 kΩ in, 750 Ω out."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
     upper = c.place(devices.resistor(1 * kohm), name="R1")
@@ -33,7 +33,7 @@ def divider(c: Builder) -> None:
 
 @component
 def driven(c: Builder) -> None:
-    """A current source into 2 kΩ, beside a voltage source that drives nothing."""
+    """Builds a current source into 2 kΩ paired with an unloaded voltage source."""
     ground = c.port("ground", Role.GROUND)
     current = c.place(devices.current_source(1 * mA), name="I1")
     load = c.place(devices.resistor(2 * kohm), name="R1")
