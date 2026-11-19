@@ -352,8 +352,11 @@ The first release, 0.1.0.
     - Renamed source amplitudes from `level`/`levels` to `value`/`values` (`Dc(value)`, `DcSweep(source, values)`) and DC sweep axes to `swept` (results version 15, batch version 4), reserving `level` for rules, logic, and MOSFETs.
     - Standardized report limits on `max_unknowns`/`max_output` (`JOLTY_MAX_UNKNOWNS`, `JOLTY_MAX_OUTPUT`, and `report(..., max_unknowns=...)`).
     - Normalized MCP tools to verb-object names (`view_circuit`, `cost_circuit`, `explain_rules`) and KiCad export to `export-kicad`/`export_kicad`/`ExportKicadRequest`/`ExportKicadResult`/`export_kicad_netlist`.
+    - Spelled out VBIC `epitaxial_*` parameters and VDMOS `quasi_saturation_resistance_temperature_exponent` in circuit format version 5.
+    - Standardized documentation lookup on `jolty read-docs` (`read_docs`, `ReadDocsRequest`, `ReadDocsResult`), transfer-measure targets on `signal`, `rise_time(lower, upper)`, and `crossing`/`frequency(threshold)`.
+    - Disambiguated `report.NetChargeLeak`, `results.PhasorPart`, `service.RuleSummary`, `runner.JobResult`, and `viewer.save_viewer`, and standardized US English spellings (`models.center`, `catalog.neighbors`, `Dimension.meter`) across Rust and Python.
 - Recorded provenance metadata in results files (format version 9) including jolty version, build, platform, and circuit/plan digests, readable via `jolty.files.load_provenance` and verified by `load_results` when given a circuit.
-  Moved `build`, `platform`, and `circuit_hash` from `jolty.shards` to `jolty.files` alongside `plan_hash` for shard digest computation.
+  Moved `build`, `platform`, and `circuit_digest` from `jolty.shards` to `jolty.files` alongside `plan_digest` for shard digest computation.
 - Attached logic domain `excursions` directly to individual analysis results (results format version 8) and removed stateful `Simulation.excursions`.
   Unmonitored runs (batches, ngspice, nested analyses) record `None`, failed analyses record no excursions, and results headers now write the true format version (fixing version 7 files previously tagged as 6).
 - Computed decade sweep frequencies (`jolty.plan.decade`) in decimal arithmetic with single rounding so every platform generates identical frequency grids despite differing `log10`/`pow` rounding.
@@ -380,3 +383,6 @@ The first release, 0.1.0.
 - Allowed specification measures to return infinite values (such as `-∞` dB at an exact notch) and judge them with infinite slack, treating only `NaN` as unmeasured.
   With exact float parsing, the twin-T notch now reports `-∞` dB rather than unmeasured.
   JSON output encodes infinities as `"Infinity"` or `"-Infinity"` per report schemas and writes `null` for undefined spread means and standard deviations.
+- Wrapped `Bsim4` in `Thermal::<Bsim4>` for self-heating parity across all eight native transistor models, unified BSIM3/BSIM4 binning macros, and exported parameter dimension and BSIM card metadata from `jolty._core`.
+- Made `matplotlib` an optional `jolty[plots]` extra (included in `jolty[mcp]`) with PEP 810 lazy imports so core `jolty` requires only `numpy`, `pydantic`, and `pydantic-settings`.
+- Shared `viewer.css` and `viewer.js` across static `.view.html` pages and compacted tracked benchmark and catalog JSON fixtures diffably, cutting repository text footprint by over 65,000 lines.
