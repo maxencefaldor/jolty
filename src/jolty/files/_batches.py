@@ -44,7 +44,14 @@ class Batch:
 
 
 def exponents_of(dimension: Dimension) -> Exponents:
-    """Encodes SI base-unit exponents of `dimension` as fraction strings for headers."""
+    """Encodes SI base-unit exponents of `dimension` as fraction strings for headers.
+
+    Args:
+        dimension: Physical dimension to serialize.
+
+    Returns:
+        Five-tuple of fraction strings for kilogram, meter, second, ampere, and kelvin.
+    """
     kilogram, meter, second, ampere, kelvin = (
         str(Fraction(exponent))
         for exponent in (
@@ -59,7 +66,14 @@ def exponents_of(dimension: Dimension) -> Exponents:
 
 
 def of_exponents(exponents: Exponents) -> Dimension:
-    """Decodes fraction-string base-unit `exponents` into a `Dimension`."""
+    """Decodes fraction-string base-unit `exponents` into a `Dimension`.
+
+    Args:
+        exponents: Five-tuple of fraction strings for SI base-unit exponents.
+
+    Returns:
+        Decoded physical `Dimension`.
+    """
     fractions = [Fraction(exponent) for exponent in exponents]
     return Dimension(
         *(
@@ -129,11 +143,26 @@ class Columns(ir.FrozenModel):
 
     @classmethod
     def from_batch(cls, found: results.BatchResult) -> Columns:
-        """Builds a `Columns` header record from a `BatchResult`."""
+        """Builds a `Columns` header record from a `BatchResult`.
+
+        Args:
+            found: Batch result whose non-array metadata is extracted.
+
+        Returns:
+            Serializable `Columns` header matching `found`.
+        """
         return cls(**_column_fields(found))
 
     def result(self, name: str, data: Mapping[str, np.ndarray]) -> results.BatchResult:
-        """Reconstructs a `BatchResult` from arrays stored under `name` in `data`."""
+        """Reconstructs a `BatchResult` from arrays stored under `name` in `data`.
+
+        Args:
+            name: Prefix key naming the batch inside `data`.
+            data: Mapping from archive entry names to NumPy arrays.
+
+        Returns:
+            Decoded `BatchResult` combining header metadata with arrays under `name`.
+        """
         values, ended = data[f"{name}.values"], data[f"{name}.ended"]
         measured, causes = data[f"{name}.measured"], data[f"{name}.causes"]
         if values.ndim != _TABLE_DIMENSIONS:
@@ -184,7 +213,15 @@ class Columns(ir.FrozenModel):
 
 
 def batch_arrays(name: str, found: results.BatchResult) -> dict[str, np.ndarray]:
-    """Collects the NumPy arrays of `found` under archive keys prefixed with `name`."""
+    """Collects the NumPy arrays of `found` under archive keys prefixed with `name`.
+
+    Args:
+        name: Prefix key naming the batch inside the archive.
+        found: Batch result whose core and trace arrays are extracted.
+
+    Returns:
+        Mapping from prefixed archive entry names to NumPy arrays.
+    """
     arrays = {f"{name}.{key}": getattr(found, key) for key in _ARRAYS}
     for index, traces in enumerate(found.traces):
         arrays[f"{name}.traces.{index}"] = traces.values
@@ -204,7 +241,12 @@ class _Batches(ir.FrozenModel):
 
 
 def save_batches(path: Path, batches: Mapping[str, Batch]) -> None:
-    """Writes named `batches` to a `.npz` batch archive at `path`."""
+    """Writes named `batches` to a `.npz` batch archive at `path`.
+
+    Args:
+        path: Destination `.npz` archive file path.
+        batches: Mapping from batch names to `Batch` entries to serialize.
+    """
     arrays: dict[str, np.ndarray] = {}
     entries = {}
     for name, batch in batches.items():
@@ -219,6 +261,12 @@ def save_batches(path: Path, batches: Mapping[str, Batch]) -> None:
 
 def load_batches(path: Path) -> dict[str, Batch]:
     """Reads named batches from the batch archive at `path`.
+
+    Args:
+        path: Source `.npz` batch archive file path.
+
+    Returns:
+        Mapping from batch names to decoded `Batch` entries.
 
     Raises:
         JoltyError: When `path` is not a valid jolty batch archive of the supported

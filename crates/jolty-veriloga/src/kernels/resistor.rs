@@ -1,6 +1,6 @@
 //! The `resistor` kernel, compiled by jolty-veriloga from `crates/jolty-veriloga/models/resistor.va`.
 //!
-//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Its source says:
+//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Original source notice:
 //!
 //! ```text
 //! The resistor of jolty's library, written in Verilog-A after its hand-written kernel in

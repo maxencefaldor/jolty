@@ -39,7 +39,7 @@
 //!      `y_3 - 3 y_2 + 3 y_1 - y_0` and per-suspect unit vectors `e_i`.
 //!    - For capacitor-voltage-source loops, the local saddle-point solve
 //!      `[C_SS / c_scale, B_S; A_S, 0] [z; μ] = [v_S; 0]` extracts exact loop current `μ_y`
-//!      and charge `μ_q`, cancelling lossless LC oscillations, bypass capacitors, and
+//!      and charge `μ_q`, canceling lossless LC oscillations, bypass capacitors, and
 //!      floating islands to machine precision.
 
 #[cfg(test)]
@@ -59,7 +59,7 @@ use crate::solver::{Factors, Solver};
 /// The threshold of Shampine's filter diagonal `F = α C (G + α C)⁻¹` below which a real mode
 /// rings under the trapezoidal rule.
 ///
-/// For a real pole `s = −σ`, the trapezoidal amplification factor is `R = 2 F − 1`, where
+/// For a real pole `s = -σ`, the trapezoidal amplification factor is `R = 2 F - 1`, where
 /// `F = α / (α + σ)`. Thus `R < 0` (alternating sign) holds if and only if `σ > α = 2/h`,
 /// equivalently `F < 0.5` (Dahlquist, 1963; Hairer and Wanner, *Solving Ordinary Differential
 /// Equations II*, 1996, section IV.3; Shampine, 1980).
@@ -76,7 +76,7 @@ pub(crate) struct StepWindow<'a> {
     pub(crate) charges: [&'a [f64]; 4],
     /// The charge derivatives `dq/dt` at each of the four times.
     pub(crate) derivatives: [&'a [f64]; 4],
-    /// The trapezoidal step coefficient `α = 2 / (t_3 − t_2)` of the latest step.
+    /// The trapezoidal step coefficient `α = 2 / (t_3 - t_2)` of the latest step.
     pub(crate) alpha: f64,
 }
 
@@ -114,7 +114,7 @@ impl Linearized<'_> {
 /// The physical domain of an unknown, keeping incompatible units apart in quadratic forms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Domain {
-    /// Node voltages (`+1`) and electrical branch currents with `C_{i,i} ≤ 0` (`−1`).
+    /// Node voltages (`+1`) and electrical branch currents with `C_{i,i} ≤ 0` (`-1`).
     Electrical,
     /// Thermal network temperatures (`K · W`).
     Thermal,
@@ -842,9 +842,9 @@ fn is_harmonic_scalar(times: [f64; 4], charges: [f64; 4], derivatives: [f64; 4])
     product_1 <= floor_1 && product_2 <= floor_2 && (product_1 < -floor_1 || product_2 < -floor_2)
 }
 
-/// Classifies every unknown into its physical domain and sign `s_i` (`+1` or `−1`).
+/// Classifies every unknown into its physical domain and sign `s_i` (`+1` or `-1`).
 ///
-/// Current rows with `C_{i,i} ≤ 0` take sign `−1` so `S C ≥ 0` and lossless `S G` is
+/// Current rows with `C_{i,i} ≤ 0` take sign `-1` so `S C ≥ 0` and lossless `S G` is
 /// skew-symmetric in watts. Internal BJT/VBIC excess-phase filters stamp `C_{i,i} = +delay > 0`
 /// in units of `A²`, so they are kept in [`Domain::Filter`] with sign `+1`.
 fn classify_domains(system: Linearized<'_>) -> Vec<(Domain, f64)> {

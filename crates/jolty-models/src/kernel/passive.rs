@@ -26,10 +26,10 @@ const TERMINALS: (usize, usize) = (0, 1);
 /// Two-terminal resistor between `a` and `b` with temperature drift, voltage nonlinearity,
 /// and thermal plus flicker noise.
 ///
-/// With `v = v(a) − v(b)`, resistance equals `r · (1 + vc1 · v + vc2 · v²)`, where `r` is
+/// With `v = v(a) - v(b)`, resistance equals `r · (1 + vc1 · v + vc2 · v²)`, where `r` is
 /// the temperature-scaled resistance (allowing negative values where coefficients bend it
 /// below zero). Resistances below [`SMALL_RESISTANCE`] introduce an explicit current unknown
-/// labelled `current`. In addition to thermal noise, branch current `I` produces flicker
+/// labeled `current`. In addition to thermal noise, branch current `I` produces flicker
 /// noise `KF · |I|^AF / f` A²/Hz across the terminals, matching ngspice.
 #[derive(Debug, Clone, Copy)]
 pub struct Resistor;
@@ -43,7 +43,7 @@ pub struct ResistorShape(Form);
 enum Form {
     /// Direct conductance stamped across the terminal [`Pair`].
     Conductance(Pair),
-    /// Explicit branch current unknown governed by `v − r · f(v) · i = 0`, with diagonal
+    /// Explicit branch current unknown governed by `v - r · f(v) · i = 0`, with diagonal
     /// `(current, current)` entry.
     Current(CurrentBranch, usize),
 }
@@ -241,7 +241,7 @@ impl Kernel for Resistor {
                 pair.add_conductance(stamp, conductance);
             }
             Form::Current(branch, entry) => {
-                // v − r · f(v) · i = 0.
+                // v - r · f(v) · i = 0.
                 let voltage = Dual::variable(branch.voltage(at));
                 let resistance = prepared
                     .coefficients
@@ -305,7 +305,7 @@ impl Kernel for Resistor {
 /// Two-terminal capacitor between `a` and `b` with temperature drift and voltage
 /// nonlinearity.
 ///
-/// With `v = v(a) − v(b)`, incremental capacitance equals `c · (1 + vc1 · v + vc2 · v²)`,
+/// With `v = v(a) - v(b)`, incremental capacitance equals `c · (1 + vc1 · v + vc2 · v²)`,
 /// where `c` is the temperature-scaled capacitance, and stored charge equals the integral of
 /// capacitance from `0 V` to `v`.
 #[derive(Debug, Clone, Copy)]
@@ -420,8 +420,8 @@ impl Kernel for Capacitor {
 
 /// Linear inductor between terminals `a` and `b` with temperature drift.
 ///
-/// Branch current from `a` to `b` is an explicit unknown labelled `current`. The branch
-/// equation `v_a − v_b − d/dt (L·i) = 0` acts as a short circuit at DC.
+/// Branch current from `a` to `b` is an explicit unknown labeled `current`. The branch
+/// equation `v_a - v_b - d/dt (L·i) = 0` acts as a short circuit at DC.
 #[derive(Debug, Clone, Copy)]
 pub struct Inductor;
 
@@ -524,7 +524,7 @@ impl Kernel for Inductor {
 /// Magnetically coupled inductors such as transformer or choke windings.
 ///
 /// Winding `k` (1-indexed) spans `a{k}` to `b{k}` with branch-current unknown `current{k}`
-/// and equation `v_a{k} − v_b{k} − d/dt Σ M_kj · i_j = 0`. Diagonal entry `M_kk` is the
+/// and equation `v_a{k} - v_b{k} - d/dt Σ M_kj · i_j = 0`. Diagonal entry `M_kk` is the
 /// self-inductance `L_k`, and off-diagonal entry `M_kj = c · √(L_k · L_j)` for a coupling
 /// `c` (zero if unspecified). Positive `c` matches SPICE dot convention between `a{k}` and
 /// `a{j}`.

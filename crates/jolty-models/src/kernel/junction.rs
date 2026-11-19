@@ -31,7 +31,7 @@ pub(crate) fn band_gap<R: Real>(temperature: R) -> R {
 }
 
 /// Band gap temperature dependence following Varshni's law,
-/// `Eg(T) = Eg(0) − α·T² / (T + β)`.
+/// `Eg(T) = Eg(0) - α·T² / (T + β)`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Varshni<R: Real = f64> {
     /// Band gap at 0 K, `Eg(0)`, in electronvolts.
@@ -103,7 +103,7 @@ impl<R: Real> Temperatures<R> {
         Self::new(actual, nominal)
     }
 
-    /// Returns the temperature offset `actual − nominal`.
+    /// Returns the temperature offset `actual - nominal`.
     pub(crate) fn difference(self) -> R {
         -(self.nominal - self.actual)
     }
@@ -128,7 +128,7 @@ impl<R: Real> Temperatures<R> {
     }
 
     /// Computes the saturation current scaling factor
-    /// `exp(((T/Tn − 1) · Eg / Vt + XTI · ln(T/Tn)) / n)` from `energy_gap` in volts,
+    /// `exp(((T/Tn - 1) · Eg / Vt + XTI · ln(T/Tn)) / n)` from `energy_gap` in volts,
     /// temperature `exponent` (SPICE `XTI`), and `emission` coefficient.
     pub(crate) fn saturation(self, energy_gap: R, exponent: R, emission: R) -> R {
         let ratio = self.ratio();
@@ -182,9 +182,9 @@ fn potential_shift<R: Real>(temperature: R, band_gap: R) -> R {
 /// Evaluates junction current and derivatives at `voltage` for `saturation` current and
 /// exponential `slope` (emission coefficient times thermal voltage).
 ///
-/// Forward and mild reverse bias use `Is · (e^{v / slope} − 1)`. Below `-3 · slope`,
-/// switches to the SPICE cubic form `−Is · (1 + (3·slope / (e·v))³)`, matching value and
-/// slope at the join and asymptoting to `−Is`.
+/// Forward and mild reverse bias use `Is · (e^{v / slope} - 1)`. Below `-3 · slope`,
+/// switches to the SPICE cubic form `-Is · (1 + (3·slope / (e·v))³)`, matching value and
+/// slope at the join and asymptoting to `-Is`.
 pub(crate) fn junction_current<R: Real, const N: usize>(
     voltage: Dual<R, N>,
     saturation: R,
@@ -327,25 +327,25 @@ pub(crate) fn limit_drain(new: f64, old: f64) -> Option<f64> {
 /// capacitance extension above `threshold` to prevent divergence.
 ///
 /// Given zero-bias capacitance `C`, built-in potential `φ`, grading coefficient `m`, and
-/// depletion coefficient `fc`, charge equals `C·φ·(1 − (1 − v/φ)^{1 − m}) / (1 − m)` below
+/// depletion coefficient `fc`, charge equals `C·φ·(1 - (1 - v/φ)^{1 - m}) / (1 - m)` below
 /// `fc·φ`. Above `fc·φ`, charge adds the quadratic integral of the linear capacitance:
-/// `C·((1 − fc·(1 + m))·(v − fc·φ) + m/(2φ)·(v² − (fc·φ)²)) / (1 − fc)^{1 + m}`.
+/// `C·((1 - fc·(1 + m))·(v - fc·φ) + m/(2φ)·(v² - (fc·φ)²)) / (1 - fc)^{1 + m}`.
 /// Voltage-independent factors are precomputed once during construction.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Depletion<R: Real = f64> {
     /// Reciprocal built-in potential `1 / φ`.
     inverse_potential: R,
-    /// Negated grading coefficient `−m`.
+    /// Negated grading coefficient `-m`.
     exponent: R,
-    /// Power-law prefactor `C · φ / (1 − m)`.
+    /// Power-law prefactor `C · φ / (1 - m)`.
     scale: R,
     /// Linear-extension voltage threshold `fc · φ`.
     threshold: R,
     /// Depletion charge evaluated at `threshold`.
     at_threshold: R,
-    /// Linear capacitance coefficient `C · (1 − fc · (1 + m)) / (1 − fc)^{1 + m}`.
+    /// Linear capacitance coefficient `C · (1 - fc · (1 + m)) / (1 - fc)^{1 + m}`.
     linear: R,
-    /// Quadratic charge coefficient `C · m / (2φ · (1 − fc)^{1 + m})`.
+    /// Quadratic charge coefficient `C · m / (2φ · (1 - fc)^{1 + m})`.
     quadratic: R,
 }
 
@@ -374,9 +374,9 @@ impl<R: Real> Depletion<R> {
     pub(crate) fn evaluate<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
         let threshold = self.threshold;
         if voltage.value.value() < threshold.value() {
-            // Evaluates `1 − (1 − v/φ)^{1 − m}` via `−expm1((1 − m) · ln1p(−v/φ))` to retain
+            // Evaluates `1 - (1 - v/φ)^{1 - m}` via `-expm1((1 - m) · ln1p(-v/φ))` to retain
             // precision near 0 V, where subtracting from 1 causes cancellation. At 1 nF, raw
-            // error `ε·C·φ/(1 − m) ≈ 3.5e-25 C` scales by a 1.5e13 /s step weight to 5e-12 A,
+            // error `ε·C·φ/(1 - m) ≈ 3.5e-25 C` scales by a 1.5e13 /s step weight to 5e-12 A,
             // exceeding the 1e-12 A nodal tolerance.
             let logarithm = (-voltage.scale(self.inverse_potential)).ln_1p();
             (-logarithm.scale(self.exponent + 1.0).exp_m1()).scale(self.scale)

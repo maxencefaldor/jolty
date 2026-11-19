@@ -149,6 +149,12 @@ class ResolvedMeasure:
     def read(self, result: results.AnalysisResult) -> Reading:
         """Evaluates this resolved measure on `result` using the Rust engine.
 
+        Args:
+            result: Solved analysis result whose arrays are evaluated.
+
+        Returns:
+            Measured scalar value paired with `unit`.
+
         Raises:
             MeasureError: When the engine cannot compute the measure on `result`.
             ValueError: When a noise integration band lies outside the frequency range.
@@ -243,13 +249,28 @@ class Measure:
         return Requirement(self, maximum=_quantity(maximum), source_location=caller())
 
     def between(self, minimum: Bound, maximum: Bound) -> Requirement:
-        """Constructs a two-sided requirement on `[minimum, maximum]`."""
+        """Constructs a two-sided requirement on `[minimum, maximum]`.
+
+        Args:
+            minimum: Inclusive lower bound for the measured value.
+            maximum: Inclusive upper bound for the measured value.
+
+        Returns:
+            Two-sided requirement constraining this measure to `[minimum, maximum]`.
+        """
         return Requirement(
             self, _quantity(minimum), _quantity(maximum), source_location=caller()
         )
 
     def within(self, target: Bound, tolerance: Bound) -> Requirement:
         """Constructs a requirement bounding the measure within `tolerance` of `target`.
+
+        Args:
+            target: Nominal center value for the measured quantity.
+            tolerance: Half-width allowed on either side of `target`.
+
+        Returns:
+            Two-sided requirement spanning `target - tolerance` to `target + tolerance`.
 
         Raises:
             DimensionError: When `target` and `tolerance` have incompatible dimensions.
@@ -342,11 +363,24 @@ class Requirement:
         return value
 
     def with_margin(self, margin: Bound) -> Requirement:
-        """Returns a copy of this requirement flagged marginal when slack < `margin`."""
+        """Returns a copy of this requirement flagged marginal when slack < `margin`.
+
+        Args:
+            margin: Non-negative slack threshold below which passing runs are marginal.
+
+        Returns:
+            Updated requirement carrying `margin`.
+        """
         return replace(self, margin=_quantity(margin))
 
     def judge(self, reading: Reading) -> tuple[Status, float]:
         """Evaluates `reading` against the bounds and returns `(status, slack)`.
+
+        Args:
+            reading: Measured scalar value and unit to compare against bounds.
+
+        Returns:
+            Pair of requirement status and signed slack in SI base units.
 
         Raises:
             DimensionError: When a bound or margin does not match the reading unit.
@@ -467,7 +501,11 @@ class Verdict(ir.FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats the verdict line followed by its source location when known."""
+        """Formats the verdict line followed by its source location when known.
+
+        Returns:
+            Human-readable verdict summary with optional indented source line.
+        """
         at = "" if self.corner is None else f" at the corner {self.corner}"
         if self.value is None or self.unit is None or self.slack is None:
             head = f"unmeasured: {self.requirement}: {self.reason}{at}"
@@ -505,6 +543,13 @@ class SummaryStatistics(ir.FrozenModel):
 
         A single-sign infinity sets `mean` to that infinity and leaves
         `standard_deviation` undefined; opposite-sign infinities leave both undefined.
+
+        Args:
+            numbers: Non-empty array of measured floating-point values.
+            unit: Display unit string associated with `numbers`.
+
+        Returns:
+            Summary statistics over `numbers` tagged with `unit`.
         """
         finite = np.isfinite(numbers)
         infinities = {float(number) for number in numbers[~finite]}
@@ -533,7 +578,14 @@ class Spread(ir.FrozenModel):
     )
 
     def describe(self, samples: int) -> str:
-        """Formats the requirement spread as one line across `samples` total runs."""
+        """Formats the requirement spread as one line across `samples` total runs.
+
+        Args:
+            samples: Total number of Monte Carlo or variant runs evaluated.
+
+        Returns:
+            Single-line human-readable summary of passing count and value statistics.
+        """
         head = f"{self.requirement}: {self.passing} of {samples} pass"
         if self.values is None:
             return f"{head}, none measured"
@@ -572,7 +624,12 @@ class Yield(ir.FrozenModel):
         return self.target is None or self.estimate >= self.target
 
     def describe(self) -> str:
-        """Formats the yield summary and Wilson interval as one line."""
+        """Formats the yield summary and Wilson interval as one line.
+
+        Returns:
+            Single-line human-readable yield estimate, confidence interval, and target
+            comparison.
+        """
         head = (
             f"yield: {self.passing} of {self.samples}, {100 * self.estimate:.4g} % "
             f"(95 % interval {100 * self.lower:.4g} to {100 * self.upper:.4g} %)"
@@ -603,6 +660,14 @@ def spread(
 
     Each entry in `sampled` contains verdicts for `specs.requirements` in order. A
     sample passes when every requirement passes or is marginal.
+
+    Args:
+        specs: Circuit specifications defining ordered requirements and optional yield
+            target.
+        sampled: Per-sample sequences of requirement verdicts aligned with `specs`.
+
+    Returns:
+        Pair of per-requirement `Spread` summaries and aggregate `Yield`.
     """
     spreads = tuple(
         _spread(requirement, [verdicts[index] for verdicts in sampled])
@@ -660,6 +725,17 @@ def judged(
 
     Matches single-run `evaluate` semantics using `planned` analysis names. When
     `batch` is None, all runs are marked unmeasured.
+
+    Args:
+        requirement: Requirement to judge across every batch run.
+        planned: Planned analysis names defined by the simulation plan.
+        batch: Completed batch result holding measured columns, or ``None`` when
+            elaboration failed.
+        place: Column index of `requirement` inside `batch.measured`.
+        runs: Number of runs represented by the returned columnar arrays.
+
+    Returns:
+        Columnar `Judged` verdicts covering all `runs` entries.
     """
     status = np.full(runs, _SEVERITY["unmeasured"], dtype=np.int8)
     slack = np.full(runs, math.inf)
@@ -703,6 +779,12 @@ def worst(conditions: Sequence[Judged]) -> Judged:
     Orders severity as failed, unmeasured, marginal, then passed; breaks ties by least
     slack, then earliest condition.
 
+    Args:
+        conditions: Non-empty sequence of per-condition `Judged` columns.
+
+    Returns:
+        Combined `Judged` columns recording the worst condition for each run.
+
     Raises:
         ValueError: When `conditions` is empty.
     """
@@ -736,6 +818,14 @@ def spread_of(
     """Computes per-requirement spreads and overall yield from columnar `judged` arrays.
 
     Entries in `judged` correspond to `specs.requirements` in order across all samples.
+
+    Args:
+        specs: Circuit specifications defining ordered requirements and optional yield
+            target.
+        judged: Columnar per-requirement verdicts aligned with `specs.requirements`.
+
+    Returns:
+        Pair of per-requirement `Spread` summaries and aggregate `Yield`.
     """
     spreads = tuple(
         _spread_of(requirement, each)
@@ -785,15 +875,22 @@ def wilson(passing: int, samples: int) -> tuple[float, float]:
     By symmetry, the upper bound equals one minus the lower bound for the failure
     proportion, returning exact 1.0 when every sample passes.
 
+    Args:
+        passing: Number of passing samples, between 0 and `samples` inclusive.
+        samples: Positive total sample count.
+
+    Returns:
+        Lower and upper bounds of the 95 % Wilson confidence interval in `[0.0, 1.0]`.
+
+    Raises:
+        ValueError: When `samples < 1` or `passing` lies outside `0..samples`.
+
     Examples:
         >>> low, high = wilson(37, 200)
         >>> f"{low:.4f} to {high:.4f}"
         '0.1373 to 0.2446'
         >>> wilson(0, 10)[0], wilson(10, 10)[1]
         (0.0, 1.0)
-
-    Raises:
-        ValueError: When `samples < 1` or `passing` lies outside `0..samples`.
     """
     if samples < 1:
         message = f"a proportion is of one sample or more, not {samples}"
@@ -813,7 +910,14 @@ def wilson(passing: int, samples: int) -> tuple[float, float]:
 
 
 def describe(verdicts: Sequence[Verdict]) -> str:
-    """Formats `verdicts` as text blocks followed by a status tally line."""
+    """Formats `verdicts` as text blocks followed by a status tally line.
+
+    Args:
+        verdicts: Requirement verdicts to render in specification order.
+
+    Returns:
+        Multi-paragraph summary of every verdict and total status counts.
+    """
     counts = Counter(verdict.status for verdict in verdicts)
     tally = ", ".join(
         f"{counts[status]} {status}" for status in _STATUSES if counts[status]
@@ -834,6 +938,15 @@ def evaluate(
     `planned` lists all planned analysis names (omissions in `solved` indicate failed
     analyses). `solved` maps analysis names to nominal results, and `corners` maps
     corner names to per-analysis results.
+
+    Args:
+        specs: Circuit specifications whose requirements are evaluated in order.
+        planned: Planned analysis names defined by the simulation plan.
+        solved: Mapping from analysis names to completed nominal results.
+        corners: Optional mapping from corner names to per-analysis results.
+
+    Returns:
+        Worst-corner `Verdict` for each requirement in `specs`.
     """
     runs = [(None, solved), *(corners or {}).items()]
     return tuple(
@@ -851,6 +964,14 @@ def judge(
     Each entry in `runs` pairs a corner name (or None for nominal conditions) with its
     completed analysis results; `planned` lists all planned analysis names.
 
+    Args:
+        requirement: Single specification requirement to evaluate.
+        planned: Planned analysis names defined by the simulation plan.
+        runs: Non-empty iterable of `(corner, results)` pairs to evaluate.
+
+    Returns:
+        Worst `Verdict` observed across `runs`.
+
     Raises:
         ValueError: When `runs` is empty.
     """
@@ -864,7 +985,15 @@ def judge(
 def reading(
     requirement: Requirement, found: Mapping[str, results.AnalysisResult]
 ) -> float | None:
-    """Evaluates `requirement` on `found` and returns its numeric value, or None."""
+    """Evaluates `requirement` on `found` and returns its numeric value, or None.
+
+    Args:
+        requirement: Specification requirement whose measure is evaluated.
+        found: Mapping from analysis names to solved analysis results.
+
+    Returns:
+        Measured value in SI base units or plain units, or ``None`` when unmeasured.
+    """
     verdict = _verdict(requirement, found.keys(), found, None)
     return verdict.value
 
@@ -977,6 +1106,16 @@ def validate_specs(
     Analyses named in `unknown_units` still check kind, referral, and parameter
     dimensions, skipping only the bound and margin dimension comparison because the
     analysis output unit could not be determined.
+
+    Args:
+        specs: Circuit specifications to validate statically before simulation.
+        planned: Ordered analysis names defined by the simulation plan.
+        shapes: Mapping from valid analysis names to empty result prototypes.
+        unknown_units: Analysis names whose output dimension could not be resolved
+            statically.
+
+    Returns:
+        Diagnostic messages describing every invalid requirement in `specs`.
     """
     defined = ", ".join(planned)
     problems: list[str] = []
@@ -1047,7 +1186,15 @@ def _against(bound: Quantity, reading: Reading, name: str) -> float:
 
 
 def format_reading(value: float, unit: str) -> str:
-    """Formats `value` in `unit` to four significant digits with an SI prefix if any."""
+    """Formats `value` in `unit` to four significant digits with an SI prefix if any.
+
+    Args:
+        value: Measured scalar value in SI base units or plain units.
+        unit: Unit symbol such as ``"V"``, ``"dB"``, ``"°"``, ``"%"``, or empty string.
+
+    Returns:
+        Formatted value string with SI prefix or plain unit suffix.
+    """
     if unit in {"dB", "°", "%"}:
         return f"{value:.4g} {unit}"
     if not unit:

@@ -68,7 +68,7 @@ super::numbered_enum!(
 pub enum GateMaterial {
     /// Polysilicon doped opposite to the substrate (SPICE `tpg = 1`).
     OppositeDoping,
-    /// Polysilicon doped like the substrate (SPICE `tpg = −1`).
+    /// Polysilicon doped like the substrate (SPICE `tpg = -1`).
     SameDoping,
     /// Aluminum gate (SPICE `tpg = 0`).
     Aluminum,
@@ -77,10 +77,10 @@ pub enum GateMaterial {
 /// Metal-oxide-semiconductor field-effect transistor implementing SPICE Level 1
 /// (Shichman-Hodges) and Level 3 with Meyer gate capacitances, matching ngspice.
 ///
-/// At Level 1, drain current follows the square law with `vgst = vgs − von`,
-/// `β = kp · w / (l − 2 · ld)`, and `β' = β · (1 + λ · vds)`. Saturation (`vds ≥ vgst`)
-/// gives `β' · vgst² / 2` and linear mode gives `β' · vds · (vgst − vds / 2)`, with
-/// threshold `von = vto + γ · (√(φ − vbs) − √φ)`. Level 3 adds short- and narrow-channel
+/// At Level 1, drain current follows the square law with `vgst = vgs - von`,
+/// `β = kp · w / (l - 2 · ld)`, and `β' = β · (1 + λ · vds)`. Saturation (`vds ≥ vgst`)
+/// gives `β' · vgst² / 2` and linear mode gives `β' · vds · (vgst - vds / 2)`, with
+/// threshold `von = vto + γ · (√(φ - vbs) - √φ)`. Level 3 adds short- and narrow-channel
 /// threshold shifts, static feedback, mobility degradation, velocity saturation,
 /// channel-length shortening, and weak inversion. The channel is symmetric and swaps drain
 /// and source when `vds < 0`.
@@ -168,7 +168,7 @@ enum Region {
     Saturated,
 }
 
-/// Operating-region metadata for [`Mosfet`] reporting `vgs − von` and `vds − vdsat` in
+/// Operating-region metadata for [`Mosfet`] reporting `vgs - von` and `vds - vdsat` in
 /// n-channel sign convention per [`Regions::margins`], swapping drain and source when
 /// `vds < 0`.
 const REGIONS: Regions = Regions {
@@ -439,7 +439,7 @@ struct Process<R: Real> {
 impl<R: Real> Process<R> {
     /// Scales process parameters for channel `sign` to `temperatures`, matching ngspice.
     ///
-    /// Scales `kp` by `(T/Tn)^−1.5`, updates `φ` with the silicon band gap and intrinsic
+    /// Scales `kp` by `(T/Tn)^-1.5`, updates `φ` with the silicon band gap and intrinsic
     /// concentration, and shifts `vto` with the band gap and `φ`.
     ///
     /// # Errors
@@ -570,7 +570,7 @@ struct SquareLaw<R: Real> {
     surface_potential: R,
     /// Square root of surface potential, `√φ`.
     root_potential: R,
-    /// Zero-bias built-in threshold component `vto − γ · √φ`.
+    /// Zero-bias built-in threshold component `vto - γ · √φ`.
     built_in: R,
 }
 
@@ -586,7 +586,7 @@ struct Conduction<R: Real> {
     /// Flag indicating forward mode (`vds >= 0`); when `false`, drain and source swap.
     forward: bool,
     region: Region,
-    /// Boundary margins `[vgs − von, vds − vdsat]` in forward orientation.
+    /// Boundary margins `[vgs - von, vds - vdsat]` in forward orientation.
     margins: [f64; 2],
 }
 
@@ -744,7 +744,7 @@ struct Displacement {
 }
 
 impl Displacement {
-    /// Claims a local unknown labelled `label` for the displacement towards the local
+    /// Claims a local unknown labeled `label` for the displacement towards the local
     /// unknown `node` from `gate`.
     fn new(layout: &mut Layout, label: &'static str, gate: usize, node: usize) -> Self {
         let unknown = layout.pivoted(label, Nature::Displacement);
@@ -760,7 +760,7 @@ impl Displacement {
         }
     }
 
-    /// Stamps `w − Cox · d(v_gate − v_node)/dt = 0` for `oxide` plus Meyer current
+    /// Stamps `w - Cox · d(v_gate - v_node)/dt = 0` for `oxide` plus Meyer current
     /// derivatives `±capacitance / oxide` at `nodes[index]`, and returns `w`.
     fn add<R: Real>(
         &self,
@@ -784,7 +784,7 @@ impl Displacement {
     }
 }
 
-/// Extracts the single-branch [`Bias`] for `v(plus) − v(minus)` from the 3-voltage `bias`.
+/// Extracts the single-branch [`Bias`] for `v(plus) - v(minus)` from the 3-voltage `bias`.
 fn across(bias: &Bias<3>, (plus, minus): (usize, usize)) -> Bias<1> {
     // Each voltage of `bias` is a node's over the inner source.
     let over_source = |values: [f64; 3], node: usize| {
@@ -1129,7 +1129,7 @@ impl<R: Real> Geometry<R> {
         if effective.value() <= 0.0 {
             let effective = effective.value();
             return Err(ParameterError(format!(
-                "the effective length, length − 2 · lateral_diffusion + length_adjustment, \
+                "the effective length, length - 2 · lateral_diffusion + length_adjustment, \
                  is positive, not {effective:?}"
             )));
         }
@@ -1138,7 +1138,7 @@ impl<R: Real> Geometry<R> {
         if effective_width.value() <= 0.0 {
             let effective_width = effective_width.value();
             return Err(ParameterError(format!(
-                "the effective width, width − 2 · width_narrowing + width_adjustment, is \
+                "the effective width, width - 2 · width_narrowing + width_adjustment, is \
                  positive, not {effective_width:?}"
             )));
         }
@@ -1444,7 +1444,7 @@ mod tests {
 
     #[test]
     fn follows_the_square_law() {
-        // Saturation: β · vgst² / 2; below it: β · vds · (vgst − vds / 2).
+        // Saturation: β · vgst² / 2; below it: β · vds · (vgst - vds / 2).
         let saturated = drain_current(2.0, 5.0);
         assert!((saturated - 5e-5).abs() < 1e-17, "{saturated}");
         let linear = drain_current(2.0, 0.5);
@@ -1489,7 +1489,7 @@ mod tests {
     /// Verifies that Level 1 classifies off, linear, and saturated regions with symmetric
     /// drain/source swap and p-channel polarity inversion.
     ///
-    /// Margins `vgs − vto` and `vds − max(vgs − vto, 0)` vanish at `mos1load.c` boundaries.
+    /// Margins `vgs - vto` and `vds - max(vgs - vto, 0)` vanish at `mos1load.c` boundaries.
     #[test]
     fn reports_its_region_and_margins() {
         let parameters = r#"{"threshold_voltage": 1, "saturation_current": 1e-30}"#;
@@ -1590,7 +1590,7 @@ mod tests {
         );
         assert_eq!(
             error(r#"{"length": 1e-6, "lateral_diffusion": 5e-7}"#),
-            "the effective length, length − 2 · lateral_diffusion + length_adjustment, is \
+            "the effective length, length - 2 · lateral_diffusion + length_adjustment, is \
              positive, not 0.0"
         );
         assert_eq!(

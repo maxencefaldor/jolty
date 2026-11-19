@@ -80,6 +80,13 @@ class Sample:
         ``r``, or ``s`` is non-positive. ``aunif(x, a)`` returns ``x + a * u``,
         ``unif(x, r)`` returns ``x + x * r * u``, and ``limit(x, a)`` returns ``x + a``
         for ``u > 0`` and ``x - a`` otherwise.
+
+        Args:
+            scope: Hierarchical placement path scoping deterministic variate draws.
+            name: Parameter or element name prefixing sequential call identifiers.
+
+        Returns:
+            `Draw` callback evaluating statistical calls deterministically for `self`.
         """
         calls = itertools.count()
 
@@ -113,6 +120,13 @@ def standard_deviation(function: str, arguments: tuple[float, ...]) -> float:
     ``a / s`` and ``gauss(x, r, s)`` gives ``|x| r / s`` (or 0 when ``a``, ``r``, or
     ``s`` is non-positive). Uniform calls ``aunif(x, a)`` and ``unif(x, r)`` give
     ``|a| / √3`` and ``|x r| / √3``, and ``limit(x, a)`` gives ``|a|``.
+
+    Args:
+        function: Case-folded SPICE statistical function name.
+        arguments: Evaluated numeric arguments passed to `function`.
+
+    Returns:
+        Non-negative standard deviation of the distribution defined by `arguments`.
 
     Examples:
         >>> standard_deviation("agauss", (0.0, 0.03, 3.0))
@@ -151,7 +165,16 @@ class Probe:
     )
 
     def draw(self, scope: str, name: str) -> Draw:
-        """Returns a recording callback for statistical calls in `name` at `scope`."""
+        """Returns a recording callback for statistical calls in `name` at `scope`.
+
+        Args:
+            scope: Hierarchical placement path recorded with each encountered call.
+            name: Parameter or element name prefixing sequential call identifiers.
+
+        Returns:
+            `Draw` callback recording calls into `self.calls` and perturbing
+            `self.moved`.
+        """
         calls = itertools.count()
 
         def drawn(function: str, arguments: tuple[float, ...]) -> float:
@@ -175,13 +198,28 @@ class Drawing:
     path: str
 
     def draws(self, name: str) -> Draw:
-        """Returns the `Draw` callback for statistical calls in definition `name`."""
+        """Returns the `Draw` callback for statistical calls in definition `name`.
+
+        Args:
+            name: Parameter or element name whose statistical calls are sampled.
+
+        Returns:
+            `Draw` callback bound to `self.sample` and `self.path`, or `nominal`.
+        """
         if self.sample is None:
             return nominal
         return self.sample.draw(self.path, name)
 
     def named(self, name: str) -> str:
-        """Qualifies component `name` with path and sample identity to avoid clashes."""
+        """Qualifies component `name` with path and sample identity to avoid clashes.
+
+        Args:
+            name: Base component name before sample or probe qualification.
+
+        Returns:
+            Component name suffixed with placement path and sample coordinates when
+            sampled.
+        """
         match self.sample:
             case Sample(seed=seed, index=index):
                 return f"{name}@{self.path}#{seed}:{index}"
@@ -190,7 +228,14 @@ class Drawing:
         return name
 
     def within(self, instance: str) -> Drawing:
-        """Returns a child `Drawing` scoped to nested placement `instance`."""
+        """Returns a child `Drawing` scoped to nested placement `instance`.
+
+        Args:
+            instance: Child subcircuit instance name appended to `self.path`.
+
+        Returns:
+            Nested `Drawing` preserving `self.sample` at the extended path.
+        """
         path = f"{self.path}/{instance}" if self.path else instance
         return Drawing(self.sample, path)
 
@@ -227,7 +272,14 @@ class GlobalPlan:
 def dependency_graph(
     definitions: Mapping[str, Expression],
 ) -> tuple[dict[str, int], dict[str, list[str]]]:
-    """Builds in-degrees and forward dependency edges over `definitions`."""
+    """Builds in-degrees and forward dependency edges over `definitions`.
+
+    Args:
+        definitions: Parameter expressions keyed by case-folded parameter name.
+
+    Returns:
+        Pair of `(in_degree, dependents)` dictionaries over `definitions`.
+    """
     in_degree: dict[str, int] = {}
     dependents: dict[str, list[str]] = {}
     keys = definitions.keys()
@@ -244,7 +296,16 @@ def topological_order(
     in_degree: dict[str, int],
     dependents: Mapping[str, list[str]],
 ) -> tuple[list[str], list[str]]:
-    """Runs Kahn's topological sort and returns `(ordered, cycle_remaining)`."""
+    """Runs Kahn's topological sort and returns `(ordered, cycle_remaining)`.
+
+    Args:
+        definitions: Parameter expressions keyed by case-folded parameter name.
+        in_degree: Count of unresolved dependencies within `definitions` per parameter.
+        dependents: Forward adjacency list mapping each parameter to dependents.
+
+    Returns:
+        Pair of `(ordered_names, cycle_remaining_names)`.
+    """
     remaining_degree = dict(in_degree)
     ready = deque(name for name in definitions if remaining_degree[name] == 0)
     ordered: list[str] = []
@@ -263,7 +324,15 @@ def stochastic_closure(
     definitions: Mapping[str, Expression],
     dependents: Mapping[str, list[str]],
 ) -> set[str]:
-    """Returns all parameters containing or depending on statistical calls."""
+    """Returns all parameters containing or depending on statistical calls.
+
+    Args:
+        definitions: Inlined parameter expressions keyed by case-folded name.
+        dependents: Forward adjacency list mapping each parameter to dependents.
+
+    Returns:
+        Case-folded names of stochastic parameters and transitive dependents.
+    """
     roots = [
         name
         for name, expression in definitions.items()
@@ -281,7 +350,15 @@ def stochastic_closure(
 
 
 def check_cycle(subcircuit: Subcircuit, instantiating: tuple[str, ...]) -> str:
-    """Returns `subcircuit`'s case-folded key after checking it is not in a cycle."""
+    """Returns `subcircuit`'s case-folded key after checking it is not in a cycle.
+
+    Args:
+        subcircuit: Subcircuit definition about to be instantiated.
+        instantiating: Active chain of case-folded enclosing subcircuit names.
+
+    Returns:
+        Case-folded name of `subcircuit`.
+    """
     key = subcircuit.name.casefold()
     if key in instantiating:
         cycle = " places ".join(
@@ -295,7 +372,15 @@ def check_cycle(subcircuit: Subcircuit, instantiating: tuple[str, ...]) -> str:
 def extract_multiplier(
     subcircuit: Subcircuit, given: Mapping[str, float]
 ) -> tuple[float, Mapping[str, float]]:
-    """Splits subcircuit multiplier `m` from `given` when it has no `m` parameter."""
+    """Splits subcircuit multiplier `m` from `given` when it has no `m` parameter.
+
+    Args:
+        subcircuit: Subcircuit definition checked for a formal `m` parameter.
+        given: Case-folded parameter overrides passed at the placement site.
+
+    Returns:
+        Pair of `(multiplier, remaining_parameters)`.
+    """
     if "m" not in given or "m" in subcircuit.defaults:
         return 1.0, given
     multiplier = given["m"]
@@ -312,7 +397,16 @@ def build_global_plan(
     temperature: float,
     functions: Mapping[str, Function],
 ) -> GlobalPlan:
-    """Partitions and evaluates global parameters for `(temperature, functions)`."""
+    """Partitions and evaluates global parameters for `(temperature, functions)`.
+
+    Args:
+        parameters: Global `.param` `(name, expression)` assignments in source order.
+        temperature: Library temperature in kelvins used to populate ``temper``.
+        functions: Case-folded user-defined functions inlined into expressions.
+
+    Returns:
+        Compiled `GlobalPlan` separating deterministic and stochastic parameters.
+    """
     functions_snapshot = dict(functions)
     inlined_definitions = {
         name: inlined(expression, functions_snapshot)
@@ -350,7 +444,15 @@ def build_global_plan(
 
 
 def evaluate_stochastic(plan: GlobalPlan, drawing: Drawing) -> dict[str, float]:
-    """Evaluates only the stochastic subset of `plan` on top of `plan.fixed`."""
+    """Evaluates only the stochastic subset of `plan` on top of `plan.fixed`.
+
+    Args:
+        plan: Compiled global parameter plan.
+        drawing: Statistical sampling context supplying draws per parameter name.
+
+    Returns:
+        Complete global parameter dictionary combining fixed and sampled values.
+    """
     values = plan.fixed.copy()
     for name, expression in plan.stochastic:
         values[name] = evaluate(expression, values, drawing.draws(name))
@@ -366,6 +468,17 @@ def resolve_into(
     partial: bool = False,
 ) -> dict[str, float]:
     """Evaluates each parameter `definitions` defines into `values` in place.
+
+    Args:
+        definitions: Parameter expressions keyed by case-folded parameter name.
+        values: Mutable parameter scope updated in topological dependency order.
+        draws: Factory mapping each parameter name to its statistical `Draw` callback.
+        functions: Case-folded user-defined functions inlined before evaluation.
+        partial: When `True`, skips parameters raising `UndefinedError` instead of
+            failing.
+
+    Returns:
+        Updated `values` dictionary populated with resolved parameters.
 
     Raises:
         SpiceError: When parameters read one another in a cycle, or an expression is
@@ -391,7 +504,14 @@ def resolve_into(
 
 
 def split_assigned_pairs(words: Sequence[str]) -> tuple[list[str], list[str]]:
-    """Splits `words` into non-assignment tokens and ``name = value`` triple tokens."""
+    """Splits `words` into non-assignment tokens and ``name = value`` triple tokens.
+
+    Args:
+        words: Tokenized SPICE statement words following the element name.
+
+    Returns:
+        Pair of `(positional_tokens, assigned_triple_tokens)`.
+    """
     signs = {position for position, word in enumerate(words) if word == "="}
     paired = {position + step for position in signs for step in (-1, 0, 1)}
     positional = [word for place, word in enumerate(words) if place not in paired]
@@ -403,6 +523,12 @@ def parse_options(statement: Statement) -> dict[str, Expression]:
     """Parses ``name = value`` options from an ``.option`` statement by folded name.
 
     Bare boolean flags without values are ignored because jolty does not read them.
+
+    Args:
+        statement: Logical ``.option`` or ``.options`` statement to parse.
+
+    Returns:
+        Mapping from case-folded option names to parsed value `Expression` nodes.
     """
     words = tokens(statement.text)[1:]
     assigned = [
@@ -416,6 +542,12 @@ def parse_options(statement: Statement) -> dict[str, Expression]:
 
 def parse_function(statement: Statement) -> tuple[str, Function]:
     """Parses a ``.func`` `statement` into `(folded_name, Function)`.
+
+    Args:
+        statement: Logical ``.func`` statement defining a user function.
+
+    Returns:
+        Pair of `(case_folded_name, Function)`.
 
     Raises:
         SpiceError: When `statement` is malformed or its body is not a valid
@@ -442,6 +574,12 @@ def parse_assignments(statement: Statement) -> list[tuple[str, Expression]]:
     Follows ngspice rules where each value extends up to the next assignment name,
     allowing unbraced spaced expressions such as ``.param a = 1 + b c = 2``.
 
+    Args:
+        statement: Logical ``.param`` or ``.params`` statement to parse.
+
+    Returns:
+        Ordered `(case_folded_name, Expression)` assignment pairs.
+
     Raises:
         SpiceError: When tokens do not form valid ``name = value`` pairs.
     """
@@ -467,6 +605,13 @@ def parse_pins_and_parameters(
     """Splits a `.subckt` header into pin names and default parameter expressions.
 
     Parameter defaults begin after ``PARAMS:`` or at the first ``name = value`` pair.
+
+    Args:
+        statement: Logical `.subckt` header statement used for error attribution.
+        words: Tokens following `.subckt <name>` on the header line.
+
+    Returns:
+        Pair of `(pin_names, default_parameter_expressions)`.
     """
     split = next(
         (
@@ -487,6 +632,12 @@ def split_keywords(words: list[str]) -> tuple[list[str], dict[str, list[str]]]:
 
     Each keyword collects all subsequent tokens until the next assignment, as in
     ``TC=1m,2u``.
+
+    Args:
+        words: Tokenized element arguments following the element name.
+
+    Returns:
+        Pair of `(positional_tokens, keyword_value_token_lists)`.
     """
     positional: list[str] = []
     assigned: dict[str, list[str]] = {}
@@ -509,7 +660,13 @@ def split_keywords(words: list[str]) -> tuple[list[str], dict[str, list[str]]]:
 def check_keywords(
     statement: Statement, assigned: Mapping[str, list[str]], allowed: frozenset[str]
 ) -> None:
-    """Fails on any keyword not in `allowed`."""
+    """Fails on any keyword not in `allowed`.
+
+    Args:
+        statement: Element statement used for error attribution.
+        assigned: Parsed keyword assignment dictionary keyed by case-folded name.
+        allowed: Permitted case-folded keyword names for the element.
+    """
     for name in assigned:
         if name not in allowed:
             message = f"jolty reads no `{name.upper()}` here"
@@ -522,7 +679,17 @@ def single_keyword(
     name: str,
     words: Sequence[str],
 ) -> float:
-    """Evaluates a single-valued keyword assignment, rejecting empty or extra tokens."""
+    """Evaluates a single-valued keyword assignment, rejecting empty or extra tokens.
+
+    Args:
+        evaluate_word: Evaluator converting a single value token to a float.
+        statement: Element statement used for error attribution.
+        name: Case-folded keyword name being evaluated.
+        words: Value tokens assigned to `name`.
+
+    Returns:
+        Evaluated floating-point value of `words[0]`.
+    """
     if not words:
         message = f"`{name.upper()}` is not assigned a value"
         raise statement.fail(message)
@@ -545,6 +712,16 @@ def instance_keywords(
     Allows trailing initial-state flags in `flags` (such as ``OFF`` and ``ON``)
     and comma-separated multi-value keywords in `multi_valued` (such as bipolar
     ``IC=vbe,vce``).
+
+    Args:
+        evaluate_word: Evaluator converting each value token to a float.
+        statement: Element statement used for error attribution.
+        assigned: Keyword token lists keyed by case-folded name.
+        flags: Case-folded trailing state flags ignored after keyword values.
+        multi_valued: Case-folded keywords accepting multiple comma-separated values.
+
+    Returns:
+        Evaluated numeric keyword dictionary keyed by case-folded name.
     """
     values: dict[str, float] = {}
     for key, words in assigned.items():

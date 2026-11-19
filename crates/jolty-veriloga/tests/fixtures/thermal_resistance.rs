@@ -1,6 +1,6 @@
 //! The `thermal_resistance` kernel, compiled by jolty-veriloga from `crates/jolty-veriloga/tests/fixtures/thermal_resistance.va`.
 //!
-//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Its source says:
+//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Original source notice:
 //!
 //! ```text
 //! jolty's thermal resistance in Verilog-A: a heat flow between two thermal nodes, in

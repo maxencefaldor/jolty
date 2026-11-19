@@ -210,7 +210,7 @@ struct Terminals<R: Real> {
     threshold: f64,
     saturation: f64,
     region: Region,
-    /// Boundary margins `Vgst` and `Vds − Vdsat`.
+    /// Boundary margins `Vgst` and `Vds - Vdsat`.
     margins: [f64; 2],
 }
 
@@ -1074,7 +1074,7 @@ mod tests {
     ///    `phi - channel.phis` and inheriting `channel.vbseff`'s left slope
     ///    `|vbsc| / (|vbsc| + 0.001)` instead of `1` (`1.85e-18 F` / `1.4e-4` error).
     /// 2. `channel::Core::evaluate` previously added `smooth_positive` to `vbsc` (`-6.73 V`),
-    ///    cancelling ~12 digits near `vbs = 0` and chattering the `vbseff < vbs` clamp
+    ///    canceling ~12 digits near `vbs = 0` and chattering the `vbseff < vbs` clamp
     ///    within `~6e-12 V` of zero across `capmod` 0, 2, and 3.
     #[test]
     fn capmod_zero_vbseff_is_smooth_and_symmetric_at_zero_bulk() {

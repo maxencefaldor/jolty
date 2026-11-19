@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn multiple_operating_points() {
-        // 1 mA/V³ · v (v − 1)(v − 2) = (1 V − v) / 10 kΩ at `x`: v = 1 or 1 ± √0.9.
+        // 1 mA/V³ · v (v - 1)(v - 2) = (1 V - v) / 10 kΩ at `x`: v = 1 or 1 ± √0.9.
         let cubic = json!([
             {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
              "terminals": {"positive": "in", "negative": "0"}},
@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(raised.len(), 1, "{raised:?}");
         assert_eq!(raised[0].rule, "unstable-pole");
         assert_eq!(raised[0].nets, ["n"]);
-        // C s² − 1e-4 s + 1/L = 0: s = 5e4 ± 998749.2j.
+        // C s² - 1e-4 s + 1/L = 0: s = 5e4 ± 998749.2j.
         let message = &raised[0].message;
         let pole = message
             .strip_prefix("the operating point is unstable: its poles at ")

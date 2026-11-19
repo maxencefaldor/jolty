@@ -682,6 +682,13 @@ _OUTPUTS: Final = _sequence_of(str, "outputs", "unknown names")
 def voltages(given: Mapping[str, Quantity], what: str) -> dict[str, float]:
     """Converts named net voltages in `given` to volts, validated as `what`.
 
+    Args:
+        given: Mapping from net path to voltage `Quantity`.
+        what: Context label included in `DimensionError` messages.
+
+    Returns:
+        Dictionary mapping each net path to its scalar potential in volts.
+
     Raises:
         DimensionError: When any value in `given` does not have voltage dimension.
     """
@@ -690,6 +697,12 @@ def voltages(given: Mapping[str, Quantity], what: str) -> dict[str, float]:
 
 def recorded(record: Sequence[str] | None) -> tuple[str, ...] | None:
     """Normalizes `record` to a tuple of patterns, or `None` when omitted.
+
+    Args:
+        record: Optional sequence of gitignore-style instance path patterns.
+
+    Returns:
+        Validated pattern tuple, or ``None`` when `record` is ``None``.
 
     Raises:
         ValidationError: When `record` is a string or contains non-string entries.
@@ -722,7 +735,11 @@ class OperatingPoint(Recorded):
     """DC operating-point analysis evaluated with every source at time zero."""
 
     def to_json(self) -> JsonValue:
-        """Serializes the analysis into the simulation engine's JSON format."""
+        """Serializes the analysis into the simulation engine's JSON format.
+
+        Returns:
+            Engine JSON tag ``'operating_point'``.
+        """
         return "operating_point"
 
 
@@ -745,7 +762,11 @@ class OperatingPoints(Recorded):
     ] = 8
 
     def to_json(self) -> JsonValue:
-        """Serializes the analysis into the simulation engine's JSON format."""
+        """Serializes the analysis into the simulation engine's JSON format.
+
+        Returns:
+            Engine JSON mapping ``{'operating_points': {'max_solutions': ...}}``.
+        """
         return {"operating_points": {"max_solutions": self.max_solutions}}
 
 
@@ -763,7 +784,14 @@ class DcSweep(Recorded):
     parameter: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """Serializes the DC sweep into engine JSON, validating against `dimension`."""
+        """Serializes the DC sweep into engine JSON, validating against `dimension`.
+
+        Args:
+            dimension: Expected physical dimension of the swept source or parameter.
+
+        Returns:
+            Engine JSON mapping ``{'dc_sweep': ...}`` with SI sweep levels.
+        """
         values: list[JsonValue] = [
             value.to(dimension, "a sweep level") for value in self.values
         ]
@@ -787,7 +815,11 @@ class Ac(Recorded):
     ]
 
     def to_json(self) -> JsonValue:
-        """Serializes the analysis into the simulation engine's JSON format."""
+        """Serializes the analysis into the simulation engine's JSON format.
+
+        Returns:
+            Engine JSON mapping ``{'ac': ...}`` with frequencies in hertz.
+        """
         frequencies: list[JsonValue] = [
             frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
         ]
@@ -830,7 +862,11 @@ class Transient(Recorded):
     operating_point: Annotated[bool, _STRICT_BOOL] = True
 
     def to_json(self) -> JsonValue:
-        """Serializes the analysis into the simulation engine's JSON format."""
+        """Serializes the analysis into the simulation engine's JSON format.
+
+        Returns:
+            Engine JSON mapping ``{'transient': ...}`` with times in seconds.
+        """
         transient: dict[str, JsonValue] = {
             "stop": self.stop.to(TIME, "a transient's stop time"),
             "method": self.method,
@@ -893,6 +929,12 @@ class PeriodicSteadyState(Recorded):
         oscillator period, whereas a driven card sets `period` in seconds. When
         `max_step` is omitted on a driven card with `points` set, `max_step` defaults to
         ``period / points``.
+
+        Args:
+            card: Parsed SPICE ``.pss`` analysis card.
+
+        Returns:
+            Equivalent `PeriodicSteadyState` analysis specification.
         """
         period = None if card.autonomous or card.period is None else card.period * s
         if card.max_step is not None:
@@ -910,7 +952,11 @@ class PeriodicSteadyState(Recorded):
         )
 
     def to_json(self) -> JsonValue:
-        """Serializes the analysis into the simulation engine's JSON format."""
+        """Serializes the analysis into the simulation engine's JSON format.
+
+        Returns:
+            Engine JSON mapping ``{'periodic_steady_state': ...}`` in SI base units.
+        """
         steady: dict[str, JsonValue] = {"method": self.method}
         if self.period is not None:
             steady["period"] = self.period.to(TIME, "a periodic steady state's period")
@@ -939,6 +985,13 @@ def differentiated(of: Differentiated, level: Dimension) -> JsonValue:
     """Serializes the differentiated analysis `of` into the engine's JSON format.
 
     DC sweep levels are validated against `level`.
+
+    Args:
+        of: Underlying analysis to differentiate, or ``None`` for DC.
+        level: Expected physical dimension when `of` is a `DcSweep`.
+
+    Returns:
+        Engine JSON payload representing the differentiated target analysis.
 
     Examples:
         >>> differentiated(None, VOLTAGE)
@@ -974,6 +1027,12 @@ class Sensitivity:
         """Serializes the sensitivity analysis into engine JSON.
 
         When differentiating a DC sweep, sweep levels are validated against `level`.
+
+        Args:
+            level: Expected physical dimension when `self.of` is a `DcSweep`.
+
+        Returns:
+            Engine JSON mapping ``{'sensitivity': ...}``.
         """
         outputs: list[JsonValue] = list(self.outputs)
         return {
@@ -1010,6 +1069,13 @@ class Mismatch:
         """Serializes the mismatch analysis and `toleranced` entries into engine JSON.
 
         When differentiating a DC sweep, sweep levels are validated against `level`.
+
+        Args:
+            level: Expected physical dimension when `self.of` is a `DcSweep`.
+            toleranced: Serialized circuit tolerance descriptors from `variation`.
+
+        Returns:
+            Engine JSON mapping ``{'mismatch': ...}``.
         """
         outputs: list[JsonValue] = list(self.outputs)
         provided: list[JsonValue] = [
@@ -1046,7 +1112,11 @@ class Stability:
     ]
 
     def to_json(self) -> JsonValue:
-        """Serializes the analysis into the simulation engine's JSON format."""
+        """Serializes the analysis into the simulation engine's JSON format.
+
+        Returns:
+            Engine JSON mapping ``{'stability': ...}`` with frequencies in hertz.
+        """
         frequencies: list[JsonValue] = [
             frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
         ]
@@ -1073,7 +1143,11 @@ class TransferFunction:
     reference: Annotated[str | None, _REFERENCE] = None
 
     def to_json(self) -> JsonValue:
-        """Serializes the analysis into the simulation engine's JSON format."""
+        """Serializes the analysis into the simulation engine's JSON format.
+
+        Returns:
+            Engine JSON mapping ``{'transfer_function': ...}``.
+        """
         named: dict[str, JsonValue] = {"source": self.source, "output": self.output}
         if self.reference is not None:
             named["reference"] = self.reference
@@ -1102,7 +1176,11 @@ class Noise:
     source: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
 
     def to_json(self) -> JsonValue:
-        """Serializes the analysis into the simulation engine's JSON format."""
+        """Serializes the analysis into the simulation engine's JSON format.
+
+        Returns:
+            Engine JSON mapping ``{'noise': ...}`` with frequencies in hertz.
+        """
         frequencies: list[JsonValue] = [
             frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
         ]
@@ -1146,7 +1224,11 @@ class PoleZero:
         return self
 
     def to_json(self) -> JsonValue:
-        """Serializes the analysis into the simulation engine's JSON format."""
+        """Serializes the analysis into the simulation engine's JSON format.
+
+        Returns:
+            Engine JSON mapping ``{'pole_zero': ...}``.
+        """
         found = {
             "source": self.source,
             "output": self.output,
@@ -1228,7 +1310,11 @@ class Parallelism:
     max_unknowns_per_interior: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
 
     def to_json(self) -> dict[str, JsonValue]:
-        """Serializes configured parallelism overrides into JSON, omitting defaults."""
+        """Serializes configured parallelism overrides into JSON, omitting defaults.
+
+        Returns:
+            Dictionary of explicitly set parallelism thresholds for the engine.
+        """
         values = {setting.name: getattr(self, setting.name) for setting in fields(self)}
         return {name: value for name, value in values.items() if value is not None}
 
@@ -1306,7 +1392,11 @@ class Options:
     """
 
     def to_json(self) -> dict[str, JsonValue]:
-        """Serializes configured solver options into engine JSON, omitting defaults."""
+        """Serializes configured solver options into engine JSON, omitting defaults.
+
+        Returns:
+            Dictionary of explicitly configured solver options in SI base units.
+        """
         values: dict[str, JsonValue] = {
             setting.name: getattr(self, setting.name)
             for setting in fields(self)
@@ -1485,11 +1575,21 @@ class Axis:
 
     @classmethod
     def temperature(cls, values: Sequence[Quantity]) -> Axis:
-        """Builds a temperature sweep `Axis` across `values`."""
+        """Builds a temperature sweep `Axis` across `values`.
+
+        Args:
+            values: Non-empty sequence of temperature `Quantity` sweep points.
+
+        Returns:
+            Temperature sweep `Axis` with `instance` and `parameter` set to ``None``.
+        """
         return cls(None, None, values)
 
     def numbers(self) -> list[float]:
         """Converts axis values into SI base-unit floats, using kelvins for temperature.
+
+        Returns:
+            List of scalar axis values converted to SI base units.
 
         Raises:
             DimensionError: When any value does not match the axis dimension.
@@ -1544,6 +1644,12 @@ rebuild_dataclass(Product)  # ty: ignore[invalid-argument-type]
 
 def runs(variants: Variants) -> int:
     """Computes the total number of runs generated by `variants`.
+
+    Args:
+        variants: Variant specification (`MonteCarlo`, `Grid`, `Explicit`, `Product`).
+
+    Returns:
+        Total number of simulation runs defined by `variants`.
 
     Examples:
         >>> from jolty.units import celsius
@@ -1715,6 +1821,12 @@ class Plan:
         """Returns the active process corner for nominal execution or for `corner`.
 
         Returns `None` to indicate each foundry kit's typical process corner.
+
+        Args:
+            corner: Optional `Corner` overriding the nominal process corner.
+
+        Returns:
+            Active foundry process corner name, or ``None`` for the kit typical corner.
         """
         if corner is not None and corner.process is not None:
             return corner.process
@@ -1724,6 +1836,12 @@ class Plan:
         """Returns the active temperature for nominal execution or for `corner`.
 
         Returns `None` to indicate the default 27 °C simulation temperature.
+
+        Args:
+            corner: Optional `Corner` overriding the nominal plan temperature.
+
+        Returns:
+            Active simulation temperature `Quantity`, or ``None`` for default 27 °C.
         """
         if corner is not None and corner.temperature is not None:
             return corner.temperature
@@ -1737,6 +1855,14 @@ def decade(start: Quantity, stop: Quantity, per_decade: int) -> list[Quantity]:
     `r = (stop / start)^(1/n)`. Steps compute sequentially in `DECADE_DIGITS`-digit
     decimal arithmetic before rounding to the nearest float so results match across
     platforms regardless of native `log10` or `pow` rounding.
+
+    Args:
+        start: Positive lower frequency bound in hertz.
+        stop: Upper frequency bound strictly above `start`.
+        per_decade: Target number of logarithmically spaced steps per decade.
+
+    Returns:
+        Ascending list of frequency `Quantity` points from `start` to `stop`.
 
     Examples:
         >>> from jolty.units import Hz
@@ -1764,6 +1890,14 @@ def decade(start: Quantity, stop: Quantity, per_decade: int) -> list[Quantity]:
 
 def linear(start: Quantity, stop: Quantity, points: int) -> list[Quantity]:
     """Generates `points` evenly spaced quantities from `start` to `stop` inclusive.
+
+    Args:
+        start: Starting `Quantity` at index 0.
+        stop: Ending `Quantity` of matching dimension at index `points - 1`.
+        points: Total number of evenly spaced points (at least 2).
+
+    Returns:
+        List of `points` evenly spaced `Quantity` values from `start` to `stop`.
 
     Examples:
         >>> from jolty.units import V

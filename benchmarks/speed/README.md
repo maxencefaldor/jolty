@@ -68,7 +68,7 @@ The first round warms both builds and is discarded.
 
 Each reported timing is the round median accompanied by a distribution-free 95% confidence interval between the `k`-th smallest and `k`-th largest samples.
 The rank `k` is computed exactly by `measuring.rank` as the largest rank whose two-sided binomial tails sum to at most 5%.
-Six runs are the minimum needed for a 95% interval, where the extreme values bound the median with probability 1 − 2/2⁶ = 96.9% (five runs reach only 93.8%).
+Six runs are the minimum needed for a 95% interval, where the extreme values bound the median with probability 1 - 2/2⁶ = 96.9% (five runs reach only 93.8%).
 A performance change is reported only when the two builds' confidence intervals do not overlap.
 Comparison resolution is the smallest shift that would separate the intervals, computed as the sum of inner half-widths divided by the first build's median.
 
@@ -85,19 +85,19 @@ Break-even sweeps and `--scale` use the same interleaved-round protocol against 
 
 On 16 November 2026, an A/A validation compared two separate worktree builds of commit `7488b6e` on `dogwood` (16-core, 32-thread AMD Ryzen 9 7950X) while other users ran workloads on the host.
 An unbiased comparison between identical builds must report zero changes.
-An earlier single-process-per-build harness (`fba9b0e`, 20:33 to 20:36 UTC, load 1.8 to 6.5) reported four false wall-clock shifts: `bjt_amp` −0.2%, `buck` +3.0%, `rc_mesh_100` −6.3%, and single-core Monte Carlo +1.8%.
+An earlier single-process-per-build harness (`fba9b0e`, 20:33 to 20:36 UTC, load 1.8 to 6.5) reported four false wall-clock shifts: `bjt_amp` -0.2%, `buck` +3.0%, `rc_mesh_100` -6.3%, and single-core Monte Carlo +1.8%.
 Process CPU time showed the same false positives except `rc_mesh_100` shifted +2.8%.
 With one environment-padded process per run (`8702b11`, 20:36 to 20:40 UTC, load 1.6 to 9.1), the A/A check reported zero changes at 0.9% to 4.6% wall-clock resolution:
 
 | Time | `7488b6e` | `7488b6e` again | Change | Resolution | Rounds |
 | --- | --- | --- | --- | --- | --- |
-| `bjt_amp` | 1.151 ms [1.136, 1.166] | 1.147 ms [1.132, 1.161] | −0.4% | 2.6% | 21 |
-| `ac_wide` | 7.16 ms [7.039, 7.327] | 6.993 ms [6.886, 7.132] | −2.3% | 3.8% | 19 |
+| `bjt_amp` | 1.151 ms [1.136, 1.166] | 1.147 ms [1.132, 1.161] | -0.4% | 2.6% | 21 |
+| `ac_wide` | 7.16 ms [7.039, 7.327] | 6.993 ms [6.886, 7.132] | -2.3% | 3.8% | 19 |
 | `buck` | 793.3 ms [774.7, 812.3] | 798.7 ms [781.1, 814.9] | +0.7% | 4.6% | 7 |
-| `inverter_chain_500` | 4.416 s [4.335, 4.488] | 4.407 s [4.308, 4.477] | −0.2% | 3.9% | 6 |
+| `inverter_chain_500` | 4.416 s [4.335, 4.488] | 4.407 s [4.308, 4.477] | -0.2% | 3.9% | 6 |
 | `rc_mesh_100` | 649.1 ms [634.5, 661] | 654.1 ms [650.7, 659.4] | +0.8% | 3.1% | 9 |
 | `monte_carlo`, a sample on one core | 530.5 µs [525.1, 542.1] | 532.2 µs [523.2, 535.6] | +0.3% | 3.9% | 6 |
-| `monte_carlo`, a sample on every core | 29.78 µs [29.67, 29.96] | 29.75 µs [29.67, 29.85] | −0.1% | 0.9% | 16 |
+| `monte_carlo`, a sample on every core | 29.78 µs [29.67, 29.96] | 29.75 µs [29.67, 29.85] | -0.1% | 0.9% | 16 |
 
 Next (20:40 to 20:45 UTC, load 1.1 to 2.3), an A/B check compared `7488b6e` against a throwaway build adding a 120 ns busy-spin per transient Newton iteration.
 The injected delay adds at least 120 ns per transient Newton iteration plus clock-read overhead (0.055 µs per read on `dogwood`).
@@ -108,7 +108,7 @@ The comparator detected every slowdown exceeding measurement resolution and repo
 | `bjt_amp` | 106 | +1.1% | +2.3% | 2.9% | |
 | `ac_wide` | 0 | 0 | +0.3% | 4.7% | |
 | `buck` | 330,869 | +5.0% | +7.7% | 4.7% | slower |
-| `inverter_chain_500` | 11,798 | +0.03% | −1.2% | 3.3% | |
+| `inverter_chain_500` | 11,798 | +0.03% | -1.2% | 3.3% | |
 | `rc_mesh_100` | 227 | +0.004% | +0.3% | 4.3% | |
 | `monte_carlo`, a sample on one core | each sample's | | +3.4% | 3.7% | |
 | `monte_carlo`, a sample on every core | each sample's | | +1.8% | 0.8% | slower |
@@ -313,7 +313,7 @@ Linear devices therefore do not count toward `min_instances_per_task`, keeping m
 Parallel device evaluation paid off on chains at 4 and 8 threads (250- and 125-MOSFET tasks), but never paid off up to 1,000 inverters on 2 threads (whole-group tasks) or 64 threads (31-MOSFET tasks).
 On 2 threads, amplifier frequency sweeps paid off only from 9,999 solves.
 Tasks of 2,250 lost 0.9% at 500 frequencies per decade, whereas tasks of 900 gained 22.6% at 200 per decade because closely spaced frequencies reuse pivots cheaply.
-Inverter chains never dissect, so `max_unknowns_per_interior` runs stayed within 0.3% of serial on every thread count (counting the −0.0% at 500 inverters on 64 threads as a gain).
+Inverter chains never dissect, so `max_unknowns_per_interior` runs stayed within 0.3% of serial on every thread count (counting the -0.0% at 500 inverters on 64 threads as a gain).
 RC meshes dissect starting at 100×100 for every swept interior bound, and at 70×70 only at ≤313 unknowns per interior (which lost on 64 threads).
 Dissecting the 300×300 mesh into 1/64th-size interiors ran 5.2× faster than serial on 64 threads.
 Parallel per-unknown work slowed every chain up to 2,000 inverters by 8.0% to 39.9% and gained only 0.7% to 1.2% on the 300×300 mesh.

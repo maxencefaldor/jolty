@@ -19,9 +19,9 @@ pub struct LogicDriverParameters {}
 
 /// Connect element driving an electrical net from a logic output.
 ///
-/// Constrains `v_output − v_ground = s · (v_supply − v_ground)` where `s` ramps smoothly
+/// Constrains `v_output - v_ground = s · (v_supply - v_ground)` where `s` ramps smoothly
 /// between logic level fractions. The output current flowing from `output` to `ground` is an
-/// unknown labelled `current`.
+/// unknown labeled `current`.
 #[derive(Debug, Clone, Copy)]
 pub struct LogicDriver;
 

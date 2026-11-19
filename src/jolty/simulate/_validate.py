@@ -59,7 +59,14 @@ class Catalog:
     overrides: Mapping[str, Mapping[str, float]]
 
     def parameters(self, path: str) -> tuple[str, ...]:
-        """Returns every real-valued parameter path defined on the device at `path`."""
+        """Returns every real-valued parameter path defined on the device at `path`.
+
+        Args:
+            path: Hierarchical path of an active device instance in `devices`.
+
+        Returns:
+            Deduplicated parameter paths writable on the device at `path`.
+        """
         instance = self.devices[path]
         return tuple(
             dict.fromkeys(
@@ -77,7 +84,19 @@ def build_catalog(  # noqa: PLR0913 - elaborated circuit topology and metadata
     overrides: Mapping[str, Mapping[str, float]],
     joined: Callable[[str, str], Joined | None],
 ) -> Catalog:
-    """Builds the static lookup catalog for an elaborated circuit."""
+    """Builds the static lookup catalog for an elaborated circuit.
+
+    Args:
+        built: Elaborated circuit whose active devices and components are indexed.
+        substituted: Component instance paths replaced by substitute device models.
+        unknowns: Circuit unknowns exposed by the engine.
+        nets: Discrete logic net names exposed by the engine.
+        overrides: Parameter overrides active on the simulation.
+        joined: Lookup returning the connected `Joined` node for an instance terminal.
+
+    Returns:
+        Populated `Catalog` indexing devices, sources, probes, nets, and unknowns.
+    """
     devices, component_paths = _walk_circuit(built, substituted)
     independent_sources = tuple(
         path
@@ -157,7 +176,15 @@ def _is_probe(
 
 
 def process_problems(plan: Plan, *, has_foundry: bool) -> list[str]:
-    """Reports process corners on `plan` when the circuit has no foundry devices."""
+    """Reports process corners on `plan` when the circuit has no foundry devices.
+
+    Args:
+        plan: Simulation plan declaring top-level and per-corner process names.
+        has_foundry: Flag indicating presence of foundry PDK devices in the circuit.
+
+    Returns:
+        Diagnostic messages for unsupported process corner declarations.
+    """
     if has_foundry:
         return []
     problems: list[str] = []
@@ -182,7 +209,18 @@ def plan_condition_problems(
     has_foundry: bool,
     check_temperature: bool,
 ) -> list[str]:
-    """Checks `plan`'s temperature and process corners against a simulation."""
+    """Checks `plan`'s temperature and process corners against a simulation.
+
+    Args:
+        plan: Simulation plan whose operating conditions are checked.
+        temperature: Simulation ambient temperature in kelvins.
+        has_foundry: Flag indicating presence of foundry PDK devices in the circuit.
+        check_temperature: Flag enforcing equality between `plan.temperature` and
+            `temperature`.
+
+    Returns:
+        Diagnostic messages for mismatched temperatures or unsupported process corners.
+    """
     problems: list[str] = []
     if check_temperature and plan.temperature is not None:
         target = plan.temperature.to(TEMPERATURE, "a plan's temperature")
@@ -198,7 +236,16 @@ def plan_condition_problems(
 def nodeset_problems(
     mapping: Mapping[str, Quantity], what: str, catalog: Catalog
 ) -> list[str]:
-    """Collects every key in `mapping` that is not a circuit voltage net."""
+    """Collects every key in `mapping` that is not a circuit voltage net.
+
+    Args:
+        mapping: Mapping from net names to voltage quantities.
+        what: Singular noun naming the mapping kind, such as ``"nodeset"``.
+        catalog: Static circuit catalog supplying valid voltage nets and ground.
+
+    Returns:
+        Diagnostic messages for keys absent from `catalog.voltage_nets`.
+    """
     valid = frozenset(catalog.voltage_nets)
     problems: list[str] = []
     for net in mapping:
@@ -409,7 +456,15 @@ def _transfer_function_problems(
 def parameter_pair_problems(
     pairs: Iterable[tuple[str, str | None]], catalog: Catalog
 ) -> list[str]:
-    """Checks deduplicated `(device_path, parameter)` pairs against `catalog`."""
+    """Checks deduplicated `(device_path, parameter)` pairs against `catalog`.
+
+    Args:
+        pairs: Iterable of `(device_path, parameter)` references to validate.
+        catalog: Static circuit catalog indexing devices and parameter paths.
+
+    Returns:
+        Diagnostic messages for missing devices or unrecognized parameter names.
+    """
     problems: list[str] = []
     missing_devices: set[str] = set()
     seen_pairs: set[tuple[str, str]] = set()
@@ -444,7 +499,14 @@ def _override_pairs(
 
 
 def variant_pairs(variants: Variants) -> list[tuple[str, str | None]]:
-    """Collects every `(instance, parameter)` pair referenced by `variants`."""
+    """Collects every `(instance, parameter)` pair referenced by `variants`.
+
+    Args:
+        variants: Parameter variation specification to traverse.
+
+    Returns:
+        Ordered `(instance, parameter)` references extracted from `variants`.
+    """
     match variants:
         case MonteCarlo():
             return []
@@ -586,7 +648,17 @@ def analysis_problems(
     *,
     has_logic_nets: bool,
 ) -> tuple[list[str], DimensionError | None]:
-    """Collects every static problem checking `analysis` against `catalog`."""
+    """Collects every static problem checking `analysis` against `catalog`.
+
+    Args:
+        analysis: Analysis specification to validate statically.
+        catalog: Static circuit catalog indexing devices, sources, and unknowns.
+        record_checker: Callback validating recorded instance patterns.
+        has_logic_nets: Flag indicating presence of discrete logic nets in the circuit.
+
+    Returns:
+        Pair of diagnostic strings and optional DC sweep `DimensionError`.
+    """
     problems: list[str] = []
     if isinstance(analysis, Recorded) and analysis.record is not None:
         problems.extend(record_checker(analysis.record))
@@ -611,7 +683,17 @@ def analyses_problems(
     *,
     has_logic_nets: bool,
 ) -> list[str]:
-    """Collects static problems across named `analyses`, prefixed by analysis name."""
+    """Collects static problems across named `analyses`, prefixed by analysis name.
+
+    Args:
+        analyses: Mapping from analysis names to specifications to validate.
+        catalog: Static circuit catalog indexing devices, sources, and unknowns.
+        record_checker: Callback validating recorded instance patterns.
+        has_logic_nets: Flag indicating presence of discrete logic nets in the circuit.
+
+    Returns:
+        Diagnostic messages prefixed with each offending analysis name.
+    """
     problems: list[str] = []
     for name, analysis in analyses.items():
         found, _ = analysis_problems(
@@ -622,7 +704,15 @@ def analyses_problems(
 
 
 def noise_unit_unknown(analysis: Noise, catalog: Catalog) -> bool:
-    """Returns whether the output or input-referred noise unit is undetermined."""
+    """Returns whether the output or input-referred noise unit is undetermined.
+
+    Args:
+        analysis: Noise analysis specification under validation.
+        catalog: Static circuit catalog indexing unknowns and independent sources.
+
+    Returns:
+        `True` when the output unknown or referred input source cannot be resolved.
+    """
     output_known = (
         analysis.output in catalog.unknowns or analysis.output == catalog.ground
     )
@@ -637,7 +727,15 @@ def noise_unit_unknown(analysis: Noise, catalog: Catalog) -> bool:
 def fidelity_scope_problems(
     scopes: Mapping[str, object], component_paths: tuple[str, ...]
 ) -> list[str]:
-    """Collects every fidelity scope that matches no component instance."""
+    """Collects every fidelity scope that matches no component instance.
+
+    Args:
+        scopes: Mapping keyed by fidelity scope paths or glob patterns.
+        component_paths: Hierarchical paths of all component instances in the circuit.
+
+    Returns:
+        Diagnostic messages for fidelity scopes matching no component instance.
+    """
     problems: list[str] = []
     for scope in scopes:
         if any(PurePosixPath(path).full_match(scope) for path in component_paths):
@@ -651,7 +749,15 @@ def fidelity_scope_problems(
 
 
 def trace_problems(traces: Sequence[str], valid_names: tuple[str, ...]) -> list[str]:
-    """Collects every trace in `traces` that is neither an unknown nor a logic net."""
+    """Collects every trace in `traces` that is neither an unknown nor a logic net.
+
+    Args:
+        traces: Requested trace names to check.
+        valid_names: All circuit unknown names and discrete logic net names.
+
+    Returns:
+        Diagnostic messages for unrecognized trace names.
+    """
     valid = frozenset(valid_names)
     problems: list[str] = []
     for trace in dict.fromkeys(traces):
@@ -666,7 +772,16 @@ def trace_problems(traces: Sequence[str], valid_names: tuple[str, ...]) -> list[
 def record_problems(
     record: Sequence[str], instances: tuple[str, ...], known: frozenset[str]
 ) -> list[str]:
-    """Collects unknown instance paths and unmatched wildcard patterns in `record`."""
+    """Collects unknown instance paths and unmatched wildcard patterns in `record`.
+
+    Args:
+        record: Exact paths, glob patterns, or ``!``-negated exclusions to check.
+        instances: Ordered recordable instance paths in the circuit.
+        known: Set of all recordable instance paths for fast membership checks.
+
+    Returns:
+        Diagnostic messages for missing instances and unmatched patterns.
+    """
     problems: list[str] = []
     for pattern in record:
         body = pattern.removeprefix("!")
@@ -685,6 +800,14 @@ def resolve_record(
     record: tuple[str, ...], instances: tuple[str, ...], known: frozenset[str]
 ) -> frozenset[str]:
     """Resolves the set of instance paths selected by `record`.
+
+    Args:
+        record: Ordered exact paths, glob patterns, and ``!``-negated exclusions.
+        instances: Ordered recordable instance paths in the circuit.
+        known: Set of all recordable instance paths in the circuit.
+
+    Returns:
+        Selected instance paths after applying inclusions and exclusions in order.
 
     Raises:
         PlanError: Lists every unknown instance path or unmatched wildcard pattern.

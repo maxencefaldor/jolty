@@ -22,7 +22,7 @@ const SOURCE_END_EXPONENT: f64 = 6.0;
 /// The least argument of `b4v5ld.c`'s gate-induced leakage's exponential, below whose
 /// negative it holds the leakage at its `3.720075976e-44` times its prefactor.
 const GIDL_EXPONENT: f64 = 100.0;
-/// Lower exponential floor `e^−100` used by `b4v5ld.c` for gate-induced leakage.
+/// Lower exponential floor `e^-100` used by `b4v5ld.c` for gate-induced leakage.
 const GIDL_MIN_EXP: f64 = 3.720_075_976e-44;
 
 /// Multi-finger channel evaluation state at one bias in the forward frame (`vds >= 0`),
@@ -58,7 +58,7 @@ pub(super) struct Operating<R: Real> {
     pub(super) nstar: D<R>,
 }
 
-/// Evaluates `T1 / ((T1 − 1)² + 2·T1·MIN_EXP)` for `T1 = e^x`, held at `1 / (MAX_EXP − 2)`
+/// Evaluates `T1 / ((T1 - 1)² + 2·T1·MIN_EXP)` for `T1 = e^x`, held at `1 / (MAX_EXP - 2)`
 /// from [`EXP_THRESHOLD`] upward, matching `b4v5temp.c` and `b4v5ld.c`.
 pub(super) fn theta<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() < EXP_THRESHOLD {

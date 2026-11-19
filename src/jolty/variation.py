@@ -58,6 +58,12 @@ def toleranced(circuit: ir.Circuit) -> tuple[Toleranced, ...]:
     Entries appear in hierarchy order with each instance's parameters sorted by path,
     matching the engine listing.
 
+    Args:
+        circuit: Circuit IR inspected for device parameter tolerances.
+
+    Returns:
+        Hierarchy-ordered tuple of `Toleranced` parameter descriptors.
+
     Raises:
         ValueError: When a toleranced parameter is non-numeric or when component
             placements form a cycle.
@@ -73,7 +79,14 @@ def toleranced(circuit: ir.Circuit) -> tuple[Toleranced, ...]:
 
 
 def payload(toleranced: Iterable[Toleranced]) -> list[JsonValue]:
-    """Encodes `toleranced` as the JSON payload expected by the engine."""
+    """Encodes `toleranced` as the JSON payload expected by the engine.
+
+    Args:
+        toleranced: Toleranced parameter descriptors to serialize.
+
+    Returns:
+        JSON-compatible list of tolerance dictionaries for the Rust engine.
+    """
     return [
         {
             "instance": parameter.instance,
@@ -94,6 +107,14 @@ def sample(
     parameter path. Each value multiplies nominal by an independent instance factor
     plus any shared lot factor, seeded by `seed`, `index`, and the parameter key.
 
+    Args:
+        toleranced: Toleranced parameter descriptors to sample.
+        seed: Unsigned 64-bit pseudorandom generator seed.
+        index: Zero-based Monte Carlo sample index.
+
+    Returns:
+        Nested dictionary `{instance: {parameter: value}}` in SI base units.
+
     Raises:
         OverflowError: When `seed` or `index` is negative or at least ``2**64``.
     """
@@ -112,7 +133,14 @@ type LotMember = tuple[str, str]
 
 
 def lot(toleranced: Toleranced) -> LotMember | None:
-    """Returns the shared `(lot_name, parameter)` key for `toleranced`, or None."""
+    """Returns the shared `(lot_name, parameter)` key for `toleranced`, or None.
+
+    Args:
+        toleranced: Single toleranced parameter descriptor to inspect.
+
+    Returns:
+        `(lot_name, parameter)` tuple when assigned to a lot, or ``None``.
+    """
     shared = toleranced.tolerance.lot
     return None if shared is None else (shared.name, toleranced.parameter)
 
@@ -123,6 +151,14 @@ def moved(
     """Builds an override moving `toleranced[index]` by `fraction` of its tolerance.
 
     All other circuit parameters remain at their nominal values.
+
+    Args:
+        toleranced: Indexed sequence of toleranced parameter descriptors.
+        index: Zero-based position of the parameter to perturb.
+        fraction: Signed fraction of tolerance range (`-1` to `1`).
+
+    Returns:
+        Single-entry override `{instance: {parameter: value}}` in SI base units.
     """
     parameter = toleranced[index]
     value = parameter.nominal * edge(parameter.tolerance, fraction)
@@ -140,6 +176,14 @@ def extreme(
     nominal. Parts belonging to a lot also multiply by the lot extreme looked up in
     `lots` (defaulting to ``0``). Results are nested by instance path and parameter
     path.
+
+    Args:
+        toleranced: Toleranced parameters paired elementwise with `directions`.
+        directions: Signed per-instance tolerance directions (`-1`, `0`, `1`).
+        lots: Signed lot directions keyed by `(lot_name, parameter)`.
+
+    Returns:
+        Nested parameter override dictionary `{instance: {parameter: value}}`.
     """
     found: dict[str, dict[str, float]] = {}
     for parameter, direction in zip(toleranced, directions, strict=True):
@@ -159,6 +203,13 @@ def edge(spread: ir.Tolerance | ir.Lot, direction: float) -> float:
     Linear tolerances evaluate ``1 + direction * relative`` (where ``relative`` is
     three standard deviations for normal distributions), and logarithmic tolerances
     evaluate ``(1 + relative) ** direction``. Passing ``-1`` selects the lower extreme.
+
+    Args:
+        spread: Instance `Tolerance` or shared `Lot` specification.
+        direction: Signed excursion multiplier along the tolerance spread.
+
+    Returns:
+        Multiplicative scale factor applied to the nominal parameter value.
 
     Examples:
         >>> edge(ir.Tolerance(relative=0.05), -1)

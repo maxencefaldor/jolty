@@ -534,11 +534,7 @@ pub(crate) fn non_standard_values(simulator: &Simulator, diagnostics: &mut Vec<D
             "inductor" => ("inductance", "H", Series::E24),
             _ => continue,
         };
-        let Some(value) = device
-            .parameters()
-            .and_then(|parameters| parameters.get(parameter))
-            .and_then(serde_json::Value::as_f64)
-        else {
+        let Some(value) = device.numeric_parameter(parameter) else {
             continue;
         };
         if value > 0.0 {

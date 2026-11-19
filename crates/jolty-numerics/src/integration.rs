@@ -12,8 +12,7 @@
 //! derivatives of the resistive and reactive parts.
 
 /// An integration formula.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Method {
     /// The first-order backward Euler formula: stable and damped, used to start and to restart
     /// after a discontinuity.
@@ -126,7 +125,7 @@ impl Method {
     /// calling `shortest`.
     ///
     /// For Gear2, the error constant depends on `u = h / h₀` ([`Method::truncation_error`]),
-    /// so the step solves the fixed point `h = Λ(C(h/h₀))`. In `x = ln h`, `ln Λ − x` has
+    /// so the step solves the fixed point `h = Λ(C(h/h₀))`. In `x = ln h`, `ln Λ - x` has
     /// slope between `-1` and `-1/2`, so Newton iteration from `previous_step` contracts
     /// until the update reaches float precision or stops shrinking.
     pub fn longest_common_step(
@@ -152,7 +151,7 @@ impl Method {
                 ErrorBound::Charge => by_charge,
                 ErrorBound::Current => by_current,
             };
-            // Compute the slope of ln Λ(C(h/h₀)) in ln h and take a Newton step on ln Λ − ln h.
+            // Compute the slope of ln Λ(C(h/h₀)) in ln h and take a Newton step on ln Λ - ln h.
             let slope = -power * gear2_elasticity(ratio);
             let next = step * (reach / step).powf((1.0 - slope).recip());
             let change = (next - step).abs();
@@ -324,15 +323,15 @@ impl Formula {
     }
 
     /// Computes the discrete charge-leak increment
-    /// `Δℓ_n = (residual − γ · previous_residual + β₁ · previous_increment) / α`.
+    /// `Δℓ_n = (residual - γ · previous_residual + β₁ · previous_increment) / α`.
     ///
     /// The identity `α + β₀ + β₁ = 0` rearranges the step formula
     /// `q̇_n = α q_n + β₀ q_{n-1} + β₁ q_{n-2} + γ q̇_{n-1}` into
-    /// `α Δq_n = q̇_n − γ q̇_{n-1} + β₁ Δq_{n-1}`. Substituting `q̇_n = r_n − f_n` splits
-    /// each step's charge change linearly into the discrete integral of `−f` plus the integral
+    /// `α Δq_n = q̇_n - γ q̇_{n-1} + β₁ Δq_{n-1}`. Substituting `q̇_n = r_n - f_n` splits
+    /// each step's charge change linearly into the discrete integral of `-f` plus the integral
     /// of the residual `r`:
     /// - backward Euler (`β₁ = 0, γ = 0`): `h · r_n`,
-    /// - trapezoidal (`β₁ = 0, γ = −1`): `½ h · (r_n + r_{n-1})`,
+    /// - trapezoidal (`β₁ = 0, γ = -1`): `½ h · (r_n + r_{n-1})`,
     /// - Gear2 (`γ = 0`): `h · (ω r̄_{n-1} + (1 + ω) r_n) / (1 + 2ω)`, a convex combination
     ///   of the previous step's mean leak rate `r̄_{n-1} = Δℓ_{n-1} / h_{n-1}` and `r_n`.
     ///

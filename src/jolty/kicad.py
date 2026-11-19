@@ -100,7 +100,11 @@ class Netlist(ir.FrozenModel):
     )
 
     def text(self) -> str:
-        """Formats the netlist as a KiCad version-E S-expression string."""
+        """Formats the netlist as a KiCad version-E S-expression string.
+
+        Returns:
+            Trailing-newline-terminated KiCad version-E netlist text.
+        """
         written = _List(
             "export",
             (
@@ -119,11 +123,19 @@ class Netlist(ir.FrozenModel):
         return "\n".join(written.lines("")) + "\n"
 
     def save(self, path: Path) -> None:
-        """Writes the formatted KiCad netlist to `path`."""
+        """Writes the formatted KiCad netlist to `path`.
+
+        Args:
+            path: Destination `.net` file path to write.
+        """
         path.write_text(self.text(), encoding="utf-8")
 
     def describe(self) -> str:
-        """Formats a plain-text summary of netlist counts and footprints."""
+        """Formats a plain-text summary of netlist counts and footprints.
+
+        Returns:
+            Multi-line summary listing footprint count, net count, and part assignments.
+        """
         head = f"{len(self.footprints)} footprints on {len(self.nets)} nets"
         rows = [
             f"  {each.reference}: {each.instance}, {each.value}, {each.part.footprint}"
@@ -134,6 +146,14 @@ class Netlist(ir.FrozenModel):
 
 def netlist(circuit: ir.Circuit, parts: catalog.Catalog, instance: str = "") -> Netlist:
     """Builds a KiCad netlist for the component at `instance` (top level by default).
+
+    Args:
+        circuit: Circuit IR containing the target component.
+        parts: Parts catalog supplying footprints and pad-to-terminal pin mappings.
+        instance: Hierarchical component instance path, or empty for the top component.
+
+    Returns:
+        Exported `Netlist` containing footprints and pad-level board nets.
 
     Raises:
         JoltyError: When no component instance exists at `instance`.

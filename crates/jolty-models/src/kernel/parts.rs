@@ -163,7 +163,7 @@ const PAIR: (usize, usize) = (POSITIVE, NEGATIVE);
 /// Two local unknowns of a two-terminal element and the four matrix entries joining them.
 ///
 /// Current flows from the positive node to the negative node, and branch voltage equals
-/// `v(positive) − v(negative)`.
+/// `v(positive) - v(negative)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Pair(Nodes<2>);
 
@@ -173,7 +173,7 @@ impl Pair {
         Self(Nodes::new(layout, [positive, negative]))
     }
 
-    /// Returns the voltage `v(positive) − v(negative)` across the element.
+    /// Returns the voltage `v(positive) - v(negative)` across the element.
     pub(crate) fn voltage(&self, at: &Local<'_>) -> f64 {
         self.0.voltage(at, POSITIVE) - self.0.voltage(at, NEGATIVE)
     }
@@ -222,7 +222,7 @@ pub(crate) struct CurrentBranch {
 }
 
 impl CurrentBranch {
-    /// Allocates a branch-current unknown labelled `label` between `positive` and `negative`
+    /// Allocates a branch-current unknown labeled `label` between `positive` and `negative`
     /// and claims the four coupling entries in `layout`.
     pub(crate) fn new(
         layout: &mut Layout,
@@ -253,7 +253,7 @@ impl CurrentBranch {
         at.unknown(self.current)
     }
 
-    /// Returns the branch voltage `v(positive) − v(negative)` as scalar `R`, carrying any
+    /// Returns the branch voltage `v(positive) - v(negative)` as scalar `R`, carrying any
     /// unknown derivative seeds in `at`.
     pub(crate) fn voltage<R: Real>(&self, at: &Local<'_>) -> R {
         let [positive, negative] = self.nodes;
@@ -311,8 +311,8 @@ impl Series {
     /// Allocates a series `resistance` behind `terminal` and returns the [`Series`] element
     /// plus the internal node index (`terminal` itself when resistance is non-positive).
     ///
-    /// Positive resistance allocates an internal voltage node labelled `label`; resistance
-    /// below [`SMALL_RESISTANCE`] (1 Ω) also allocates a branch current unknown labelled
+    /// Positive resistance allocates an internal voltage node labeled `label`; resistance
+    /// below [`SMALL_RESISTANCE`] (1 Ω) also allocates a branch current unknown labeled
     /// `current` with a [pivot](Layout::pivot) at `(inner, current)` equal to `-1`. The
     /// current column contains only `1` at `terminal` and `-R` on the current diagonal
     /// across all `G`, `G + αC`, and `G + jωC` matrices because no charge depends on the
@@ -371,7 +371,7 @@ impl Series {
     }
 
     /// Claims matrix entries coupling this series resistance to the controlling voltage
-    /// `v(plus) − v(minus)` and withdraws any explicit-current pivot.
+    /// `v(plus) - v(minus)` and withdraws any explicit-current pivot.
     ///
     /// Withdrawing the pivot is required because a voltage-dependent resistance can grow
     /// past 1 Ω and lose column dominance.
@@ -502,7 +502,7 @@ pub(crate) fn series_value<R: Real>(resistance: R) -> R {
 }
 
 /// Controlling voltages for one device evaluation: the step-limited evaluation voltages and
-/// the difference `applied − voltages`.
+/// the difference `applied - voltages`.
 ///
 /// Linearly extending every model output along `beyond` ensures the next Newton step solves
 /// the circuit linearized at the limited operating point.
@@ -510,7 +510,7 @@ pub(crate) fn series_value<R: Real>(resistance: R) -> R {
 pub(crate) struct Bias<const N: usize> {
     /// Step-limited voltages at which the model is evaluated.
     pub(crate) voltages: [f64; N],
-    /// Offset `applied − voltages` by which each applied voltage exceeds the evaluated value.
+    /// Offset `applied - voltages` by which each applied voltage exceeds the evaluated value.
     pub(crate) beyond: [f64; N],
 }
 

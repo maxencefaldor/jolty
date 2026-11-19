@@ -1,6 +1,6 @@
 //! The `networks` kernel, compiled by jolty-veriloga from `crates/jolty-veriloga/tests/fixtures/networks.va`.
 //!
-//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Its source says:
+//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Original source notice:
 //!
 //! ```text
 //! Shorts and branch currents, written to exercise how the compiler joins nodes and

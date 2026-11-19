@@ -58,7 +58,12 @@ class Built:
 
 
 def check_net_name(node: str, statement: Statement) -> None:
-    """Rejects node names colliding with `GROUND` or containing `ir.SEPARATOR`."""
+    """Rejects node names colliding with `GROUND` or containing `ir.SEPARATOR`.
+
+    Args:
+        node: Written SPICE node name to validate.
+        statement: Statement used for error attribution on failure.
+    """
     if node.casefold() == GROUND:
         message = f"a node named `{node}`, which jolty names the ground port"
         raise statement.fail(message)
@@ -71,7 +76,14 @@ def check_net_name(node: str, statement: Statement) -> None:
 
 
 def node_of(written: str) -> str | None:
-    """Extracts the single node name from ``V(node)``, or returns None otherwise."""
+    """Extracts the single node name from ``V(node)``, or returns None otherwise.
+
+    Args:
+        written: Token expected in ``V(node)`` form.
+
+    Returns:
+        Trimmed node name inside ``V(...)``, or `None` when malformed or differential.
+    """
     if written[:2].casefold() != "v(" or not written.endswith(")"):
         return None
     inside = written[2:-1].strip()
@@ -84,6 +96,14 @@ def parse_voltages(
     functions: Mapping[str, Function],
 ) -> dict[str, float]:
     """Parses ``V(node)=value`` voltage entries from an ``.ic`` or ``.nodeset`` line.
+
+    Args:
+        statement: Logical ``.ic`` or ``.nodeset`` statement to parse.
+        scope: Case-folded parameter values in scope for voltage expressions.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        Mapping from written SPICE node names to evaluated voltages in volts.
 
     Raises:
         SpiceError: When an entry is malformed or evaluates to a non-finite value.
@@ -118,7 +138,16 @@ def port_map(
     built: Built,
     connections: Mapping[str, str] | None,
 ) -> dict[str, str]:
-    """Maps `subcircuit`'s canonical pin names to the external nets in `connections`."""
+    """Maps `subcircuit`'s canonical pin names to the external nets in `connections`.
+
+    Args:
+        subcircuit: Subcircuit definition supplying formal pin names.
+        built: Translated subcircuit build mapping case-folded pins to canonical nets.
+        connections: Optional mapping from pin names to connected external net names.
+
+    Returns:
+        Mapping from canonical subcircuit port net names to external net names.
+    """
     if connections is None or not connections:
         return {}
     canonical = {pin.casefold(): built.nets[pin.casefold()] for pin in subcircuit.pins}
@@ -133,7 +162,16 @@ def port_map(
 
 
 def remap_net(net: str, mapping: Mapping[str, str], prefix: str) -> str:
-    """Remaps a net from a child subcircuit into its parent's namespace."""
+    """Remaps a net from a child subcircuit into its parent's namespace.
+
+    Args:
+        net: Canonical net name inside the child subcircuit.
+        mapping: Port mapping from child port nets to parent net names.
+        prefix: Hierarchy prefix prepended to unmapped internal nets.
+
+    Returns:
+        Corresponding net name in the parent namespace.
+    """
     if net == GROUND:
         return GROUND
     if net in mapping:
@@ -144,7 +182,16 @@ def remap_net(net: str, mapping: Mapping[str, str], prefix: str) -> str:
 def remap_capacitor(
     capacitor: DeviceVoltage, mapping: Mapping[str, str], prefix: str
 ) -> DeviceVoltage:
-    """Remaps a capacitor's ``IC=`` voltage endpoints into its parent's namespace."""
+    """Remaps a capacitor's ``IC=`` voltage endpoints into its parent's namespace.
+
+    Args:
+        capacitor: Child capacitor initial-voltage record.
+        mapping: Port mapping from child port nets to parent net names.
+        prefix: Hierarchy prefix prepended to element and internal net names.
+
+    Returns:
+        Remapped `DeviceVoltage` expressed in the parent namespace.
+    """
     return DeviceVoltage(
         element=f"{prefix}{capacitor.element}",
         positive=remap_net(capacitor.positive, mapping, prefix),
@@ -156,7 +203,15 @@ def remap_capacitor(
 def prefixed_inductors(
     inductors: tuple[tuple[str, float], ...], prefix: str
 ) -> dict[str, float]:
-    """Prefixes inductor current unknown names with `prefix`."""
+    """Prefixes inductor current unknown names with `prefix`.
+
+    Args:
+        inductors: Pairs of `(unknown_name, initial_current)` collected inside a build.
+        prefix: Hierarchy prefix prepended to each unknown name.
+
+    Returns:
+        Mapping from prefixed inductor unknown names to initial currents in amperes.
+    """
     return {f"{prefix}{unknown_name}": current for unknown_name, current in inductors}
 
 
@@ -169,7 +224,19 @@ def collect_node_voltages(  # noqa: PLR0913 - subcircuit, build, local/top maps 
     path: str,
     connections: Mapping[str, str] | None,
 ) -> tuple[dict[str, str], str, list[tuple[str, float]]]:
-    """Gathers and remaps ``.ic`` or ``.nodeset`` voltages for a subcircuit."""
+    """Gathers and remaps ``.ic`` or ``.nodeset`` voltages for a subcircuit.
+
+    Args:
+        subcircuit: Subcircuit definition being queried.
+        built: Nominal build of `subcircuit` supplying canonical net names.
+        local_entries: Inner `(net, voltage)` pairs collected inside `built`.
+        top_level: Library-level written node voltages overriding inner declarations.
+        path: Hierarchical placement path, or empty when `subcircuit` is top-level.
+        connections: Optional mapping from subcircuit pin names to external nets.
+
+    Returns:
+        Tuple of `(port_mapping, hierarchy_prefix, remapped_entries)`.
+    """
     mapping = port_map(subcircuit, built, connections)
     prefix = f"{path}{ir.SEPARATOR}" if path else ""
     entries: list[tuple[str, float]] = [
@@ -187,6 +254,14 @@ def resolve_node_voltages(
     what: str,
 ) -> dict[str, float]:
     """Resolves ``.ic`` or ``.nodeset`` entries, checking ground consistency.
+
+    Args:
+        entries: Ordered `(net, voltage)` pairs where later entries override earlier
+            assignments.
+        what: Noun phrase describing the directive kind in error messages.
+
+    Returns:
+        Mapping from non-ground net names to resolved voltages in volts.
 
     Raises:
         SpiceError: When ground is assigned a non-zero voltage.
@@ -282,6 +357,13 @@ def solve_initial_voltages(
     capacitors: Sequence[DeviceVoltage],
 ) -> dict[str, float]:
     """Solves ``.ic`` node voltages and capacitor ``IC=`` voltage differences.
+
+    Args:
+        entries: Explicit `(net, voltage)` pairs from ``.ic`` statements.
+        capacitors: Capacitor differential voltage constraints from ``IC=`` parameters.
+
+    Returns:
+        Mapping from constrained non-ground net names to solved voltages in volts.
 
     Raises:
         SpiceError: When a shorted capacitor has a non-zero ``IC=``, ground is assigned

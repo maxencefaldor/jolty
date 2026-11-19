@@ -29,7 +29,8 @@ impl Facts<'_> {
         out.line(format!(
             "//! The `{name}` kernel, compiled by jolty-veriloga from `{source}`.\n\
              //!\n\
-             //! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Its source says:\n\
+             //! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. \
+             Original source notice:\n\
              //!"
         ));
         for line in std::iter::once("```text")

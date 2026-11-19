@@ -90,6 +90,9 @@ def run(
         conditions: Temperature, process corner, mismatch seed, and parameter overrides.
         unknowns: Circuit unknowns requested for extraction from ngspice output.
 
+    Returns:
+        Standard `AnalysisResult` populated from exported ngspice vectors.
+
     Raises:
         SimulationError: If ngspice does not support the analysis, fails to run, or
             cannot read the netlist.

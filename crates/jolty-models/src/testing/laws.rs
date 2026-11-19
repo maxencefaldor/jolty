@@ -40,7 +40,7 @@ const NEAR: [f64; 7] = [0.0, 1e-9, -1e-9, 0.5, -0.5, 5.0, -5.0];
 const FAR: [f64; 6] = [50.0, -50.0, 1e3, -1e3, 1e6, -1e6];
 
 /// Transistor parameters whose sign follows device polarity, matching SPICE threshold
-/// conventions (for example, n-channel `vto` of 0.8 V corresponds to p-channel −0.8 V).
+/// conventions (for example, n-channel `vto` of 0.8 V corresponds to p-channel -0.8 V).
 /// The mirrored device flips polarity, negates every listed parameter, and leaves all
 /// remaining parameters unchanged.
 const SIGNED: &[(&str, &[&str])] = &[
@@ -216,7 +216,7 @@ fn within_junctions_reach(x: &[f64], natures: &[Nature]) -> bool {
 ///
 /// Every kernel stamps each current and charge into one node row and its negation into
 /// another, making the exact node sum zero. Floating-point row sums stay within
-/// `(k − 1) · u` of the row's `k` term magnitudes to first order, where `u` is half of
+/// `(k - 1) · u` of the row's `k` term magnitudes to first order, where `u` is half of
 /// `f64::EPSILON` (Higham, "Accuracy and Stability of Numerical Algorithms", 2002,
 /// §4.2). Summing across rows adds a matching rounding contribution. With at most one
 /// term per local unknown `n`, the total sum lies within `n² · ε` of the largest row

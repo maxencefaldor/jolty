@@ -219,7 +219,7 @@ fn memristor_into_a_capacitor(memristor: (&str, Value), amplitude: f64) -> Circu
 #[test]
 fn a_memristor_its_drive_leaves_alone_keeps_its_state() {
     // The sine stays within the thresholds, so the state never moves, and every state is
-    // as periodic as any other: Φ − I is singular, its row for the state zero. Shooting
+    // as periodic as any other: Φ - I is singular, its row for the state zero. Shooting
     // keeps the state where it starts, and the capacitor settles through the 5.5 kΩ that
     // state sets, as an RC of a time constant of 0.55 periods.
     let memristor = json!({"on_voltage": -1.0, "off_voltage": 1.0,
@@ -253,7 +253,7 @@ fn a_memristor_its_drive_leaves_alone_keeps_its_state() {
 #[test]
 fn a_memristor_and_a_capacitor_keep_the_charge_they_share() {
     // Charge q through the memristor shifts state by q / Q and capacitor voltage by q / C,
-    // leaving Q·x − C·v(out) invariant per period. Each invariant value admits a distinct
+    // leaving Q·x - C·v(out) invariant per period. Each invariant value admits a distinct
     // steady state, and shooting preserves the operating-point invariant.
     let (charge, capacitance, frequency) = (1e-5, 1e-7, 1e3);
     let memristor = json!({"charge": charge});
@@ -344,7 +344,7 @@ fn a_circuit_with_logic_has_no_periodic_steady_state_here() {
     );
 }
 
-/// Builds an LC tank regulated by nonlinear conductance `−g (1 − r² / a²)` where
+/// Builds an LC tank regulated by nonlinear conductance `-g (1 - r² / a²)` where
 /// `r² = v² + (z i)²`.
 ///
 /// When `z = √(L/C)`, the tank is lossless on the circle of radius `a`, yielding an exact
@@ -390,8 +390,8 @@ fn default_tank() -> (Vec<Instance>, f64) {
 
 #[test]
 fn an_oscillating_tank_finds_its_period_and_its_amplitude() {
-    // The conductance at rest, −g, grows the tank's mode at σ = g / 2C; on the circle the
-    // radius relaxes at g / C, so a period contracts its error by e^(−2π g / ωC).
+    // The conductance at rest, -g, grows the tank's mode at σ = g / 2C; on the circle the
+    // radius relaxes at g / C, so a period contracts its error by e^(-2π g / ωC).
     let (inductance, capacitance, radius): (f64, f64, f64) = (1e-6, 1e-9, 1.0);
     let impedance = (inductance / capacitance).sqrt();
     let omega = 1.0 / (inductance * capacitance).sqrt();
@@ -414,7 +414,7 @@ fn an_oscillating_tank_finds_its_period_and_its_amplitude() {
     // Each period starts with two backward Euler steps until the four-point trapezoidal
     // error estimator fills. Each backward Euler step h retains 1 / (1 + (ωh)²) of tank
     // energy, reducing radius by at most (ωh)² (C / 2gT + 1 / 2). A start repeating within
-    // tolerance stays within tolerance / (1 − e^(−2π g / ωC)) of the orbit.
+    // tolerance stays within tolerance / (1 - e^(-2π g / ωC)) of the orbit.
     let lost: f64 = times[..3]
         .windows(2)
         .map(|pair| (omega * (pair[1] - pair[0])).powi(2))

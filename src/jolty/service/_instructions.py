@@ -325,6 +325,9 @@ def _render_instructions(
 def build_instructions() -> str:
     """Builds the MCP server instructions programmatically from code and offline docs.
 
+    Returns:
+        Complete MCP server instruction text listing workflows, APIs, and doc URIs.
+
     Raises:
         JoltyError: When the offline documentation catalog cannot be loaded.
     """

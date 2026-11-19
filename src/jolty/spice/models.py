@@ -783,6 +783,15 @@ def own_temperature(
     temperature. Card ``T_REL_GLOBAL`` and instance ``DTEMP`` specify an offset from
     circuit temperature.
 
+    Args:
+        card: Evaluated model-card parameter values keyed by case-folded SPICE name.
+        instance: Evaluated element-level parameter values keyed by case-folded name.
+        statement: Element statement used for error attribution.
+
+    Returns:
+        Single-entry dictionary setting ``"temperature"`` (in kelvins) or
+        ``"temperature_offset"``, or an empty dictionary.
+
     Raises:
         SpiceError: When temperature is specified more than once or uses unsupported
             ``T_REL_LOCAL`` inheritance offsets.
@@ -877,6 +886,16 @@ def geometric_values(
     Evaluates each card expression in `scope` with `functions` inlined and statistical
     calls sampled by `draws`. Ignores ``BV_MAX``, which affects only SOA checks.
 
+    Args:
+        card: SPICE3 geometric resistor (`r`) or capacitor (`c`) model card.
+        scope: Case-folded parameter values in scope for evaluating card expressions.
+        draws: Factory mapping each card parameter name to a statistical draw callback.
+        statement: Optional element statement overriding `card.statement` for errors.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        Evaluated numeric card parameters keyed by canonical `GEOMETRIC` names.
+
     Raises:
         SpiceError: When `card` specifies an unsupported parameter, attributed to
             `statement` or `card.statement`.
@@ -925,6 +944,16 @@ def geometric(
     (``capsetup.c``, lines 71 to 88; ``captemp.c``, lines 60 to 72). Omitted ``CJ`` is
     derived from ``THICK`` and ``DI``, and ``2 · DEL`` supplies omitted ``NARROW`` or
     ``SHORT``.
+
+    Args:
+        card: SPICE3 geometric resistor or capacitor model card.
+        values: Evaluated canonical card parameters returned by `geometric_values`.
+        instance: Evaluated element-level geometric attributes (`r`/`c`, `w`, `l`,
+            `scale`).
+        statement: Element statement used for error attribution.
+
+    Returns:
+        Resolved `Geometric` value (scaled by `scale`) and drift parameter dictionary.
 
     Raises:
         SpiceError: When a resistor card disables thermal noise or sets flicker
@@ -1036,7 +1065,14 @@ class ModelCard:
 
 
 def is_derived(statement: Statement) -> bool:
-    """Returns whether a ``.model`` statement inherits from another via ``AKO:``."""
+    """Returns whether a ``.model`` statement inherits from another via ``AKO:``.
+
+    Args:
+        statement: Candidate ``.model`` statement to inspect.
+
+    Returns:
+        `True` when `statement` inherits from a base model via ``AKO:``.
+    """
     words = statement.text.split(maxsplit=2)
     return (
         len(words) >= 3  # noqa: PLR2004 - `.model`, name, type
@@ -1046,6 +1082,13 @@ def is_derived(statement: Statement) -> bool:
 
 def read(statement: Statement, known: Mapping[str, ModelCard]) -> ModelCard:
     """Parses a `.model` `statement` into a `ModelCard`, resolving ``AKO:`` in `known`.
+
+    Args:
+        statement: Logical ``.model`` statement to parse.
+        known: Previously parsed model cards keyed by case-folded model name.
+
+    Returns:
+        Parsed `ModelCard` with ``AKO:`` inheritance and polarity flags resolved.
 
     Raises:
         SpiceError: When `statement` is malformed or references an unknown base model.
@@ -1166,6 +1209,13 @@ def assignments(statement: Statement, words: list[str]) -> dict[str, Expression]
 
     Each value may be a numeric literal, identifier, or delimited expression.
 
+    Args:
+        statement: Logical SPICE statement used for error attribution.
+        words: Tokenized ``name = value`` triples to parse.
+
+    Returns:
+        Mapping from case-folded parameter names to parsed `Expression` trees.
+
     Raises:
         SpiceError: When `words` do not form valid `name = value` assignments.
     """
@@ -1180,7 +1230,14 @@ def assignments(statement: Statement, words: list[str]) -> dict[str, Expression]
 
 
 def value(word: str) -> Expression:
-    """Parses a single parameter value token into a numeric or general `Expression`."""
+    """Parses a single parameter value token into a numeric or general `Expression`.
+
+    Args:
+        word: Single parameter value token (literal, identifier, or expression).
+
+    Returns:
+        `Number` node for finite numeric literals, or parsed `Expression` otherwise.
+    """
     written = number(word)
     return Number(written) if written is not None else parse(word)
 
@@ -1206,6 +1263,18 @@ def device(  # noqa: PLR0913 - device translation inputs
 
     Evaluates card expressions in `scope` with user `functions` inlined and statistical
     calls sampled via `draws` (defaulting to nominal values).
+
+    Args:
+        card: Parsed SPICE ``.model`` card describing the device.
+        scope: Case-folded parameter values in scope for evaluating card expressions.
+        instance: Evaluated element-level geometric, area, multiplicity, and temperature
+            overrides.
+        statement: Element statement used for error attribution.
+        draws: Factory mapping each card parameter name to a statistical draw callback.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        Translated jolty `Made` device pairing model name and SI parameter dictionary.
 
     Raises:
         SpiceError: When the model type or any parameter is unsupported by jolty.
@@ -1406,7 +1475,16 @@ def _diode(
 
 
 def unmatched(card: ModelCard, parameter: str, statement: Statement) -> SpiceError:
-    """Builds a `SpiceError` reporting that `parameter` on `card` has no counterpart."""
+    """Builds a `SpiceError` reporting that `parameter` on `card` has no counterpart.
+
+    Args:
+        card: Model card containing the unsupported parameter.
+        parameter: Unsupported parameter name.
+        statement: Statement to which the error location is attributed.
+
+    Returns:
+        `SpiceError` reporting that `parameter` on `card` has no jolty counterpart.
+    """
     message = (
         f"jolty's devices have no counterpart to `{parameter.upper()}` of `{card.name}`"
     )
@@ -1492,6 +1570,16 @@ def scale_flicker_coefficient(
     label: str,
 ) -> float:
     """Scales a flicker noise coefficient across `copies` parallel elements.
+
+    Args:
+        coefficient: Base flicker noise coefficient (`KF`).
+        exponent: Current exponent (`AF`) governing parallel multiplicity scaling.
+        copies: Effective parallel multiplicity factor (`m`).
+        statement: Element statement used for error attribution.
+        label: Descriptive context included in overflow error messages.
+
+    Returns:
+        Flicker noise coefficient scaled by `copies ** (1 - exponent)`.
 
     Raises:
         SpiceError: When scaling overflows or produces a non-finite value.
@@ -1688,6 +1776,15 @@ def holds(
     ``LMAX``, ``WMIN``, and ``WMAX`` evaluated in `scope` with `functions` inlined.
     Boundaries are inclusive within `BIN_TOLERANCE`. Cards of unmodeled binned levels
     can still match here and fail later during device translation.
+
+    Args:
+        card: Candidate binned MOSFET model card.
+        scope: Case-folded parameter values in scope for evaluating bin bounds.
+        size: Instance `(length, width)` pair in meters.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        `True` when `card` defines bin bounds containing `size` within `BIN_TOLERANCE`.
     """
     bounds = _bounds(card, scope, functions)
     if bounds is None:
@@ -1707,6 +1804,14 @@ def center(
 
     Returns `None` when `card` is not a binned card as defined by
     [`holds`][jolty.spice.models.holds].
+
+    Args:
+        card: Candidate binned MOSFET model card.
+        scope: Case-folded parameter values in scope for evaluating bin bounds.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        Midpoint `(length, width)` in meters, or `None` when `card` is not binned.
     """
     bounds = _bounds(card, scope, functions)
     if bounds is None:
@@ -2038,6 +2143,16 @@ def vbic_heating(
     Active when ``RTH`` is positive and ``SELFT`` is omitted or equal to 1. Clamps
     ``CTH`` to `VBIC_MIN_THERMAL_CAPACITANCE`, divides thermal resistance (K/W) by
     ``area * m``, and multiplies thermal capacitance (J/K) by ``area * m``.
+
+    Args:
+        card: VBIC bipolar transistor model card.
+        scope: Case-folded parameter values in scope for evaluating thermal parameters.
+        instance: Evaluated element-level `area` and multiplicity `m` overrides.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        Area-scaled `(rth, cth)` pair in K/W and J/K when self-heating is active, or
+        `None`.
     """
     given = {
         name: evaluate(inlined(card.parameters[name], functions), scope)

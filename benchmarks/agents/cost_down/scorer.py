@@ -62,7 +62,7 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
         message = "jolty's verdict on the plan and the scorer's reasons disagree"
         raise RuntimeError(message)
     if not reference.ok:
-        reason = "the original does not meet its own plan"
+        reason = "the baseline design does not meet the reference plan"
         shortfalls.append(Shortfall(kind=Kind.SCORER, reason=reason))
     shortfalls += [
         unmet("bench", each) for each in _bench_changes(reference_circuit, built)
@@ -183,14 +183,16 @@ def _bench_changes(reference: ir.Circuit, built: ir.Circuit) -> list[str]:
 
     original, found = bench(reference), bench(built)
     changes = []
-    for id, instance in original.items():
-        placed = found.get(id)
+    for instance, expected in original.items():
+        placed = found.get(instance)
         if placed is None:
-            changes.append(f"the bench places no {id}")
-        elif id == INSTANCE:
-            if placed.terminals != instance.terminals:
-                changes.append(f"{id}'s ports join other nets")
-        elif placed != instance:
-            changes.append(f"the bench's {id} differs")
-    changes.extend(f"the bench adds {id}" for id in found if id not in original)
+            changes.append(f"the bench places no {instance}")
+        elif instance == INSTANCE:
+            if placed.terminals != expected.terminals:
+                changes.append(f"{instance}'s ports join other nets")
+        elif placed != expected:
+            changes.append(f"the bench's {instance} differs")
+    changes.extend(
+        f"the bench adds {instance}" for instance in found if instance not in original
+    )
     return changes

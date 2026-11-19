@@ -2,9 +2,10 @@
 
 A three-op-amp instrumentation amplifier: a gain of 10.09 that rejects common mode.
 
-Two followers with 10 kΩ feedback resistors share a 2.2 kΩ gain resistor, a gain of 1 + 2·10/2.2 = 10.09 to the difference of their inputs and of one to what the inputs share; a difference amplifier of four matched 10 kΩ resistors then keeps the difference alone.
+Two input followers with 10 kΩ feedback resistors share a 2.2 kΩ gain resistor, giving differential gain 1 + 2·10/2.2 = 10.09 and unity common-mode gain.
+A matched 10 kΩ difference stage then rejects the common-mode signal.
 A 10 mV difference riding on 2 V comes out as 100.9 mV.
-Simulate it with `jolty simulate examples/instrumentation_amplifier.py`.
+Simulate with `jolty simulate examples/instrumentation_amplifier.py`.
 
 [Open in 3D](instrumentation-amplifier.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/instrumentation_amplifier.py){ .md-button }
 

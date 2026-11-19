@@ -211,7 +211,7 @@ def test_a_net_plays_the_role_of_the_ports_on_it() -> None:
 def test_signal_flows_from_the_sources_and_rails_sink() -> None:
     drawn = layout(circuit(chain()), "chain")
     placed = {item.name: item for item in drawn.instances}
-    assert [placed[id].column for id in ("V1", "X1", "X2")] == [0, 1, 2]
+    assert [placed[name].column for name in ("V1", "X1", "X2")] == [0, 1, 2]
     assert placed["VDD"].column == 0
     assert placed["VDD"].origin[1] < placed["V1"].origin[1]
     assert placed["V1"].pin("positive")[1] == placed["X1"].pin("input")[1]

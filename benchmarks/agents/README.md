@@ -9,7 +9,7 @@ An independent scorer then evaluates the resulting deliverables without inspecti
 | [`cost_down`](cost_down/task.md) | Reduce the cost of a transistor bias stage using a resistor catalog | The design meets the original specifications and yield at a lower cost |
 | [`cubic`](cubic/task.md) | Output the cube of an input current from a 2 V supply, DC to 1 GHz | Mean normalized error against the patented circuit (US 6,160,427) is at most 1 |
 | [`cubic_discrete`](cubic_discrete/task.md) | Output a scaled cube of an input current from a 2 V supply using 2N3904 and 2N3906 transistors without a reference current | Mean error does not exceed the patented circuit (US 6,160,427) as measured by Koza |
-| [`voltage_current`](voltage_current/task.md) | Convert a differential input voltage to current at 1 mA/V using only a −15 V supply | Mean normalized error against the patented circuit (US 6,166,529) as measured by Koza is at most 1 |
+| [`voltage_current`](voltage_current/task.md) | Convert a differential input voltage to current at 1 mA/V using only a -15 V supply | Mean normalized error against the patented circuit (US 6,166,529) as measured by Koza is at most 1 |
 | [`balun`](balun/task.md) | Split one input into two half-amplitude outputs 180° apart from a 1 V supply, 1 to 100 MHz | Differential gain and distortion match the patented circuit (US 6,265,908) as measured by Koza, with balanced outputs |
 | [`analogcoder`](analogcoder/task.md) | Design the twenty-four AnalogCoder circuits, from amplifiers to a phase-locked loop | Every circuit passes the corresponding AnalogCoder verification check |
 

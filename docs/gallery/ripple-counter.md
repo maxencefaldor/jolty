@@ -2,10 +2,10 @@
 
 A two-bit ripple counter of edge-triggered D flip-flops, each six NAND gates.
 
-Each flip-flop is the 7474's: two latches of three-input NAND gates that pass the data only on the clock's rising edge, with a preset and a clear.
-Fed its own complement, a flip-flop toggles on every rising edge and halves its clock; the second, clocked by the first's complement, halves it again, so the two count 0, 1, 2, 3 in binary.
-The clear holds both at zero for the first nanoseconds.
-Simulate it with `jolty simulate examples/ripple_counter.py`.
+Each flip-flop follows the 7474 topology: two latches of three-input NAND gates pass data on the rising clock edge, with preset and clear.
+Driven by its complemented output, a flip-flop toggles on every rising edge to halve the clock frequency.
+A second stage clocked by the first complement halves the rate again, counting 0, 1, 2, 3 in binary while clear holds both outputs at zero initially.
+Simulate with `jolty simulate examples/ripple_counter.py`.
 
 [Open in 3D](ripple-counter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ripple_counter.py){ .md-button }
 

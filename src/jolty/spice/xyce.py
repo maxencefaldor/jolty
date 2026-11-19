@@ -103,6 +103,9 @@ _PRECISION: Final = 16
 def version() -> str | None:
     """Returns the installed Xyce version banner, or None when Xyce is unavailable.
 
+    Returns:
+        First line of the Xyce version banner, or `None` when Xyce is uninstalled.
+
     Examples:
         >>> version() is None or "Xyce" in version()
         True
@@ -119,6 +122,13 @@ def option_temperature(temperature: float) -> float:
     Accepts `temperature` in kelvins. Xyce uses SPICE3 constants whose thermal voltage
     sits 29 ppm below jolty at equal kelvins, so adjusting simulation and nominal
     temperatures isolates device-model differences from physical constants.
+
+    Args:
+        temperature: Target jolty temperature in kelvins.
+
+    Returns:
+        Xyce ``.options device temp`` value in degrees Celsius with matching thermal
+        voltage.
 
     Examples:
         >>> round(option_temperature(300.15), 3)
@@ -152,7 +162,14 @@ class Result:
     """Wall-clock process runtime measured by jolty, in seconds."""
 
     def real(self, name: str) -> npt.NDArray[np.float64]:
-        """Returns the real part of the vector `name`."""
+        """Returns the real part of the vector `name`.
+
+        Args:
+            name: Lowercase vector name in `vectors` (such as ``"v(out)"``).
+
+        Returns:
+            Real-part `float64` array of the named vector.
+        """
         return self.vectors[name].real
 
 
@@ -174,6 +191,19 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
     voltage with `temperature` (in kelvins) and nominal 27 °C, invokes `launch`
     (defaulting to serial ``Xyce``, or e.g. ``mpirun -np 4 Xyce``), and enforces
     `timeout` seconds unless None.
+
+    Args:
+        deck: SPICE netlist lines in Xyce dialect starting with a title line.
+        analysis: Xyce dot-command analysis card (such as ``".op"`` or
+            ``".tran 1n 1u"``).
+        printed: Optional `.print` column expressions overriding analysis defaults.
+        options: Xyce `.options` lines overriding `OPTIONS`.
+        temperature: Target simulation temperature in kelvins.
+        launch: Optional command prefix invoking Xyce (such as MPI launcher tokens).
+        timeout: Subprocess timeout in seconds, or `None` for no limit.
+
+    Returns:
+        Parsed `Result` vectors and solver timing metrics from the Xyce run.
 
     Raises:
         JoltyError: When Xyce is unavailable, times out, fails, or prints no values.
@@ -242,6 +272,14 @@ def execute(
     Defaults `launch` to serial ``Xyce`` on PATH (supporting wrappers such as
     ``mpirun -np 4 Xyce``). Serves as the single Xyce process entry point parallel to
     [`ngspice.execute`][jolty.spice.ngspice.execute].
+
+    Args:
+        deck: Complete Xyce deck lines written to ``circuit.cir``.
+        launch: Optional command tokens invoking Xyce, defaulting to `(EXECUTABLE,)`.
+        timeout: Subprocess timeout in seconds, or `None` for no limit.
+
+    Returns:
+        `Executed` record containing stdout/stderr, exit code, wall time, and CSV text.
 
     Raises:
         JoltyError: When Xyce is unavailable and no `launch` command is supplied.

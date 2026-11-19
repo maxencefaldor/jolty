@@ -56,7 +56,7 @@ fn a_divider_has_one_solution() {
 
 #[test]
 fn an_n_shaped_load_line_crosses_three_times() {
-    // 1 mA/V³ · v (v − 1)(v − 2) = (1 V − v) / 10 kΩ, so (v − 1)(v² − 2v + 0.1) = 0.
+    // 1 mA/V³ · v (v - 1)(v - 2) = (1 V - v) / 10 kΩ, so (v - 1)(v² - 2v + 0.1) = 0.
     let cubic = circuit([
         voltage_dc("V1", "in", 1.0),
         resistor("R1", 1e4, "in", "x"),

@@ -105,7 +105,7 @@ impl TwinCase {
 }
 
 /// Returns forward-active unknown values for a bipolar transistor (collector 3 V, base
-/// 0.75 V, emitter 0 V, substrate −1 V). Internal nodes offset slightly inside their
+/// 0.75 V, emitter 0 V, substrate -1 V). Internal nodes offset slightly inside their
 /// terminals, and omitted current unknowns default to 1 mA.
 fn forward_active(name: &str) -> Option<f64> {
     Some(match name {
@@ -200,7 +200,7 @@ pub(crate) fn vbic_delayed() -> Case {
     Case::from_bias::<Vbic>(&delayed, forward_active)
 }
 
-/// Returns saturated unknown values for a field-effect transistor (drain 3 V, gate −0.5 V,
+/// Returns saturated unknown values for a field-effect transistor (drain 3 V, gate -0.5 V,
 /// source 0 V), with internal nodes slightly inside their terminals.
 fn saturated(name: &str) -> Option<f64> {
     Some(match name {
@@ -319,7 +319,7 @@ const BSIM4_GIVEN: (&str, &[&str]) = (
 );
 
 /// Returns saturated unknown values for a BSIM4 n-channel MOSFET (drain 1.5 V, gate 1.8 V,
-/// source 0 V, body −0.5 V).
+/// source 0 V, body -0.5 V).
 fn bsim4_saturated(name: &str) -> Option<f64> {
     Some(match name {
         "n0" | "drain" => 1.5,

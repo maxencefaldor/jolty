@@ -66,6 +66,11 @@ def save_raw(
     omit timestamps so identical results produce identical bytes, and
     [`load_raw`][jolty.files.load_raw] reads the file back.
 
+    Args:
+        path: Destination SPICE `.raw` file path.
+        analyses: Non-empty mapping from plot titles to supported analysis results.
+        binary: Flag writing little-endian IEEE-754 binary payloads instead of ASCII.
+
     Raises:
         ValueError: When `analyses` is empty, an analysis name contains a line break,
             or an analysis type is unsupported in SPICE raw format.
@@ -100,6 +105,17 @@ def load_raw(path: Path) -> dict[str, RawAnalysisResult]:
     ``max(len(times) - 1, 0)`` with zero rejected steps. Binary raw files preserve exact
     IEEE-754 bits, including ``-0.0``.
 
+    Args:
+        path: Source SPICE `.raw` file path to parse.
+
+    Returns:
+        Mapping from deduplicated plot titles to decoded analysis results.
+
+    Raises:
+        JoltyError: When the file contains no plots, malformed headers, truncated
+            values, invalid numbers, an unsupported ``Plotname:``, or mismatched
+            real/complex flags.
+
     Examples:
         >>> import tempfile
         >>> from pathlib import Path
@@ -113,11 +129,6 @@ def load_raw(path: Path) -> dict[str, RawAnalysisResult]:
         ...     save_raw(path, {"op": point})
         ...     load_raw(path)["op"].voltage("out")
         2.5
-
-    Raises:
-        JoltyError: When the file contains no plots, malformed headers, truncated
-            values, invalid numbers, an unsupported ``Plotname:``, or mismatched
-            real/complex flags.
     """
     data = path.read_bytes()
     try:

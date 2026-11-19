@@ -24,12 +24,26 @@ _NO_FUNCTIONS: Final[Mapping[str, Function]] = MappingProxyType({})
 
 
 def letter(statement: Statement) -> str:
-    """Returns the case-folded leading element type letter of `statement`."""
+    """Returns the case-folded leading element type letter of `statement`.
+
+    Args:
+        statement: Logical SPICE statement whose leading character is read.
+
+    Returns:
+        Case-folded first character of `statement.text`.
+    """
     return statement.text[0].casefold()
 
 
 def keyword(statement: Statement) -> str:
-    """Returns the case-folded first word of `statement` (such as ``.param``)."""
+    """Returns the case-folded first word of `statement` (such as ``.param``).
+
+    Args:
+        statement: Logical SPICE statement whose directive or element word is read.
+
+    Returns:
+        Case-folded leading whitespace-delimited token of `statement.text`.
+    """
     return statement.text.split(maxsplit=1)[0].casefold()
 
 
@@ -42,6 +56,15 @@ def expanded(
     including file directory, both globally and inside subcircuits. Reading a file
     without `section` collects statements outside ``.lib name ... .endl`` sections.
     Active `(path, section)` frames in `within` detect include cycles.
+
+    Args:
+        path: Filesystem path to the SPICE file to read.
+        section: Optional ``.lib`` section name to extract, or `None` for top-level
+            statements.
+        within: Active stack of `(resolved_path, section)` frames for cycle detection.
+
+    Returns:
+        Expanded `Statement` list in source order with nested includes inlined.
 
     Raises:
         SpiceError: When `path` cannot be read, `section` is missing, or includes form
@@ -93,6 +116,16 @@ def expanded_text(
     None) and whether `section` was seen. Inside a ``.subckt ... .ends`` body, a
     two-word ``.lib`` is never treated as opening a library section; it reaches
     `_included` and fails with the malformed directive error.
+
+    Args:
+        text: Raw SPICE file contents to preprocess.
+        directory: Base directory used to resolve relative `.include` and `.lib` paths.
+        label: Source filename recorded on emitted `Statement` objects.
+        section: Optional target `.lib` section name, or `None` for unsectioned lines.
+        within: Active stack of `(resolved_path, section)` frames for cycle detection.
+
+    Returns:
+        Pair of `(expanded_statements, section_seen)`.
     """
     target = None if section is None else section.casefold()
     found: list[Statement] = []
@@ -150,7 +183,14 @@ def _included(
 
 
 def unconditional(body: Sequence[Statement]) -> list[Statement]:
-    """Returns all statements in `body` outside ``.if`` conditional blocks."""
+    """Returns all statements in `body` outside ``.if`` conditional blocks.
+
+    Args:
+        body: Subcircuit body statements to filter.
+
+    Returns:
+        Statements appearing at conditional nesting depth zero.
+    """
     depth = 0
     found: list[Statement] = []
     for statement in body:
@@ -178,6 +218,14 @@ def chosen(
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> list[Statement]:
     """Selects statements from `body` by evaluating ``.if`` blocks in `scope`.
+
+    Args:
+        body: Subcircuit body statements potentially containing ``.if`` blocks.
+        scope: Case-folded parameter values used to evaluate branch conditions.
+        functions: Case-folded user-defined functions inlined in branch conditions.
+
+    Returns:
+        Active non-directive statements selected across all conditional branches.
 
     Raises:
         SpiceError: When conditional directives are unmatched or unterminated.

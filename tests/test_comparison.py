@@ -149,15 +149,17 @@ def test_a_session_holds_nothing_of_the_runner_s_environment(
     assert agent_run.SET == "(set)"
 
 
-def _assistant(id: str, *blocks: dict[str, object], parent: str | None = None) -> str:
-    """Returns a JSONL assistant event line containing blocks for message `id`."""
-    message = {"id": id, "role": "assistant", "content": list(blocks)}
+def _assistant(
+    call_id: str, *blocks: dict[str, object], parent: str | None = None
+) -> str:
+    """Returns a JSONL assistant event line containing blocks for `call_id`."""
+    message = {"id": call_id, "role": "assistant", "content": list(blocks)}
     event = {"type": "assistant", "message": message, "parent_tool_use_id": parent}
     return json.dumps(event)
 
 
-def _call(id: str, name: str) -> dict[str, object]:
-    return {"type": "tool_use", "id": id, "name": name, "input": {}}
+def _call(call_id: str, name: str) -> dict[str, object]:
+    return {"type": "tool_use", "id": call_id, "name": name, "input": {}}
 
 
 def test_the_transcript_reader_counts_turns_and_tool_calls(tmp_path: Path) -> None:

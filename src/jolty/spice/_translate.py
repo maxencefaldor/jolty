@@ -105,15 +105,38 @@ class LibraryHost(Protocol):
         ...
 
     def known_models(self, local: Mapping[str, ModelCard]) -> dict[str, ModelCard]:
-        """Returns all models visible inside a subcircuit, local shadowing global."""
+        """Returns all models visible inside a subcircuit, local shadowing global.
+
+        Args:
+            local: Subcircuit-local model cards keyed by case-folded name.
+
+        Returns:
+            Combined global and local model dictionary keyed by case-folded name.
+        """
         ...
 
     def model(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
-        """Looks up a model card by name in local then global scope."""
+        """Looks up a model card by name in local then global scope.
+
+        Args:
+            name: Model name to look up (matched case-insensitively).
+            local: Subcircuit-local model cards keyed by case-folded name.
+
+        Returns:
+            Matching `ModelCard`, or `None` when undefined in both scopes.
+        """
         ...
 
     def card(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
-        """Looks up a model card by name or its first bin."""
+        """Looks up a model card by name or its first bin.
+
+        Args:
+            name: Exact model name or binned model base name.
+            local: Subcircuit-local model cards keyed by case-folded name.
+
+        Returns:
+            Exact `ModelCard` or first matching bin card, or `None` when absent.
+        """
         ...
 
     def binned(
@@ -125,15 +148,40 @@ class LibraryHost(Protocol):
         *,
         functions: Mapping[str, Function] = NO_FUNCTIONS,
     ) -> ModelCard | None:
-        """Selects the matching MOSFET bin for `instance`."""
+        """Selects the matching MOSFET bin for `instance`.
+
+        Args:
+            name: Base model name without numeric bin suffix.
+            local: Subcircuit-local model cards keyed by case-folded name.
+            instance: Evaluated MOSFET instance attributes including `l`, `w`, and `nf`.
+            scope: Case-folded parameter values in scope for evaluating bin bounds.
+            functions: Case-folded user-defined functions inlined before evaluation.
+
+        Returns:
+            Matching binned `ModelCard`, or `None` when no bin matches `instance`.
+        """
         ...
 
     def fingers(self, instance: Mapping[str, float]) -> float:
-        """Returns the finger divisor used when selecting a MOSFET bin."""
+        """Returns the finger divisor used when selecting a MOSFET bin.
+
+        Args:
+            instance: Evaluated MOSFET instance parameter dictionary.
+
+        Returns:
+            Effective finger divisor applied to instance width during bin lookup.
+        """
         ...
 
     def subcircuit(self, name: str) -> Subcircuit | None:
-        """Looks up a subcircuit definition by name."""
+        """Looks up a subcircuit definition by name.
+
+        Args:
+            name: Subcircuit name to look up.
+
+        Returns:
+            Parsed `Subcircuit` definition, or `None` when undefined.
+        """
         ...
 
     def place_built(  # noqa: PLR0913 - subcircuit placement state and survey list
@@ -146,7 +194,19 @@ class LibraryHost(Protocol):
         *,
         uses: list[Use] | None = None,
     ) -> Built:
-        """Builds a child subcircuit placement."""
+        """Builds a child subcircuit placement.
+
+        Args:
+            subcircuit: Target subcircuit definition to instantiate.
+            scope: Enclosing global parameter values in scope.
+            given: Evaluated parameter overrides passed on the instance line.
+            drawing: Statistical sampling context and hierarchical placement path.
+            instantiating: Active chain of subcircuit names used to detect recursion.
+            uses: Optional list collecting survey records rather than raising on errors.
+
+        Returns:
+            Full `Built` record bundling the component, net names, and initial state.
+        """
         ...
 
 
@@ -245,6 +305,13 @@ class Translation:
 
         Evaluates ``.if`` conditional blocks using parameters declared outside those
         blocks.
+
+        Args:
+            name: Qualified component name assigned to the built subcircuit.
+
+        Returns:
+            Translated `Built` bundle containing the component, net map, and initial
+            state.
         """
         body = self.subcircuit.body
         outside_conditions = {id(statement) for statement in unconditional(body)}
@@ -318,7 +385,14 @@ class Translation:
         )
 
     def component(self, name: str) -> Component:
-        """Translates the subcircuit and returns its built `Component` named `name`."""
+        """Translates the subcircuit and returns its built `Component` named `name`.
+
+        Args:
+            name: Qualified component name assigned to the built subcircuit.
+
+        Returns:
+            Translated jolty `Component` for the subcircuit.
+        """
         return self.translate(name).component
 
     def net(self, node: str) -> str:
@@ -326,6 +400,12 @@ class Translation:
 
         Node ``0`` maps to `GROUND`; other nodes preserve their first spelling while
         matching case-insensitively.
+
+        Args:
+            node: Written SPICE node token to resolve.
+
+        Returns:
+            Canonical net name in the translated component (`GROUND` for node ``0``).
         """
         if node == "0":
             self.grounded = True
@@ -337,6 +417,12 @@ class Translation:
         """Evaluates numeric literal or parameter expression `word` in current scope.
 
         Statistical calls sample using the active element's `self.draw` callback.
+
+        Args:
+            word: SPICE literal or parameter expression token to evaluate.
+
+        Returns:
+            Evaluated finite floating-point value.
 
         Raises:
             SpiceError: When `word` evaluates to a non-finite number.
@@ -357,6 +443,12 @@ class Translation:
 
         Multiplies instance `m` by `self.multiplier` in all compatibility modes,
         matching ngspice HSPICE mode (``inpcom.c``, lines 4257 to 4283).
+
+        Args:
+            instance: Evaluated element-level parameter dictionary.
+
+        Returns:
+            Copy of `instance` with `m` scaled by `self.multiplier`.
         """
         if self.multiplier == 1:
             return dict(instance)
@@ -364,6 +456,12 @@ class Translation:
 
     def parse(self, text: str) -> Expression:
         """Parses SPICE expression `text` and inlines all visible user functions.
+
+        Args:
+            text: Raw SPICE expression string to parse and inline.
+
+        Returns:
+            Parsed `Expression` tree with user functions expanded inline.
 
         Raises:
             SpiceError: When `text` is invalid or invokes a recursive user function.
@@ -383,6 +481,13 @@ class Translation:
 
         Connects terminals according to `terminals` and names the instance after the
         element token unless `identifier` is supplied.
+
+        Args:
+            statement: Source SPICE element statement providing location metadata.
+            model: Target jolty device model name.
+            parameters: SI device parameter dictionary validated by the engine.
+            terminals: Mapping from jolty terminal names to canonical net names.
+            identifier: Optional explicit instance name overriding the element token.
         """
         made = checked_device(statement, model, parameters)
         self.instances.append(
@@ -413,6 +518,12 @@ class Translation:
 
         Adds dedicated sense terminals for referenced node voltages and inserts series
         sensing ports for referenced source currents.
+
+        Args:
+            statement: Source SPICE element statement providing location metadata.
+            model: Behavioral jolty device model name.
+            nodes: Pair of `(positive_node, negative_node)` SPICE node tokens.
+            expression: Inlined SPICE `Expression` governing the behavioral output.
         """
         terminals = {
             "positive": self.net(nodes[0]),
@@ -452,6 +563,13 @@ class Translation:
 
         Returns the `(entry, exit)` net pair spliced onto the source's positive
         terminal.
+
+        Args:
+            source: SPICE name of the sensed voltage or behavioral source.
+            statement: Dependent element statement used for error attribution.
+
+        Returns:
+            Pair of `(entry_net, exit_net)` spliced in series with `source`.
         """
         found = self.senses.get(source.casefold())
         if found is None:
@@ -691,6 +809,14 @@ class Translation:
         """Translates model `card` and `instance` parameters into a `Made` device.
 
         Statistical functions in `card` sample under keys ``<card_name>.<parameter>``.
+
+        Args:
+            card: Parsed SPICE `.model` card describing the device.
+            instance: Evaluated element-level geometric, area, and multiplicity values.
+            statement: Element statement used for error attribution.
+
+        Returns:
+            Translated jolty `Made` device pairing model name and SI parameters.
         """
         prefix = card.name.casefold()
 

@@ -1,7 +1,7 @@
 # SPICE models
 
 Vendors publish their parts as SPICE models: an op-amp as a macromodel subcircuit, a transistor as a model card.
-`jolty.spice` reads SPICE files into a library whose subcircuits each become a component to place, so a circuit can use the part its maker modelled.
+`jolty.spice` reads SPICE files into a library whose subcircuits each become a component to place, so a circuit can use the part its maker modeled.
 
 ## Loading a library
 

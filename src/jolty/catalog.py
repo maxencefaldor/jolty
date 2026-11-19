@@ -65,6 +65,12 @@ def mantissas(series: Series) -> tuple[float, ...]:
     E3 through E24 use historical IEC 60063 values. E48 through E192 round decade
     powers to three significant digits, except for 9.20 in E192.
 
+    Args:
+        series: IEC 60063 E-series name (`'E3'` through `'E192'`).
+
+    Returns:
+        Ascending tuple of normalized decade mantissas in ``[1, 10)``.
+
     Examples:
         >>> mantissas("E96")[:4]
         (1.0, 1.02, 1.05, 1.07)
@@ -74,6 +80,14 @@ def mantissas(series: Series) -> tuple[float, ...]:
 
 def values(series: Series, low: float, high: float) -> tuple[float, ...]:
     """Returns every `series` value from `low` to `high` inclusive in ascending order.
+
+    Args:
+        series: IEC 60063 E-series name (`'E3'` through `'E192'`).
+        low: Positive inclusive lower bound in SI base units.
+        high: Positive inclusive upper bound at or above `low`.
+
+    Returns:
+        Ascending tuple of preferred `series` values within ``[low, high]``.
 
     Raises:
         ValueError: When `low` is not positive or exceeds `high`.
@@ -93,6 +107,13 @@ def values(series: Series, low: float, high: float) -> tuple[float, ...]:
 
 def neighbors(series: Series, value: float) -> tuple[float, float]:
     """Returns the `series` values immediately at or below and at or above `value`.
+
+    Args:
+        series: IEC 60063 E-series name (`'E3'` through `'E192'`).
+        value: Positive target component value in SI base units.
+
+    Returns:
+        `(lower, upper)` pair of adjacent `series` values bracketing `value`.
 
     Raises:
         ValueError: When `value` is not positive.
@@ -202,7 +223,11 @@ class Part(ir.FrozenModel):
         return self.lifecycle != "obsolete"
 
     def describe(self) -> str:
-        """Formats a human-readable summary of the part excluding price."""
+        """Formats a human-readable summary of the part excluding price.
+
+        Returns:
+            Comma-separated summary of kind, value, part number, package, and status.
+        """
         said = []
         if self.kind is not None and self.value is not None:
             said.append(
@@ -228,11 +253,22 @@ class Catalog(ir.FrozenModel):
 
     @classmethod
     def load(cls, path: Path) -> Catalog:
-        """Loads and validates a catalog from the JSON file at `path`."""
+        """Loads and validates a catalog from the JSON file at `path`.
+
+        Args:
+            path: Filesystem path to a UTF-8 JSON catalog file.
+
+        Returns:
+            Validated `Catalog` parsed from `path`.
+        """
         return cls.model_validate_json(path.read_bytes())
 
     def save(self, path: Path) -> None:
-        """Writes the catalog to `path` as indented JSON."""
+        """Writes the catalog to `path` as indented JSON.
+
+        Args:
+            path: Destination filesystem path written as indented UTF-8 JSON.
+        """
         path.write_text(self.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
     def cheapest(self, kind: PartKind, value: float, tolerance: float) -> Part | None:
@@ -240,6 +276,14 @@ class Catalog(ir.FrozenModel):
 
         Price ties break in favor of the first listed part. Returns ``None`` when no
         orderable part matches.
+
+        Args:
+            kind: Passive device category (`'resistor'`, `'capacitor'`, `'inductor'`).
+            value: Nominal component value in SI base units.
+            tolerance: Maximum acceptable relative tolerance fraction.
+
+        Returns:
+            Lowest-priced orderable matching `Part`, or ``None`` when unavailable.
         """
         return _cheapest(
             part for part in self.matching(kind, value, tolerance) if part.orderable
@@ -248,13 +292,30 @@ class Catalog(ir.FrozenModel):
     def matching(
         self, kind: PartKind, value: float, tolerance: float
     ) -> tuple[Part, ...]:
-        """Returns all parts matching `kind`, `value`, and `tolerance`."""
+        """Returns all parts matching `kind`, `value`, and `tolerance`.
+
+        Args:
+            kind: Passive device category (`'resistor'`, `'capacitor'`, `'inductor'`).
+            value: Nominal component value in SI base units.
+            tolerance: Maximum acceptable relative tolerance fraction.
+
+        Returns:
+            Tuple of all matching catalog parts including obsolete entries.
+        """
         return tuple(
             part for part, held in self._valued(kind, tolerance) if _same(held, value)
         )
 
     def values(self, kind: PartKind, tolerance: float) -> tuple[float, ...]:
-        """Returns sorted distinct values of orderable parts within `tolerance`."""
+        """Returns sorted distinct values of orderable parts within `tolerance`.
+
+        Args:
+            kind: Passive device category (`'resistor'`, `'capacitor'`, `'inductor'`).
+            tolerance: Maximum acceptable relative tolerance fraction.
+
+        Returns:
+            Sorted tuple of distinct nominal values among orderable matching parts.
+        """
         found = sorted(
             held for part, held in self._valued(kind, tolerance) if part.orderable
         )
@@ -270,6 +331,12 @@ class Catalog(ir.FrozenModel):
         Numbered instances select a matching part with that part number; if the part
         declares a device kind, the instance value and tolerance also match. Unnumbered
         resistors, capacitors, and inductors match by kind, value, and tolerance.
+
+        Args:
+            instance: Placed circuit `ir.Instance` to match and price.
+
+        Returns:
+            Cheapest orderable matching `Part`, or a human-readable unpriced reason.
         """
         if instance.part is not None:
             return _numbered(self, instance, instance.part)
@@ -347,7 +414,11 @@ class Bill(ir.FrozenModel):
         return math.fsum(line.part.price for line in self.lines)
 
     def describe(self) -> str:
-        """Formats the bill of materials as a plain-text report."""
+        """Formats the bill of materials as a plain-text report.
+
+        Returns:
+            Plain-text bill-of-materials report with line items and unpriced reasons.
+        """
         head = (
             f"{len(self.lines)} parts for {self.total:.6g} {self.currency}, "
             f"{len(self.unpriced)} instances unpriced"
@@ -366,6 +437,14 @@ class Bill(ir.FrozenModel):
 
 def bill(circuit: ir.Circuit, catalog: Catalog, instance: str = "") -> Bill:
     """Builds a bill of materials for the component at `instance` (top by default).
+
+    Args:
+        circuit: Circuit IR containing component definitions and placements.
+        catalog: Orderable part `Catalog` supplying prices and packages.
+        instance: Optional component instance path; empty prices `circuit.top`.
+
+    Returns:
+        Priced `Bill` covering all billable placements under the target component.
 
     Raises:
         KeyError: When no component instance exists at `instance`.
@@ -397,6 +476,14 @@ def built(
 
     Yielded entries include numbered devices or components plus unnumbered device
     instances outside them, in placement order.
+
+    Args:
+        circuit: Circuit IR containing the component hierarchy.
+        component: Component definition name whose placements are traversed.
+        prefix: Hierarchical path prefix prepended to yielded instance names.
+
+    Returns:
+        Iterator of `(path, instance)` pairs for every billable placement.
     """
     for path, instance in circuit.walk(
         component, prefix=prefix, descend=lambda placed: placed.part is None

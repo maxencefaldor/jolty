@@ -2,10 +2,10 @@
 
 A Wien bridge oscillator, its amplitude held by two diodes.
 
-The bridge's series and parallel RC arms, 10 kΩ and 10 nF each, pass a third of the output with no phase shift at f₀ = 1/(2πRC) = 1.592 kHz, so the loop oscillates there when the op-amp's non-inverting gain is three.
-Its gain is 1 + 22 kΩ/10 kΩ = 3.2, enough to start; as the swing grows, two 1N4148 diodes across part of the feedback resistor conduct and bring the gain to three, holding the amplitude.
-A 1 µA pulse at the start sets it going.
-Simulate it with `jolty simulate examples/wien_bridge.py`.
+The series and parallel 10 kΩ, 10 nF RC arms pass one third of the output with zero phase shift at f₀ = 1/(2πRC) = 1.592 kHz, sustaining oscillation at a non-inverting gain of 3.
+Start-up gain is 1 + 22 kΩ/10 kΩ = 3.2; as amplitude grows, two 1N4148 diodes across part of the feedback resistor reduce gain toward 3 to stabilize the swing.
+A 1 µA start-up pulse initiates oscillation.
+Simulate with `jolty simulate examples/wien_bridge.py`.
 
 [Open in 3D](wien-bridge.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/wien_bridge.py){ .md-button }
 

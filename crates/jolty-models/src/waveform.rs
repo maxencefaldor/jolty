@@ -18,8 +18,8 @@
 //!
 //! An exponential waveform follows SPICE `EXP` (ngspice 47 manual, §4.1.3). Before
 //! `rise_delay`, the waveform holds `initial`. After `rise_delay`, it adds
-//! `(pulsed − initial)(1 − e^{−(t − rise_delay)/rise_time_constant})`, and after
-//! `fall_delay`, it adds `(initial − pulsed)(1 − e^{−(t − fall_delay)/fall_time_constant})`.
+//! `(pulsed - initial)(1 - e^{-(t - rise_delay)/rise_time_constant})`, and after
+//! `fall_delay`, it adds `(initial - pulsed)(1 - e^{-(t - fall_delay)/fall_time_constant})`.
 
 use std::f64::consts::TAU;
 

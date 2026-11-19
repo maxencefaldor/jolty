@@ -60,8 +60,8 @@ macro_rules! controlled_common {
 
 /// Linear voltage-controlled voltage source.
 ///
-/// Constrains `v_positive − v_negative = gain · (v_control_positive − v_control_negative)`.
-/// Output current flowing from `positive` to `negative` is an unknown labelled `current`,
+/// Constrains `v_positive - v_negative = gain · (v_control_positive - v_control_negative)`.
+/// Output current flowing from `positive` to `negative` is an unknown labeled `current`,
 /// while control terminals draw zero current.
 #[derive(Debug, Clone, Copy)]
 pub struct VoltageControlledVoltageSource;
@@ -124,7 +124,7 @@ impl Kernel for VoltageControlledVoltageSource {
 
 /// Linear voltage-controlled current source.
 ///
-/// Drives `transconductance · (v_control_positive − v_control_negative)` from `positive`
+/// Drives `transconductance · (v_control_positive - v_control_negative)` from `positive`
 /// through the source to `negative`, drawing zero current at the control terminals.
 #[derive(Debug, Clone, Copy)]
 pub struct VoltageControlledCurrentSource;
@@ -193,7 +193,7 @@ impl Kernel for VoltageControlledCurrentSource {
 ///
 /// Drives `gain` times the control current from `positive` through the source to `negative`.
 /// The control port shorts `control_positive` to `control_negative` with a branch-current
-/// unknown labelled `control`.
+/// unknown labeled `control`.
 #[derive(Debug, Clone, Copy)]
 pub struct CurrentControlledCurrentSource;
 
@@ -264,9 +264,9 @@ impl Kernel for CurrentControlledCurrentSource {
 
 /// Linear current-controlled voltage source modeled with a zero-volt sensing port.
 ///
-/// Constrains `v_positive − v_negative = transresistance · i_control`. The control port
+/// Constrains `v_positive - v_negative = transresistance · i_control`. The control port
 /// shorts `control_positive` to `control_negative` (unknown `control`), and output current
-/// flowing from `positive` to `negative` is an unknown labelled `current`.
+/// flowing from `positive` to `negative` is an unknown labeled `current`.
 #[derive(Debug, Clone, Copy)]
 pub struct CurrentControlledVoltageSource;
 

@@ -432,7 +432,8 @@ Every parameter is optional; omitted Early voltages, knee currents, and transit-
 
 Base, collector, and emitter resistances add internal nodes `Q1:base`, `Q1:collector`, and `Q1:emitter`, plus corresponding `*_current` unknowns when resistance (or `min_base_resistance`) is below 1 Ω.
 
-Excess phase delays forward transport current `Ibe / qb` by `td = PTF · π / 180 · TF` via the second-order Bessel filter `3 / (s² td² + 3 s td + 3)`, matching ngspice transient integration with phase near `PTF` at `1 / (2π · TF)`.
+Excess phase delays forward transport current `Ibe / qb` by `td = PTF · π / 180 · TF` via the second-order Bessel filter `3 / (s² td² + 3 s td + 3)`.
+Filter integration matches ngspice transient behavior and produces phase shift near `PTF` at `1 / (2π · TF)`.
 The Bessel filter adds unknowns `Q1:delayed_transport` and `Q1:delayed_transport_slope` across all analyses, exposing both poles in pole-zero analysis.
 ngspice AC instead applies a pure delay `exp(-jω·td)`, causing AC gain at `1 / (2π · TF)` to differ by the Bessel filter magnitude (5% at `PTF = 30°`).
 

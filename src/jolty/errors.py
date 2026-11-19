@@ -13,7 +13,12 @@ _SHORT_NAME_LENGTH: Final = 2
 
 
 def fail(kind: LiteralString, message: str) -> Never:
-    """Raises a Pydantic custom error holding literal `message` escaped from braces."""
+    """Raises a Pydantic custom error holding literal `message` escaped from braces.
+
+    Args:
+        kind: Machine-readable Pydantic error code.
+        message: Human-readable validation message preserved verbatim.
+    """
     raise PydanticCustomError(kind, "{message}", {"message": message})
 
 
@@ -23,7 +28,17 @@ def detail(
     value: object,
     location: tuple[int | str, ...] = (),
 ) -> InitErrorDetails:
-    """Builds one structured validation error entry at `location` with `message`."""
+    """Builds one structured validation error entry at `location` with `message`.
+
+    Args:
+        kind: Machine-readable Pydantic error code.
+        message: Human-readable validation failure description.
+        value: Rejected input value recorded on the error entry.
+        location: Field path segments locating the offending value, empty at the root.
+
+    Returns:
+        Structured Pydantic initialization error record for `ValidationError`.
+    """
     return InitErrorDetails(
         type=PydanticCustomError(kind, "{message}", {"message": message}),
         loc=location,
@@ -32,7 +47,12 @@ def detail(
 
 
 def raise_if_errors(title: str, found: Sequence[InitErrorDetails]) -> None:
-    """Raises `ValidationError` containing every entry in `found` when non-empty."""
+    """Raises `ValidationError` containing every entry in `found` when non-empty.
+
+    Args:
+        title: Model or schema title attached to the raised `ValidationError`.
+        found: Collected validation error records; nothing is raised when empty.
+    """
     if found:
         raise ValidationError.from_exception_data(title, list(found))
 
@@ -44,6 +64,13 @@ def close_names(names: Sequence[str], name: str) -> str:
     case-insensitive matching when needed. Two-character names fall back further to
     cutoff 0.5 so single-character edits (such as ``V2`` for ``V1`` or ``po`` for
     ``op``) still match.
+
+    Args:
+        names: Candidate valid names in priority order.
+        name: Unrecognized query name to match.
+
+    Returns:
+        Semicolon-prefixed close-names suffix, or an empty string when none match.
 
     Examples:
         >>> close_names(["out", "in"], "ou")

@@ -37,6 +37,12 @@ def digest(described: Mapping[str, JsonValue]) -> str:
     and [`platform`][jolty.files.platform] to enforce bit-identical determinism within
     one build and platform.
 
+    Args:
+        described: JSON-serializable mapping of numerical shard inputs.
+
+    Returns:
+        Lowercase 64-character hexadecimal SHA-256 digest string.
+
     Examples:
         >>> len(digest({"samples": 10}))
         64
@@ -56,6 +62,12 @@ def merge(paths: Sequence[Path]) -> tuple[files.Shard, tuple[Path, ...]]:
 
     Returns the merged [`Shard`][jolty.files.Shard] along with the input paths sorted
     by sample range.
+
+    Args:
+        paths: Non-empty sequence of shard `.npz` file paths to validate and join.
+
+    Returns:
+        Pair of merged full-range `Shard` and sorted input shard paths.
 
     Raises:
         JoltyError: When `paths` is empty, a file is invalid, shard digests differ, or
@@ -193,6 +205,12 @@ def monte_carlo(
 
     Returns the report together with the nominal-condition batch formatted for a batch
     file.
+
+    Args:
+        shard: Merged Monte Carlo shard spanning all planned samples.
+
+    Returns:
+        Pair of aggregated `MonteCarloReport` and serializable nominal `Batch`.
     """
     if not shard.conditions:
         message = "the shard holds no conditions"
@@ -225,6 +243,16 @@ def spreads(
     `found` holds each condition batch (or ``None`` when elaboration failed) and
     `planned` lists the plan analysis names. Each sample takes its worst verdict across
     all conditions for every requirement.
+
+    Args:
+        planned: Planned analysis names defined by the simulation plan.
+        found: Per-condition batch results (nominal first, then corners), or ``None``.
+        count: Total number of Monte Carlo samples evaluated per condition.
+        specs: Optional specification requirements and yield target.
+
+    Returns:
+        Three-tuple of failed sample count, requirement `Spread` tuple, and optional
+        `Yield`.
     """
     failed = np.zeros(count, dtype=np.bool_)
     for batch in found:
@@ -254,6 +282,16 @@ def saved(
 
     When `found` is ``None``, elaboration failed and every sample records empty
     readings with an elaboration-failure diagnostic.
+
+    Args:
+        found: Nominal-condition batch result, or ``None`` when elaboration failed.
+        count: Number of runs represented by the returned batch.
+        planned: Planned analysis names defined by the simulation plan.
+        specs: Optional circuit specifications naming requirements and bounds.
+
+    Returns:
+        Serializable `Batch` pairing nominal readings with requirement labels and
+        bounds.
     """
     requirements = () if specs is None else tuple(specs.requirements)
     if found is None:

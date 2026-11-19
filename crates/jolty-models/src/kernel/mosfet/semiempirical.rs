@@ -127,7 +127,7 @@ impl<R: Real> Semiempirical<R> {
         }
     }
 
-    /// Computes the short-channel charge-sharing factor from `root = √(φ − vbs)`.
+    /// Computes the short-channel charge-sharing factor from `root = √(φ - vbs)`.
     fn short_channel(&self, root: Dual<R, 3>) -> Dual<R, 3> {
         if self.junction_depth.value() == 0.0 || self.alpha.value() == 0.0 {
             return Dual::number(1.0);

@@ -123,7 +123,12 @@ class _Shard(ir.FrozenModel):
 
 
 def save_shard(path: Path, shard: Shard) -> None:
-    """Writes `shard` to `path`."""
+    """Writes `shard` to `path`.
+
+    Args:
+        path: Destination `.npz` shard archive file path.
+        shard: Simulated Monte Carlo shard slice to serialize.
+    """
     arrays: dict[str, np.ndarray] = {}
     for place, found in enumerate(shard.conditions):
         if found is not None:
@@ -154,6 +159,12 @@ def save_shard(path: Path, shard: Shard) -> None:
 
 def load_shard(path: Path) -> Shard:
     """Reads the shard archive at `path`.
+
+    Args:
+        path: Source `.npz` shard archive file path.
+
+    Returns:
+        Decoded `Shard` loaded from `path`.
 
     Raises:
         JoltyError: When `path` is not a valid jolty shard archive of the supported

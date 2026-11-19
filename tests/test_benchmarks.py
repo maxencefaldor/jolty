@@ -548,8 +548,8 @@ def test_an_integrated_designs_resistors_stray_together() -> None:
     @component
     def pair(c: Builder) -> None:
         a, b = c.port("a"), c.port("b")
-        for id, value in (("R1", 1 * kohm), ("R2", 3 * kohm)):
-            placed = c.place(devices.resistor(value), name=id)
+        for name, value in (("R1", 1 * kohm), ("R2", 3 * kohm)):
+            placed = c.place(devices.resistor(value), name=name)
             c.connect(placed.a, a)
             c.connect(placed.b, b)
 

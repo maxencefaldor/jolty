@@ -463,10 +463,8 @@ plots = [
 dev = [
     { name = "coverage" },
     { name = "hypothesis" },
-    { name = "jax" },
-    { name = "matplotlib" },
+    { name = "jolty", extra = ["jax", "mcp", "plots"] },
     { name = "maturin" },
-    { name = "mcp" },
     { name = "mpmath" },
     { name = "pytest" },
     { name = "pytest-xdist" },
@@ -475,7 +473,7 @@ dev = [
     { name = "ty" },
 ]
 docs = [
-    { name = "matplotlib" },
+    { name = "jolty", extra = ["plots"] },
     { name = "mkdocstrings-python" },
     { name = "zensical" },
 ]
@@ -495,20 +493,18 @@ provides-extras = ["jax", "mcp", "plots"]
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", specifier = ">=7.17.3" },
-    { name = "hypothesis" },
-    { name = "jax", specifier = ">=0.12" },
-    { name = "matplotlib", specifier = ">=3.10" },
-    { name = "maturin" },
-    { name = "mcp", specifier = ">=2.1" },
+    { name = "hypothesis", specifier = ">=6.170" },
+    { name = "jolty", extras = ["jax", "mcp", "plots"] },
+    { name = "maturin", specifier = ">=1.16,<2" },
     { name = "mpmath", specifier = ">=1.4.1" },
-    { name = "pytest" },
-    { name = "pytest-xdist" },
-    { name = "ruff" },
-    { name = "rumdl" },
-    { name = "ty" },
+    { name = "pytest", specifier = ">=9.2" },
+    { name = "pytest-xdist", specifier = ">=3.8" },
+    { name = "ruff", specifier = ">=0.17" },
+    { name = "rumdl", specifier = ">=0.3" },
+    { name = "ty", specifier = ">=0.0.104" },
 ]
 docs = [
-    { name = "matplotlib", specifier = ">=3.10" },
+    { name = "jolty", extras = ["plots"] },
     { name = "mkdocstrings-python", specifier = ">=2.0.10" },
     { name = "zensical", specifier = ">=0.1.1" },
 ]

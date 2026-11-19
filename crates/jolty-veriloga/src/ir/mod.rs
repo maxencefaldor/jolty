@@ -40,7 +40,7 @@ pub(crate) enum Probe {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Builtin {
     Exp,
-    /// Exponential minus one (`eˣ − 1`), accurate near zero (jolty extension matching C
+    /// Exponential minus one (`eˣ - 1`), accurate near zero (jolty extension matching C
     /// `expm1`).
     Expm1,
     Ln,
@@ -229,9 +229,9 @@ pub(crate) struct Parameter {
     pub(crate) aliases: Vec<String>,
 }
 
-/// Global reference node (electrical ground or thermal ambient).
+/// Global ground node (electrical ground or thermal ambient).
 ///
-/// Reference potential is always zero and contributions to it are discarded.
+/// Ground potential is always zero and contributions to it are discarded.
 pub(crate) const GROUND: usize = usize::MAX;
 
 /// Named or unnamed branch between two nodes (or one node and [`GROUND`]).

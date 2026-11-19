@@ -33,20 +33,18 @@ Issues = "https://github.com/maxencefaldor/jolty/issues"
 [dependency-groups]
 dev = [
     "coverage>=7.17.3",
-    "hypothesis",
-    "jax>=0.12",
-    "matplotlib>=3.10",
-    "maturin",
-    "mcp>=2.1",
+    "hypothesis>=6.170",
+    "jolty[jax,mcp,plots]",
+    "maturin>=1.16,<2",
     "mpmath>=1.4.1",
-    "pytest",
-    "pytest-xdist",
-    "ruff",
-    "rumdl",
-    "ty",
+    "pytest>=9.2",
+    "pytest-xdist>=3.8",
+    "ruff>=0.17",
+    "rumdl>=0.3",
+    "ty>=0.0.104",
 ]
 docs = [
-    "matplotlib>=3.10",
+    "jolty[plots]",
     "mkdocstrings-python>=2.0.10",
     "zensical>=0.1.1",
 ]
@@ -84,10 +82,6 @@ select = ["ALL"]
 # COM812 conflicts with the ruff formatter, which manages trailing commas automatically.
 # TC: pydantic evaluates type annotations at runtime, so annotated types stay runtime imports.
 ignore = ["COM812", "TC"]
-
-[tool.ruff.lint.flake8-builtins]
-# "id" names an instance across the circuit format, engine, and builder.
-builtins-ignorelist = ["id"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

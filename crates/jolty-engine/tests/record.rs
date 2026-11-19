@@ -407,10 +407,10 @@ fn each_device_reports_its_own_small_signal_model_and_variables() {
     assert_exact(conductance("R1.a", "R1.a"), 2.5e-4);
     assert_exact(conductance("R1.a", "R1.b"), -2.5e-4);
     assert_exact(capacitance("C1.b", "C1.a"), -3e-12);
-    // A source's branch equation holds its voltage: v(positive) − v(negative) = level.
+    // A source's branch equation holds its voltage: v(positive) - v(negative) = level.
     assert_exact(conductance("VG:current", "VG.positive"), 1.0);
     assert_exact(conductance("VG.positive", "VG:current"), 1.0);
-    // In saturation, gm = β (vgs − vto), with β = kp W / L.
+    // In saturation, gm = β (vgs - vto), with β = kp W / L.
     let gm = conductance("M1.drain", "M1.gate");
     assert!((gm - 2e-4 * 0.7).abs() < 1e-18, "{gm}");
     assert_exact(conductance("M1.gate", "M1.drain"), 0.0);

@@ -50,6 +50,12 @@ def q2n3904(*, heated: bool = False) -> devices.Device:
     Datasheet ratings are 40 V collector-emitter, 60 V collector-base, 6 V
     emitter-base, 200 mA collector current, and 625 mW at 25 °C ambient. Junction
     temperature spans -55 °C to 150 °C with 200 K/W thermal resistance to ambient.
+
+    Args:
+        heated: When ``True``, exposes a self-heating ``thermal`` terminal.
+
+    Returns:
+        Numbered, rated 2N3904 NPN `Device` with onsemi Gummel-Poon parameters.
     """
     return (
         _heated(
@@ -94,6 +100,12 @@ def q2n3906(*, heated: bool = False) -> devices.Device:
     Datasheet ratings are 40 V emitter-collector and base-collector, 5 V base-emitter,
     200 mA collector current, and 625 mW at 25 °C ambient. Junction temperature spans
     -55 °C to 150 °C with 200 K/W thermal resistance to ambient.
+
+    Args:
+        heated: When ``True``, exposes a self-heating ``thermal`` terminal.
+
+    Returns:
+        Numbered, rated 2N3906 PNP `Device` with onsemi Gummel-Poon parameters.
     """
     return (
         _heated(
@@ -137,6 +149,12 @@ def d1n4148(*, heated: bool = False) -> devices.Device:
     Datasheet ratings are 100 V repetitive reverse voltage, 300 mA forward current,
     and 500 mW at 25 °C ambient. Junction temperature spans -55 °C to 175 °C with
     300 K/W thermal resistance to ambient.
+
+    Args:
+        heated: When ``True``, exposes a self-heating ``thermal`` terminal.
+
+    Returns:
+        Numbered, rated 1N4148 silicon diode `Device` with onsemi SPICE parameters.
     """
     return (
         _heated(
@@ -322,22 +340,50 @@ MTP50P03HDL: Final = Datasheet(
 
 
 def irf511(*, heated: bool = False) -> Component:
-    """Returns an IRF511 power MOSFET fitted to [its datasheet][jolty.parts.IRF511]."""
+    """Returns an IRF511 power MOSFET fitted to [its datasheet][jolty.parts.IRF511].
+
+    Args:
+        heated: When ``True``, exposes a shared ``thermal`` junction port.
+
+    Returns:
+        Numbered, rated IRF511 n-channel power MOSFET `Component`.
+    """
     return power_mosfet(IRF511, heated=heated)
 
 
 def irf9230(*, heated: bool = False) -> Component:
-    """Returns an IRF9230 MOSFET fitted to [its datasheet][jolty.parts.IRF9230]."""
+    """Returns an IRF9230 MOSFET fitted to [its datasheet][jolty.parts.IRF9230].
+
+    Args:
+        heated: When ``True``, exposes a shared ``thermal`` junction port.
+
+    Returns:
+        Numbered, rated IRF9230 p-channel power MOSFET `Component`.
+    """
     return power_mosfet(IRF9230, heated=heated)
 
 
 def irfz44(*, heated: bool = False) -> Component:
-    """Returns an IRFZ44 MOSFET fitted to [its datasheet][jolty.parts.IRFZ44]."""
+    """Returns an IRFZ44 MOSFET fitted to [its datasheet][jolty.parts.IRFZ44].
+
+    Args:
+        heated: When ``True``, exposes a shared ``thermal`` junction port.
+
+    Returns:
+        Numbered, rated IRFZ44 n-channel power MOSFET `Component`.
+    """
     return power_mosfet(IRFZ44, heated=heated)
 
 
 def mtp50p03hdl(*, heated: bool = False) -> Component:
-    """Returns an MTP50P03HDL MOSFET fitted to [its sheet][jolty.parts.MTP50P03HDL]."""
+    """Returns an MTP50P03HDL MOSFET fitted to [its sheet][jolty.parts.MTP50P03HDL].
+
+    Args:
+        heated: When ``True``, exposes a shared ``thermal`` junction port.
+
+    Returns:
+        Numbered, rated MTP50P03HDL logic-level p-channel MOSFET `Component`.
+    """
     return power_mosfet(MTP50P03HDL, heated=heated)
 
 
@@ -368,6 +414,13 @@ def power_mosfet(sheet: Datasheet, *, heated: bool = False) -> Component:
     the source beyond threshold at VGS = 0, matching standard vendor level-1 and
     level-3 subcircuits. Among the built-in parts, only MTP50P03HDL has a stated diode
     drop (2.39 V) above its threshold.
+
+    Args:
+        sheet: Positive-magnitude 25 °C power MOSFET datasheet specification.
+        heated: When ``True``, exposes a shared ``thermal`` junction port.
+
+    Returns:
+        Numbered, rated power MOSFET `Component` fitted to `sheet`.
     """
     n = sheet.channel == "n"
     drain_source = sheet.drain_source_voltage * V
@@ -406,6 +459,12 @@ def transconductance_parameter(sheet: Datasheet) -> float:
     Selects the larger of two candidates: the linear-region `β` matching RDS(on) via
     `id = β · vds · (vov - vds / 2)` at overdrive `vov`, and the saturation `β`
     matching minimum transconductance `√(2 · β · id)`.
+
+    Args:
+        sheet: Power MOSFET datasheet figures at 25 °C.
+
+    Returns:
+        Fitted level-1 `kp * w / l` transconductance factor in A/V².
     """
     return max(_channel(sheet, sheet.on_resistance * sheet.on_current), _least(sheet))
 
@@ -415,6 +474,12 @@ def drain_resistance(sheet: Datasheet) -> float:
 
     Returns zero when the channel alone achieves RDS(on), and returns the residual
     resistance when minimum transconductance requires a larger `β`.
+
+    Args:
+        sheet: Power MOSFET datasheet figures at 25 °C.
+
+    Returns:
+        Series drain resistance in ohms reconciling RDS(on) with minimum `gfs`.
     """
     beta = _least(sheet)
     if beta <= _channel(sheet, sheet.on_resistance * sheet.on_current):
@@ -426,7 +491,14 @@ def drain_resistance(sheet: Datasheet) -> float:
 
 
 def diode_resistance(sheet: Datasheet) -> float:
-    """Computes the body-diode series resistance (ohms) matching the datasheet drop."""
+    """Computes the body-diode series resistance (ohms) matching the datasheet drop.
+
+    Args:
+        sheet: Power MOSFET datasheet figures at 25 °C.
+
+    Returns:
+        Body-diode ohmic series resistance in ohms matching `sheet.diode_drop`.
+    """
     junction = THERMAL_VOLTAGE * math.log1p(sheet.diode_current / SATURATION_CURRENT)
     return (sheet.diode_drop - junction) / sheet.diode_current
 
@@ -444,7 +516,13 @@ def _least(sheet: Datasheet) -> float:
 
 @component
 def fitted_mosfet(c: Builder, sheet: Datasheet, *, heated: bool = False) -> None:
-    """Builds the unrated power MOSFET subcircuit fitted to `sheet`."""
+    """Builds the unrated power MOSFET subcircuit fitted to `sheet`.
+
+    Args:
+        c: Component `Builder` populated with channel and body-diode elements.
+        sheet: Power MOSFET datasheet figures at 25 °C.
+        heated: When ``True``, joins element thermal pins to port ``thermal``.
+    """
     drain, gate, source = (c.port(name) for name in ("drain", "gate", "source"))
     sign = 1.0 if sheet.channel == "n" else -1.0
     resistance = drain_resistance(sheet)

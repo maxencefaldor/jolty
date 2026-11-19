@@ -48,6 +48,14 @@ def fetch(url: str, digest: str, cache: Path | None = None) -> Path:
     Subsequent calls return the verified cached file without downloading again. Uses
     the configured settings cache directory when `cache` is None.
 
+    Args:
+        url: Source URL of the file to download.
+        digest: Expected 64-character hexadecimal SHA-256 digest.
+        cache: Optional cache root directory overriding runtime settings.
+
+    Returns:
+        Local filesystem path to the verified cached file.
+
     Raises:
         DownloadError: When `digest` is malformed, `url` names an unsafe filename,
             the transfer fails, the payload exceeds `_MAX_DOWNLOAD_BYTES`, or the

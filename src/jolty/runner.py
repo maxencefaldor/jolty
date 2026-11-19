@@ -303,6 +303,13 @@ def run(job: Job, directory: Path) -> JobResult:
 
     Script directories are prepended to `sys.path` during execution so scripts can
     import sibling modules just as under ``python script.py``.
+
+    Args:
+        job: Subprocess build or simulation job specification.
+        directory: Scratch directory where results, batches, or shards are staged.
+
+    Returns:
+        `Built` outcome on completion, or `Failure` recording any script exception.
     """
     try:
         with _importable(job.script, job.plan):
@@ -1215,7 +1222,12 @@ def _relative(filename: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Executes the runner job located in the directory passed as the CLI argument."""
+    """Executes the runner job located in the directory passed as the CLI argument.
+
+    Args:
+        argv: Single-element argument list naming the job directory, defaulting to
+            ``sys.argv[1:]`` when ``None``.
+    """
     (argument,) = sys.argv[1:] if argv is None else argv
     directory = Path(argument)
     job = Job.model_validate_json((directory / JOB).read_bytes())

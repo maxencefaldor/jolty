@@ -31,7 +31,7 @@ use crate::{
 /// currents, forward knee softening, and depletion charge behind the shared series
 /// resistance, or behind a dedicated series resistance connected directly to `anode`.
 ///
-/// Positive series resistance inserts an internal node labelled `junction` (and
+/// Positive series resistance inserts an internal node labeled `junction` (and
 /// `junction_current` below [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE)); a separate
 /// sidewall resistance inserts `sidewall` (and `sidewall_current`). When a breakdown
 /// voltage is supplied, reverse current grows exponentially past the ngspice-matched
@@ -156,7 +156,7 @@ struct Sidewall<R: Real> {
 }
 
 /// Depletion-region recombination current
-/// `Isr · (e^{v / (nr·Vt)} − 1) · ((1 − v/φ)² + 0.005)^{m/2}` matching ngspice `dioload.c`
+/// `Isr · (e^{v / (nr·Vt)} - 1) · ((1 - v/φ)² + 0.005)^{m/2}` matching ngspice `dioload.c`
 /// (lines 390 to 405).
 ///
 /// Below `-3 · slope` of the bottom junction, voltage is clamped at the boundary (lines
@@ -172,7 +172,7 @@ struct Recombination<R: Real> {
     half_grading: R,
 }
 
-/// Reverse tunneling current `−Itun · (e^{−v / (ntun·Vt)} − 1)` matching ngspice
+/// Reverse tunneling current `-Itun · (e^{-v / (ntun·Vt)} - 1)` matching ngspice
 /// `dioload.c` (lines 461 to 483).
 #[derive(Debug, Clone, Copy)]
 struct Tunneling<R: Real> {
@@ -202,7 +202,7 @@ pub enum DiodeTemperatureModel {
     /// proportionally by its relative coefficient per kelvin.
     One,
     /// Model 2 (`TLEV = 2`): identical to model 1 except saturation currents and potentials
-    /// follow the Varshni energy gap `Eg − α·T² / (T + β)`.
+    /// follow the Varshni energy gap `Eg - α·T² / (T + β)`.
     Two,
 }
 
@@ -938,8 +938,8 @@ impl<R: Real> Gaps<R> {
     /// Computes the saturation-current temperature scaling factor for `factor`, `exponent`,
     /// and `emission` (`diotemp.c`, lines 114 to 184).
     ///
-    /// Models 0 and 1 compute `exp((factor · (T/Tn − 1) · Eg / Vt + exponent · ln(T/Tn)) / n)`.
-    /// Model 2 uses `Eg(Tn) / Vt(Tn) − Eg(T) / Vt` in place of `(T/Tn − 1) · Eg / Vt`.
+    /// Models 0 and 1 compute `exp((factor · (T/Tn - 1) · Eg / Vt + exponent · ln(T/Tn)) / n)`.
+    /// Model 2 uses `Eg(Tn) / Vt(Tn) - Eg(T) / Vt` in place of `(T/Tn - 1) · Eg / Vt`.
     fn scaling(self, factor: R, exponent: R, emission: R) -> R {
         let Temperatures { actual, nominal } = self.temperatures;
         let vt = self.temperatures.thermal_voltage();
@@ -1043,7 +1043,7 @@ impl<R: Real> Recombination<R> {
 }
 
 impl<R: Real> Tunneling<R> {
-    /// Evaluates reverse tunneling current `Itun · (e^{−v / slope} − 1)` and derivatives at
+    /// Evaluates reverse tunneling current `Itun · (e^{-v / slope} - 1)` and derivatives at
     /// `voltage` (subtracted from forward junction current).
     fn current<const N: usize>(&self, voltage: Dual<R, N>) -> Dual<R, N> {
         ((-voltage).divide(self.slope).exp() - 1.0).scale(self.saturation_current)
@@ -1486,7 +1486,7 @@ mod tests {
         };
         // Model 0 lowers BV by 1 mV/K to 5.95 V; model 1 lowers BV by 0.1%/K to 5.7 V, placing
         // 6 V deeper by 0.25 V and raising current by `e^{0.25/Vt}`. Matching shifts
-        // `Vt · ln(Ibv/Is + 1 − BV/Vt)` differ by 8.3 in 1.4e8 (6e-8 relative).
+        // `Vt · ln(Ibv/Is + 1 - BV/Vt)` differ by 8.3 in 1.4e8 (6e-8 relative).
         let ratio = breakdown(1) / breakdown(0);
         let expected = (0.25 / thermal_voltage(REFERENCE_TEMPERATURE + 50.0)).exp();
         assert!(

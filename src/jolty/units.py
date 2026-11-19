@@ -142,6 +142,13 @@ class Quantity:
     def to(self, dimension: Dimension, name: str) -> float:
         """Validates dimension and finiteness and returns the scalar SI value.
 
+        Args:
+            dimension: Expected physical dimension for conversion.
+            name: Parameter label included in error messages on mismatch.
+
+        Returns:
+            Finite scalar value expressed in SI base units.
+
         Raises:
             DimensionError: When the quantity dimension differs from `dimension`;
                 the message names `name`, the expected unit, and the given quantity.
@@ -177,6 +184,9 @@ class Quantity:
 
         Fifteen significant digits preserve script literals while eliminating binary
         floating-point noise in generated component names.
+
+        Returns:
+            Space-free SI-prefixed string rounded to 15 significant digits.
 
         Examples:
             >>> (1.00001 * kohm).compact(), (4.7 * nF).compact(), (0.02 / V).compact()
@@ -249,6 +259,12 @@ ZERO_CELSIUS: Final = 273.15
 def celsius(degrees: float) -> Quantity:
     """Converts `degrees` Celsius into a temperature `Quantity` in kelvins.
 
+    Args:
+        degrees: Temperature on the Celsius scale.
+
+    Returns:
+        Temperature `Quantity` in kelvins (`degrees + 273.15`).
+
     Examples:
         >>> celsius(27).value
         300.15
@@ -258,6 +274,13 @@ def celsius(degrees: float) -> Quantity:
 
 def finite(value: float, name: str) -> float:
     """Validates that `value` is finite and returns `value`.
+
+    Args:
+        value: Numeric scalar to check for finiteness.
+        name: Parameter label included in the `ValueError` message when non-finite.
+
+    Returns:
+        Validated finite floating-point `value`.
 
     Raises:
         ValueError: When `value` is infinite or NaN; the message names `name`.
@@ -270,6 +293,13 @@ def finite(value: float, name: str) -> float:
 
 def format_si(value: float, symbol: str) -> str:
     """Formats `value` to four significant digits with an SI prefix in [1, 1000).
+
+    Args:
+        value: Numeric magnitude in SI base units.
+        symbol: Base unit symbol (such as `"V"` or `"Ω"`) placed after the SI prefix.
+
+    Returns:
+        Human-readable string formatted to four significant digits with an SI prefix.
 
     Examples:
         >>> format_si(4700.0, "Ω")

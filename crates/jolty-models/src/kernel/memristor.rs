@@ -1,7 +1,7 @@
 //! Memristor models with a state-dependent resistance between `positive` and `negative`,
 //! varying from on-resistance at state 0 to off-resistance at state 1 by [law](MemristorLaw).
 //!
-//! State is tracked as an internal unknown labelled `state` that evolves only in time.
+//! State is tracked as an internal unknown labeled `state` that evolves only in time.
 //! Operating-point and linearized analyses hold `state` at the initial value; transient
 //! integration evolves `state` under the control drive, damped near both bounds by a smooth
 //! window.
@@ -22,7 +22,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MemristorLaw {
-    /// Linear series-boundary resistance `r_on + (r_off − r_on) · x`.
+    /// Linear series-boundary resistance `r_on + (r_off - r_on) · x`.
     #[default]
     Linear,
     /// Exponential tunnel-barrier resistance `r_on · (r_off / r_on)^x`.
@@ -85,7 +85,7 @@ impl<R: Real> Memristance<R> {
     /// `drive`, slowing motion toward either bound without impeding departure.
     ///
     /// Let `d` be the distance to the target bound in window widths. Inside the bound, the
-    /// window multiplies `drive` by `1 − e^(−d)` so motion halts at the boundary; beyond the
+    /// window multiplies `drive` by `1 - e^(-d)` so motion halts at the boundary; beyond the
     /// bound, multiplying by `d` reverses motion with a matching slope.
     fn rate(&self, state: Dual<R, 2>, drive: Dual<R, 2>) -> Dual<R, 2> {
         let toward_off = drive.value.value() > 0.0;
@@ -110,8 +110,8 @@ impl<R: Real> Memristance<R> {
 #[derive(Debug, Clone, Copy)]
 enum Control<R: Real> {
     /// VTEAM voltage thresholds: drives state toward off above `off_voltage` at
-    /// `off_rate · (v/v_off − 1)^α_off` and toward on below `on_voltage` at
-    /// `on_rate · (v/v_on − 1)^α_on`, holding constant in between.
+    /// `off_rate · (v/v_off - 1)^α_off` and toward on below `on_voltage` at
+    /// `on_rate · (v/v_on - 1)^α_on`, holding constant in between.
     Voltage {
         on_voltage: R,
         off_voltage: R,
@@ -263,7 +263,7 @@ impl MemristorShape {
         let row = self.state;
         let [on_positive, on_negative, own] = self.own;
         if at.transient {
-            // dx/dt − rate = 0.
+            // dx/dt - rate = 0.
             let [by_voltage, by_state] = rate.gradient;
             stamp.add_residual(row, -rate.value);
             stamp.add_charge(row, state.value);
@@ -272,7 +272,7 @@ impl MemristorShape {
             stamp.add_conductance(own, -by_state);
             stamp.add_capacitance(own, R::constant(1.0));
         } else {
-            // x − x₀ = 0.
+            // x - x₀ = 0.
             stamp.add_residual(row, -prepared.initial + state.value);
             stamp.add_conductance(own, R::constant(1.0));
         }
@@ -316,9 +316,9 @@ fn a_hundredth<R: Real>() -> R {
 /// Voltage-controlled memristor following the VTEAM model (Kvatinsky, Ramadan, Friedman,
 /// and Kolodny, 2015).
 ///
-/// Terminal voltage `v = v(positive) − v(negative)` drives the state toward off above
-/// `off_voltage` at `off_rate · (v/v_off − 1)^α_off` and toward on below `on_voltage` at
-/// `−on_rate · (v/v_on − 1)^α_on`. Between thresholds the state holds constant. Each rate
+/// Terminal voltage `v = v(positive) - v(negative)` drives the state toward off above
+/// `off_voltage` at `off_rate · (v/v_off - 1)^α_off` and toward on below `on_voltage` at
+/// `-on_rate · (v/v_on - 1)^α_on`. Between thresholds the state holds constant. Each rate
 /// equals the speed at twice the corresponding threshold in full ranges per second, damped
 /// near either bound by the window.
 #[derive(Debug, Clone, Copy)]
@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn each_rate_is_the_speed_at_twice_its_threshold() {
         let mut bench = Bench::new::<VoltageControlledMemristor>(VTEAM).stepping();
-        // Mid-range, its window is open: within e^(−40) of its speed.
+        // Mid-range, its window is open: within e^(-40) of its speed.
         let open = 1.0 - (-40.0f64).exp();
         assert_close(&[rate(&mut bench, 1.0, 0.4)], &[1e5 * open]);
         assert_close(&[rate(&mut bench, -2.0, 0.4)], &[-2e6 * open]);
@@ -661,7 +661,7 @@ mod tests {
         // Driven on from its off bound, it leaves at once.
         let leaving = rate(&mut bench, -2.0, 1.0);
         assert_close(&[leaving], &[-2e6 * (1.0 - (-100.0f64).exp())]);
-        // A window's width from the bound, it moves at 1 − 1/e of its speed.
+        // A window's width from the bound, it moves at 1 - 1/e of its speed.
         let slowed = rate(&mut bench, -2.0, 0.01);
         assert_close(&[slowed], &[-2e6 * (1.0 - (-1.0f64).exp())]);
         assert!(rate(&mut bench, -2.0, -0.001) > 0.0);

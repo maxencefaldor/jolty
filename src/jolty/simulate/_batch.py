@@ -77,12 +77,27 @@ def mismatch(seed: int, index: int) -> int:
     """Computes the kit mismatch seed for Monte Carlo sample `index`.
 
     The derived seed is independent of corner so every corner evaluates the same parts.
+
+    Args:
+        seed: Base Monte Carlo seed declared by the plan.
+        index: Zero-based Monte Carlo sample index.
+
+    Returns:
+        Deterministic 32-bit mismatch seed derived from `seed` and `index`.
     """
     return int(np.random.SeedSequence([seed, index]).generate_state(1)[0])
 
 
 def labels(parameters: Sequence[tuple[str, str] | None]) -> tuple[str, ...]:
-    """Formats column labels for `parameters`, such as ``R1 resistance``."""
+    """Formats column labels for `parameters`, such as ``R1 resistance``.
+
+    Args:
+        parameters: Sequence of `(instance, parameter)` pairs, or ``None`` for ambient
+            temperature.
+
+    Returns:
+        Human-readable column labels aligned with `parameters`.
+    """
     return tuple(
         "temperature" if parameter is None else f"{parameter[0]} {parameter[1]}"
         for parameter in parameters
@@ -127,6 +142,16 @@ class Planned:
         traces: Sequence[str],
     ) -> Planned:
         """Plans a batch of `analyses` on `host`.
+
+        Args:
+            host: Simulation host capabilities and circuit metadata.
+            analyses: Mapping from analysis names to specifications run per variant.
+            options: Shared solver tolerances, iteration limits, and nodesets.
+            measures: Measures evaluated on every run of the batch.
+            traces: Circuit unknown names retained across traced runs.
+
+        Returns:
+            Compiled `Planned` batch ready for engine or ngspice execution.
 
         Raises:
             KeyError: When `traces` names no unknown.
@@ -239,7 +264,16 @@ class Planned:
         runs: range,
         each: Callable[[results.Run], object] | None,
     ) -> _core.BatchResult:
-        """Executes `runs` of `ran` in the native engine, invoking `each` per run."""
+        """Executes `runs` of `ran` in the native engine, invoking `each` per run.
+
+        Args:
+            ran: Compiled engine variants over which the batch iterates.
+            runs: Contiguous slice of variant indices to execute.
+            each: Optional per-run callback receiving each decoded `Run`.
+
+        Returns:
+            Raw engine batch payload covering `runs`.
+        """
         measures = [
             (self.engine[reading.measure.analysis], reading.resolved.measure)
             for reading in self.readings
@@ -305,7 +339,16 @@ class Planned:
         runs: range,
         each: Callable[[results.Run], object] | None,
     ) -> _core.BatchResult:
-        """Executes `runs` of `ran` in ngspice across worker threads."""
+        """Executes `runs` of `ran` in ngspice across worker threads.
+
+        Args:
+            ran: Compiled engine variants supplying per-run overrides and samples.
+            runs: Contiguous slice of variant indices to execute.
+            each: Optional per-run callback receiving each decoded `Run`.
+
+        Returns:
+            Batch payload matching engine layout across all executed ngspice runs.
+        """
         with ThreadPoolExecutor(engine_pool().threads) as executor:
             found = list(executor.map(functools.partial(self._ngspice, ran), runs))
         count = len(found)
@@ -403,6 +446,12 @@ class Planned:
 
     def result(self, found: _core.BatchResult) -> results.BatchResult:
         """Assembles the typed `BatchResult` from raw engine or ngspice output.
+
+        Args:
+            found: Raw batch payload produced by `in_engine` or `in_ngspice`.
+
+        Returns:
+            Typed `BatchResult` combining parameters, measures, errors, and traces.
 
         Raises:
             OverflowError: When a measure summation overflows on a run.

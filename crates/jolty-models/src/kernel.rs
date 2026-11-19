@@ -244,7 +244,7 @@ pub trait Kernel: Send + Sync + 'static {
 
     /// Appends delayed conductance terms sampled through [`Local::delayed`] to `found`.
     ///
-    /// Small-signal analysis scales each constant conductance by `e^{−s·delay}` at complex
+    /// Small-signal analysis scales each constant conductance by `e^{-s·delay}` at complex
     /// frequency `s`, while DC uses the full value. Transient analysis records history for
     /// each delayed column and schedules breakpoints `delay` seconds after integration
     /// restarts.

@@ -75,15 +75,24 @@ class Device:
         tolerance, or log-uniform within a factor of ``1 + relative``. Monte Carlo
         analyses multiply sampled values by any shared `lot` factor.
 
+        Args:
+            parameter: Dotted parameter path targeting a numeric model value.
+            relative: Relative tolerance fraction (such as 0.01 for 1 %).
+            distribution: Sampling distribution across the tolerance interval.
+            lot: Optional shared manufacturing lot correlating multiple instances.
+
+        Returns:
+            Copy of the device carrying the added parameter tolerance.
+
+        Raises:
+            ValueError: If `parameter` does not resolve to a numeric value, or if
+                `distribution` rejects the tolerance.
+
         Examples:
             >>> from jolty.units import V
             >>> supply = voltage_source(5 * V).toleranced("waveform.dc", 0.05)
             >>> supply.tolerances["waveform.dc"].relative
             0.05
-
-        Raises:
-            ValueError: If `parameter` does not resolve to a numeric value, or if
-                `distribution` rejects the tolerance.
         """
         match ir.parameter(self.parameters, parameter):
             case float() | int():
@@ -115,6 +124,21 @@ class Device:
         ``maximum=50 * V, minimum=-50 * V`` for a 50 V bipolar capacitor). Simulations
         check every rating at the operating point and throughout transient runs.
 
+        Args:
+            stress: Electrical or thermal stress category to bound.
+            maximum: Upper operating limit in units matching `stress`.
+            minimum: Lower operating limit in units matching `stress`.
+            terminals: Explicit terminal names overriding default rating pins.
+
+        Returns:
+            Copy of the device with the appended operating-limit rating.
+
+        Raises:
+            DimensionError: If a bound does not match the physical dimension of
+                `stress`.
+            ValueError: If `terminals` are invalid for the device or `stress`, or if
+                bounds are missing or inverted.
+
         Examples:
             >>> from jolty.units import V, W, celsius, kohm, uF
             >>> resistor(1 * kohm).rated("power", 0.25 * W).ratings[0].maximum
@@ -123,12 +147,6 @@ class Device:
             ('a', 'b')
             >>> diode().rated("temperature", celsius(175)).ratings[0].maximum
             448.15
-
-        Raises:
-            DimensionError: If a bound does not match the physical dimension of
-                `stress`.
-            ValueError: If `terminals` are invalid for the device or `stress`, or if
-                bounds are missing or inverted.
         """
         rating = rate(
             self.terminals,
@@ -148,13 +166,16 @@ class Device:
         that thermal net. Supported models are resistors, diodes, JFETs, bipolar
         transistors, VBICs, MOSFETs, VDMOS devices, BSIM3, and BSIM4.
 
-        Examples:
-            >>> diode().heated().terminals
-            ('anode', 'cathode', 'thermal')
+        Returns:
+            Copy of the device exposing an electrothermal ``thermal`` terminal.
 
         Raises:
             ValueError: If the device model does not support self-heating or has
                 invalid parameters.
+
+        Examples:
+            >>> diode().heated().terminals
+            ('anode', 'cathode', 'thermal')
         """
         _core.terminals(self.model, json.dumps(self.parameters))
         parameters: dict[str, JsonValue] = {**self.parameters, "thermal": True}
@@ -175,15 +196,21 @@ class Device:
         junctions require temperatures above 0 K. Device temperature overrides are not
         differentiated by sensitivity analyses.
 
-        Examples:
-            >>> from jolty.units import celsius, kohm
-            >>> resistor(1 * kohm).held_at(celsius(85)).parameters["temperature"]
-            358.15
+        Args:
+            temperature: Absolute operating temperature in kelvins.
+
+        Returns:
+            Copy of the device pinned to `temperature` regardless of ambient.
 
         Raises:
             DimensionError: If `temperature` does not have temperature dimension.
             ValueError: If `temperature` is below 0 K or the device is a logic model
                 whose timing ignores temperature.
+
+        Examples:
+            >>> from jolty.units import celsius, kohm
+            >>> resistor(1 * kohm).held_at(celsius(85)).parameters["temperature"]
+            358.15
         """
         kelvins = temperature.to(TEMPERATURE, "a device's own temperature")
         if kelvins < 0:
@@ -201,15 +228,21 @@ class Device:
         Scaling semantics match [`held_at`][jolty.devices.Device.held_at] while
         tracking changes in global simulation temperature.
 
-        Examples:
-            >>> from jolty.units import K, kohm
-            >>> resistor(1 * kohm).warmer_by(20 * K).parameters["temperature_offset"]
-            20.0
+        Args:
+            offset: Temperature delta relative to global simulation ambient.
+
+        Returns:
+            Copy of the device shifted in temperature by `offset`.
 
         Raises:
             DimensionError: If `offset` does not have temperature dimension.
             ValueError: If the device is a logic model whose timing ignores
                 temperature.
+
+        Examples:
+            >>> from jolty.units import K, kohm
+            >>> resistor(1 * kohm).warmer_by(20 * K).parameters["temperature_offset"]
+            20.0
         """
         kelvins = offset.to(TEMPERATURE, "a device's temperature offset")
         return self._surrounded("temperature_offset", finite(kelvins, "offset"))
@@ -237,12 +270,18 @@ class Device:
     def numbered(self, part: str) -> Device:
         """Returns a copy of the device tagged with manufacturer part number `part`.
 
-        Examples:
-            >>> diode().numbered("1N4148").part
-            '1N4148'
+        Args:
+            part: Non-empty manufacturer part number without outer whitespace.
+
+        Returns:
+            Copy of the device annotated with manufacturer part number `part`.
 
         Raises:
             ValueError: If `part` is empty or has leading or trailing whitespace.
+
+        Examples:
+            >>> diode().numbered("1N4148").part
+            '1N4148'
         """
         return replace(self, part=ir.part_number(part))
 
@@ -259,6 +298,16 @@ def rate(
 
     Rating rules and default terminal selection match
     [`Device.rated`][jolty.devices.Device.rated].
+
+    Args:
+        own: Ordered terminal names belonging to the device or component.
+        stress: Electrical or thermal stress category to bound.
+        maximum: Upper operating limit in units matching `stress`.
+        minimum: Lower operating limit in units matching `stress`.
+        terminals: Explicit terminal subset overriding default rating pins.
+
+    Returns:
+        Validated `ir.Rating` converted to SI base units.
 
     Raises:
         DimensionError: If a bound does not match the physical dimension of `stress`.
@@ -441,6 +490,23 @@ def resistor(  # noqa: PLR0913 - resistor value, tolerance, drift, and noise
     In addition to thermal noise, a flicker coefficient ``KF`` adds flicker noise of
     ``KF · |I|^AF / f`` A²/Hz from resistor current ``I`` with exponent ``AF``.
 
+    Args:
+        resistance: Nominal resistance at `nominal_temperature` in ohms.
+        tolerance: Optional uniform relative tolerance fraction on resistance.
+        temperature_coefficient: Linear resistance drift coefficient (K⁻¹).
+        quadratic_temperature_coefficient: Quadratic resistance drift coefficient (K⁻²).
+        exponential_temperature_coefficient: Exponential resistance drift rate in
+            percent per kelvin (SPICE ``TCE``).
+        nominal_temperature: Reference temperature for drift scaling in kelvins.
+        voltage_coefficient: Linear voltage coefficient of resistance (V⁻¹).
+        quadratic_voltage_coefficient: Quadratic voltage coefficient of resistance
+            (V⁻²).
+        flicker_coefficient: Flicker noise scaling coefficient (SPICE ``KF``).
+        flicker_exponent: Flicker noise current exponent (SPICE ``AF``).
+
+    Returns:
+        Two-terminal resistor `Device` across ``a`` and ``b``.
+
     Examples:
         >>> from jolty.units import K, V, kohm
         >>> resistor(1 * kohm, temperature_coefficient=1e-4 / K).parameters
@@ -470,6 +536,20 @@ def capacitor(  # noqa: PLR0913 - capacitance, tolerance, drift, and curvature
     [`resistor`][jolty.devices.resistor]. Voltage coefficients scale capacitance with
     terminal voltage ``v`` from ``a`` to ``b`` by ``1 + vc1 · v + vc2 · v²``, and
     stored charge equals the integral of that capacitance from 0 V.
+
+    Args:
+        capacitance: Nominal zero-bias capacitance in farads.
+        tolerance: Optional uniform relative tolerance fraction on capacitance.
+        temperature_coefficient: Linear capacitance drift coefficient (K⁻¹).
+        quadratic_temperature_coefficient: Quadratic capacitance drift coefficient
+            (K⁻²).
+        nominal_temperature: Reference temperature for drift scaling in kelvins.
+        voltage_coefficient: Linear voltage coefficient of capacitance (V⁻¹).
+        quadratic_voltage_coefficient: Quadratic voltage coefficient of capacitance
+            (V⁻²).
+
+    Returns:
+        Two-terminal capacitor `Device` across ``a`` and ``b``.
     """
     values = locals()
     values.pop("tolerance")
@@ -490,6 +570,16 @@ def inductor(
     Branch current flowing from ``a`` through the inductor to ``b`` is exposed as the
     unknown ``current``. Inductance temperature drift and Monte Carlo tolerance scaling
     match [`resistor`][jolty.devices.resistor].
+
+    Args:
+        inductance: Nominal inductance at `nominal_temperature` in henries.
+        tolerance: Optional uniform relative tolerance fraction on inductance.
+        temperature_coefficient: Linear inductance drift coefficient (K⁻¹).
+        quadratic_temperature_coefficient: Quadratic inductance drift coefficient (K⁻²).
+        nominal_temperature: Reference temperature for drift scaling in kelvins.
+
+    Returns:
+        Two-terminal linear inductor `Device` across ``a`` and ``b``.
     """
     values = locals()
     values.pop("tolerance")
@@ -513,6 +603,19 @@ def coupled_inductors(
     entering both ``a`` terminals, matching SPICE ``K`` elements. At least two windings
     are required, and each pair may be coupled at most once.
 
+    Args:
+        windings: Sequence of at least two plain unrated `inductor` devices.
+        couplings: Pairwise coupling coefficients in ``[-1, 1]`` keyed by 1-based
+            winding indices.
+
+    Returns:
+        Multi-winding coupled-inductor `Device` preserving winding tolerances.
+
+    Raises:
+        ValueError: If a winding is not a plain inductor, declares ratings or a part
+            number, or sets an individual temperature instead of applying
+            [`held_at`][jolty.devices.Device.held_at] to the coupled device as a whole.
+
     Examples:
         >>> from jolty.units import mH
         >>> transformer = coupled_inductors(
@@ -520,11 +623,6 @@ def coupled_inductors(
         ... )
         >>> transformer.terminals
         ('a1', 'b1', 'a2', 'b2')
-
-    Raises:
-        ValueError: If a winding is not a plain inductor, declares ratings or a part
-            number, or sets an individual temperature instead of applying
-            [`held_at`][jolty.devices.Device.held_at] to the coupled device as a whole.
     """
     tolerances: dict[str, ir.Tolerance] = {}
     for number, winding in enumerate(windings, start=1):
@@ -533,7 +631,7 @@ def coupled_inductors(
             raise ValueError(message)
         if {"temperature", "temperature_offset"} & winding.parameters.keys():
             message = (
-                f"winding {number} runs at a temperature of its own, which the coupled "
+                f"winding {number} sets an individual temperature, which the coupled "
                 "inductors take as a whole"
             )
             raise ValueError(message)
@@ -562,6 +660,13 @@ def transmission_line(characteristic_impedance: Quantity, delay: Quantity) -> De
     a DC short between ports and introduces phase shift ``e^{-jωτ}`` in AC analyses.
     Transient stepping lands on waveform corners as they arrive at the opposite port.
 
+    Args:
+        characteristic_impedance: Port characteristic impedance in ohms.
+        delay: One-way propagation delay between ports in seconds.
+
+    Returns:
+        Four-terminal lossless transmission-line `Device`.
+
     Examples:
         >>> from jolty.units import ns, ohm
         >>> line = transmission_line(50 * ohm, 1 * ns)
@@ -579,6 +684,12 @@ def thermal_resistance(resistance: Quantity) -> Device:
     thermal terminal connects either to a thermal net (solving for temperature rise
     above ambient) or to ground representing ambient temperature.
 
+    Args:
+        resistance: Thermal resistance between ``a`` and ``b`` in K/W.
+
+    Returns:
+        Two-terminal thermal-resistance `Device` across ``a`` and ``b``.
+
     Examples:
         >>> from jolty.units import K, W
         >>> thermal_resistance(50 * K / W).terminals
@@ -595,6 +706,12 @@ def thermal_capacitance(capacitance: Quantity) -> Device:
 
     Stored thermal energy scales linearly with the terminal temperature difference,
     controlling how quickly a thermal net responds to injected heat flow.
+
+    Args:
+        capacitance: Heat capacity between ``a`` and ``b`` in J/K.
+
+    Returns:
+        Two-terminal thermal-capacitance `Device` across ``a`` and ``b``.
     """
     return device(
         "thermal_capacitance",
@@ -608,6 +725,12 @@ def heat_source(power: Quantity) -> Device:
     Heat sources drive thermal power into a thermal network just as current sources
     drive electrical current, modeling external heat dissipation into a substrate or
     board.
+
+    Args:
+        power: Constant thermal power injected from ``a`` into ``b`` in watts.
+
+    Returns:
+        Two-terminal constant heat-source `Device` across ``a`` and ``b``.
     """
     return device("heat_source", {"power": power.to(POWER, "heat flow")})
 
@@ -618,6 +741,12 @@ def voltage_source(waveform: Waveform | Quantity) -> Device:
     Passing a [`Quantity`][jolty.units.Quantity] creates a constant DC level. Branch
     current from ``positive`` through the source to ``negative`` is exposed as
     ``current``, taking negative values while supplying power.
+
+    Args:
+        waveform: Time-varying `Waveform` or constant DC voltage `Quantity`.
+
+    Returns:
+        Independent voltage-source `Device` across ``positive`` and ``negative``.
     """
     level = Dc(waveform) if isinstance(waveform, Quantity) else waveform
     parameters: dict[str, JsonValue] = {"waveform": level.to_json(VOLTAGE)}
@@ -630,6 +759,12 @@ def current_source(waveform: Waveform | Quantity) -> Device:
     Current flows internally from ``positive`` to ``negative``, exiting into the
     circuit at ``negative``. Passing a [`Quantity`][jolty.units.Quantity] creates a
     constant DC level.
+
+    Args:
+        waveform: Time-varying `Waveform` or constant DC current `Quantity`.
+
+    Returns:
+        Independent current-source `Device` across ``positive`` and ``negative``.
     """
     level = Dc(waveform) if isinstance(waveform, Quantity) else waveform
     parameters: dict[str, JsonValue] = {"waveform": level.to_json(CURRENT)}
@@ -642,6 +777,12 @@ def voltage_controlled_voltage_source(gain: float) -> Device:
     Output voltage ``positive`` minus ``negative`` equals `gain` times the control
     voltage ``control_positive`` minus ``control_negative``. Control terminals draw
     zero current.
+
+    Args:
+        gain: Dimensionless voltage ratio from control port to output port.
+
+    Returns:
+        Four-terminal VCVS `Device` with voltage gain `gain`.
     """
     return _device("voltage_controlled_voltage_source", locals())
 
@@ -652,6 +793,12 @@ def voltage_controlled_current_source(transconductance: Quantity) -> Device:
     Output current flows from ``positive`` through the source to ``negative`` at
     `transconductance` times the control voltage ``control_positive`` minus
     ``control_negative``.
+
+    Args:
+        transconductance: Voltage-to-current transfer ratio in siemens.
+
+    Returns:
+        Four-terminal VCCS `Device` with transconductance `transconductance`.
     """
     return _device("voltage_controlled_current_source", locals())
 
@@ -663,6 +810,12 @@ def current_controlled_current_source(gain: float) -> Device:
     zero-volt short circuit exposing sensed branch current as ``control``. Output
     current flows from ``positive`` through the source to ``negative`` at `gain` times
     that sensed current.
+
+    Args:
+        gain: Dimensionless current gain from sensed control branch to output.
+
+    Returns:
+        Four-terminal CCCS `Device` with current gain `gain`.
     """
     return _device("current_controlled_current_source", locals())
 
@@ -674,6 +827,12 @@ def current_controlled_voltage_source(transresistance: Quantity) -> Device:
     zero-volt short circuit exposing sensed current as ``control``. Output voltage
     ``positive`` minus ``negative`` equals `transresistance` times that current, and
     output branch current is exposed as ``current``.
+
+    Args:
+        transresistance: Current-to-voltage transfer ratio in ohms.
+
+    Returns:
+        Four-terminal CCVS `Device` with transresistance `transresistance`.
     """
     return _device("current_controlled_voltage_source", locals())
 
@@ -690,6 +849,12 @@ def behavioral_voltage_source(expression: str) -> Device:
     as ``current``. Refer to the expressions reference page for operators and
     functions.
 
+    Args:
+        expression: SI voltage expression over node voltages, currents, and time.
+
+    Returns:
+        Behavioral voltage-source `Device` with expression-derived terminals.
+
     Raises:
         ValueError: If `expression` cannot be parsed as a valid behavioral expression.
 
@@ -705,6 +870,12 @@ def behavioral_current_source(expression: str) -> Device:
 
     Expression syntax and terminal ordering match
     [`behavioral_voltage_source`][jolty.devices.behavioral_voltage_source].
+
+    Args:
+        expression: SI current expression over node voltages, currents, and time.
+
+    Returns:
+        Behavioral current-source `Device` with expression-derived terminals.
 
     Raises:
         ValueError: If `expression` cannot be parsed as a valid behavioral expression.
@@ -724,6 +895,12 @@ def behavioral_capacitor(expression: str) -> Device:
     current from ``positive`` through the device to ``negative`` equals the time
     derivative of charge using exact symbolic derivatives, conserving charge across
     all operating points.
+
+    Args:
+        expression: SI charge expression in coulombs differentiated over time.
+
+    Returns:
+        Charge-conserving behavioral capacitor `Device`.
 
     Raises:
         ValueError: If `expression` cannot be parsed as a valid behavioral expression.
@@ -748,6 +925,15 @@ def voltage_controlled_switch(
     resistance logarithmically between `off_resistance` at `off_voltage` and
     `on_resistance` at `on_voltage`, clamping outside that range. Control terminals
     draw zero current, and omitted parameters use PSpice defaults.
+
+    Args:
+        on_resistance: Closed-state switch resistance at or above `on_voltage`.
+        off_resistance: Open-state switch resistance at or below `off_voltage`.
+        on_voltage: Control voltage threshold for full conduction.
+        off_voltage: Control voltage threshold for open-state resistance.
+
+    Returns:
+        Four-terminal voltage-controlled switch `Device`.
     """
     return _device("voltage_controlled_switch", locals())
 
@@ -766,6 +952,15 @@ def current_controlled_switch(
     from `off_resistance` at `off_current` to `on_resistance` at `on_current`, matching
     [`voltage_controlled_switch`][jolty.devices.voltage_controlled_switch]. Omitted
     parameters use PSpice defaults.
+
+    Args:
+        on_resistance: Closed-state switch resistance at or above `on_current`.
+        off_resistance: Open-state switch resistance at or below `off_current`.
+        on_current: Sensed control current threshold for full conduction.
+        off_current: Sensed control current threshold for open-state resistance.
+
+    Returns:
+        Four-terminal current-controlled switch `Device`.
     """
     return _device("current_controlled_switch", locals())
 
@@ -786,6 +981,16 @@ def photocell(
     `gamma`, placed in parallel with `dark_resistance`. When `response_time` is
     specified, conductance tracks light changes with that first-order time constant;
     otherwise conductance responds instantaneously.
+
+    Args:
+        resistance: Cell resistance at reference `illuminance` in ohms.
+        illuminance: Reference illuminance in lux corresponding to `resistance`.
+        gamma: Power-law exponent relating illuminance to conductance.
+        dark_resistance: Shunt resistance in complete darkness in ohms.
+        response_time: First-order photoconductive time constant in seconds.
+
+    Returns:
+        Four-terminal light-dependent resistor `Device`.
 
     Examples:
         >>> from jolty.units import kohm, ms
@@ -823,6 +1028,22 @@ def voltage_controlled_memristor(  # noqa: PLR0913 - VTEAM model parameters
     threshold. A fractional `window` slows state evolution near 0 and 1 without
     crossing either bound, starting from initial `state`.
 
+    Args:
+        on_resistance: Low-resistance state value at state 0 in ohms.
+        off_resistance: High-resistance state value at state 1 in ohms.
+        on_voltage: Negative voltage threshold driving state toward 0.
+        off_voltage: Positive voltage threshold driving state toward 1.
+        on_rate: State transition velocity toward 0 in inverse seconds.
+        off_rate: State transition velocity toward 1 in inverse seconds.
+        on_exponent: Power-law nonlinearity exponent for state-0 switching.
+        off_exponent: Power-law nonlinearity exponent for state-1 switching.
+        law: Resistance interpolation law (`'linear'` or `'exponential'`).
+        state: Initial normalized internal state in ``[0, 1]``.
+        window: Boundary window fraction slowing drift near 0 and 1.
+
+    Returns:
+        Two-terminal VTEAM voltage-controlled memristor `Device`.
+
     Examples:
         >>> from jolty.units import V, kohm, s
         >>> cell = voltage_controlled_memristor(
@@ -856,6 +1077,17 @@ def current_controlled_memristor(  # noqa: PLR0913 - HP memristor parameters
     `charge`, modeling dopant drift across the full device length. A fractional
     `window` slows state motion near 0 and 1 without crossing either bound, starting
     from initial `state`.
+
+    Args:
+        on_resistance: Low-resistance state value at state 0 in ohms.
+        off_resistance: High-resistance state value at state 1 in ohms.
+        charge: Full-scale dopant-drift charge in coulombs.
+        law: Resistance interpolation law (`'linear'` or `'exponential'`).
+        state: Initial normalized internal state in ``[0, 1]``.
+        window: Boundary window fraction slowing drift near 0 and 1.
+
+    Returns:
+        Two-terminal HP current-controlled memristor `Device`.
 
     Examples:
         >>> from jolty.units import kohm, ohm, uC
@@ -940,6 +1172,87 @@ def diode(  # noqa: PLR0913 - ngspice junction diode model parameters
     With flicker coefficient ``KF`` and exponent ``AF``, each junction current ``I``
     adds flicker noise of ``KF · |I|^AF / f`` A²/Hz.
 
+    Args:
+        saturation_current: Bottom-junction reverse saturation current (``IS``).
+        emission_coefficient: Bottom-junction forward ideality factor (``N``).
+        series_resistance: Ohmic bottom series resistance in ohms (``RS``).
+        junction_capacitance: Zero-bias bottom depletion capacitance (``CJO``).
+        junction_potential: Bottom-junction built-in potential in volts (``VJ``).
+        grading_coefficient: Bottom-junction depletion grading exponent (``M``).
+        depletion_coefficient: Forward-bias depletion capacitance linearization fraction
+            (``FC``).
+        transit_time: Minority-carrier diffusion transit time in seconds (``TT``).
+        forward_knee_current: High-injection forward knee current (``IKF``).
+        reverse_knee_current: Reverse high-injection knee current (``IKR``).
+        recombination_saturation_current: Depletion-region recombination saturation
+            current (``ISR``).
+        recombination_emission_coefficient: Recombination current ideality factor
+            (``NR``).
+        sidewall_saturation_current: Sidewall-junction reverse saturation current
+            (``ISS``).
+        sidewall_emission_coefficient: Sidewall-junction forward ideality factor
+            (``NS``).
+        sidewall_series_resistance: Dedicated sidewall ohmic series resistance in ohms
+            (``RSW``).
+        sidewall_junction_capacitance: Zero-bias sidewall depletion capacitance
+            (``CJSW``).
+        sidewall_junction_potential: Sidewall-junction built-in potential in volts
+            (``VJSW``).
+        sidewall_grading_coefficient: Sidewall-junction depletion grading exponent
+            (``MJSW``).
+        sidewall_depletion_coefficient: Sidewall forward-bias capacitance linearization
+            fraction (``FCS``).
+        sidewall_forward_knee_current: Sidewall high-injection forward knee current
+            (``IKP``).
+        tunneling_saturation_current: Bottom trap-assisted tunneling saturation current
+            (``JTUN``).
+        sidewall_tunneling_saturation_current: Sidewall trap-assisted tunneling
+            saturation current (``JTUNSW``).
+        tunneling_emission_coefficient: Tunneling exponential slope factor (``NTUN``).
+        tunneling_saturation_current_temperature_exponent: Temperature exponent for
+            tunneling saturation current (``XTITUN``).
+        tunneling_energy_gap_factor: Band-gap scaling factor for tunneling temperature
+            drift (``KEG``).
+        breakdown_voltage: Reverse avalanche breakdown voltage in volts (``BV``).
+        breakdown_current: Reverse current at `breakdown_voltage` (``IBV``).
+        breakdown_emission_coefficient: Reverse breakdown ideality factor (``NBV``).
+        breakdown_temperature_coefficient: Breakdown voltage temperature coefficient in
+            V/K or K⁻¹ (``TCV``).
+        temperature_model: Saturation and breakdown temperature selector (``TLEV``).
+        capacitance_temperature_model: Junction capacitance temperature selector
+            (``TLEVC``).
+        energy_gap: Semiconductor band-gap energy in joules or eV-volts (``EG``).
+        energy_gap_alpha: Varshni band-gap temperature slope coefficient (``GAP1``).
+        energy_gap_beta: Varshni band-gap reference temperature offset (``GAP2``).
+        saturation_current_temperature_exponent: Saturation current temperature exponent
+            (``XTI``).
+        junction_capacitance_temperature_coefficient: Linear temperature coefficient of
+            `junction_capacitance` (``CTA``).
+        sidewall_junction_capacitance_temperature_coefficient: Linear temperature
+            coefficient of sidewall capacitance (``CTP``).
+        junction_potential_temperature_coefficient: Linear temperature coefficient of
+            `junction_potential` (``PTA``).
+        sidewall_junction_potential_temperature_coefficient: Linear temperature
+            coefficient of sidewall potential (``PTP``).
+        series_resistance_temperature_coefficient: Linear temperature coefficient of
+            series resistance (``TRS1``).
+        series_resistance_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of series resistance (``TRS2``).
+        transit_time_temperature_coefficient: Linear temperature coefficient of transit
+            time (``TTT1``).
+        transit_time_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of transit time (``TTT2``).
+        grading_coefficient_temperature_coefficient: Linear temperature coefficient of
+            grading exponent (``TM1``).
+        grading_coefficient_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of grading exponent (``TM2``).
+        nominal_temperature: Model extraction temperature in kelvins (``TNOM``).
+        flicker_coefficient: Flicker noise scaling coefficient (``KF``).
+        flicker_exponent: Flicker noise current exponent (``AF``).
+
+    Returns:
+        Junction diode `Device` across ``anode`` and ``cathode``.
+
     Raises:
         DimensionError: If a parameter has the wrong physical dimension; breakdown
             voltage temperature coefficient requires V/K at temperature model 0 and 1/K
@@ -988,6 +1301,33 @@ def jfet(  # noqa: PLR0913 - SPICE JFET model parameters
     Series resistances generate thermal noise, and the channel produces thermal noise
     of ``8kT · gm / 3`` A²/Hz. With flicker coefficient ``KF`` and exponent ``AF``,
     drain current ``Id`` adds flicker noise of ``KF · |Id|^AF / f`` A²/Hz.
+
+    Args:
+        channel: Channel carrier polarity (`'n'` or `'p'`).
+        threshold_voltage: Pinch-off threshold voltage in volts (``VTO``).
+        transconductance_parameter: Square-law transconductance in A/V² (``BETA``).
+        channel_length_modulation: Output conductance slope in V⁻¹ (``LAMBDA``).
+        drain_resistance: Extrinsic ohmic drain resistance in ohms (``RD``).
+        source_resistance: Extrinsic ohmic source resistance in ohms (``RS``).
+        gate_source_capacitance: Zero-bias gate-source capacitance (``CGS``).
+        gate_drain_capacitance: Zero-bias gate-drain capacitance (``CGD``).
+        junction_potential: Gate-junction built-in potential in volts (``PB``).
+        saturation_current: Gate-junction reverse saturation current (``IS``).
+        depletion_coefficient: Forward-bias capacitance linearization fraction (``FC``).
+        doping_tail: Sydney University power-law conduction exponent (``B``).
+        threshold_voltage_temperature_coefficient: Linear temperature shift of
+            `threshold_voltage` in V/K (``TCV``).
+        transconductance_parameter_temperature_exponent: Temperature exponent of
+            `transconductance_parameter` (``BEX``).
+        energy_gap: Gate-junction band-gap energy at 0 K (``EG``).
+        saturation_current_temperature_exponent: Gate-junction saturation current
+            temperature exponent (``XTI``).
+        nominal_temperature: Model extraction temperature in kelvins (``TNOM``).
+        flicker_coefficient: Flicker noise scaling coefficient (``KF``).
+        flicker_exponent: Flicker noise drain-current exponent (``AF``).
+
+    Returns:
+        Three-terminal JFET `Device` across ``drain``, ``gate``, and ``source``.
 
     Examples:
         >>> from jolty.units import V, mA
@@ -1139,6 +1479,175 @@ def bipolar_transistor(  # noqa: PLR0913 - Gummel-Poon BJT model parameters
     generate shot noise. With flicker coefficient ``KF`` and exponent ``AF``, base
     current ``Ib`` adds flicker noise of ``KF · |Ib|^AF / f`` A²/Hz.
 
+    Args:
+        polarity: Transistor doping polarity (`'npn'` or `'pnp'`).
+        saturation_current: Transport saturation current in amperes (``IS``).
+        forward_beta: Ideal maximum forward current gain (``BF``).
+        reverse_beta: Ideal maximum reverse current gain (``BR``).
+        forward_emission_coefficient: Forward transport ideality factor (``NF``).
+        reverse_emission_coefficient: Reverse transport ideality factor (``NR``).
+        forward_early_voltage: Forward Early voltage in volts (``VAF``).
+        reverse_early_voltage: Reverse Early voltage in volts (``VAR``).
+        forward_knee_current: Forward beta high-current roll-off knee (``IKF``).
+        reverse_knee_current: Reverse beta high-current roll-off knee (``IKR``).
+        base_emitter_leakage_current: Base-emitter nonideal leakage saturation current
+            (``ISE``).
+        base_emitter_leakage_emission_coefficient: Base-emitter leakage ideality factor
+            (``NE``).
+        base_collector_leakage_current: Base-collector nonideal leakage saturation
+            current (``ISC``).
+        base_collector_leakage_emission_coefficient: Base-collector leakage ideality
+            factor (``NC``).
+        base_resistance: Zero-bias base resistance in ohms (``RB``).
+        min_base_resistance: High-current minimum base resistance in ohms (``RBM``).
+        base_resistance_current: Base current where base resistance halves toward
+            minimum (``IRB``).
+        emitter_resistance: Extrinsic emitter series resistance in ohms (``RE``).
+        collector_resistance: Extrinsic collector series resistance in ohms (``RC``).
+        base_emitter_capacitance: Zero-bias base-emitter depletion capacitance
+            (``CJE``).
+        base_emitter_potential: Base-emitter built-in potential in volts (``VJE``).
+        base_emitter_grading: Base-emitter depletion grading exponent (``MJE``).
+        forward_transit_time: Ideal forward base transit time in seconds (``TF``).
+        transit_time_bias_coefficient: Forward transit-time bias-dependence multiplier
+            (``XTF``).
+        transit_time_voltage: Base-collector voltage scaling `forward_transit_time`
+            (``VTF``).
+        transit_time_current: High-current onset for `forward_transit_time` rise
+            (``ITF``).
+        base_collector_capacitance: Zero-bias total base-collector depletion capacitance
+            (``CJC``).
+        base_collector_potential: Base-collector built-in potential in volts (``VJC``).
+        base_collector_grading: Base-collector depletion grading exponent (``MJC``).
+        internal_base_fraction: Fraction of `base_collector_capacitance` on intrinsic
+            base (``XCJC``).
+        reverse_transit_time: Ideal reverse transit time in seconds (``TR``).
+        depletion_coefficient: Forward-bias depletion capacitance linearization fraction
+            (``FC``).
+        excess_phase: Excess phase in degrees at `1 / (2π · TF)` (``PTF``).
+        substrate: Substrate junction orientation (`'vertical'` or `'lateral'`).
+        substrate_saturation_current: Substrate-junction saturation current in amperes
+            (``ISS``).
+        substrate_emission_coefficient: Substrate-junction forward ideality factor
+            (``NS``).
+        substrate_capacitance: Zero-bias substrate depletion capacitance (``CJS``).
+        substrate_potential: Substrate built-in potential in volts (``VJS``).
+        substrate_grading: Substrate depletion grading exponent (``MJS``).
+        energy_gap: Band-gap energy for saturation scaling (``EG``).
+        saturation_current_temperature_exponent: Saturation current temperature exponent
+            (``XTI``).
+        beta_temperature_exponent: Forward and reverse beta exponent (``XTB``).
+        temperature_model: Beta temperature scaling law selector (``TLEV``).
+        capacitance_temperature_model: Junction capacitance temperature law selector
+            (``TLEVC``).
+        high_injection_exponent: High-injection base-charge roll-off exponent (``NKF``).
+        forward_beta_temperature_coefficient: Linear temperature coefficient of
+            `forward_beta` (K⁻¹).
+        forward_beta_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `forward_beta` (K⁻²).
+        reverse_beta_temperature_coefficient: Linear temperature coefficient of
+            `reverse_beta` (K⁻¹).
+        reverse_beta_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `reverse_beta` (K⁻²).
+        forward_knee_current_temperature_coefficient: Linear temperature coefficient of
+            `forward_knee_current` (K⁻¹).
+        forward_knee_current_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `forward_knee_current` (K⁻²).
+        reverse_knee_current_temperature_coefficient: Linear temperature coefficient of
+            `reverse_knee_current` (K⁻¹).
+        reverse_knee_current_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `reverse_knee_current` (K⁻²).
+        forward_early_voltage_temperature_coefficient: Linear temperature coefficient of
+            `forward_early_voltage` (K⁻¹).
+        forward_early_voltage_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `forward_early_voltage` (K⁻²).
+        reverse_early_voltage_temperature_coefficient: Linear temperature coefficient of
+            `reverse_early_voltage` (K⁻¹).
+        reverse_early_voltage_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `reverse_early_voltage` (K⁻²).
+        base_resistance_temperature_coefficient: Linear temperature coefficient of
+            `base_resistance` (K⁻¹).
+        base_resistance_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `base_resistance` (K⁻²).
+        min_base_resistance_temperature_coefficient: Linear temperature coefficient of
+            `min_base_resistance` (K⁻¹).
+        min_base_resistance_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `min_base_resistance` (K⁻²).
+        base_resistance_current_temperature_coefficient: Linear temperature coefficient
+            of `base_resistance_current` (K⁻¹).
+        base_resistance_current_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `base_resistance_current` (K⁻²).
+        collector_resistance_temperature_coefficient: Linear temperature coefficient of
+            `collector_resistance` (K⁻¹).
+        collector_resistance_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `collector_resistance` (K⁻²).
+        emitter_resistance_temperature_coefficient: Linear temperature coefficient of
+            `emitter_resistance` (K⁻¹).
+        emitter_resistance_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `emitter_resistance` (K⁻²).
+        forward_emission_coefficient_temperature_coefficient: Linear temperature
+            coefficient of `forward_emission_coefficient` (K⁻¹).
+        forward_emission_coefficient_quadratic_temperature_coefficient: Quadratic
+            temperature coefficient of ``NF`` (K⁻²).
+        reverse_emission_coefficient_temperature_coefficient: Linear temperature
+            coefficient of `reverse_emission_coefficient` (K⁻¹).
+        reverse_emission_coefficient_quadratic_temperature_coefficient: Quadratic
+            temperature coefficient of ``NR`` (K⁻²).
+        base_emitter_leakage_emission_coefficient_temperature_coefficient: Linear
+            temperature coefficient of ``NE`` (K⁻¹).
+        base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient:
+            Quadratic temperature coefficient of ``NE`` (K⁻²).
+        base_collector_leakage_emission_coefficient_temperature_coefficient: Linear
+            temperature coefficient of ``NC`` (K⁻¹).
+        base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient:
+            Quadratic temperature coefficient of ``NC`` (K⁻²).
+        substrate_emission_coefficient_temperature_coefficient: Linear temperature
+            coefficient of `substrate_emission_coefficient` (K⁻¹).
+        substrate_emission_coefficient_quadratic_temperature_coefficient: Quadratic
+            temperature coefficient of ``NS`` (K⁻²).
+        transit_time_current_temperature_coefficient: Linear temperature coefficient of
+            `transit_time_current` (K⁻¹).
+        transit_time_current_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `transit_time_current` (K⁻²).
+        forward_transit_time_temperature_coefficient: Linear temperature coefficient of
+            `forward_transit_time` (K⁻¹).
+        forward_transit_time_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `forward_transit_time` (K⁻²).
+        reverse_transit_time_temperature_coefficient: Linear temperature coefficient of
+            `reverse_transit_time` (K⁻¹).
+        reverse_transit_time_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `reverse_transit_time` (K⁻²).
+        base_emitter_grading_temperature_coefficient: Linear temperature coefficient of
+            `base_emitter_grading` (K⁻¹).
+        base_emitter_grading_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `base_emitter_grading` (K⁻²).
+        base_collector_grading_temperature_coefficient: Linear temperature coefficient
+            of `base_collector_grading` (K⁻¹).
+        base_collector_grading_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `base_collector_grading` (K⁻²).
+        substrate_grading_temperature_coefficient: Linear temperature coefficient of
+            `substrate_grading` (K⁻¹).
+        substrate_grading_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `substrate_grading` (K⁻²).
+        base_emitter_capacitance_temperature_coefficient: Linear temperature coefficient
+            of `base_emitter_capacitance` (K⁻¹).
+        base_collector_capacitance_temperature_coefficient: Linear temperature
+            coefficient of `base_collector_capacitance` (K⁻¹).
+        substrate_capacitance_temperature_coefficient: Linear temperature coefficient of
+            `substrate_capacitance` (K⁻¹).
+        base_emitter_potential_temperature_coefficient: Linear temperature coefficient
+            of `base_emitter_potential` (V/K).
+        base_collector_potential_temperature_coefficient: Linear temperature coefficient
+            of `base_collector_potential` (V/K).
+        substrate_potential_temperature_coefficient: Linear temperature coefficient of
+            `substrate_potential` (V/K).
+        nominal_temperature: Model extraction temperature in kelvins (``TNOM``).
+        flicker_coefficient: Flicker noise scaling coefficient (``KF``).
+        flicker_exponent: Flicker noise base-current exponent (``AF``).
+
+    Returns:
+        Gummel-Poon BJT `Device` with optional fourth ``substrate`` terminal.
+
     Examples:
         >>> from jolty.units import V, fA
         >>> transistor = bipolar_transistor(
@@ -1288,6 +1797,184 @@ def vbic(  # noqa: PLR0913 - VBIC 1.2 model parameters
     generate shot noise. With flicker coefficient ``KFN``, base-emitter currents ``Ib``
     add flicker noise of ``KFN · |Ib|^AFN / f^BFN`` A²/Hz.
 
+    Args:
+        polarity: Transistor doping polarity (`'npn'` or `'pnp'`).
+        extrinsic_collector_resistance: Extrinsic collector series resistance in ohms
+            (``RCX``).
+        intrinsic_collector_resistance: Intrinsic epitaxial collector resistance in ohms
+            (``RCI``).
+        epitaxial_saturation_voltage: Epitaxial carrier velocity-saturation voltage
+            (``VO``).
+        epitaxial_doping_parameter: Epitaxial doping parameter for Kull quasi-saturation
+            (``GAMM``).
+        high_current_collector_factor: High-current intrinsic collector
+            current-spreading factor (``HRCF``).
+        extrinsic_base_resistance: Extrinsic base resistance in ohms (``RBX``).
+        intrinsic_base_resistance: Zero-bias intrinsic modulated base resistance in ohms
+            (``RBI``).
+        emitter_resistance: Extrinsic emitter resistance in ohms (``RE``).
+        substrate_resistance: Substrate contact resistance in ohms (``RS``).
+        parasitic_base_resistance: Parasitic PNP/NPN base resistance in ohms (``RBP``).
+        saturation_current: Main transport saturation current in amperes (``IS``).
+        forward_emission_coefficient: Forward transport ideality factor (``NF``).
+        reverse_emission_coefficient: Reverse transport ideality factor (``NR``).
+        depletion_coefficient: Forward-bias depletion capacitance offset fraction
+            (``FC``).
+        base_emitter_overlap_capacitance: Fixed base-emitter overlap capacitance in
+            farads (``CBEO``).
+        base_emitter_capacitance: Zero-bias base-emitter depletion capacitance
+            (``CJE``).
+        base_emitter_potential: Base-emitter built-in potential in volts (``PE``).
+        base_emitter_grading: Base-emitter depletion grading exponent (``ME``).
+        base_emitter_smoothing: Smooth-capacitance transition parameter for B-E junction
+            (``AJE``).
+        base_collector_overlap_capacitance: Fixed base-collector overlap capacitance in
+            farads (``CBCO``).
+        base_collector_capacitance: Zero-bias intrinsic base-collector capacitance
+            (``CJC``).
+        epitaxial_charge: Quasi-saturation epitaxial charge parameter (``QCO``).
+        extrinsic_base_collector_capacitance: Zero-bias extrinsic base-collector
+            capacitance (``CJEP``).
+        base_collector_potential: Base-collector built-in potential in volts (``PC``).
+        base_collector_grading: Base-collector depletion grading exponent (``MC``).
+        base_collector_smoothing: Smooth-capacitance transition parameter for B-C
+            junction (``AJC``).
+        collector_substrate_capacitance: Zero-bias collector-substrate depletion
+            capacitance (``CJCP``).
+        collector_substrate_potential: Collector-substrate built-in potential in volts
+            (``PS``).
+        collector_substrate_grading: Collector-substrate depletion grading exponent
+            (``MS``).
+        collector_substrate_smoothing: Smooth-capacitance transition parameter for C-S
+            junction (``AJS``).
+        collector_substrate_fixed_capacitance: Fixed collector-substrate parasitic
+            capacitance (``CCSO``).
+        ideal_base_emitter_current: Ideal base-emitter diode saturation current
+            (``IBEI``).
+        intrinsic_base_emitter_fraction: Sidewall/intrinsic partition fraction for B-E
+            current (``WBE``).
+        ideal_base_emitter_emission_coefficient: Ideal base-emitter diode ideality
+            factor (``NEI``).
+        nonideal_base_emitter_current: Nonideal base-emitter recombination current
+            (``IBEN``).
+        nonideal_base_emitter_emission_coefficient: Nonideal base-emitter recombination
+            ideality factor (``NEN``).
+        ideal_base_collector_current: Ideal intrinsic base-collector saturation current
+            (``IBCI``).
+        ideal_base_collector_emission_coefficient: Ideal base-collector diode ideality
+            factor (``NCI``).
+        nonideal_base_collector_current: Nonideal base-collector recombination current
+            (``IBCN``).
+        nonideal_base_collector_emission_coefficient: Nonideal base-collector
+            recombination ideality factor (``NCN``).
+        avalanche_coefficient: Base-collector weak-avalanche multiplier (``AVC1``).
+        avalanche_exponent_coefficient: Base-collector weak-avalanche exponential factor
+            (``AVC2``).
+        parasitic_saturation_current: Parasitic substrate-transistor transport
+            saturation current (``ISP``).
+        parasitic_extrinsic_fraction: Extrinsic collector partition of parasitic
+            transport (``WSP``).
+        parasitic_forward_emission_coefficient: Parasitic transport ideality factor
+            (``NFP``).
+        parasitic_ideal_base_emitter_current: Parasitic extrinsic B-C ideal diode
+            current (``IBEIP``).
+        parasitic_nonideal_base_emitter_current: Parasitic extrinsic B-C nonideal diode
+            current (``IBENP``).
+        parasitic_ideal_base_collector_current: Parasitic B-S ideal diode saturation
+            current (``IBCIP``).
+        parasitic_ideal_base_collector_emission_coefficient: Parasitic B-S ideal diode
+            ideality factor (``NCIP``).
+        parasitic_nonideal_base_collector_current: Parasitic B-S nonideal diode
+            saturation current (``IBCNP``).
+        parasitic_nonideal_base_collector_emission_coefficient: Parasitic B-S nonideal
+            diode ideality factor (``NCNP``).
+        forward_early_voltage: Forward Early voltage in volts (``VEF``).
+        reverse_early_voltage: Reverse Early voltage in volts (``VER``).
+        forward_knee_current: Forward high-injection knee current (``IKF``).
+        reverse_knee_current: Reverse high-injection knee current (``IKR``).
+        parasitic_knee_current: Parasitic transistor high-injection knee current
+            (``IKP``).
+        knee_rolloff: High-injection base-charge exponent (``NKF``).
+        base_charge: Base-charge formulation (`'vbic'` or `'gummel_poon'`, ``QBM``).
+        forward_transit_time: Nominal forward transit time in seconds (``TF``).
+        transit_time_base_width_coefficient: Base-width modulation weight on
+            `forward_transit_time` (``QTF``).
+        transit_time_bias_coefficient: Bias-dependent multiplier on
+            `forward_transit_time` (``XTF``).
+        transit_time_voltage: B-C voltage scaling transit-time bias (``VTF``).
+        transit_time_current: High-current threshold for transit time (``ITF``).
+        reverse_transit_time: Reverse transit time in seconds (``TR``).
+        excess_phase_delay: Excess-phase transport delay in seconds (``TD``).
+        flicker_coefficient: Base-emitter flicker noise coefficient (``KFN``).
+        flicker_exponent: Flicker noise current exponent (``AFN``).
+        flicker_frequency_exponent: Flicker noise frequency exponent (``BFN``).
+        reach_through_voltage: B-C punch-through limiting voltage (``VRT``).
+        reach_through_smoothing: Reach-through capacitance smoothing (``ART``).
+        base_emitter_breakdown_voltage: Base-emitter reverse breakdown voltage in volts
+            (``VBBE``).
+        base_emitter_breakdown_emission_coefficient: Base-emitter breakdown ideality
+            factor (``NBBE``).
+        base_emitter_breakdown_current: Reverse current at
+            `base_emitter_breakdown_voltage` (``IBBE``).
+        reverse_saturation_current_ratio: Reverse-to-forward transport saturation ratio
+            (``ISRR``).
+        nominal_temperature: Reference extraction temperature in kelvins (``TNOM``).
+        activation_energy: Main transport activation energy (``EA``).
+        ideal_base_emitter_activation_energy: Ideal B-E diode activation energy
+            (``EAIE``).
+        ideal_base_collector_activation_energy: Ideal B-C diode activation energy
+            (``EAIC``).
+        ideal_collector_substrate_activation_energy: Ideal C-S diode activation energy
+            (``EAIS``).
+        nonideal_base_emitter_activation_energy: Nonideal B-E recombination activation
+            energy (``EANE``).
+        nonideal_base_collector_activation_energy: Nonideal B-C recombination activation
+            energy (``EANC``).
+        nonideal_collector_substrate_activation_energy: Nonideal C-S recombination
+            activation energy (``EANS``).
+        parasitic_activation_energy: Parasitic transport activation energy (``EAP``).
+        reverse_activation_energy_shift: Activation-energy offset for `ISRR` scaling
+            (``DEAR``).
+        saturation_current_temperature_exponent: Transport saturation temperature
+            exponent (``XIS``).
+        ideal_base_current_temperature_exponent: Ideal base diode temperature exponent
+            (``XII``).
+        nonideal_base_current_temperature_exponent: Nonideal recombination diode
+            temperature exponent (``XIN``).
+        reverse_saturation_current_temperature_exponent: Temperature exponent of
+            `reverse_saturation_current_ratio` (``XISR``).
+        emission_coefficient_temperature_coefficient: Linear temperature coefficient of
+            `NF` and `NR` (``TNF``).
+        avalanche_temperature_coefficient: Linear temperature coefficient of `AVC2`
+            (``TAVC``).
+        forward_knee_current_temperature_exponent: Temperature exponent of
+            `forward_knee_current` (``XIKF``).
+        extrinsic_collector_resistance_temperature_exponent: Temperature exponent of
+            `extrinsic_collector_resistance` (``XRCX``).
+        intrinsic_collector_resistance_temperature_exponent: Temperature exponent of
+            `intrinsic_collector_resistance` (``XRCI``).
+        extrinsic_base_resistance_temperature_exponent: Temperature exponent of
+            `extrinsic_base_resistance` (``XRBX``).
+        intrinsic_base_resistance_temperature_exponent: Temperature exponent of
+            `intrinsic_base_resistance` (``XRBI``).
+        emitter_resistance_temperature_exponent: Temperature exponent of
+            `emitter_resistance` (``XRE``).
+        substrate_resistance_temperature_exponent: Temperature exponent of
+            `substrate_resistance` (``XRS``).
+        parasitic_base_resistance_temperature_exponent: Temperature exponent of
+            `parasitic_base_resistance` (``XRBP``).
+        epitaxial_saturation_voltage_temperature_exponent: Temperature exponent of
+            `epitaxial_saturation_voltage` (``XVO``).
+        breakdown_voltage_temperature_coefficient: Linear temperature coefficient of
+            `VBBE` (``TVBBE1``).
+        breakdown_voltage_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `VBBE` (``TVBBE2``).
+        breakdown_emission_temperature_coefficient: Linear temperature coefficient of
+            `NBBE` (``TNBBE``).
+
+    Returns:
+        Four-terminal VBIC 1.2 bipolar transistor `Device`.
+
     Examples:
         >>> from jolty.units import V, fA, ohm
         >>> transistor = vbic(
@@ -1393,6 +2080,68 @@ def mosfet(  # noqa: PLR0913 - SPICE level 1 and 3 MOSFET parameters
     A²/Hz. Gate area sums parallel multiplier widths and assumes a 0.1 µm oxide
     thickness when omitted.
 
+    Args:
+        level: SPICE MOSFET equation level (`1` Shichman-Hodges or `3` short-channel).
+        channel: Channel carrier polarity (`'n'` or `'p'`).
+        width: Drawn channel width in meters (``W``).
+        length: Drawn channel length in meters (``L``).
+        multiplier: Parallel finger or device count multiplier (``M``).
+        threshold_voltage: Zero-bias threshold voltage in volts (``VTO``).
+        transconductance_parameter: Intrinsic transconductance factor in A/V² (``KP``).
+        body_effect: Bulk threshold parameter in V^{1/2} (``GAMMA``).
+        surface_potential: Strong-inversion surface potential in volts (``PHI``).
+        channel_length_modulation: Saturation output slope in V⁻¹ (``LAMBDA``).
+        lateral_diffusion: Source/drain lateral under-diffusion in meters (``LD``).
+        oxide_thickness: Gate oxide thickness in meters (``TOX``).
+        surface_mobility: Low-field carrier surface mobility (``UO``).
+        substrate_doping: Channel substrate doping concentration (``NSUB``).
+        surface_state_density: Fixed oxide interface charge density (``NSS``).
+        gate_material: Gate electrode work-function type (``TPG``: opposite, same, or
+            aluminum).
+        drain_resistance: Extrinsic drain series resistance in ohms (``RD``).
+        source_resistance: Extrinsic source series resistance in ohms (``RS``).
+        sheet_resistance: Diffusion sheet resistance in ohms per square (``RSH``).
+        drain_squares: Number of sheet squares in the drain diffusion (``NRD``).
+        source_squares: Number of sheet squares in the source diffusion (``NRS``).
+        saturation_current: Bulk-junction lumped saturation current (``IS``).
+        saturation_current_density: Bulk-junction areal saturation current density
+            (``JS``).
+        drain_area: Drain diffusion area in square meters (``AD``).
+        source_area: Source diffusion area in square meters (``AS``).
+        drain_perimeter: Drain diffusion perimeter in meters (``PD``).
+        source_perimeter: Source diffusion perimeter in meters (``PS``).
+        junction_potential: Bulk-junction built-in potential in volts (``PB``).
+        bulk_drain_capacitance: Fixed zero-bias bulk-drain capacitance (``CBD``).
+        bulk_source_capacitance: Fixed zero-bias bulk-source capacitance (``CBS``).
+        bottom_capacitance: Zero-bias bottom areal junction capacitance (``CJ``).
+        sidewall_capacitance: Zero-bias sidewall perimetric junction capacitance
+            (``CJSW``).
+        bottom_grading: Bottom-junction grading exponent (``MJ``).
+        sidewall_grading: Sidewall-junction grading exponent (``MJSW``).
+        depletion_coefficient: Forward-bias junction capacitance linearization fraction
+            (``FC``).
+        gate_source_overlap: Gate-source overlap capacitance per meter (``CGSO``).
+        gate_drain_overlap: Gate-drain overlap capacitance per meter (``CGDO``).
+        gate_bulk_overlap: Gate-bulk overlap capacitance per meter (``CGBO``).
+        nominal_temperature: Model extraction temperature in kelvins (``TNOM``).
+        flicker_coefficient: Flicker noise scaling coefficient (``KF``).
+        flicker_exponent: Flicker noise drain-current exponent (``AF``).
+        max_drift_velocity: Level-3 carrier saturation velocity in m/s (``VMAX``).
+        junction_depth: Level-3 metallurgical junction depth in meters (``XJ``).
+        fast_surface_state_density: Level-3 subthreshold fast surface-state density
+            (``NFS``).
+        static_feedback: Level-3 DIBL static feedback factor (``ETA``).
+        narrow_width_factor: Level-3 narrow-channel threshold factor (``DELTA``).
+        mobility_modulation: Level-3 gate-field mobility degradation in V⁻¹ (``THETA``).
+        saturation_field_factor: Level-3 channel-length shortening factor (``KAPPA``).
+        width_narrowing: Level-3 lateral width reduction per side (``WD``).
+        length_adjustment: Level-3 drawn-to-mask length offset (``XL``).
+        width_adjustment: Level-3 drawn-to-mask width offset (``XW``).
+        threshold_adjustment: Per-instance threshold voltage shift (``DELVTO``).
+
+    Returns:
+        Four-terminal SPICE level 1 or level 3 MOSFET `Device`.
+
     Examples:
         >>> from jolty.units import nm, um
         >>> mosfet(width=2 * um, length=1 * um, oxide_thickness=20 * nm).parameters
@@ -1479,6 +2228,81 @@ def vdmos(  # noqa: PLR0913 - ngspice VDMOS model parameters
     flicker noise of ``KF · |Id|^AF / (f · Cox²)`` A²/Hz using a 0.1 µm reference
     oxide capacitance per unit area.
 
+    Args:
+        channel: Channel carrier polarity (`'n'` or `'p'`).
+        multiplier: Parallel cell or die multiplier (``M``).
+        threshold_voltage: Gate-source turn-on threshold voltage (``VTO``).
+        transconductance_parameter: Channel transconductance factor (``KP``).
+        channel_length_modulation: Saturation output slope in V⁻¹ (``LAMBDA``).
+        mobility_modulation: Gate-field mobility degradation in V⁻¹ (``THETA``).
+        triode_conductance_multiplier: Linear-region conductance compression multiplier
+            (``MTRIODE``).
+        subthreshold_slope: Subthreshold conduction slope voltage (``KSUBVT``).
+        subthreshold_shift: Subthreshold threshold voltage offset (``VSUBSC``).
+        drain_resistance: Extrinsic drift/drain resistance in ohms (``RD``).
+        source_resistance: Extrinsic source lead resistance in ohms (``RS``).
+        gate_resistance: Internal polysilicon gate resistance in ohms (``RG``).
+        quasi_saturation_resistance: Quasi-saturation JFET-region resistance in ohms
+            (``RQ``).
+        quasi_saturation_voltage: Quasi-saturation onset voltage (``VQ``).
+        drain_source_resistance: Parallel drain-source leakage resistance (``RDS``).
+        gate_source_capacitance: Fixed gate-source capacitance in farads (``CGS``).
+        max_gate_drain_capacitance: Accumulation-region maximum Miller capacitance
+            (``CGDMAX``).
+        min_gate_drain_capacitance: High-voltage minimum Miller capacitance
+            (``CGDMIN``).
+        gate_drain_capacitance_coefficient: Miller capacitance voltage transition slope
+            in V⁻¹ (``A``).
+        saturation_current: Body-diode reverse saturation current (``IS``).
+        emission_coefficient: Body-diode forward ideality factor (``N``).
+        body_resistance: Body-diode series resistance in ohms (``RB``).
+        junction_capacitance: Zero-bias body-diode capacitance in farads (``CJO``).
+        junction_potential: Body-diode built-in potential in volts (``VJ``).
+        grading_coefficient: Body-diode depletion grading exponent (``M``).
+        depletion_coefficient: Body-diode forward capacitance linearization fraction
+            (``FC``).
+        transit_time: Body-diode reverse-recovery transit time (``TT``).
+        breakdown_voltage: Drain-source avalanche breakdown voltage (``BV``).
+        breakdown_current: Reverse current at `breakdown_voltage` (``IBV``).
+        breakdown_emission_coefficient: Avalanche breakdown ideality factor (``NBV``).
+        energy_gap: Body-diode band-gap energy (``EG``).
+        saturation_current_temperature_exponent: Body-diode saturation current
+            temperature exponent (``XTI``).
+        nominal_temperature: Model extraction temperature in kelvins (``TNOM``).
+        threshold_voltage_temperature_coefficient: Linear temperature shift of
+            `threshold_voltage` in V/K (``VTC``).
+        transconductance_parameter_temperature_exponent: Temperature exponent of
+            `transconductance_parameter` (``BEX``).
+        subthreshold_slope_temperature_coefficient: Linear temperature coefficient of
+            `subthreshold_slope` (``TKVT1``).
+        subthreshold_slope_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `subthreshold_slope` (``TKVT2``).
+        drain_resistance_temperature_exponent: Power-law temperature exponent of
+            `drain_resistance` (``TRD``).
+        drain_resistance_temperature_coefficient: Linear temperature coefficient of
+            `drain_resistance` (``TRD1``).
+        drain_resistance_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `drain_resistance` (``TRD2``).
+        quasi_saturation_resistance_temperature_exponent: Temperature exponent of
+            `quasi_saturation_resistance` (``TRQ``).
+        source_resistance_temperature_coefficient: Linear temperature coefficient of
+            `source_resistance` (``TRS1``).
+        source_resistance_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `source_resistance` (``TRS2``).
+        gate_resistance_temperature_coefficient: Linear temperature coefficient of
+            `gate_resistance` (``TRG1``).
+        gate_resistance_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `gate_resistance` (``TRG2``).
+        body_resistance_temperature_coefficient: Linear temperature coefficient of
+            `body_resistance` (``TRB1``).
+        body_resistance_quadratic_temperature_coefficient: Quadratic temperature
+            coefficient of `body_resistance` (``TRB2``).
+        flicker_coefficient: Flicker noise scaling coefficient (``KF``).
+        flicker_exponent: Flicker noise drain-current exponent (``AF``).
+
+    Returns:
+        Three-terminal VDMOS power MOSFET `Device`.
+
     Examples:
         >>> from jolty.units import V, ohm
         >>> vdmos(threshold_voltage=4 * V, drain_resistance=0.044 * ohm).parameters
@@ -1534,6 +2358,34 @@ def bsim3(  # noqa: PLR0913 - instance geometry and BSIM3 model selectors
     Sheet resistances generate thermal noise, while the channel produces thermal and
     flicker noise selected by `noise_model` (SPICE2 or BSIM3 formulations).
 
+    Args:
+        channel: Channel carrier polarity (`'n'` or `'p'`).
+        width: Drawn channel width in meters (``W``).
+        length: Drawn channel length in meters (``L``).
+        multiplier: Parallel instance multiplier (``M``).
+        drain_area: Drain diffusion area in square meters (``AD``).
+        source_area: Source diffusion area in square meters (``AS``).
+        drain_perimeter: Drain diffusion perimeter in meters (``PD``).
+        source_perimeter: Source diffusion perimeter in meters (``PS``).
+        drain_squares: Sheet-resistance squares in drain diffusion (``NRD``).
+        source_squares: Sheet-resistance squares in source diffusion (``NRS``).
+        threshold_adjustment: Instance threshold voltage offset (``DELVTO``).
+        mobility_multiplier: Instance low-field mobility scale factor (``MULU0``).
+        mobility_model: BSIM3 mobility degradation formulation (``MOBMOD`` 1..3).
+        capacitance_model: Intrinsic gate-charge formulation (``CAPMOD`` 0..3).
+        noise_model: Channel thermal/flicker noise selector (``NOIMOD`` 1..6).
+        check_parameters: When ``True``, clamps out-of-range model parameters.
+        charge_partition: Channel-charge drain/source split selector (``XPART``).
+        nominal_temperature: Model extraction temperature in kelvins (``TNOM``).
+        card: Mapping of BSIM3v3.3 manual parameter names to SI quantities or floats.
+
+    Returns:
+        Four-terminal BSIM3v3.3 MOSFET `Device`.
+
+    Raises:
+        DimensionError: If a parameter has the wrong physical dimension.
+        ValueError: If `card` names an unknown BSIM3 parameter or a non-finite value.
+
     Examples:
         >>> from jolty.units import V, nm, um
         >>> transistor = bsim3(
@@ -1543,10 +2395,6 @@ def bsim3(  # noqa: PLR0913 - instance geometry and BSIM3 model selectors
         ... )
         >>> transistor.parameters["tox"], transistor.parameters["k2"]
         (7.6e-09, -0.02)
-
-    Raises:
-        DimensionError: If a parameter has the wrong physical dimension.
-        ValueError: If `card` names an unknown BSIM3 parameter or a non-finite value.
     """
     values = locals()
     values.pop("card")
@@ -1595,12 +2443,19 @@ def bsim3_dimension(name: str, mobility_model: int | None = None) -> Dimension |
     square meters (``p``). Parameters ``uc`` and ``uc1`` use meters per square volt by
     default, or inverse volts when `mobility_model` is 3.
 
-    Examples:
-        >>> bsim3_dimension("lvth0") == VOLTAGE * LENGTH, bsim3_dimension("k2")
-        (True, None)
+    Args:
+        name: BSIM3v3.3 direct or ``l``/``w``/``p``-binned card parameter name.
+        mobility_model: Optional ``MOBMOD`` value resolving ``uc`` and ``uc1``.
+
+    Returns:
+        Expected SI `Dimension`, or ``None`` for plain dimensionless numbers.
 
     Raises:
         ValueError: If BSIM3 defines no parameter named `name`.
+
+    Examples:
+        >>> bsim3_dimension("lvth0") == VOLTAGE * LENGTH, bsim3_dimension("k2")
+        (True, None)
     """
     dimension, extent = _bsim_parameter("BSIM3", name, BSIM3_CARD, BSIM3_BINNED)
     if dimension == "uc":
@@ -1724,6 +2579,42 @@ def bsim4(  # noqa: PLR0913 - instance geometry and BSIM4 model selectors
     `thermal_noise_model` (``tnoimod``, charge-based or holistic), while flicker noise
     follows `flicker_noise_model` (``fnoimod``, SPICE2 or BSIM4).
 
+    Args:
+        channel: Channel carrier polarity (`'n'` or `'p'`).
+        width: Total drawn channel width across fingers in meters (``W``).
+        length: Drawn channel length in meters (``L``).
+        multiplier: Parallel instance multiplier (``M``).
+        fingers: Number of gate fingers dividing `width` (``NF``).
+        drain_area: Explicit drain diffusion area in square meters (``AD``).
+        source_area: Explicit source diffusion area in square meters (``AS``).
+        drain_perimeter: Explicit drain diffusion perimeter in meters (``PD``).
+        source_perimeter: Explicit source diffusion perimeter in meters (``PS``).
+        drain_squares: Sheet-resistance squares in drain diffusion (``NRD``).
+        source_squares: Sheet-resistance squares in source diffusion (``NRS``).
+        diffusion_edge_a: LOD stress distance from gate to left STI edge (``SA``).
+        diffusion_edge_b: LOD stress distance from gate to right STI edge (``SB``).
+        finger_spacing: Gate-to-gate spacing between adjacent fingers (``SD``).
+        threshold_adjustment: Instance threshold voltage offset (``DELVTO``).
+        mobility_multiplier: Instance low-field mobility scale factor (``MULU0``).
+        body_resistance_model: Substrate resistance network selector (``RBODYMOD``).
+        gate_resistance_model: Gate electrode resistance selector (``RGATEMOD``).
+        perimeter_model: Layout source/drain geometry selector (``GEOMOD``/``PERMOD``).
+        drain_source_resistance_model: Lumped vs extrinsic S/D resistance selector
+            (``RDSMOD``).
+        flicker_noise_model: Flicker noise formulation selector (``FNOIMOD``).
+        thermal_noise_model: Channel thermal noise selector (``TNOIMOD``).
+        check_parameters: When ``True``, clamps out-of-range model parameters.
+        charge_partition: Channel-charge drain/source split selector (``XPART``).
+        nominal_temperature: Model extraction temperature in kelvins (``TNOM``).
+        card: Mapping of BSIM4.5 manual parameter names to SI quantities or floats.
+
+    Returns:
+        Four-terminal BSIM4.5 MOSFET `Device`.
+
+    Raises:
+        DimensionError: If a parameter has the wrong physical dimension.
+        ValueError: If `card` names an unknown BSIM4 parameter or a non-finite value.
+
     Examples:
         >>> from jolty.units import V, nm, um
         >>> transistor = bsim4(
@@ -1733,10 +2624,6 @@ def bsim4(  # noqa: PLR0913 - instance geometry and BSIM4 model selectors
         ... )
         >>> transistor.parameters["toxe"], transistor.parameters["k2"]
         (4e-09, -0.02)
-
-    Raises:
-        DimensionError: If a parameter has the wrong physical dimension.
-        ValueError: If `card` names an unknown BSIM4 parameter or a non-finite value.
     """
     values = locals()
     values.pop("card")
@@ -1776,12 +2663,18 @@ def bsim4_dimension(name: str) -> Dimension | None:
     Binned prefixes multiply the base parameter dimension by meters (``l``, ``w``) or
     square meters (``p``).
 
-    Examples:
-        >>> bsim4_dimension("lvth0") == VOLTAGE * LENGTH, bsim4_dimension("k2")
-        (True, None)
+    Args:
+        name: BSIM4.5 direct or ``l``/``w``/``p``-binned card parameter name.
+
+    Returns:
+        Expected SI `Dimension`, or ``None`` for plain dimensionless numbers.
 
     Raises:
         ValueError: If BSIM4 defines no parameter named `name`.
+
+    Examples:
+        >>> bsim4_dimension("lvth0") == VOLTAGE * LENGTH, bsim4_dimension("k2")
+        (True, None)
     """
     return _extended(*_bsim_parameter("BSIM4", name, BSIM4_CARD, BSIM4_BINNED))
 
@@ -1832,6 +2725,25 @@ def logic_cell(  # noqa: PLR0913 - logic function, timing, and electrical pins
     `input_capacitance` (defaulting to zero), while electrical outputs drive ramped
     waveforms crossing half supply at transition times.
 
+    Args:
+        inputs: Ordered boolean input terminal names (first input is MSB).
+        outputs: Mapping from output pin names to truth-table strings or callables.
+        rise: Inertial propagation delay for rising output transitions.
+        fall: Inertial propagation delay for falling edges, defaulting to `rise`.
+        transition: Output ramp duration between logic rails.
+        electrical: When ``True``, adds ``supply`` and ``ground`` electrical rails.
+        input_capacitance: Shunt capacitance per input pin when `electrical` is true.
+        threshold: Fractional supply threshold slicing electrical inputs.
+
+    Returns:
+        Combinational `logic_cell` `Device` with Pure-Logic or mixed-signal pins.
+
+    Raises:
+        DimensionError: If `rise`, `fall`, `transition`, or `input_capacitance` has the
+            wrong physical dimension.
+        ValueError: If `input_capacitance` or `threshold` is passed with
+            ``electrical=False``, or if the engine rejects the cell.
+
     Examples:
         >>> from jolty.units import ps
         >>> nand = logic_cell(
@@ -1842,12 +2754,6 @@ def logic_cell(  # noqa: PLR0913 - logic function, timing, and electrical pins
         ... )
         >>> nand.terminals, nand.parameters["outputs"]
         (('a', 'b', 'y'), [{'name': 'y', 'table': '1110'}])
-
-    Raises:
-        DimensionError: If `rise`, `fall`, `transition`, or `input_capacitance` has the
-            wrong physical dimension.
-        ValueError: If `input_capacitance` or `threshold` is passed with
-            ``electrical=False``, or if the engine rejects the cell.
     """
     tables: list[JsonValue] = [
         {"name": name, "table": _table(function, len(inputs))}
@@ -1907,6 +2813,19 @@ def logic_gate(  # noqa: PLR0913 - logic cell gate parameters
     for ``not`` and ``buffer``), and the output terminal is ``y``. All timing and
     electrical options forward directly to [`logic_cell`][jolty.devices.logic_cell].
 
+    Args:
+        gate: Standard boolean gate function name.
+        inputs: Input pin count (forced to 1 for `'not'` and `'buffer'`).
+        rise: Inertial propagation delay for rising output transitions.
+        fall: Inertial propagation delay for falling edges, defaulting to `rise`.
+        transition: Output ramp duration between logic rails.
+        electrical: When ``True``, adds ``supply`` and ``ground`` electrical rails.
+        input_capacitance: Shunt capacitance per input pin when `electrical` is true.
+        threshold: Fractional supply threshold slicing electrical inputs.
+
+    Returns:
+        Standard combinational gate `Device` with inputs ``a..`` and output ``y``.
+
     Examples:
         >>> from jolty.units import ps
         >>> logic_gate("xor", rise=20 * ps, transition=10 * ps).parameters["outputs"]
@@ -1939,6 +2858,14 @@ def logic_source(
     pair in `changes`. Each edge ramps between ground and supply over `transition`,
     crossing half supply at the scheduled event time.
 
+    Args:
+        initial: Initial logic state (`0`, `1`, or ``None``) at time zero.
+        changes: Time-ordered `(time, level)` transition events.
+        transition: Edge ramp duration crossing half supply at event times.
+
+    Returns:
+        Single-terminal event-driven `logic_source` `Device`.
+
     Examples:
         >>> from jolty.units import ns, ps
         >>> clock = logic_source(0, [(1 * ns, 1), (2 * ns, 0)], transition=50 * ps)
@@ -1961,6 +2888,12 @@ def format_logic_level(level: LogicLevel | float) -> str:
 
     Simulation results store numeric logic levels using NaN for unknown states.
 
+    Args:
+        level: Discrete `LogicLevel` or floating-point trace reading (NaN for unknown).
+
+    Returns:
+        Single-character engine state string: ``'0'``, ``'1'``, or ``'x'``.
+
     Examples:
         >>> [format_logic_level(level) for level in (0, 1, None, 1.0, math.nan)]
         ['0', '1', 'x', '1', 'x']
@@ -1976,6 +2909,13 @@ def device(model: str, parameters: dict[str, JsonValue]) -> Device:
     Unlike the typed constructors above, this low-level helper accepts raw SI base-unit
     values without dimension checking, supporting imported models such as SPICE
     libraries.
+
+    Args:
+        model: Primitive engine model identifier.
+        parameters: Validated parameter dictionary already expressed in SI base units.
+
+    Returns:
+        Constructed `Device` with engine-resolved terminal names.
 
     Raises:
         ValueError: If `model` is unknown or the engine rejects `parameters`.

@@ -81,10 +81,10 @@ macro_rules! source_common {
     };
 }
 
-/// Independent voltage source constraining `v_positive − v_negative` to its waveform value.
+/// Independent voltage source constraining `v_positive - v_negative` to its waveform value.
 ///
 /// The branch current flowing from `positive` through the source to `negative` is an unknown
-/// labelled `current`, so a source delivering power carries negative current.
+/// labeled `current`, so a source delivering power carries negative current.
 #[derive(Debug, Clone, Copy)]
 pub struct VoltageSource;
 
@@ -121,7 +121,7 @@ impl Kernel for VoltageSource {
         branch.add(at, stamp, -(value - voltage));
     }
 
-    /// Stamps `-1.0` into the branch equation residual (derivative of `v − value` with respect
+    /// Stamps `-1.0` into the branch equation residual (derivative of `v - value` with respect
     /// to `value`).
     fn excite<R: Real>(VoltageSourceShape(branch): &VoltageSourceShape, stamp: &mut Stamp<'_, R>) {
         stamp.add_residual(branch.unknown(), R::constant(-1.0));

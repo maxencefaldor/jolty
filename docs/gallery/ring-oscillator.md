@@ -3,9 +3,9 @@
 A ring oscillator of five CMOS inverters, transistor by transistor.
 
 An odd ring of inverters has no stable state: each edge runs round the ring and comes back inverted, so the ring oscillates with a period of twice the five stages' delays.
-Here each stage drives the next one's gate and 10 fF, and the ring runs near 930 MHz.
-A pulse on the first stage's input sets it going.
-Simulate it with `jolty simulate examples/ring_oscillator.py`.
+Each inverter stage drives the next stage's gate plus 10 fF, oscillating near 930 MHz.
+A pulse on the first stage's input sets oscillation going.
+Simulate with `jolty simulate examples/ring_oscillator.py`.
 
 [Open in 3D](ring-oscillator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/ring_oscillator.py){ .md-button }
 

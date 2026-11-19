@@ -46,7 +46,7 @@ Each stage's completion criterion measures a concrete effect, summarized in the 
 | 1.4 Short laws | Measured: at most 25 extra instructions per evaluation (below) | None |
 | MOSFET circuits under step 1 | Unchanged because MOSFET kernels are already composed | Unchanged |
 | 2 Chunk twins | Unchanged by design because Newton is untouched; every kernel keeps identical instruction counts except VDMOS (+0.9% from compiler inlining and codegen choices) | Measured on machine D: an 8-wide twin takes 2.4× (BSIM4) to 3.5× (diode at 0.69 V) fewer instructions than eight 1-wide twins (below). Whole `Simulator::vjp` + `pull_back` speeds up 1.28× to 2.16× total (1.51× to 2.45× `pull_back`) on chunk 8 vs chunk 1 with bit-identical results across all 25 cases (2.6). JVP evaluates each device once per tangent regardless of parameter count. |
-| 2b AC exact | At most +2 instructions (+0.07%) on Newton `f64` kernels, −4 on VBIC, and −10 on photocell (`instructions.rs`, below) | Measured on machine E: AC VJP pullback is 49.8× faster at 1,000 parameters (107.8 to 2.17 ms; total `vjp` + `pull_back` 28.7× faster, 109.9 to 3.83 ms). Results match `61fa6e8` central differences within 9.74e-8 at 1,000 parameters (9.57e-10 on `loaded_amplifier`), with AC dot-product residual 7.15e-17. |
+| 2b AC exact | At most +2 instructions (+0.07%) on Newton `f64` kernels, -4 on VBIC, and -10 on photocell (`instructions.rs`, below) | Measured on machine E: AC VJP pullback is 49.8× faster at 1,000 parameters (107.8 to 2.17 ms; total `vjp` + `pull_back` 28.7× faster, 109.9 to 3.83 ms). Results match `61fa6e8` central differences within 9.74e-8 at 1,000 parameters (9.57e-10 on `loaded_amplifier`), with AC dot-product residual 7.15e-17. |
 
 ## Step 1: every kernel composed on dual numbers
 
@@ -83,7 +83,7 @@ Weak avalanche current is separated into a dedicated current law, and both helpe
 Across 1,200 evaluations (both polarities, base charges, smoothings, temperatures, and excess-phase modes), residuals and conductances shift by at most 0.9 ε of the row maximum while charges and capacitances stay unchanged.
 Every VBIC unit test, ngspice comparison, and law-suite check passes unchanged.
 Instruction counts from `crates/jolty-models/benches/instructions.rs` (gungraun via Valgrind 3.25.1 Callgrind, excluding case setup and drop, against `main` `8fb1e4b`) drop across every configuration.
-Defaults fall from 10,879 to 7,184 instructions (−34.0%), full models fall from 12,830 to 8,838 (−31.1%), and excess-phase models fall from 13,376 to 9,290 (−30.5%).
+Defaults fall from 10,879 to 7,184 instructions (-34.0%), full models fall from 12,830 to 8,838 (-31.1%), and excess-phase models fall from 13,376 to 9,290 (-30.5%).
 Criterion timings from `evaluation.rs` (two builds alternating twice on one pinned core of an AMD EPYC 7B12 at load 2 to 5, with machine B unreachable) confirm large wall-clock speedups.
 Defaults drop from 1.42 to 1.51 µs down to 819 to 829 ns, and full models drop from 1.53 to 1.63 µs down to 1.02 to 1.26 µs.
 With excess phase enabled, evaluation drops from 1.59 to 1.66 µs down to 1.01 to 1.05 µs.
@@ -112,7 +112,7 @@ Residuals, conductances, and capacitances shift by at most 3.5 ε of the row max
 One-time verification replaced keeping a permanent reference test so hand-written kernels do not persist as duplicate implementations.
 Callgrind counts on Gummel-Poon rise from 2,203 to 2,370 at defaults (+7.6%) and from 4,500 to 4,581 with every feature (+1.8%).
 Gummel-Poon with excess phase rises from 4,926 to 5,053 (+2.6%), while JFET rises from 2,409 to 2,477 at defaults (+2.8%) and 3,165 to 3,237 full (+2.3%).
-Alternating Criterion timings shifted by −15% to +12%, well inside build-layout noise (unchanged VDMOS code shifted by +9% to +10% between the same builds).
+Alternating Criterion timings shifted by -15% to +12%, well inside build-layout noise (unchanged VDMOS code shifted by +9% to +10% between the same builds).
 The small instruction increase is submitted to the owner; consistent dual-number kernels remain unless the owner decides otherwise.
 
 ### 1.4 The short hand-written laws
@@ -265,7 +265,7 @@ The operating-point term moves to the adjoint side exactly:
 
 ```text
 λᵀ (∂J/∂x · dx₀/dp) v  =  gᵀ dx₀/dp,     g = ∂/∂x (λᵀ J(x) v)
-gᵀ dx₀/dp  =  −(J₀⁻ᵀ g)ᵀ ∂F₀/∂p
+gᵀ dx₀/dp  =  -(J₀⁻ᵀ g)ᵀ ∂F₀/∂p
 ```
 
 Each device contributes its share of `g` as the gradient of one scalar over its local unknowns.
@@ -303,7 +303,7 @@ Three alternating rounds of 11 repetitions (33 samples per revision) ran on a 50
 | 1,000 | 107.795 ms (100.857 to 117.648) | 2.165 ms (1.970 to 2.657) | 49.8× | 109.933 → 3.830 ms (28.7×) |
 
 Callgrind instruction counts from `crates/jolty-models/benches/instructions.rs` (gungraun, Valgrind 3.25.1) against `61fa6e8` on `glibc 2.39` show at most +2 instructions (+0.07%) on Newton `f64` kernels.
-VBIC drops by 1 to 4 instructions and the photocell drops by 10 instructions (−0.49%).
+VBIC drops by 1 to 4 instructions and the photocell drops by 10 instructions (-0.49%).
 Re-measuring on machine D (`glibc 2.27`, `ff752db`) after fixing `diode_twin` bias from `"anode"` (1 mV) to `"junction"` (0.69 V) yields `27,077 / 35,861 / 53,350 / 92,128` on `bsim4`.
 On the same host, `diode` counts `1,090 / 1,360 / 1,662 / 2,482` and `resistor` counts `430 / 607 / 772 / 1,170`.
 

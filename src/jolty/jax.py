@@ -335,6 +335,15 @@ def function(
     `saved_pullbacks` pullbacks before recomputing on backward passes, and engine
     exceptions propagate through JAX callbacks with their original type and message.
 
+    Args:
+        circuit_or_top: Circuit IR or top-level `Component` to simulate.
+        analysis: Differentiable analysis specification with static point count.
+        options: Optional solver tolerance, iteration, and nodeset options.
+        saved_pullbacks: Maximum forward-pass pullbacks retained in LRU cache.
+
+    Returns:
+        JAX-transformable callable mapping `JaxParameters` to `JaxOutputs`.
+
     Raises:
         ElaborationError: When the circuit fails to elaborate or the first call
             references parameters not present on circuit devices.

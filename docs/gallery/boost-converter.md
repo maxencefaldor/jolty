@@ -2,8 +2,9 @@
 
 A boost converter: an inductor charged by a switch and dumped through a diode.
 
-The switch shorts the inductor to ground for 60 % of each 10 µs period, storing energy it then delivers through the diode on top of the input: the output settles near Vin/(1 - D) = 12.5 V from 5 V, less the losses.
-Simulate it with `jolty simulate examples/boost_converter.py`.
+The switch shorts the inductor to ground for 60 % of each 10 µs period, storing energy that discharges through the diode onto the output.
+From a 5 V input, the output settles near Vin/(1 - D) = 12.5 V minus diode and switch losses.
+Simulate with `jolty simulate examples/boost_converter.py`.
 
 [Open in 3D](boost-converter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/boost_converter.py){ .md-button }
 

@@ -122,6 +122,16 @@ def mosfet(
     `multiplier` parallel copies. ngspice simulates the device using binned SKY130
     models; dimensions outside every model bin fail in ngspice.
 
+    Args:
+        transistor: SKY130 model suffix from `TRANSISTORS` (without `PREFIX`).
+        width: Total channel width across all fingers as a length `Quantity`.
+        length: Gate length as a length `Quantity`.
+        fingers: Number of gate fingers (`1` or more).
+        multiplier: Number of parallel device copies (`1` or more).
+
+    Returns:
+        Foundry MOSFET `Device` configured for SKY130 simulation in ngspice.
+
     Raises:
         ValueError: When `transistor` is unknown, dimensions are non-positive, or
             `fingers` or `multiplier` is less than 1.
@@ -164,6 +174,12 @@ def written(parameters: Mapping[str, JsonValue]) -> str:
     drain and source diffusion areas, perimeters, and squares from `DIFFUSION` as in
     SKY130 xschem symbols. Emits both ``mult`` (for PDK mismatch) and ``m`` (for
     ngspice multiplicity).
+
+    Args:
+        parameters: Validated `foundry_mosfet` device parameter dictionary.
+
+    Returns:
+        SPICE model name and instance parameter clause ready for an `X` element line.
 
     Raises:
         ValueError: When `parameters` are invalid for a SKY130 transistor.
@@ -233,6 +249,13 @@ def running(process: str | None, *, mismatched: bool) -> Running:
     Defaults to the typical corner when `process` is None, appending the mismatch
     section suffix when `mismatched` is true.
 
+    Args:
+        process: SKY130 corner name from `CORNERS`, or `None` for `TYPICAL`.
+        mismatched: When `True`, selects the statistical mismatch corner variant.
+
+    Returns:
+        `Running` keyword dictionary specifying SKY130 library section and mode.
+
     Raises:
         SimulationError: When `process` is not a supported SKY130 corner.
     """
@@ -254,6 +277,14 @@ def inner(element: str, model: str) -> str:
 
     SKY130 subcircuits name the inner transistor after its model, so ``XM1`` of
     ``nfet_01v8`` maps to ``m.xm1.msky130_fd_pr__nfet_01v8``.
+
+    Args:
+        element: SPICE subcircuit instance name (such as ``"XM1"``).
+        model: Full SKY130 subcircuit model name (such as
+            ``"sky130_fd_pr__nfet_01v8"``).
+
+    Returns:
+        Lowercase ngspice internal device path for the inner MOSFET.
     """
     return f"m.{element}.m{model}".lower()
 

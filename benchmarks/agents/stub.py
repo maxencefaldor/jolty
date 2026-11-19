@@ -167,24 +167,24 @@ def _turns(task: Path, arm: Arm) -> Iterator[dict[str, object]]:
     }
 
 
-def _written(id: str, name: str, text: str) -> Iterator[dict[str, object]]:
-    """Writes `text` to `name` and yields the assistant and result events for `id`."""
+def _written(call_id: str, name: str, text: str) -> Iterator[dict[str, object]]:
+    """Writes `text` to `name` and yields assistant and result events for `call_id`."""
     Path(name).write_text(text, encoding="utf-8")
-    yield _message(id, "Write", {"file_path": name})
-    yield _result(id, f"wrote {name}")
+    yield _message(call_id, "Write", {"file_path": name})
+    yield _result(call_id, f"wrote {name}")
 
 
-def _ran(id: str, command: list[str]) -> Iterator[dict[str, object]]:
-    """Executes `command` from ``PATH`` and yields the corresponding events for `id`."""
-    yield _message(id, "Bash", {"command": " ".join(command)})
+def _ran(call_id: str, command: list[str]) -> Iterator[dict[str, object]]:
+    """Executes `command` from ``PATH`` and yields transcript events for `call_id`."""
+    yield _message(call_id, "Bash", {"command": " ".join(command)})
     ran = subprocess.run(command, capture_output=True, text=True, check=False)  # noqa: S603 - arm executables on prepared PATH
-    yield _result(id, ran.stdout + ran.stderr)
+    yield _result(call_id, ran.stdout + ran.stderr)
 
 
 def _called(
-    id: str, tool: str, arguments: dict[str, object]
+    call_id: str, tool: str, arguments: dict[str, object]
 ) -> Iterator[dict[str, object]]:
-    """Invokes `tool` on ``jolty-mcp`` and yields the corresponding events for `id`.
+    """Invokes `tool` on ``jolty-mcp`` and yields transcript events for `call_id`.
 
     Launches ``jolty-mcp`` from ``PATH`` in the current working directory with the
     active environment, matching Claude Code's ``mcp__jolty__<tool>`` naming.
@@ -200,21 +200,23 @@ def _called(
             block.text for block in answered.content if isinstance(block, TextContent)
         )
 
-    yield _message(id, f"mcp__jolty__{tool}", arguments)
-    yield _result(id, asyncio.run(call()))
+    yield _message(call_id, f"mcp__jolty__{tool}", arguments)
+    yield _result(call_id, asyncio.run(call()))
 
 
-def _message(id: str, tool: str, arguments: dict[str, object]) -> dict[str, object]:
-    """Builds an assistant transcript event for message `id` calling `tool`."""
+def _message(
+    call_id: str, tool: str, arguments: dict[str, object]
+) -> dict[str, object]:
+    """Builds an assistant transcript event for `call_id` invoking `tool`."""
     return {
         "type": "assistant",
         "message": {
-            "id": id,
+            "id": call_id,
             "role": "assistant",
             "content": [
                 {
                     "type": "tool_use",
-                    "id": f"{id}-call",
+                    "id": f"{call_id}-call",
                     "name": tool,
                     "input": arguments,
                 }
@@ -223,14 +225,18 @@ def _message(id: str, tool: str, arguments: dict[str, object]) -> dict[str, obje
     }
 
 
-def _result(id: str, output: str) -> dict[str, object]:
-    """Builds a user transcript event carrying `output` for tool call `id`."""
+def _result(call_id: str, output: str) -> dict[str, object]:
+    """Builds a user transcript event carrying `output` for tool call `call_id`."""
     return {
         "type": "user",
         "message": {
             "role": "user",
             "content": [
-                {"type": "tool_result", "tool_use_id": f"{id}-call", "content": output}
+                {
+                    "type": "tool_result",
+                    "tool_use_id": f"{call_id}-call",
+                    "content": output,
+                }
             ],
         },
     }

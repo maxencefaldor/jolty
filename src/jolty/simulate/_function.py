@@ -126,6 +126,14 @@ class Elaborated:
     ) -> _core.Simulator:
         """Builds an engine simulator from this elaborated circuit with `overrides`.
 
+        Args:
+            overrides: Optional nested mapping of instance paths to parameter values in
+                SI base units.
+
+        Returns:
+            Engine `Simulator` initialized with `overrides` at the elaborated
+            temperature.
+
         Raises:
             ElaborationError: Lists unknown parameters in `overrides` or devices whose
                 overridden parameters fall out of range.
@@ -148,6 +156,9 @@ class Elaborated:
     def check(self, parameters: Mapping[str, Iterable[str]]) -> None:
         """Checks that the circuit defines every instance and parameter in `parameters`.
 
+        Args:
+            parameters: Mapping from instance paths to iterables of parameter names.
+
         Raises:
             ElaborationError: Lists missing instances and unrecognized parameter names.
         """
@@ -159,6 +170,12 @@ class Elaborated:
 
     def variants(self, runs: Iterable[Parameters]) -> _core.Variants:
         """Compiles explicit parameter `runs` into engine variants for this circuit.
+
+        Args:
+            runs: Per-run parameter override mappings in SI base units.
+
+        Returns:
+            Compiled explicit engine `Variants` at the elaborated temperature.
 
         Raises:
             ElaborationError: Lists unrecognized parameter names referenced by `runs`.
@@ -276,7 +293,15 @@ class Function:
     def pushed(
         self, parameters: Parameters, tangents: Parameters
     ) -> tuple[Outputs, Outputs]:
-        """Computes primal outputs and forward-mode directional derivatives (JVP)."""
+        """Computes primal outputs and forward-mode directional derivatives (JVP).
+
+        Args:
+            parameters: Parameter overrides defining the evaluation point.
+            tangents: Directional parameter perturbations in SI base units.
+
+        Returns:
+            Pair of primal `Outputs` and forward-pushed tangent `Outputs`.
+        """
         names = self._named(parameters)
         given = {(path, name) for path, named in tangents.items() for name in named}
         if unknown := sorted(given - set(names)):
@@ -299,7 +324,14 @@ class Function:
         return outputs, pushed
 
     def pulled(self, parameters: Parameters) -> tuple[Outputs, Pullback]:
-        """Computes primal outputs and a reverse-mode adjoint pullback (VJP)."""
+        """Computes primal outputs and a reverse-mode adjoint pullback (VJP).
+
+        Args:
+            parameters: Parameter overrides defining the evaluation point.
+
+        Returns:
+            Pair of primal `Outputs` and adjoint `Pullback` callable.
+        """
         names = self._named(parameters)
         core, (outcome, pullback) = self._run(
             parameters,
@@ -346,14 +378,32 @@ class Function:
         return points_of(self.analysis)
 
     def batch(self, names: Sequence[tuple[str, str]], values: npt.ArrayLike) -> Outputs:
-        """Evaluates the analysis across a batch of parameter rows."""
+        """Evaluates the analysis across a batch of parameter rows.
+
+        Args:
+            names: Ordered `(instance, parameter)` pairs naming matrix columns.
+            values: Two-dimensional array of parameter values shaped
+                `(runs, len(names))`.
+
+        Returns:
+            Batched unknown `Outputs` indexed by run and analysis point.
+        """
         outputs, _ = self._batched(names, values, [])
         return outputs
 
     def batch_vjp(
         self, names: Sequence[tuple[str, str]], values: npt.ArrayLike
     ) -> tuple[Outputs, BatchPullback]:
-        """Evaluates a batch of runs and returns its outputs and `BatchPullback`."""
+        """Evaluates a batch of runs and returns its outputs and `BatchPullback`.
+
+        Args:
+            names: Ordered `(instance, parameter)` pairs naming matrix columns.
+            values: Two-dimensional array of parameter values shaped
+                `(runs, len(names))`.
+
+        Returns:
+            Pair of batched `Outputs` and `BatchPullback` over all runs.
+        """
         outputs, core = self._batched(names, values, list(names))
         pullback = BatchPullback(
             core,
@@ -510,6 +560,14 @@ def function(
     Calling ``function(circuit, analysis)(parameters)`` evaluates `analysis` with
     `options` at `parameters` and returns unknown outputs.
 
+    Args:
+        circuit_or_top: Circuit IR or top-level component to elaborate.
+        analysis: Differentiable analysis specification evaluated per call.
+        options: Optional solver tolerances, iteration limits, and nodesets.
+
+    Returns:
+        Callable `Function` evaluating `analysis` at parameter overrides.
+
     Raises:
         ElaborationError: Lists every problem reported during circuit elaboration.
     """
@@ -525,6 +583,14 @@ def jvp(
     point and `tangents` specifies SI-unit perturbations, holding omitted parameters
     fixed. Exact derivatives are computed by the direct method with one linear solve
     per analysis point.
+
+    Args:
+        function: Differentiable circuit analysis function to evaluate.
+        parameters: Parameter overrides defining the primal evaluation point.
+        tangents: Directional parameter perturbations in SI base units.
+
+    Returns:
+        Pair of primal `Outputs` and directional derivative `Outputs`.
 
     Raises:
         ValueError: When `tangents` references a parameter absent from `parameters`.
@@ -545,6 +611,13 @@ def vjp(function: Function, parameters: Parameters) -> tuple[Outputs, Pullback]:
     gradient. Over frequency, cotangents and gradients are complex ``v^T dx/dp``, so
     a real loss of phasors ``a + jb`` uses the real part of the pullback applied to
     ``dL/da - j dL/db``.
+
+    Args:
+        function: Differentiable circuit analysis function to evaluate.
+        parameters: Parameter overrides defining the primal evaluation point.
+
+    Returns:
+        Pair of primal `Outputs` and reverse-mode adjoint `Pullback`.
 
     Raises:
         ElaborationError: When parameter overrides fail circuit elaboration.

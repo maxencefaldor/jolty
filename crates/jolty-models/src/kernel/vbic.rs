@@ -34,10 +34,10 @@ const VBIC_CHARGE: f64 = 1.602_189e-19;
 /// bipolar inter-company model*, IEEE Journal of Solid-State Circuits 31(10), 1996, as
 /// extended by VBIC 1.2.
 ///
-/// Intrinsic transport current `(Itzf − Itzr)` equals `(Ifi − Iri) / qb` from internal
+/// Intrinsic transport current `(Itzf - Itzr)` equals `(Ifi - Iri) / qb` from internal
 /// emitter to internal collector. Forward and reverse currents are
-/// `Ifi = IS · (e^{vbei / (NF · Vt)} − 1)` and
-/// `Iri = IS · ISRR · (e^{vbci / (NR · Vt)} − 1)`. Normalized base charge `qb` combines
+/// `Ifi = IS · (e^{vbei / (NF · Vt)} - 1)` and
+/// `Iri = IS · ISRR · (e^{vbci / (NR · Vt)} - 1)`. Normalized base charge `qb` combines
 /// the Early effect via smoothed depletion charges with high injection via knee currents
 /// in VBIC or Gummel-Poon form. Ideal and non-ideal base-emitter currents split between
 /// internal and external base with breakdown, while base-collector junctions carry weak
@@ -213,7 +213,7 @@ pub struct VbicParameters<R: Real = f64> {
     /// The base-emitter grading coefficient, `ME`, below 1; default 0.33.
     pub base_emitter_grading: R,
     /// The base-emitter capacitance's smoothing, `AJE`, in volts: SPICE's linear extension
-    /// above `FC · PE` at zero or below; default −0.5.
+    /// above `FC · PE` at zero or below; default -0.5.
     #[dimension(VOLTAGE)]
     pub base_emitter_smoothing: R,
     /// The base-collector overlap capacitance, `CBCO`, in farads, between the terminals;
@@ -236,7 +236,7 @@ pub struct VbicParameters<R: Real = f64> {
     pub base_collector_potential: R,
     /// The base-collector grading coefficient, `MC`, below 1; default 0.33.
     pub base_collector_grading: R,
-    /// The base-collector capacitances' smoothing, `AJC`, in volts; default −0.5.
+    /// The base-collector capacitances' smoothing, `AJC`, in volts; default -0.5.
     #[dimension(VOLTAGE)]
     pub base_collector_smoothing: R,
     /// The zero-bias collector-substrate depletion capacitance, `CJCP`, in farads; default
@@ -248,7 +248,7 @@ pub struct VbicParameters<R: Real = f64> {
     pub collector_substrate_potential: R,
     /// The collector-substrate grading coefficient, `MS`, below 1; default 0.33.
     pub collector_substrate_grading: R,
-    /// The collector-substrate capacitance's smoothing, `AJS`, in volts; default −0.5.
+    /// The collector-substrate capacitance's smoothing, `AJS`, in volts; default -0.5.
     #[dimension(VOLTAGE)]
     pub collector_substrate_smoothing: R,
     /// The fixed collector-substrate capacitance, `CCSO`, in farads; default 0.
@@ -280,7 +280,7 @@ pub struct VbicParameters<R: Real = f64> {
     /// The weak avalanche's coefficient, `AVC1`, per volt; default 0, no avalanche.
     #[dimension(PER_VOLT)]
     pub avalanche_coefficient: R,
-    /// The weak avalanche's exponent coefficient, `AVC2`, in volts to the power `1 − MC`;
+    /// The weak avalanche's exponent coefficient, `AVC2`, in volts to the power `1 - MC`;
     /// default 0.
     pub avalanche_exponent_coefficient: R,
     /// The parasitic transistor's transport saturation current, `ISP`, in amperes; default
@@ -694,7 +694,7 @@ impl<R: Real> Depletion<R> {
         } = *self;
         let shift = -(potential * limit);
         let complement = -(grading - 1.0);
-        // P · (1 − (1 − v / P)^(1 − M)) / (1 − M), the power law's charge.
+        // P · (1 - (1 - v / P)^(1 - M)) / (1 - M), the power law's charge.
         let law = |voltage: Dual<R, N>| {
             -((-(voltage.divide(potential) - 1.0)).pow(complement) - 1.0)
                 .scale(potential / complement)
@@ -725,7 +725,7 @@ impl<R: Real> Depletion<R> {
             Some((through, rounding)) if rounding.value() > 0.0 => {
                 let span = through - shift;
                 let four_rounding = rounding * rounding * 4.0;
-                // `vnl`, the normalized voltage limited smoothly to (−1, 1).
+                // `vnl`, the normalized voltage limited smoothly to (-1, 1).
                 let limited = |normalized: Dual<R, N>| {
                     let below = normalized - 1.0;
                     let beyond = normalized + 1.0;
@@ -814,19 +814,19 @@ struct BaseCurrents<R: Real> {
 }
 
 /// Base-emitter junction breakdown current, zero at zero bias:
-/// `−IBBE · (e^{(−VBBE − v) / (NBBE · Vt)} − EBBE)`.
+/// `-IBBE · (e^{(-VBBE - v) / (NBBE · Vt)} - EBBE)`.
 #[derive(Debug, Clone, Copy)]
 struct Breakdown<R: Real> {
     voltage: R,
     /// The emission coefficient times the thermal voltage.
     slope: R,
     current: R,
-    /// Zero-bias breakdown exponential `e^{−VBBE / (NBBE · Vt)}`.
+    /// Zero-bias breakdown exponential `e^{-VBBE / (NBBE · Vt)}`.
     at_zero: R,
 }
 
 /// Base-collector junction weak avalanche current with smoothed depletion voltage `vl`:
-/// `(Itzf − Itzr − Ibcj) · AVC1 · vl · e^{−AVC2 · vl^(MC − 1)}`.
+/// `(Itzf - Itzr - Ibcj) · AVC1 · vl · e^{-AVC2 · vl^(MC - 1)}`.
 #[derive(Debug, Clone, Copy)]
 struct Avalanche<R: Real> {
     coefficient: R,
@@ -983,7 +983,7 @@ impl<R: Real> Core<R> {
         voltage.divide(emission * self.thermal_voltage).exp()
     }
 
-    /// Sums diode currents `I · (e^{v / (n · Vt)} − 1)` at `voltage`.
+    /// Sums diode currents `I · (e^{v / (n · Vt)} - 1)` at `voltage`.
     fn diodes<const N: usize>(&self, voltage: Dual<R, N>, diodes: [Diode<R>; 2]) -> Dual<R, N> {
         diodes
             .into_iter()
@@ -1252,7 +1252,7 @@ impl<R: Real> Scaling<R> {
         value * (self.difference * coefficient + 1.0)
     }
 
-    /// Computes the Arrhenius factor `(T / Tn)^exponent · e^{−energy · (1 − T / Tn) / Vt}`.
+    /// Computes the Arrhenius factor `(T / Tn)^exponent · e^{-energy · (1 - T / Tn) / Vt}`.
     fn arrhenius(self, exponent: R, energy: R) -> R {
         self.ratio.pow(exponent) * (-energy * -(self.ratio - 1.0) / self.thermal_voltage).exp()
     }
@@ -1807,7 +1807,7 @@ impl<R: Real> VbicParameters<R> {
 }
 
 /// Ngspice VBIC excess-phase network with current unknowns `x1` and `x2`. The filter
-/// enforces `TD · dx1/dt + x2 − Itzf = 0` and `TD / 3 · dx2/dt + x2 − x1 = 0`. Delayed
+/// enforces `TD · dx1/dt + x2 - Itzf = 0` and `TD / 3 · dx2/dt + x2 - x1 = 0`. Delayed
 /// current `x2` delivers `3 / (s² · TD² + 3 · s · TD + 3)` of `Itzf` from intrinsic
 /// collector to emitter. At DC both unknowns equal forward transport current, oriented
 /// with device polarity.

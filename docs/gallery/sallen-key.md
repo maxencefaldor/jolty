@@ -2,9 +2,10 @@
 
 A unity-gain Sallen-Key low-pass filter: the second-order Butterworth response.
 
-Two 10 kΩ resistors, 20 nF from their junction back to the output and 10 nF to ground make ω₀ = 1/√(R₁R₂C₁C₂) and Q = √(R₁R₂C₁C₂)/((R₁ + R₂)C₂) = 1/√2: a cutoff of 1.125 kHz with no peaking, -3.01 dB there and -40 dB a decade beyond.
-A follower drives the output: the op-amp of the shared parts, 100 dB of gain and 1 MHz of bandwidth.
-Simulate it with `jolty simulate examples/sallen_key.py`.
+Two 10 kΩ resistors, a 20 nF feedback capacitor, and a 10 nF shunt capacitor set ω₀ = 1/√(R₁R₂C₁C₂) and Q = √(R₁R₂C₁C₂)/((R₁ + R₂)C₂) = 1/√2.
+The filter cuts off at 1.125 kHz with -3.01 dB at cutoff, no peaking, and -40 dB per decade roll-off.
+A unity follower built from the shared 100 dB, 1 MHz op-amp drives the output.
+Simulate with `jolty simulate examples/sallen_key.py`.
 
 [Open in 3D](sallen-key.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/sallen_key.py){ .md-button }
 

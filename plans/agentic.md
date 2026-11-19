@@ -1,9 +1,9 @@
 # Agentic design
 
-Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 18 November.
+Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 19 November.
 The archival research report lives in `research/agentic.md`, kept whole.
 
-Plan: ✅ 13 done · 🚧 1 in progress · 📋 9 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 14 done · 📋 9 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -31,7 +31,7 @@ Progress is measured by old roadmap item 8: the same agent runs identical tasks 
 
 - **Harness code:** agents write manual bisections (50 steps to tune one resistor), Monte Carlo loops, and custom measurements because sensitivities target unknowns rather than specs and jolty lacks an optimizer (items 9 and 11).
 - **Learning the API:** resolved (item 5) by deriving MCP instructions programmatically from code covering every device, real part, analysis, and measurement.
-    All 17 guide pages and 33 examples are bundled offline via `jolty docs`, `read_docs`, and MCP `jolty://docs/...` resources.
+    All 17 guide pages and 33 examples are bundled offline via `jolty read-docs`, `read_docs`, and MCP `jolty://docs/...` resources.
 - **Completed since 15 November:** transistor operating-point regions and margins appear in `OperatingPointResult.region` and `jolty simulate` (items 4 and 4b), and `PeriodicSteadyState(period=None)` solves autonomous oscillators (item 22).
 - **Images:** each plot costs 774 to 1,849 visual tokens, totaling roughly 2,800 tokens per simulation (item 6).
 
@@ -73,11 +73,11 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ### ✅ 4. Transistor operating regions and margins at the operating point
 
-- **What:** report each MOSFET region (off, weak inversion, linear, or saturated) and each bipolar region (cut off, active, saturated, or reversed) with distances to each boundary (`vgs − vth`, `vds − vdsat`, and bipolar `vce` above saturation).
+- **What:** report each MOSFET region (off, weak inversion, linear, or saturated) and each bipolar region (cut off, active, saturated, or reversed) with distances to each boundary (`vgs - vth`, `vds - vdsat`, and bipolar `vce` above saturation).
     Each model computes regions and margins from model equations, exposed on operating-point results and sorted nearest-boundary-first in reports.
 - **Why:** operating region is the first check analog designers and published circuit agents inspect.
 - **Done when:** reports list every transistor's region, backed by tests covering every region of every transistor model.
-- **Result** (`05812c3`): each transistor model declares regions and margins alongside the device kernel and reports them among device variables, readable via `OperatingPointResult.region(path)` (formerly `OperatingPoint.region`).
+- **Result** (`05812c3`): each transistor model declares regions and margins alongside the device kernel and reports them among device variables, readable via `OperatingPointResult.region(instance)` (formerly `OperatingPoint.region`).
     Text and JSON reports from `jolty simulate` list transistors nearest a boundary first, and results files persist them (format version 10).
     Recording full variables adds 0.24 to 0.84 ms on the 500-inverter chain, so only `jolty simulate` enables `record` by default (approved by the owner on 15 November).
     Since `adaedc9`, recording regions alone (`Recorded.regions`) adds no measurable overhead on a fresh chain operating point and 9 to 10 µs on a cached point, eliminating duplicate evaluations.
@@ -85,17 +85,17 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ### ✅ 4b. Margins in the designer's sign convention
 
-- **What:** flip PMOS and PNP margin signs so positive margins always indicate on or saturated operation (matching `|VGS| − |VTH|`), correcting the earlier subagent's signed-voltage output.
+- **What:** flip PMOS and PNP margin signs so positive margins always indicate on or saturated operation (matching `|VGS| - |VTH|`), correcting the earlier subagent's signed-voltage output.
 - **Result** (`8af6932`): PMOS and PNP margins are flipped so positive values indicate on or saturated operation for every transistor.
 - **Source:** owner decision, 15 November.
 
 ### ✅ 5. Offline reference inside the session
 
-- **What:** derive MCP instructions from code covering every device, real part, analysis, and measurement, and serve the guide and examples offline via MCP resources and `jolty docs`.
+- **What:** derive MCP instructions from code covering every device, real part, analysis, and measurement, and serve the guide and examples offline via MCP resources and `jolty read-docs`.
 - **Why:** agents inside item 8's sandbox cannot access external docs, and the hand-written instructions listed only 11 of 33 device constructors.
 - **Done when:** a test fails if any public constructor is omitted from MCP instructions, and the guide reads offline inside item 8's sandbox.
 - **Result** (18 November): zero-dependency `crates/jolty-python/build.rs` generates `OUT_DIR/docs.json`, packed into wheels as `jolty/assets/docs.json` (`428,613` bytes covering 17 guide pages and 33 examples).
-    Added the `jolty docs [TOPIC]` CLI command, `read_docs` MCP tool, 50 static MCP resources (`jolty://docs/guide/...`, `jolty://docs/examples/...`), and 2 URI templates.
+    Added the `jolty read-docs [TOPIC]` CLI command, `read_docs` MCP tool, 50 static MCP resources (`jolty://docs/guide/...`, `jolty://docs/examples/...`), and 2 URI templates.
     Replaced the hand-written MCP instructions with programmatic `build_instructions()` derived from `jolty.devices`, `jolty.parts`, `jolty.plan`, `jolty.specs`, `jolty.service`, and bundled doc summaries.
     Unit tests fail whenever any public device constructor, part, analysis, or measurement is missing.
 - **Source:** row 15.
@@ -207,14 +207,14 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Transients starting from initial conditions must differentiate accurately (fixing the bug flagged by the adjoint agent), and the guide must document `function`, `jvp`, and `vjp`.
 - **Result** (`0820e3b`, `26b418c`, on `main` since 17 November): implemented `Simulator::jvp`, `vjp`, and `pull_back` for operating point, DC sweep, AC, transient, and periodic steady state (period keyed `"the period"`).
     Only named parameters construct twins, and `Sensitivity`, `Mismatch`, period derivatives, and `Objective` now delegate to the shared path with legacy code paths deleted.
-    The dot-product test holds to 7.4e-16, and transients from initial conditions now differentiate accurately (previously returning `d out/dR` = −1 mV/Ω at t = 0 for an RC starting at 0 V).
+    The dot-product test holds to 7.4e-16, and transients from initial conditions now differentiate accurately (previously returning `d out/dR` = -1 mV/Ω at t = 0 for an RC starting at 0 V).
     Python exposes `jolty.function`, `jolty.jvp`, and `jolty.vjp` with float parameters in SI base units.
     AC's operating-point term initially used a per-parameter central difference and became exact in `1349a11` (`device-derivatives.md` 2b).
     **Remaining:** transient and period VJPs reject logic devices, and delay lines are rejected in both directions.
 - **Lead.**
     **Source:** owner decision on 16 November; replaces item 7's pattern selection (passed parameters select what is differentiated) and enables item 19.
 
-### 🚧 19. Bridges to JAX and PyTorch
+### ✅ 19. Bridge to JAX
 
 - **What:** enable `jax.grad`, `jax.vjp`, `jax.vmap`, and `jax.jit` through circuit analyses so jolty solves the circuit while JAX differentiates surrounding networks, losses, and optimizers.
 - **Why:** analog circuit training for transformer-like networks runs in a JAX loop, which previously exchanged files without gradients into JAX.
@@ -224,19 +224,17 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     - The backward rule registers `jolty.vjp`'s pullback (item 12b) via `jax.custom_vjp`, costing one transposed solve per backward pass regardless of parameter count, including exact AC (`device-derivatives.md` 2b).
     - The batching rule maps `jax.vmap` over inputs into a single multi-core jolty batch run.
     - Forward-mode `jax.jvp` is rejected by `custom_vjp` until a concrete use case emerges (owner approved, 16 November).
-    - PyTorch support will wrap `torch.autograd.Function` around the same pullback once JAX lands.
-- **Needs:** item 12b (on `main`); `jax` as an optional extra `jolty[jax]` (owner approved, 17 November); `torch` awaits owner approval.
-- **Done: JAX** (`8fd0b77`, reworked on 18 November): `jolty.jax.function(circuit, analysis, options=None, *, saved_pullbacks=16)` lives behind optional extra `jolty[jax]` (`jax>=0.12`) as thin glue over `jolty.simulate.Function`.
+- **Needs:** item 12b (on `main`); `jax` as an optional extra `jolty[jax]` (owner approved, 17 November).
+- **Result** (`8fd0b77`, reworked on 18 November): `jolty.jax.function(circuit, analysis, options=None, *, saved_pullbacks=16)` lives behind optional extra `jolty[jax]` (`jax>=0.12`) as thin glue over `jolty.simulate.Function`.
     Every call, whether `jax.vmap`-mapped or unbatched, runs one `Function.batch` forward and one `BatchPullback` backward across worker threads via `Batch::map`.
     The forward pass caches up to `saved_pullbacks` pullbacks so `jax.grad` solves the circuit once; evicted pullbacks re-run the forward pass with identical bits.
     All five differentiable analyses are supported: `OperatingPoint`, `DcSweep`, `Ac` with complex cotangents, `Transient` and driven `PeriodicSteadyState` evaluated at required `breakpoints`, and autonomous oscillators returning only `PERIOD`.
     In `tests/test_jax.py`, `jax.grad` matches `jolty.vjp` bit-for-bit across every analysis and agrees with finite differences under `jit`, `remat`, `jacrev`, nested `vmap`, and empty `vmap`.
     Batch `vmap` matches an explicit loop bit-for-bit with `jax_enable_x64` both enabled and disabled, including under free-threaded Python 3.15t with the GIL disabled.
     Batched runs skip matrix dissection unless options specify interior thresholds, so large circuits where `jolty.function` dissects may differ in the last digits.
-- **Not done: PyTorch:** wrapping `torch.autograd.Function` around `BatchPullback` awaits owner approval of `torch` as an optional dependency.
 - **Done when:** `jax.grad` of a loss through operating point, DC sweep, and transient analyses matches `jolty.vjp` bit-for-bit and matches finite differences under `jit`.
     In addition, `vmap` over a batch of inputs must match an explicit loop bit-for-bit.
-- **Source:** row 14; owner direction on 16 and 17 November.
+- **Source:** row 14; owner direction on 16, 17, and 19 November.
 
 ### 📋 20. Large regular circuits in a few lines
 
@@ -276,6 +274,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - Each session's `PATH` includes only the active arm's tools and system directories.
 - Run limits (time, turns, and budget) have no defaults; the owner specifies limits for each paid run.
 - Item 8 waited for item 1 because undercounting one arm's tries would invalidate the comparison.
+- PyTorch support (`jolty.torch`) was explicitly rejected by the owner on 19 November 2026, standardizing ML differentiation solely on JAX (`jolty[jax]`).
 
 ## 6. Open principles
 

@@ -325,7 +325,16 @@ def _analysis(name: str, result: results.AnalysisResult) -> dict[str, JsonValue]
 def scene(
     circuit: ir.Circuit, analyses: Mapping[str, results.AnalysisResult], title: str = ""
 ) -> dict[str, JsonValue]:
-    """Builds the complete JSON scene payload for `circuit` and `analyses`."""
+    """Builds the complete JSON scene payload for `circuit` and `analyses`.
+
+    Args:
+        circuit: Circuit IR whose component layouts and hierarchy are serialized.
+        analyses: Mapping from analysis names to results sampled into viewer frames.
+        title: Optional page title, defaulting to `circuit.top` when empty.
+
+    Returns:
+        JSON-serializable scene mapping containing layouts, views, and analyses.
+    """
     layouts: dict[str, JsonValue] = {
         name: _layout(circuit, name)
         for name in sorted(
@@ -484,6 +493,15 @@ def page(
     Omitting `assets` inlines the bundled stylesheet and module script for a standalone
     file. Passing a base URL or relative path in `assets` links external ``viewer.css``
     and ``viewer.js`` files beneath that base instead.
+
+    Args:
+        data: Scene mapping produced by `scene`.
+        three: Base URL from which `three.js` modules are imported.
+        assets: Optional base URL or relative directory linking external viewer assets
+            instead of inlining them.
+
+    Returns:
+        Complete UTF-8 HTML document string for the 3D viewer.
     """
     imports = {
         "imports": {
@@ -517,6 +535,14 @@ def save_viewer(  # noqa: PLR0913 - path, circuit, analyses, title and asset bas
     The generated page loads three.js from `three` (jsDelivr by default). Passing
     `assets` links external ``viewer.css`` and ``viewer.js`` beneath that base URL
     instead of inlining them.
+
+    Args:
+        path: Destination `.html` file path to write.
+        circuit: Circuit IR to lay out and embed in the viewer.
+        analyses: Mapping from analysis names to results animated by the timeline.
+        title: Optional HTML page title, defaulting to `circuit.top` when empty.
+        three: Base URL from which `three.js` modules are imported.
+        assets: Optional base URL or relative directory linking external viewer assets.
     """
     rendered = page(scene(circuit, analyses, title), three, assets=assets)
     path.write_text(rendered, encoding="utf-8")

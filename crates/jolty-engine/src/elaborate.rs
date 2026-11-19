@@ -32,7 +32,7 @@ pub struct SummedTerminal {
     pub(crate) name: String,
     /// Hierarchical path of the owning component instance or logic device, such as `X1`.
     pub(crate) owner: String,
-    /// Node joined by this terminal, or `None` for the reference node.
+    /// Node joined by this terminal, or `None` for ground.
     pub(crate) node: Node,
     /// Flag indicating whether the terminal lies on a thermal net.
     pub(crate) thermal: bool,
@@ -97,7 +97,7 @@ impl fmt::Display for Location {
 pub enum ElaborationProblem {
     /// Structural validation failure in the circuit.
     Structure(Problem),
-    /// Top component declaring no ground port, leaving the circuit without a reference node.
+    /// Top component declaring no ground port, leaving the circuit without ground.
     NoGround(Name),
     /// Top component declaring multiple ground ports.
     SeveralGrounds {

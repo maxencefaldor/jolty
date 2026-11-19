@@ -62,6 +62,12 @@ def diagnose(
     first 0 dB gain crossover is below 45°, and ``low-gain-margin`` when gain margin
     at the first -180° phase crossover is below 6 dB, matching `phase_margin` and
     `gain_margin`.
+
+    Args:
+        solved: Mapping from analysis names to completed analysis results.
+
+    Returns:
+        Stability-margin diagnostics emitted across all stability analyses in `solved`.
     """
     found: list[checks.Diagnostic] = []
     for name, result in solved.items():
@@ -134,6 +140,17 @@ def value(
 
     In a transient or DC sweep, the value is linearly interpolated `at` the requested
     time or swept level.
+
+    Args:
+        analysis: Plan key naming the target operating-point, transient, or DC sweep
+            analysis.
+        signal: Circuit unknown name to read.
+        at: Evaluation time or swept level for transient and DC sweep analyses, or
+            ``None`` at an operating point.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure reading `signal` from `analysis`.
     """
     traces = _Signal(signal, reference)
     _check(at, "at")
@@ -189,6 +206,17 @@ def gain(
     Computes the transfer magnitude of `signal` relative to `over` (or unit
     excitation), interpolated over log frequency. Omitting `signal` measures the loop
     gain of a stability analysis.
+
+    Args:
+        analysis: Plan key naming the target AC or stability analysis.
+        signal: Output unknown name for AC analyses, or ``None`` for stability loop
+            gain.
+        at: Frequency at which small-signal gain is evaluated.
+        over: Optional denominator unknown name for a ratio transfer gain.
+        reference: Optional negative reference net for a differential output voltage.
+
+    Returns:
+        Measure evaluating small-signal gain in decibels at `at`.
     """
     return _transfer_at(
         analysis,
@@ -211,6 +239,17 @@ def phase(
     Computes the phase of `signal` relative to `over` (or excitation), unwrapped from
     the lowest frequency and interpolated over log frequency. Omitting `signal`
     measures the loop-gain phase of a stability analysis.
+
+    Args:
+        analysis: Plan key naming the target AC or stability analysis.
+        signal: Output unknown name for AC analyses, or ``None`` for stability loop
+            phase.
+        at: Frequency at which unwrapped phase is evaluated.
+        over: Optional denominator unknown name for a ratio transfer phase.
+        reference: Optional negative reference net for a differential output voltage.
+
+    Returns:
+        Measure evaluating unwrapped small-signal phase in degrees at `at`.
     """
     return _transfer_at(
         analysis,
@@ -233,6 +272,17 @@ def bandwidth(
     Compares gain of `signal` over `over` (or unit excitation, or stability loop gain
     when `signal` is omitted) against its lowest-frequency gain, interpolating the
     crossing over log frequency.
+
+    Args:
+        analysis: Plan key naming the target AC or stability analysis.
+        signal: Output unknown name for AC analyses, or ``None`` for stability loop
+            gain.
+        drop: Positive attenuation in decibels below lowest-frequency gain.
+        over: Optional denominator unknown name for a ratio transfer gain.
+        reference: Optional negative reference net for a differential output voltage.
+
+    Returns:
+        Measure evaluating bandwidth in hertz at the requested `drop`.
 
     Raises:
         ValueError: When `drop` is not positive.
@@ -269,6 +319,16 @@ def crossover(
     Evaluates gain of `signal` over `over` (or unit excitation) in an AC response, or
     loop gain of a stability analysis when `signal` is omitted. The crossing frequency
     is interpolated over log frequency.
+
+    Args:
+        analysis: Plan key naming the target AC or stability analysis.
+        signal: Output unknown name for AC analyses, or ``None`` for stability loop
+            gain.
+        over: Optional denominator unknown name for a ratio transfer gain.
+        reference: Optional negative reference net for a differential output voltage.
+
+    Returns:
+        Measure evaluating unity-gain crossover frequency in hertz.
     """
     transfer = _Transfer(*_signals(signal, over, reference))
     return _transfer_measure(
@@ -292,6 +352,16 @@ def phase_margin(
     Evaluates gain and phase of `signal` relative to `over` (or excitation) in an AC
     response. Omitting `signal` measures the loop phase margin of a stability
     analysis.
+
+    Args:
+        analysis: Plan key naming the target AC or stability analysis.
+        signal: Output unknown name for AC analyses, or ``None`` for stability loop
+            gain.
+        over: Optional denominator unknown name for a ratio transfer response.
+        reference: Optional negative reference net for a differential output voltage.
+
+    Returns:
+        Measure evaluating phase margin in degrees at unity-gain crossover.
     """
     transfer = _Transfer(*_signals(signal, over, reference))
     return _transfer_measure(
@@ -315,6 +385,16 @@ def gain_margin(
     Evaluates gain and unwrapped phase of `signal` relative to `over` (or excitation)
     in an AC response. Omitting `signal` measures the loop gain margin of a stability
     analysis.
+
+    Args:
+        analysis: Plan key naming the target AC or stability analysis.
+        signal: Output unknown name for AC analyses, or ``None`` for stability loop
+            gain.
+        over: Optional denominator unknown name for a ratio transfer response.
+        reference: Optional negative reference net for a differential output voltage.
+
+    Returns:
+        Measure evaluating gain margin in decibels at the -180° phase crossing.
     """
     transfer = _Transfer(*_signals(signal, over, reference))
     inverted = f"the phase of {transfer} never falls through -180°"
@@ -342,6 +422,16 @@ def maximum(
 
     The evaluation window spans from `start` to `stop` (times or sweep levels),
     defaulting to the full axis.
+
+    Args:
+        analysis: Plan key naming the target transient or DC sweep analysis.
+        signal: Circuit unknown name to evaluate.
+        start: Inclusive window start time or sweep level, or ``None`` for axis start.
+        stop: Inclusive window stop time or sweep level, or ``None`` for axis end.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating the maximum of `signal` across the window.
     """
     window = _Window(_Signal(signal, reference), start, stop)
     return _statistic("maximum", analysis, window, _core.Measure.maximum)
@@ -359,6 +449,16 @@ def minimum(
 
     The evaluation window spans from `start` to `stop` (times or sweep levels),
     defaulting to the full axis.
+
+    Args:
+        analysis: Plan key naming the target transient or DC sweep analysis.
+        signal: Circuit unknown name to evaluate.
+        start: Inclusive window start time or sweep level, or ``None`` for axis start.
+        stop: Inclusive window stop time or sweep level, or ``None`` for axis end.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating the minimum of `signal` across the window.
     """
     window = _Window(_Signal(signal, reference), start, stop)
     return _statistic("minimum", analysis, window, _core.Measure.minimum)
@@ -376,6 +476,16 @@ def peak_to_peak(
 
     The evaluation window spans from `start` to `stop` (times or sweep levels),
     defaulting to the full axis.
+
+    Args:
+        analysis: Plan key naming the target transient or DC sweep analysis.
+        signal: Circuit unknown name to evaluate.
+        start: Inclusive window start time or sweep level, or ``None`` for axis start.
+        stop: Inclusive window stop time or sweep level, or ``None`` for axis end.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating peak-to-peak amplitude of `signal` across the window.
     """
     window = _Window(_Signal(signal, reference), start, stop)
     return _statistic("peak-to-peak", analysis, window, _core.Measure.peak_to_peak)
@@ -393,6 +503,16 @@ def mean(
 
     The evaluation window spans from `start` to `stop` (times or sweep levels),
     defaulting to the full axis.
+
+    Args:
+        analysis: Plan key naming the target transient or DC sweep analysis.
+        signal: Circuit unknown name to evaluate.
+        start: Inclusive window start time or sweep level, or ``None`` for axis start.
+        stop: Inclusive window stop time or sweep level, or ``None`` for axis end.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating the trapezoidal average of `signal` across the window.
     """
     window = _Window(_Signal(signal, reference), start, stop)
     return _statistic("mean", analysis, window, _core.Measure.mean)
@@ -411,6 +531,16 @@ def rms(
     The evaluation window spans from `start` to `stop` (times or sweep levels),
     defaulting to the full axis, integrating the squared waveform by the trapezoidal
     rule.
+
+    Args:
+        analysis: Plan key naming the target transient or DC sweep analysis.
+        signal: Circuit unknown name to evaluate.
+        start: Inclusive window start time or sweep level, or ``None`` for axis start.
+        stop: Inclusive window stop time or sweep level, or ``None`` for axis end.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating the root-mean-square level of `signal` across the window.
     """
     window = _Window(_Signal(signal, reference), start, stop)
     return _statistic("rms", analysis, window, _core.Measure.rms)
@@ -430,6 +560,19 @@ def rise_time(  # noqa: PLR0913 - a window, its signal and the two bounds
 
     The step spans from the signal value at window start to the value at window stop,
     measuring elapsed time from fraction `lower` to fraction `upper`.
+
+    Args:
+        analysis: Plan key naming the target transient analysis.
+        signal: Circuit unknown name to evaluate.
+        lower: Fractional step threshold marking transition start, strictly above 0.
+        upper: Fractional step threshold marking transition completion, strictly below
+            1.
+        start: Inclusive window start time, or ``None`` for transient start.
+        stop: Inclusive window stop time, or ``None`` for transient stop.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating transition time in seconds from `lower` to `upper`.
 
     Raises:
         ValueError: Unless 0 < `lower` < `upper` < 1.
@@ -464,6 +607,16 @@ def overshoot(
 
     The step spans from the signal value at window start to the final value at window
     stop.
+
+    Args:
+        analysis: Plan key naming the target transient analysis.
+        signal: Circuit unknown name to evaluate.
+        start: Inclusive window start time, or ``None`` for transient start.
+        stop: Inclusive window stop time, or ``None`` for transient stop.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating percentage step overshoot across the window.
     """
     window = _Window(_Signal(signal, reference), start, stop)
     return _transient_measure(
@@ -491,6 +644,17 @@ def settling_time(  # noqa: PLR0913 - a window, its signal and the band
     The step spans from the signal value at window start to the final value at window
     stop; settling time is the elapsed time until `signal` remains inside `band` times
     the step around its final value.
+
+    Args:
+        analysis: Plan key naming the target transient analysis.
+        signal: Circuit unknown name to evaluate.
+        band: Positive fractional tolerance band around the final step value.
+        start: Inclusive window start time, or ``None`` for transient start.
+        stop: Inclusive window stop time, or ``None`` for transient stop.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating settling time in seconds within `band`.
 
     Raises:
         ValueError: When `band` is not positive.
@@ -520,7 +684,20 @@ def crossing(  # noqa: PLR0913 - a window, its signal, the threshold and the edg
     stop: Quantity | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """Measures the first time `signal` crosses `threshold` in direction `edge`."""
+    """Measures the first time `signal` crosses `threshold` in direction `edge`.
+
+    Args:
+        analysis: Plan key naming the target transient analysis.
+        signal: Circuit unknown name to evaluate.
+        threshold: Signal level whose first crossing time is measured.
+        edge: Crossing polarity: ``"rising"``, ``"falling"``, or ``"either"``.
+        start: Inclusive window start time, or ``None`` for transient start.
+        stop: Inclusive window stop time, or ``None`` for transient stop.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating the first crossing time in seconds.
+    """
     _check(threshold, "the threshold")
     window = _Window(_Signal(signal, reference), start, stop)
     uncrossed = f"{window} does not cross {threshold}"
@@ -556,6 +733,18 @@ def frequency(  # noqa: PLR0913 - a window, its signal and the threshold
     When `threshold` is omitted, the midpoint between the signal minimum and maximum is
     used. Frequency equals one fewer than the rising-crossing count divided by the span
     between the first and last crossings.
+
+    Args:
+        analysis: Plan key naming the target transient analysis.
+        signal: Circuit unknown name to evaluate.
+        threshold: Optional level defining rising crossings, defaulting to signal
+            midpoint.
+        start: Inclusive window start time, or ``None`` for transient start.
+        stop: Inclusive window stop time, or ``None`` for transient stop.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating oscillation frequency in hertz across the window.
     """
     _check(threshold, "the threshold")
     window = _Window(_Signal(signal, reference), start, stop)
@@ -601,6 +790,18 @@ def distortion(  # noqa: PLR0913 - a window, its signal, the fundamental, the ha
     period before window stop, or over all complete periods between `start` and `stop`
     when `start` is given. A pure tone with zero harmonic content reads -6000 dB.
 
+    Args:
+        analysis: Plan key naming the target transient analysis.
+        signal: Circuit unknown name to evaluate.
+        fundamental: Fundamental tone frequency.
+        harmonics: Highest harmonic order included in the distortion sum.
+        start: Optional window start time for multi-period Fourier integration.
+        stop: Optional window stop time, defaulting to transient stop.
+        reference: Optional negative reference net for a differential voltage reading.
+
+    Returns:
+        Measure evaluating total harmonic distortion in decibels.
+
     Raises:
         DimensionError: When `fundamental` does not carry frequency dimensions.
         ValueError: When `fundamental` is not positive, or `harmonics` is less than 2
@@ -642,6 +843,14 @@ def noise_density(analysis: str, *, at: Quantity, referred: bool = False) -> Mea
     Computes the square root of power spectral density in V/√Hz or A/√Hz using
     power-law interpolation between frequency points. When `referred` is true, returns
     input-referred noise density in the units of the analysis input source.
+
+    Args:
+        analysis: Plan key naming the target noise analysis.
+        at: Frequency at which spot noise spectral density is evaluated.
+        referred: Flag selecting input-referred noise density instead of output noise.
+
+    Returns:
+        Measure evaluating spot noise spectral density at `at`.
     """
     _check(at, "at")
 
@@ -677,6 +886,17 @@ def integrated_noise(
     band (defaulting to the full analysis range) using SPICE power-law interpolation,
     in volts or amperes. When `referred` is true, returns input-referred RMS noise in
     the units of the analysis input source.
+
+    Args:
+        analysis: Plan key naming the target noise analysis.
+        start: Lower integration frequency bound, or ``None`` for the lowest solved
+            frequency.
+        stop: Upper integration frequency bound, or ``None`` for the highest solved
+            frequency.
+        referred: Flag selecting input-referred RMS noise instead of output RMS noise.
+
+    Returns:
+        Measure evaluating integrated RMS noise across the frequency band.
     """
     _check(start, "start")
     _check(stop, "stop")
@@ -725,6 +945,12 @@ def solutions(analysis: str) -> Measure:
     ``solutions("states") <= 1`` checks for a unique operating point, while
     ``solutions("states") >= 3`` checks that a latch has two stable states plus its
     metastable equilibrium.
+
+    Args:
+        analysis: Plan key naming the target operating-points search analysis.
+
+    Returns:
+        Measure counting the solved DC operating points in `analysis`.
     """
 
     def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
@@ -746,6 +972,12 @@ def damping(analysis: str) -> Measure:
     pole, between 0 and 1 for an underdamped conjugate pair, and negative for an
     unstable right-half-plane pole. Requiring ``damping("pz") >= 0`` enforces stability
     and ``damping("pz") >= 0.5`` limits ringing.
+
+    Args:
+        analysis: Plan key naming the target pole-zero analysis.
+
+    Returns:
+        Measure evaluating the minimum damping ratio across all poles in `analysis`.
     """
 
     def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
@@ -760,6 +992,12 @@ def dominant_pole(analysis: str) -> Measure:
 
     Equals ``|p| / (2π)`` in hertz for the pole closest to the origin, which governs
     the slowest settling mode.
+
+    Args:
+        analysis: Plan key naming the target pole-zero analysis.
+
+    Returns:
+        Measure evaluating dominant-pole natural frequency in hertz.
     """
 
     def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
@@ -879,7 +1117,7 @@ def _check_threshold(
 
 @dataclass(frozen=True, slots=True)
 class _Signal:
-    """Target circuit unknown or differential voltage relative to a reference node."""
+    """Circuit unknown or differential voltage relative to a negative reference net."""
 
     name: str
     reference: str | None = None

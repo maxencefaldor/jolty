@@ -350,7 +350,7 @@ struct Terminals<R: Real> {
     threshold: f64,
     saturation: f64,
     region: Region,
-    /// Boundary margins `Vgst` and `Vds − Vdsat`.
+    /// Boundary margins `Vgst` and `Vds - Vdsat`.
     margins: [f64; 2],
 }
 
@@ -1231,7 +1231,7 @@ mod tests {
                     "gate_resistance_model": {resistive}, "rshg": 20, "xgw": 1e-7,
                     "ngcon": 2, "xrcrg1": 10, "xrcrg2": 2"#
             );
-            // The substrate current's `e^(−β0/ΔV)` curves so sharply, as `(β0/ΔV²)²`, and
+            // The substrate current's `e^(-β0/ΔV)` curves so sharply, as `(β0/ΔV²)²`, and
             // kinks where `ΔV = β0/34`, that central differences of the body's conductance
             // err by up to 4e-3 of it: `substrate_current_jacobians_match_finite_differences`
             // checks it where the drain is well past saturation.
@@ -1321,7 +1321,7 @@ mod tests {
     #[test]
     fn the_gate_electrodes_resistance_is_its_sheets_between_its_contacts() {
         // Gate resistance formula:
-        // `rshg · (xgw + Weffcj / (3 · ngcon)) / (ngcon · nf · (l + xl − xgl))`.
+        // `rshg · (xgw + Weffcj / (3 · ngcon)) / (ngcon · nf · (l + xl - xgl))`.
         // For a 1 µm finger: `20 Ω · (0.1 µm + 1 µm / 6) / (2 · 2 · 0.14 µm)`.
         let resistance = 20.0 * (1e-7 + 1e-6 / 6.0) / (2.0 * 2.0 * 0.14e-6);
         for (model, unknowns) in [(1, 5), (3, 6)] {

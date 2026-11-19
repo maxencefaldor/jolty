@@ -42,7 +42,14 @@ MAX_SERIES: Final = 8
 
 
 def parse_nature(name: str) -> Nature:
-    """Parses `name` into a known unknown nature, defaulting to ``"state"``."""
+    """Parses `name` into a known unknown nature, defaulting to ``"state"``.
+
+    Args:
+        name: Raw nature string from engine or SPICE metadata.
+
+    Returns:
+        Recognized `Nature` literal, falling back to ``"state"`` for other strings.
+    """
     match name:
         case "voltage" | "current" | "temperature":
             return name
@@ -68,6 +75,13 @@ def default_traces(
     unknowns, temperature unknowns, and logic nets are eligible. Without named
     top-level nets, the first voltages and temperatures are chosen, or else the first
     logic nets. At most [`MAX_SERIES`][jolty.unknowns.MAX_SERIES] traces are returned.
+
+    Args:
+        unknowns: Solved circuit unknowns in solver order.
+        nets: Additional logic net names eligible for selection.
+
+    Returns:
+        Up to `MAX_SERIES` trace names prioritizing user-named top-level nets.
     """
     nodes = [
         unknown.name

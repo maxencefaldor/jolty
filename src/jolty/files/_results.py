@@ -94,7 +94,13 @@ class _Archive(Mapping[str, np.ndarray]):
 def write_archive(
     path: Path, arrays: Mapping[str, np.ndarray], header: BaseModel | None = None
 ) -> None:
-    """Writes `arrays` (and JSON `header`) to `path` deterministically."""
+    """Writes `arrays` (and JSON `header`) to `path` deterministically.
+
+    Args:
+        path: Destination `.npz` archive file path.
+        arrays: Mapping from archive entry names to NumPy arrays.
+        header: Optional Pydantic model serialized as the JSON `header` entry.
+    """
     entries = (
         arrays
         if header is None
@@ -111,7 +117,15 @@ def write_archive(
 
 @contextlib.contextmanager
 def open_archive(path: Path, unreadable: str) -> Generator[Mapping[str, np.ndarray]]:
-    """Opens the NumPy `.npz` archive at `path`, raising `JoltyError` if corrupt."""
+    """Opens the NumPy `.npz` archive at `path`, raising `JoltyError` if corrupt.
+
+    Args:
+        path: Source `.npz` archive file path to open.
+        unreadable: Error message raised in `JoltyError` when `path` is corrupt.
+
+    Returns:
+        Context manager yielding a read-only mapping of archive arrays.
+    """
     try:
         handle = path.open("rb")
     except FileNotFoundError, IsADirectoryError, PermissionError:
@@ -132,7 +146,16 @@ def open_archive(path: Path, unreadable: str) -> Generator[Mapping[str, np.ndarr
 
 
 def header_text(data: Mapping[str, np.ndarray], unreadable: str) -> str:
-    """Extracts the JSON header string from `data`, raising `JoltyError` if corrupt."""
+    """Extracts the JSON header string from `data`, raising `JoltyError` if corrupt.
+
+    Args:
+        data: Opened archive mapping containing a scalar string `header` entry.
+        unreadable: Error message raised in `JoltyError` when `header` is missing or
+            malformed.
+
+    Returns:
+        Decoded UTF-8 JSON header string.
+    """
     try:
         raw = data[HEADER]
     except (KeyError, TypeError, *_ARCHIVE_ERRORS):
@@ -152,7 +175,16 @@ def header_text(data: Mapping[str, np.ndarray], unreadable: str) -> str:
 def open_validated[M: BaseModel](
     path: Path, model: type[M], unreadable: str
 ) -> Generator[tuple[M, Mapping[str, np.ndarray]]]:
-    """Opens `path`, validates its header against `model`, and wraps load errors."""
+    """Opens `path`, validates its header against `model`, and wraps load errors.
+
+    Args:
+        path: Source `.npz` archive file path to open and validate.
+        model: Pydantic header model validating the JSON `header` entry.
+        unreadable: Error message raised in `JoltyError` on archive or schema errors.
+
+    Returns:
+        Context manager yielding the validated header model and archive array mapping.
+    """
     with open_archive(path, unreadable) as data:
         text = header_text(data, unreadable)
         try:
@@ -174,6 +206,12 @@ def circuit_digest(circuit: ir.Circuit) -> str:
     [`SourceLocation`][jolty.ir.SourceLocation] metadata, which only identifies script
     lines for diagnostics and does not affect simulation. Equivalent circuits built
     from different script paths or machines produce the same digest.
+
+    Args:
+        circuit: Circuit IR whose simulation-relevant fields are hashed.
+
+    Returns:
+        Lowercase 64-character hexadecimal SHA-256 digest of `circuit`.
 
     Examples:
         >>> from jolty.ir import Circuit, Component, DeviceOf, Instance, SourceLocation
@@ -207,6 +245,9 @@ def build() -> str:
     The digest covers the compiled engine library, the relative paths and contents of
     every Python module in the package, and the Python interpreter version used to
     evaluate script-defined measures.
+
+    Returns:
+        Lowercase 64-character hexadecimal SHA-256 digest of the active jolty build.
     """
     digester = hashlib.sha256(Path(_core.__file__).read_bytes())
     for module in sorted(_PACKAGE.rglob("*.py")):
@@ -222,6 +263,9 @@ def platform() -> str:
     Elementary functions such as ``exp``, ``ln``, and ``pow`` come from the platform C
     library, reported as the glibc version on most Linux systems or the operating
     system version on macOS and Windows.
+
+    Returns:
+        Space-separated platform tag, C library name, and C library release string.
 
     Examples:
         >>> platform() != ""
@@ -347,6 +391,12 @@ def plan_digest(plan: Plan) -> str:
     of dictionary insertion order across analyses, corners, fidelity scopes, overrides,
     and corner arguments.
 
+    Args:
+        plan: Simulation plan to canonicalize and hash.
+
+    Returns:
+        Lowercase 64-character hexadecimal SHA-256 digest of `plan`.
+
     Examples:
         >>> from jolty.plan import OperatingPoint
         >>> plan_digest(Plan({"op": OperatingPoint()})) == plan_digest(
@@ -391,6 +441,14 @@ class Provenance(ir.FrozenModel):
         cls, circuit: ir.Circuit | None = None, plan: Plan | None = None
     ) -> Self:
         """Builds provenance metadata for `circuit` and `plan` on the current host.
+
+        Args:
+            circuit: Optional circuit whose SHA-256 digest is recorded.
+            plan: Optional simulation plan whose SHA-256 digest is recorded.
+
+        Returns:
+            `Provenance` record populated for the active jolty version, build, and
+            platform.
 
         Examples:
             >>> Provenance.from_circuit_and_plan().circuit is None
@@ -622,6 +680,12 @@ def save_results(
     The archive records [`Provenance`][jolty.files.Provenance] containing the jolty
     version, build digest, platform, and optional digests for `circuit` and `plan`.
 
+    Args:
+        path: Destination `.results.npz` archive file path.
+        analyses: Non-empty mapping from analysis names to results of one circuit.
+        circuit: Optional circuit whose digest is stored in archive provenance.
+        plan: Optional simulation plan whose digest is stored in archive provenance.
+
     Raises:
         ValueError: If `analyses` is empty or contains results from different circuits.
     """
@@ -654,6 +718,13 @@ def load_results(
 
     When `circuit` is supplied, archives whose [`Provenance`][jolty.files.Provenance]
     records a different circuit digest are rejected.
+
+    Args:
+        path: Source `.results.npz` archive file path to load.
+        circuit: Optional circuit checked against the archive provenance digest.
+
+    Returns:
+        Mapping from analysis names to decoded `AnalysisResult` instances.
 
     Raises:
         JoltyError: If `path` is not a valid jolty results archive, uses an
@@ -690,6 +761,12 @@ def load_results(
 
 def load_provenance(path: Path) -> Provenance:
     """Reads the [`Provenance`][jolty.files.Provenance] metadata from `path`.
+
+    Args:
+        path: Source `.results.npz` archive file path to inspect.
+
+    Returns:
+        Validated `Provenance` record stored in the archive header.
 
     Raises:
         JoltyError: If `path` is not a valid jolty results archive or uses an

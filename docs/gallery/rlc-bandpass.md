@@ -2,8 +2,9 @@
 
 A series RLC band-pass filter, its output across the resistor.
 
-With 10 mH, 100 nF and 100 Ω, it resonates at f₀ = 1/(2π√(LC)) = 5.033 kHz with a quality factor Q = √(L/C)/R = 3.162, so its half-power band spans f₀/Q = 1.592 kHz, between f₀(√(1 + 1/4Q²) ∓ 1/2Q).
-Simulate it with `jolty simulate examples/rlc_bandpass.py`.
+With 10 mH, 100 nF, and 100 Ω, the circuit resonates at f₀ = 1/(2π√(LC)) = 5.033 kHz with quality factor Q = √(L/C)/R = 3.162.
+The half-power passband spans f₀/Q = 1.592 kHz between f₀(√(1 + 1/4Q²) ∓ 1/2Q).
+Simulate with `jolty simulate examples/rlc_bandpass.py`.
 
 [Open in 3D](rlc-bandpass.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/rlc_bandpass.py){ .md-button }
 

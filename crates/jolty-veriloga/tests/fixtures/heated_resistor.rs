@@ -1,6 +1,6 @@
 //! The `heated_resistor` kernel, compiled by jolty-veriloga from `crates/jolty-veriloga/tests/fixtures/heated_resistor.va`.
 //!
-//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Its source says:
+//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Original source notice:
 //!
 //! ```text
 //! A resistor whose resistance rises with the temperature of its thermal terminal, which

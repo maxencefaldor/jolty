@@ -149,6 +149,15 @@ class Component:
         is total electrical port dissipation, and temperature is ambient plus the
         ``thermal`` port net rise when present.
 
+        Args:
+            stress: Electrical or thermal stress category to bound.
+            maximum: Upper operating limit in units matching `stress`.
+            minimum: Lower operating limit in units matching `stress`.
+            terminals: Component port names overriding default rating ports.
+
+        Returns:
+            Copy of the component carrying the appended port stress rating.
+
         Raises:
             DimensionError: When a bound does not match the physical dimension of
                 `stress`.
@@ -163,13 +172,26 @@ class Component:
     def numbered(self, part: str) -> Component:
         """Returns a copy of the component tagged with manufacturer part number `part`.
 
+        Args:
+            part: Non-empty manufacturer part number without outer whitespace.
+
+        Returns:
+            Copy of the component tagged with manufacturer part number `part`.
+
         Raises:
             ValueError: When `part` is empty or has leading or trailing whitespace.
         """
         return replace(self, part=ir.part_number(part))
 
     def built_as(self, other: Component) -> bool:
-        """Returns whether `other` matches this component except ratings and part."""
+        """Returns whether `other` matches this component except ratings and part.
+
+        Args:
+            other: Candidate `Component` compared for structural identity.
+
+        Returns:
+            ``True`` when `other` shares the same name, definition, and children.
+        """
         return other is self or (
             other.name == self.name
             and other.definition == self.definition
@@ -204,6 +226,13 @@ class Builder:
     def port(self, name: str, role: Role = Role.SIGNAL) -> Net:
         """Declares external port `name` with the given `role`.
 
+        Args:
+            name: External port identifier valid within the component.
+            role: Electrical or functional role assigned to the port.
+
+        Returns:
+            Named `Net` handle representing the declared external port.
+
         Raises:
             BuildError: When `name` is invalid or already declared.
         """
@@ -213,6 +242,12 @@ class Builder:
 
     def net(self, name: str) -> Net:
         """Declares internal net `name` so connections can reference it by name.
+
+        Args:
+            name: Internal net identifier valid within the component.
+
+        Returns:
+            Named `Net` handle for wiring subsequent connections.
 
         Raises:
             BuildError: When `name` is invalid or already declared.
@@ -224,6 +259,13 @@ class Builder:
         """Places a device or component as instance `name`.
 
         The placed instance records the build-script source line that placed it.
+
+        Args:
+            item: Primitive `Device` or child `Component` to instantiate.
+            name: Unique instance identifier within the current component.
+
+        Returns:
+            `Placed` handle exposing instance terminals as attributes and keys.
 
         Raises:
             BuildError: When `name` is invalid or already used in this component, or
@@ -263,6 +305,10 @@ class Builder:
 
         Subsequent connections can reference a named net with ``Net(name)``.
 
+        Args:
+            *points: Placed terminals and declared nets to short together.
+            name: Optional new internal net name assigned to the joined node.
+
         Raises:
             BuildError: When a point does not belong to this component, the
                 connection joins two differently named nets, or `name` is invalid or
@@ -275,20 +321,24 @@ class Builder:
             self._join(joined[0], point)
 
     def finish(self) -> Component:
-        """Returns the finalized component built from all declared items."""
+        """Returns the finalized component built from all declared items.
+
+        Returns:
+            Immutable `Component` assembled from declared ports, placements, and nets.
+        """
         nets: dict[Connectable, str] = {}
         instances = []
-        for id, placement in self._placements.items():
+        for name, placement in self._placements.items():
             terminals = {}
             for terminal in placement.terminals:
-                root = self._find(Terminal(id, terminal))
+                root = self._find(Terminal(name, terminal))
                 net = self._root_names.get(root) or nets.setdefault(
-                    root, f"{id}.{terminal}"
+                    root, f"{name}.{terminal}"
                 )
                 terminals[terminal] = net
             instances.append(
                 ir.Instance(
-                    name=id,
+                    name=name,
                     of=placement.of,
                     parameters=placement.parameters,
                     terminals=terminals,
@@ -360,6 +410,12 @@ def component[**P](function: ComponentFunction[P]) -> Callable[P, Component]:
     argument set builds a component named after the function and formatted arguments,
     such as ``rc_filter[resistance=1kΩ]``. Repeated calls with identical formatted
     arguments return the cached component.
+
+    Args:
+        function: Builder callback accepting a leading `Builder` argument.
+
+    Returns:
+        Memoized component factory taking the remaining parameters of `function`.
     """
     signature = inspect.signature(function)
     built: dict[str, Component] = {}
@@ -382,6 +438,12 @@ def component[**P](function: ComponentFunction[P]) -> Callable[P, Component]:
 
 def circuit(top: Component) -> ir.Circuit:
     """Builds a circuit IR with `top` as the top-level component.
+
+    Args:
+        top: Root `Component` forming the top level of the hierarchy.
+
+    Returns:
+        Validated `ir.Circuit` collecting `top` and all transitive child definitions.
 
     Raises:
         BuildError: When two distinct components share the same name.
@@ -445,6 +507,9 @@ def caller() -> ir.SourceLocation | None:
 
     The recorded file path is relative to the working directory when located inside
     that directory.
+
+    Returns:
+        `ir.SourceLocation` two frames above `caller`, or ``None`` without frames.
     """
     frame = inspect.currentframe()
     line = frame.f_back.f_back if frame and frame.f_back else None

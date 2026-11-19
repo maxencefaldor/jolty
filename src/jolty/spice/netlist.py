@@ -27,7 +27,14 @@ class Statement:
     text: str
 
     def fail(self, message: str) -> SpiceError:
-        """Builds a `SpiceError` attributing `message` to this statement's location."""
+        """Builds a `SpiceError` attributing `message` to this statement's location.
+
+        Args:
+            message: Error description attributed to the statement.
+
+        Returns:
+            `SpiceError` formatted with file path, line number, message, and text.
+        """
         return SpiceError(f"{self.file}:{self.line}: {message}: `{self.text}`")
 
 
@@ -54,7 +61,15 @@ def _strip_comment(text: str) -> str:
 
 
 def statements(text: str, file: str = "<text>") -> list[Statement]:
-    """Splits SPICE source `text` from `file` into logical statements."""
+    """Splits SPICE source `text` from `file` into logical statements.
+
+    Args:
+        text: Raw SPICE netlist or library source text.
+        file: Source filename recorded on each logical statement.
+
+    Returns:
+        Logical SPICE statements with comments stripped and continuations joined.
+    """
     found: list[Statement] = []
     for number, raw in enumerate(text.splitlines(), start=1):
         printable = (
@@ -94,6 +109,12 @@ def tokens(text: str) -> list[str]:
     Parenthesized, braced, and quoted groups stay intact; a parenthesized group
     directly following a word attaches to it (as in ``POLY(2)``). Commas and
     whitespace act as token separators.
+
+    Args:
+        text: Logical SPICE statement text to tokenize.
+
+    Returns:
+        Ordered word, ``=``, and delimited-group tokens.
     """
     found: list[str] = []
     current = ""

@@ -1,6 +1,6 @@
 # Bandgap reference
 
-A bandgap voltage reference: two transistors' base-emitter voltages cancelling drift.
+A bandgap voltage reference: two transistors' base-emitter voltages canceling drift.
 
 An op-amp holds its two inputs equal, so equal resistors carry equal currents into a 2N3904 and into eight in parallel behind 1 kΩ.
 The resistor then holds the difference of their base-emitter voltages, Vt·ln 8, proportional to absolute temperature, and the output adds R₁/R₃ times it to a base-emitter voltage, which falls with temperature.

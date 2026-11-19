@@ -1,10 +1,10 @@
 # Colpitts oscillator
 
-A Colpitts oscillator: a 2N3904 in common base, its tank a coil and two capacitors.
+A Colpitts oscillator: a common-base 2N3904 with an LC tank and capacitive divider.
 
-The tank's 100 µH resonates with its capacitors in series, 1 nF and 10 nF making 0.909 nF, at 1/(2π√(LC)) = 528 kHz; their divider feeds the emitter a tenth of the collector's swing in phase, closing the loop.
-The supply's rise starts it.
-Simulate it with `jolty simulate examples/colpitts_oscillator.py`.
+The 100 µH inductor resonates with the 1 nF and 10 nF series capacitors (0.909 nF equivalent) at 1/(2π√(LC)) = 528 kHz.
+The capacitive divider feeds one tenth of the collector swing back to the emitter in phase, and the supply ramp initiates oscillation.
+Simulate with `jolty simulate examples/colpitts_oscillator.py`.
 
 [Open in 3D](colpitts-oscillator.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/colpitts_oscillator.py){ .md-button }
 

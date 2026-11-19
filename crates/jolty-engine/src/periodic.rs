@@ -73,7 +73,7 @@ pub struct PeriodicSteadyState {
     #[serde(default)]
     pub max_step: Option<f64>,
     /// Integration method used between breakpoints; defaults to trapezoidal.
-    #[serde(default)]
+    #[serde(default, with = "crate::MethodSerde")]
     pub method: Method,
     /// Additional times within a fixed period in seconds that the solver hits exactly without
     /// restarting integration; empty by default.

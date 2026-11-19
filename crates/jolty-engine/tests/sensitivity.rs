@@ -657,9 +657,9 @@ fn rc() -> Circuit {
 
 #[test]
 fn a_transient_from_initial_conditions_moves_as_the_state_it_starts_from() {
-    // Starting from `out` = 0 V gives `out = V (1 − e^(−t/RC))`, regardless of whether the
-    // DC operating point runs. Analytical derivatives are `d out/dR = −V t/(R²C) e^(−t/RC)`,
-    // `d out/dV = 1 − e^(−t/RC)`, and `d out/dC = −V t/(RC²) e^(−t/RC)`.
+    // Starting from `out` = 0 V gives `out = V (1 - e^(-t/RC))`, regardless of whether the
+    // DC operating point runs. Analytical derivatives are `d out/dR = -V t/(R²C) e^(-t/RC)`,
+    // `d out/dV = 1 - e^(-t/RC)`, and `d out/dC = -V t/(RC²) e^(-t/RC)`.
     // Trapezoidal error scales as `(h/τ)² (t/τ) / 12` (7e-7 at `t = 2τ`, `h = τ/500`), and
     // initial backward Euler steps add `h₀/2τ`, staying within 1e-5 of peak derivatives.
     let (resistance, capacitance, level): (f64, f64, f64) = (1e3, 1e-9, 1.0);

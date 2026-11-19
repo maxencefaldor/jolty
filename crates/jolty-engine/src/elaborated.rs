@@ -262,6 +262,13 @@ impl Placed {
             Origin::Detector(_) | Origin::Driver(_) => None,
         }
     }
+
+    /// Returns the nominal `f64` value of top-level parameter `name`, or `None` when absent or
+    /// non-numeric.
+    #[must_use]
+    pub fn numeric_parameter(&self, name: &str) -> Option<f64> {
+        self.parameters()?.get(name)?.as_f64()
+    }
 }
 
 /// Structural delta between an elaborated circuit and the topology induced by a [`Values`]

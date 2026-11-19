@@ -3,9 +3,9 @@
 A common-emitter amplifier: a 2N3904 biased by a divider, its emitter degenerated.
 
 The divider sets the base near 1.8 V, so about 1.1 mA flows through the emitter's 100 Ω and 1 kΩ; the 1 kΩ is bypassed above a few hertz.
-The midband gain is the collector's 4.7 kΩ over the emitter's 100 Ω and the transistor's own 1/gm, some 32 dB, inverted.
+The midband gain is the collector's 4.7 kΩ over the emitter's 100 Ω and the transistor's intrinsic 1/gm, some 32 dB, inverted.
 Coupling capacitors pass the band from tens of hertz up.
-Simulate it with `jolty simulate examples/common_emitter.py`.
+Simulate with `jolty simulate examples/common_emitter.py`.
 
 [Open in 3D](common-emitter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/common_emitter.py){ .md-button }
 

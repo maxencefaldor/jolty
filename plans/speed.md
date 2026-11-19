@@ -135,7 +135,7 @@ Any optimization that speeds up one fixture while slowing another requires inves
 ### ✅ 3c. The switches' small series resistances eliminated too
 
 - **What:** resistances below 1 Ω introduce a current unknown so `1/R` never lands on a node diagonal.
-    An inner-node row pivot eliminates the current unknown cleanly: −1 against a column of ±1 and −R always passes the pivot test.
+    An inner-node row pivot eliminates the current unknown cleanly: -1 against a column of ±1 and -R always passes the pivot test.
     Supporting inner-node elimination requires condensation to accept off-diagonal pivots.
 - **Done when:** the buck factors 13 unknowns, matching ngspice.
 - **Result** (`a73e889`, 16 November): condensation now accepts off-diagonal pivots declared by kernels via `Layout::pivot`, eliminating small-resistance currents on inner-node rows.
@@ -197,7 +197,7 @@ Any optimization that speeds up one fixture while slowing another requires inves
 - **What:** on circuits with a few dozen unknowns, fixed overhead dominates three passes: two-stage slab gather, the `|J|·|x|` convergence product, and per-step error-filter refactorization.
 - **Done when:** buck iteration cost drops to at most 1.5× ngspice without sacrificing accuracy.
 - **Result, in part** (`3f53643`, `9277c9b`, 16 November): tightened the refactorization loop and eliminated allocations in the error filter with identical bits.
-    Buck runtime dropped from 848 to 825 ms (−2.8%), `bjt_amp` and `ac_wide` stayed flat, and the 500-inverter chain rose +0.7% from general condensation bookkeeping (3,000 eliminated unknowns per factor).
+    Buck runtime dropped from 848 to 825 ms (-2.8%), `bjt_amp` and `ac_wide` stayed flat, and the 500-inverter chain rose +0.7% from general condensation bookkeeping (3,000 eliminated unknowns per factor).
     Per buck iteration, jolty takes 2,661 to 2,697 ns versus 1,036 ns for ngspice.
     Phase breakdown (jolty vs ngspice): evaluation 1,074 to 1,101 vs 433 ns, factoring 449 to 467 vs 95 ns, and solving 351 to 362 vs 86 ns.
     jolty averages 1.35 factorizations per iteration (one extra error-filter refactor per judged step) and runs 331,020 iterations versus 196,438 for ngspice.

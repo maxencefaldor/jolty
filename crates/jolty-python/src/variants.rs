@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use jolty_engine::batch::Variants as EngineVariants;
-use jolty_engine::variants::{Axis, Explicit, Grid, MonteCarlo, Product, Toleranced};
+use jolty_engine::variants::{Axis, Explicit, Grid, GridChain, MonteCarlo, Product, Toleranced};
 use jolty_engine::{ParameterId, Values};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -195,7 +195,12 @@ impl Variants {
                 columns.push(Column::Temperature);
             }
         }
-        let grid = value_result(Grid::new(stepped, warm))?;
+        let chain = if warm {
+            GridChain::Warm
+        } else {
+            GridChain::Independent
+        };
+        let grid = value_result(Grid::new(stepped, chain))?;
         Ok(Self {
             toleranced: TolerancedParameter::Grid(Arc::new(grid)),
             elaborated: Arc::clone(circuit),

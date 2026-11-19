@@ -16,11 +16,13 @@ __lazy_modules__ = [
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from importlib.metadata import version
-from typing import Literal, NoReturn, override
+from operator import getitem
+from typing import Any, Final, Literal, NoReturn, cast, override
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model
 from pydantic_settings import (
     BaseSettings,
     CliApp,
@@ -51,100 +53,112 @@ class _Output(BaseModel):
             raise SystemExit(1)
 
 
-class BuildCommand(service.BuildRequest, _Output):
-    """Run a script's build(), save the circuit it returns, and elaborate it."""
+@dataclass(frozen=True, slots=True)
+class CommandSpec[Request: BaseModel]:
+    """Declarative specification binding one ``jolty`` subcommand to a service call."""
 
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.build(self, Settings.load()))
-
-
-class SimulateCommand(service.SimulateRequest, _Output):
-    """Build a script's circuit, then run every analysis of a plan on it."""
-
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.simulate(self, Settings.load()))
+    name: str
+    request_type: type[Request]
+    handler: Callable[[Request, Settings], Awaitable[service.CommandResult]]
+    description: str
 
 
-class MergeCommand(service.MergeRequest, _Output):
-    """Merge the shards of a plan's Monte Carlo analysis, and report them as one run."""
+COMMANDS: Final = (
+    CommandSpec(
+        "build",
+        service.BuildRequest,
+        service.build,
+        "Build a script's circuit and elaborate it.",
+    ),
+    CommandSpec(
+        "simulate",
+        service.SimulateRequest,
+        service.simulate,
+        "Build a script's circuit and run a plan's analyses on it.",
+    ),
+    CommandSpec(
+        "merge",
+        service.MergeRequest,
+        service.merge,
+        "Merge the shards of a plan's Monte Carlo analysis into one run.",
+    ),
+    CommandSpec(
+        "plot",
+        service.PlotRequest,
+        service.plot,
+        "Plot the analyses of a saved results file.",
+    ),
+    CommandSpec(
+        "measure",
+        service.MeasureRequest,
+        service.measure,
+        "Read a measure from a saved results file.",
+    ),
+    CommandSpec(
+        "draw",
+        service.DrawRequest,
+        service.draw,
+        "Draw a component of a saved circuit file.",
+    ),
+    CommandSpec(
+        "view",
+        service.ViewRequest,
+        service.view,
+        "Write a 3D viewer of a saved circuit and its results.",
+    ),
+    CommandSpec(
+        "check",
+        service.CheckRequest,
+        service.check,
+        "Check the structure of a saved circuit file.",
+    ),
+    CommandSpec(
+        "explain",
+        service.ExplainRequest,
+        service.explain,
+        "Explain rules and their levels.",
+    ),
+    CommandSpec(
+        "read_docs",
+        service.ReadDocsRequest,
+        service.read_docs,
+        "List or read the offline guide and examples.",
+    ),
+    CommandSpec(
+        "cost",
+        service.CostRequest,
+        service.cost,
+        "Price a component of a saved circuit file with a catalog.",
+    ),
+    CommandSpec(
+        "export_kicad",
+        service.ExportKicadRequest,
+        service.export_kicad,
+        "Write a component of a saved circuit file as a KiCad netlist.",
+    ),
+)
+"""Declarative specifications for every top-level ``jolty`` CLI subcommand."""
 
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.merge(self, Settings.load()))
 
+def _subcommand_model[Request: BaseModel](
+    spec: CommandSpec[Request],
+) -> type[BaseModel]:
+    """Builds the Pydantic CLI subcommand model for `spec`."""
+    handler = spec.handler
 
-class PlotCommand(service.PlotRequest, _Output):
-    """Plot the analyses of a saved results file."""
+    class _Runner(_Output):
+        async def cli_cmd(self) -> None:
+            """Runs the command."""
+            self.emit(await handler(cast(Request, self), Settings.load()))
 
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.plot(self, Settings.load()))
-
-
-class MeasureCommand(service.MeasureRequest, _Output):
-    """Read a measure from a saved results file without simulating again."""
-
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.measure(self, Settings.load()))
-
-
-class DrawCommand(service.DrawRequest, _Output):
-    """Draw the schematic of a saved circuit's top component or a selected instance."""
-
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.draw(self, Settings.load()))
-
-
-class ViewCommand(service.ViewRequest, _Output):
-    """Write a 3D viewer of a saved circuit and its results."""
-
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.view(self, Settings.load()))
-
-
-class CheckCommand(service.CheckRequest, _Output):
-    """Check the structure of a saved circuit file."""
-
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.check(self, Settings.load()))
-
-
-class ExplainCommand(service.ExplainRequest, _Output):
-    """Explain check rules, including each rule's condition and severity level."""
-
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.explain(self, Settings.load()))
-
-
-class ReadDocsCommand(service.ReadDocsRequest, _Output):
-    """List or read jolty's offline guide pages and example scripts."""
-
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.read_docs(self, Settings.load()))
-
-
-class CostCommand(service.CostRequest, _Output):
-    """Price a component of a saved circuit file with a catalog's parts."""
-
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.cost(self, Settings.load()))
-
-
-class ExportKicadCommand(service.ExportKicadRequest, _Output):
-    """Write a component of a saved circuit file as a KiCad netlist."""
-
-    async def cli_cmd(self) -> None:
-        """Runs the command."""
-        self.emit(await service.export_kicad(self, Settings.load()))
+    model_name = f"{spec.request_type.__name__.removesuffix('Request')}Command"
+    return create_model(
+        model_name,
+        __base__=(spec.request_type, _Output),
+        __doc__=spec.request_type.__doc__,
+        __module__=__name__,
+        __namespace__={"cli_cmd": _Runner.cli_cmd},
+    )
 
 
 class CommandLine(BaseSettings):
@@ -177,12 +191,29 @@ class CommandLine(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Reads the command line only."""
+        """Reads the command line only.
+
+        Args:
+            settings_cls: Settings class under initialization.
+            init_settings: Keyword and CLI argument settings source.
+            env_settings: Environment variable settings source, ignored by CLI models.
+            dotenv_settings: Dotenv file settings source, ignored by CLI models.
+            file_secret_settings: Secret directory settings source, ignored by CLI
+                models.
+
+        Returns:
+            Single-element tuple containing only `init_settings`.
+        """
         return (init_settings,)
 
 
 def run(command: type[CommandLine], arguments: Sequence[str] | None = None) -> None:
     """Runs `command` on `arguments`, defaulting to the process command-line arguments.
+
+    Args:
+        command: CLI settings class to parse and execute.
+        arguments: Command-line tokens to parse, defaulting to ``sys.argv[1:]`` when
+            ``None``.
 
     Raises:
         SystemExit: Exits with status 2 and reports each invalid option and its
@@ -195,51 +226,35 @@ def run(command: type[CommandLine], arguments: Sequence[str] | None = None) -> N
         _fail(_invalid(error), as_json=False)
 
 
-class Jolty(CommandLine):
-    """Build and simulate electronic circuits written as Python scripts."""
+class _JoltyBase(CommandLine):
+    """Base settings class for the generated top-level ``jolty`` CLI model."""
 
     model_config = SettingsConfigDict(cli_prog_name="jolty")
-
-    build: CliSubCommand[BuildCommand] = Field(
-        description="Build a script's circuit and elaborate it."
-    )
-    simulate: CliSubCommand[SimulateCommand] = Field(
-        description="Build a script's circuit and run a plan's analyses on it."
-    )
-    merge: CliSubCommand[MergeCommand] = Field(
-        description="Merge the shards of a plan's Monte Carlo analysis into one run."
-    )
-    plot: CliSubCommand[PlotCommand] = Field(
-        description="Plot the analyses of a saved results file."
-    )
-    measure: CliSubCommand[MeasureCommand] = Field(
-        description="Read a measure from a saved results file."
-    )
-    draw: CliSubCommand[DrawCommand] = Field(
-        description="Draw a component of a saved circuit file."
-    )
-    view: CliSubCommand[ViewCommand] = Field(
-        description="Write a 3D viewer of a saved circuit and its results."
-    )
-    check: CliSubCommand[CheckCommand] = Field(
-        description="Check the structure of a saved circuit file."
-    )
-    explain: CliSubCommand[ExplainCommand] = Field(
-        description="Explain rules and their levels."
-    )
-    read_docs: CliSubCommand[ReadDocsCommand] = Field(
-        description="List or read the offline guide and examples."
-    )
-    cost: CliSubCommand[CostCommand] = Field(
-        description="Price a component of a saved circuit file with a catalog."
-    )
-    export_kicad: CliSubCommand[ExportKicadCommand] = Field(
-        description="Write a component of a saved circuit file as a KiCad netlist."
-    )
 
     def cli_cmd(self) -> None:
         """Runs the chosen subcommand."""
         CliApp.run_subcommand(self)
+
+
+def _build_jolty() -> type[_JoltyBase]:
+    """Builds the top-level ``Jolty`` CLI settings model from `COMMANDS`."""
+    fields: dict[str, Any] = {
+        spec.name: (
+            getitem(CliSubCommand, _subcommand_model(spec)),
+            Field(description=spec.description),
+        )
+        for spec in COMMANDS
+    }
+    return create_model(
+        "Jolty",
+        __base__=_JoltyBase,
+        __doc__="Build and simulate electronic circuits written as Python scripts.",
+        __module__=__name__,
+        **fields,
+    )
+
+
+Jolty: Final = _build_jolty()
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -250,6 +265,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     errors, a failed simulation, missed Monte Carlo yield target, an unpriced device,
     or a failed netlist export. Exit status 2 indicates invalid arguments or settings,
     a missing subcommand, or an unhandled command failure such as a script exception.
+
+    Args:
+        argv: Command-line tokens to parse, defaulting to ``sys.argv[1:]`` when
+            ``None``.
     """
     arguments = sys.argv[1:] if argv is None else list(argv)
     if arguments == ["--version"]:

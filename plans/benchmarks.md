@@ -67,10 +67,10 @@ The 6× target on 16 cores for `inverter_chain_50000` is not yet met (`speed.md`
 | `min_instances_per_task` | meshes | from 50 a side | from 70 | from 70 | from 100 |
 | `min_unknowns_per_task` (then `min_unknowns_inside`) | chains | no gain up to 5,000 inverters | no gain | no gain | no gain |
 | `min_unknowns_per_task` (then `min_unknowns_inside`) | meshes | from 300 a side | from 300 | no gain | from 300 |
-| `max_unknowns_per_interior` | chains | from 5,000 inverters, −1.7% | no gain | no gain | no gain |
-| `max_unknowns_per_interior` | meshes | from 100 a side, −17% | from 70, −6% | from 50, −4% | from 100, −16% |
+| `max_unknowns_per_interior` | chains | from 5,000 inverters, -1.7% | no gain | no gain | no gain |
+| `max_unknowns_per_interior` | meshes | from 100 a side, -17% | from 70, -6% | from 50, -4% | from 100, -16% |
 
-At 300 nodes per side, the dissected mesh runs in 7.37 s on 64 threads versus 27.6 s undissected (−73%).
+At 300 nodes per side, the dissected mesh runs in 7.37 s on 64 threads versus 27.6 s undissected (-73%).
 
 **Initial hard-circuit corpus rates** (`6905ddf`; local Mac, load 8.1 to 11.5; raw logs not kept): 48 total cases.
 Eighteen cases come from jolty (Schmitt triggers, a latch from rest, an SRAM cell, a ring from rest, a capacitance-free chain, an impasse circuit, `folded_sources`, the buck, and the memristive NOR).
@@ -115,7 +115,7 @@ Previous timings also lacked confidence intervals and accuracy metrics, now supp
 
 - Xyce has columns in speed views, precision, and coverage, but not yet in the robustness corpus, and is not installed on machine D (item 11); matched ngspice comparisons (`--view`) are done (item 4).
 - Second versions of the precision suite and robustness corpus remain planned (items 7b and 8b), while coverage matrix v2 is done (item 9b).
-- No machine runs the nightly suite yet (item 5), though CI now verifies deterministic counts, digits, and fingerprints (item 5b).
+- No machine runs the nightly suite yet (item 5), though CI now verifies deterministic counts, digits, and digests (item 5b).
 
 ## 4. Plan
 

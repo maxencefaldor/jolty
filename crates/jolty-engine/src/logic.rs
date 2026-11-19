@@ -2,7 +2,7 @@
 //!
 //! Logic nets carry a [`LogicLevel`] rather than a continuous voltage. The scheduler tracks
 //! each net driver's active level and pending transition, processing events in time order
-//! so logic inputs react with inertial delay (cancelling superseded pending changes) and
+//! so logic inputs react with inertial delay (canceling superseded pending changes) and
 //! analog connect drivers track net transitions.
 
 use std::cmp::{Ordering, Reverse};

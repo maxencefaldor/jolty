@@ -1,10 +1,10 @@
 //! The `constructs` kernel, compiled by jolty-veriloga from `crates/jolty-veriloga/tests/fixtures/constructs.va`.
 //!
-//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Its source says:
+//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Original source notice:
 //!
 //! ```text
 //! A conductance that saturates, written to exercise the constructs of the CMC's models:
-//! an analog function called inline, a named block with variables of its own, tanh and
+//! an analog function called inline, a named block with local variables, tanh and
 //! atan, a $warning, output variables, one of them a ddx, an aliasparam, a range bounded
 //! by another parameter, a default jolty's $simparam leaves to the source, and $mfactor.
 //! ```

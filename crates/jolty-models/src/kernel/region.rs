@@ -13,7 +13,7 @@ pub struct Regions {
     ///
     /// Margins use n-channel / NPN sign convention regardless of device polarity (reversing
     /// voltages for p-channel / PNP devices) so positive values always denote conduction or
-    /// saturation, matching `|vgs| − |vth|`.
+    /// saturation, matching `|vgs| - |vth|`.
     pub margins: &'static [&'static str],
 }
 
@@ -25,10 +25,10 @@ impl Regions {
     };
 }
 
-/// Gate-source overdrive voltage `vgs − vth` for field-effect transistors.
+/// Gate-source overdrive voltage `vgs - vth` for field-effect transistors.
 pub(crate) const OVERDRIVE: &str = "overdrive_voltage";
 
-/// Drain-source saturation margin `vds − vdsat` separating linear and saturated FET regions.
+/// Drain-source saturation margin `vds - vdsat` separating linear and saturated FET regions.
 pub(crate) const SATURATION_MARGIN: &str = "saturation_margin";
 
 /// Intrinsic base-emitter voltage in NPN sign convention (emitter-over-base for PNP).
@@ -38,7 +38,7 @@ pub(crate) const BASE_EMITTER: &str = "base_emitter_voltage";
 pub(crate) const BASE_COLLECTOR: &str = "base_collector_voltage";
 
 /// Operating region of a bipolar transistor determined by which intrinsic junctions inject
-/// positive ideal current `Is · (e^{v / (N · Vt)} − 1)` (matching `v > 0` in ngspice
+/// positive ideal current `Is · (e^{v / (N · Vt)} - 1)` (matching `v > 0` in ngspice
 /// `bjtload.c` and VBIC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bipolar {

@@ -117,7 +117,7 @@ struct Values {
     inner: jolty_engine::Values,
 }
 
-/// Structural fingerprint of parameter overrides relative to the base elaborated circuit;
+/// Structural digest of parameter overrides relative to the base elaborated circuit;
 /// equal values share an identical matrix structure.
 #[pyclass(module = "jolty._core", frozen, eq, hash)]
 #[derive(PartialEq, Eq, Hash)]

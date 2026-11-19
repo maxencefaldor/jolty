@@ -38,7 +38,7 @@ pub struct AcResult {
 }
 
 impl Simulator {
-    /// Linearizes the circuit at its operating point and solves `(G + jωC) x = −∂f/∂s` at each
+    /// Linearizes the circuit at its operating point and solves `(G + jωC) x = -∂f/∂s` at each
     /// frequency, where `s` is the excited source's value.
     ///
     /// # Errors

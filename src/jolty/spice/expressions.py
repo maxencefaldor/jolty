@@ -62,6 +62,13 @@ def number(text: str) -> float | None:
     Returns `None` for non-finite values, including literals that overflow IEEE-754
     double precision on parsing or scale multiplication.
 
+    Args:
+        text: Candidate numeric literal with optional SPICE scale suffix and unit.
+
+    Returns:
+        Parsed finite floating-point value, or `None` when `text` is non-numeric or
+        non-finite.
+
     Examples:
         >>> number("4.7k"), number("1MEG"), number("1uF"), number("-2.5E-3")
         (4700.0, 1000000.0, 1e-06, -0.0025)
@@ -292,7 +299,14 @@ def _is_enclosed(text: str) -> bool:
 
 
 def nesting_depth(text: str) -> int:
-    """Returns the maximum parenthesis nesting depth in `text`."""
+    """Returns the maximum parenthesis nesting depth in `text`.
+
+    Args:
+        text: Expression string to inspect.
+
+    Returns:
+        Maximum parenthesis nesting depth in `text`.
+    """
     depth = 0
     deepest = 0
     for character in text:
@@ -306,6 +320,9 @@ def nesting_depth(text: str) -> int:
 
 def check_core_depth(text: str) -> None:
     """Checks that `text` stays within `_MAX_CORE_DEPTH` nested parentheses.
+
+    Args:
+        text: Translated expression string checked against `_MAX_CORE_DEPTH`.
 
     Raises:
         SpiceError: When the translated expression exceeds the safe nesting limit.
@@ -321,6 +338,12 @@ def check_core_depth(text: str) -> None:
 
 def parse(text: str) -> Expression:
     """Parses a SPICE expression string, stripping outer braces or quotes.
+
+    Args:
+        text: SPICE expression string, optionally enclosed in braces or quotes.
+
+    Returns:
+        Parsed syntax tree for `text`.
 
     Raises:
         SpiceError: When `text` is not a valid expression.
@@ -498,7 +521,14 @@ class _Parser:
 
 
 def children(expression: Expression) -> tuple[Expression, ...]:
-    """Returns the direct sub-expressions of `expression` in evaluation order."""
+    """Returns the direct sub-expressions of `expression` in evaluation order.
+
+    Args:
+        expression: Expression node whose direct operands are requested.
+
+    Returns:
+        Direct child expression nodes in evaluation order, or an empty tuple for leaves.
+    """
     match expression:
         case Unary(_, operand):
             return (operand,)
@@ -546,7 +576,14 @@ def _equal(first: Expression, second: Expression) -> bool:
 
 
 def walk(expression: Expression) -> Iterator[Expression]:
-    """Yields every node of `expression` iteratively without recursion."""
+    """Yields every node of `expression` iteratively without recursion.
+
+    Args:
+        expression: Root expression node to traverse.
+
+    Returns:
+        Iterator yielding every expression node reachable from `expression`.
+    """
     stack: list[Expression] = [expression]
     while stack:
         current = stack.pop()
@@ -567,6 +604,17 @@ def fold[Result](
     without descending into the children of `node`. Otherwise `before(node)` (when
     provided) runs before descending left-to-right, and `combine(node, built)`
     combines the folded child results.
+
+    Args:
+        expression: Root expression node to fold.
+        leaf: Callback returning a direct result to short-circuit descent, or `None` to
+            descend.
+        combine: Callback combining a node and folded child results into a single value.
+        before: Optional pre-order hook invoked on non-short-circuited nodes before
+            descending.
+
+    Returns:
+        Folded result computed at the root `expression`.
     """
     frames: list[tuple[Expression, bool]] = [(expression, False)]
     results: list[Result] = []
@@ -595,7 +643,15 @@ def fold[Result](
 
 
 def rebuild(expression: Expression, subexpressions: list[Expression]) -> Expression:
-    """Rebuilds `expression` with `subexpressions` in place of its children."""
+    """Rebuilds `expression` with `subexpressions` in place of its children.
+
+    Args:
+        expression: Template expression node supplying kind and operator or function.
+        subexpressions: Replacement child expressions in `children(expression)` order.
+
+    Returns:
+        Reconstructed expression node, reusing `expression` when children are unchanged.
+    """
     current = children(expression)
     if len(current) == len(subexpressions) and all(
         new is old for new, old in zip(subexpressions, current, strict=True)
@@ -625,7 +681,19 @@ def rewrite(
     before: Callable[[Expression], None] | None = None,
     combine: Callable[[Expression, list[Expression]], Expression] = rebuild,
 ) -> Expression:
-    """Rewrites `expression` bottom-up iteratively without recursion."""
+    """Rewrites `expression` bottom-up iteratively without recursion.
+
+    Args:
+        expression: Root expression node to rewrite.
+        replace: Optional leaf callback returning a replacement subtree to skip
+            descending, or `None` to descend.
+        before: Optional pre-order hook invoked before descending into child nodes.
+        combine: Bottom-up constructor building each rewritten node from transformed
+            children.
+
+    Returns:
+        Rewritten expression tree.
+    """
     leaf = _no_replace if replace is None else replace
     return fold(expression, leaf, combine, before=before)
 
@@ -757,16 +825,24 @@ def inlined(
     call arguments, tracking active frames in `calling`. User functions may call other
     user functions, but direct or indirect recursion is rejected.
 
+    Args:
+        expression: Expression whose user-defined function calls are expanded.
+        functions: Case-folded user function definitions available in scope.
+        calling: Active call stack of function names used to detect recursion.
+
+    Returns:
+        Expression with all calls into `functions` substituted inline.
+
+    Raises:
+        SpiceError: When a function recurses, receives the wrong argument count, or
+            inlining exceeds `_MAX_INLINED_NODES` nodes.
+
     Examples:
         >>> twice = Function(("x",), parse("2 * x"))
         >>> inlined(parse("twice(twice(y)) + 1"), {"twice": twice})
         Binary(operator='+', left=Binary(operator='*', left=Number(value=2.0), \
 right=Binary(operator='*', left=Number(value=2.0), right=Name(name='y'))), \
 right=Number(value=1.0))
-
-    Raises:
-        SpiceError: When a function recurses, receives the wrong argument count, or
-            inlining exceeds `_MAX_INLINED_NODES` nodes.
     """
     if not functions:
         return expression
@@ -865,7 +941,16 @@ elements built by [`library`][jolty.spice.library] use ``rounded_table``.
 def substituted(
     expression: Expression, variable: Expression, replacement: Expression
 ) -> Expression:
-    """Replaces every occurrence of `variable` in `expression` with `replacement`."""
+    """Replaces every occurrence of `variable` in `expression` with `replacement`.
+
+    Args:
+        expression: Expression tree in which occurrences are replaced.
+        variable: Target subexpression matched structurally for replacement.
+        replacement: Expression substituted for each occurrence of `variable`.
+
+    Returns:
+        Expression with every occurrence of `variable` replaced by `replacement`.
+    """
 
     def replace(node: Expression) -> Expression | None:
         return replacement if node == variable else None
@@ -1049,6 +1134,14 @@ def integral(
     ``tanh``, ``sin``, or ``cos`` applied to linear functions of `variable`. Polynomial
     powers are integrated term by term, and elementary functions are divided by the
     linear slope. Returns `None` when no closed-form antiderivative is supported.
+
+    Args:
+        expression: Integrand expression containing constants and `variable`.
+        variable: Integration variable expression node.
+        depth: Nesting depth guard returning `None` past `_MAX_DEPTH`.
+
+    Returns:
+        Closed-form antiderivative expression, or `None` when unsupported.
     """
     if depth > _MAX_DEPTH:
         return None
@@ -1078,7 +1171,14 @@ def integral(
 
 
 def names(expression: Expression) -> set[str]:
-    """Returns the set of parameter and constant names referenced in `expression`."""
+    """Returns the set of parameter and constant names referenced in `expression`.
+
+    Args:
+        expression: Expression tree to scan for identifier references.
+
+    Returns:
+        Case-folded parameter and constant names referenced in `expression`.
+    """
     return {node.name for node in walk(expression) if isinstance(node, Name)}
 
 
@@ -1094,7 +1194,15 @@ type Draw = Callable[[str, tuple[float, ...]], float]
 
 
 def nominal(_function: str, arguments: tuple[float, ...]) -> float:
-    """Returns the nominal value (first argument) of a statistical function call."""
+    """Returns the nominal value (first argument) of a statistical function call.
+
+    Args:
+        _function: Statistical function name, unused during nominal evaluation.
+        arguments: Evaluated numeric arguments, with the nominal value first.
+
+    Returns:
+        Nominal value from `arguments[0]`.
+    """
     return arguments[0]
 
 
@@ -1105,6 +1213,14 @@ def evaluate(
 
     Statistical calls take values returned by `draw` (defaulting to `nominal`),
     evaluated in source order with inner calls first.
+
+    Args:
+        expression: Parameter-only expression to evaluate.
+        parameters: Case-folded parameter values in scope.
+        draw: Statistical sampling callback invoked on statistical function calls.
+
+    Returns:
+        Evaluated floating-point value of `expression`.
 
     Raises:
         SpiceError: When `expression` references a voltage, current, unknown
@@ -1138,7 +1254,14 @@ def evaluate(
 
 
 def is_statistical(expression: Expression) -> bool:
-    """Returns whether `expression` is a call to a SPICE statistical function."""
+    """Returns whether `expression` is a call to a SPICE statistical function.
+
+    Args:
+        expression: Expression node to classify.
+
+    Returns:
+        `True` when `expression` invokes a SPICE statistical distribution function.
+    """
     if not isinstance(expression, Call):
         return False
     function = expression.function
@@ -1196,6 +1319,15 @@ def translate(
     Substitutes numeric values for parameters, maps non-ground nodes through `node`,
     and maps voltage-source currents through `current`. Emits parentheses only where
     operator precedence or associativity requires them.
+
+    Args:
+        expression: SPICE expression tree to format.
+        parameters: Case-folded parameter values substituted as numeric literals.
+        node: Mapper converting non-ground SPICE node names to jolty net names.
+        current: Mapper converting SPICE voltage-source names to jolty instance names.
+
+    Returns:
+        Expression formatted in the jolty expression language.
 
     Raises:
         SpiceError: When `expression` references an unknown parameter or function, or

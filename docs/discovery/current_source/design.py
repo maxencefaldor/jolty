@@ -4,7 +4,7 @@
 Transistor Q1 passes the load current while Q2 shunts Q1 base drive once sense
 resistor Rs drops one Vbe.
 Feeding Q2 through a supply resistor causes Q2 current and Vbe to track the line,
-yielding 17% regulation error from 3 V to 24 V.
+yielding 17% regulation error across 3 to 24 volts.
 Replacing the resistor with a 1:10 PNP mirror lowers line regulation error to 2.6%,
 limited by the 2N3906 18.7 V Early voltage.
 Output current equals Vbe/Rs and still falls at 0.3%/K with temperature.

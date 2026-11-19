@@ -226,10 +226,18 @@ class CommandResult(FrozenModel, ABC):
 
     @abstractmethod
     def describe(self) -> str:
-        """Formats the command result as human- and agent-readable text."""
+        """Formats the command result as human- and agent-readable text.
+
+        Returns:
+            Human- and agent-readable summary of the command outcome.
+        """
 
     def images(self) -> tuple[Path, ...]:
-        """Returns image paths written by the command for MCP attachment."""
+        """Returns image paths written by the command for MCP attachment.
+
+        Returns:
+            PNG image paths written during execution, or an empty tuple by default.
+        """
         return ()
 
 
@@ -244,7 +252,11 @@ class ScriptOutput(FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats captured script output as text, or empty if nothing was written."""
+        """Formats captured script output as text, or empty if nothing was written.
+
+        Returns:
+            Indented stdout and stderr blocks, or an empty string when silent.
+        """
         blocks = [
             f"script {title}:\n{_indent(text.rstrip())}"
             for title, text in (("output", self.stdout), ("errors", self.stderr))
@@ -281,7 +293,11 @@ class CircuitSummary(FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats the circuit summary and any elaboration errors as text."""
+        """Formats the circuit summary and any elaboration errors as text.
+
+        Returns:
+            Saved circuit summary line plus any elaboration problem block.
+        """
         counts = [_plural(self.components, "component")]
         if self.devices is not None:
             counts.append(_plural(self.devices, "device"))
@@ -338,7 +354,11 @@ class BuildResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the build result summary as text."""
+        """Formats the build result summary as text.
+
+        Returns:
+            Multi-paragraph summary of circuit size, checks, output, and elapsed time.
+        """
         blocks = [
             self.circuit.describe(),
             self.report.describe() if self.report else "",
@@ -350,7 +370,11 @@ class BuildResult(CommandResult):
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """Returns the generated schematic path when drawing was enabled."""
+        """Returns the generated schematic path when drawing was enabled.
+
+        Returns:
+            Single-element tuple containing `schematic`, or empty when omitted.
+        """
         return (self.schematic,) if self.schematic else ()
 
 
@@ -451,7 +475,11 @@ class SimulateRequest(FrozenModel):
         return self
 
     def taken(self) -> range | None:
-        """Returns the requested sample index range, or None for a full plan run."""
+        """Returns the requested sample index range, or None for a full plan run.
+
+        Returns:
+            Sample index `range(start, stop)` when `samples` is set, or ``None``.
+        """
         if self.samples is None:
             return None
         start, stop = self.samples.split(":")
@@ -526,7 +554,11 @@ class SimulateResult(CommandResult):
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """Returns the schematic path followed by all generated plot paths."""
+        """Returns the schematic path followed by all generated plot paths.
+
+        Returns:
+            Ordered PNG paths for the schematic and every generated analysis plot.
+        """
         drawn = (self.schematic,) if self.schematic else ()
         return (*drawn, *(plot.path for plot in self.plots))
 
@@ -559,7 +591,11 @@ class SimulateResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the simulation result summary as text."""
+        """Formats the simulation result summary as text.
+
+        Returns:
+            Multi-paragraph summary of circuit, checks, analyses, specs, and files.
+        """
         blocks = [
             self.circuit.describe(),
             self.report.describe() if self.report else "",
@@ -587,6 +623,14 @@ class SimulateResult(CommandResult):
 
 async def build(request: BuildRequest, settings: Settings) -> BuildResult:
     """Runs ``build()`` in a separate subprocess, saves the circuit, and elaborates it.
+
+    Args:
+        request: Build command parameters naming the script, output path, and rules.
+        settings: Runtime settings controlling subprocess timeout, diagnostics, and
+            output limits.
+
+    Returns:
+        Structured `BuildResult` summarizing elaboration, checks, and schematic output.
 
     Raises:
         JoltyError: When the script is missing, fails, times out, or returns no
@@ -621,6 +665,14 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
 
     The results file contains all completed analyses. When no analysis completes, any
     stale results file at the target path is removed.
+
+    Args:
+        request: Simulation command parameters naming scripts, outputs, and options.
+        settings: Runtime settings controlling subprocess timeout, diagnostics, and
+            report limits.
+
+    Returns:
+        Structured `SimulateResult` summarizing analyses, specs, batches, and plots.
 
     Raises:
         JoltyError: When a script is missing, fails, times out, or returns no circuit
@@ -785,7 +837,11 @@ class MergeResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the merge summary as text."""
+        """Formats the merge summary as text.
+
+        Returns:
+            Multi-paragraph summary of merged shards, batch path, yield, and plots.
+        """
         blocks = [
             f"merged {_plural(len(self.shards), 'shard')}",
             f"saved {self.batches}",
@@ -798,12 +854,23 @@ class MergeResult(CommandResult):
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """Returns the generated plot paths."""
+        """Returns the generated plot paths.
+
+        Returns:
+            PNG paths of all generated histogram and trace-envelope plots.
+        """
         return tuple(plot.path for plot in self.plots)
 
 
 async def merge(request: MergeRequest, settings: Settings) -> MergeResult:
     """Merges shards in a directory, saves their batch, and plots distributions.
+
+    Args:
+        request: Merge command parameters naming the shards directory and output path.
+        settings: Runtime settings, unused by shard merging.
+
+    Returns:
+        Structured `MergeResult` reporting merged shards, Monte Carlo yield, and plots.
 
     Raises:
         JoltyError: When the directory contains no shards, a file is invalid, shard
@@ -865,17 +932,33 @@ class PlotResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the generated plot paths, one per line."""
+        """Formats the generated plot paths, one per line.
+
+        Returns:
+            Newline-separated plot output lines, or ``"nothing to plot"`` when empty.
+        """
         return _describe_plots(self.plots) if self.plots else "nothing to plot"
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """Returns the generated plot paths."""
+        """Returns the generated plot paths.
+
+        Returns:
+            PNG paths for all generated analysis plots.
+        """
         return tuple(plot.path for plot in self.plots)
 
 
 async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
     """Plots analyses from a saved results file next to it; settings are unused.
+
+    Args:
+        request: Plot command parameters naming the results archive, analyses, and
+            traces.
+        settings: Runtime settings, unused by result plotting.
+
+    Returns:
+        Structured `PlotResult` listing every generated plot image.
 
     Raises:
         JoltyError: When the optional `matplotlib` extra is missing, the file is
@@ -915,12 +998,25 @@ class MeasureResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the measure reading as a single line."""
+        """Formats the measure reading as a single line.
+
+        Returns:
+            Measure description paired with its formatted value.
+        """
         return f"{self.description}: {self.formatted}"
 
 
 async def measure(request: MeasureRequest, settings: Settings) -> MeasureResult:
     """Reads a measure from a saved results file without running any simulation.
+
+    Args:
+        request: Measure command parameters naming the results archive and target
+            measure.
+        settings: Runtime settings controlling maximum unknowns listed in errors.
+
+    Returns:
+        Structured `MeasureResult` holding the evaluated value, unit, and formatted
+        text.
 
     Raises:
         JoltyError: When the file is missing or invalid, the requested analysis or
@@ -1069,17 +1165,33 @@ class DrawResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the schematic output path as a single line."""
+        """Formats the schematic output path as a single line.
+
+        Returns:
+            Single-line confirmation naming `schematic`.
+        """
         return f"drew {self.schematic}"
 
     @override
     def images(self) -> tuple[Path, ...]:
-        """Returns the generated schematic path."""
+        """Returns the generated schematic path.
+
+        Returns:
+            Single-element tuple containing `schematic`.
+        """
         return (self.schematic,)
 
 
 async def draw(request: DrawRequest, settings: Settings) -> DrawResult:
     """Draws a component schematic next to a saved circuit file; settings are unused.
+
+    Args:
+        request: Draw command parameters naming the circuit, instance, and optional
+            results.
+        settings: Runtime settings, unused by schematic rendering.
+
+    Returns:
+        Structured `DrawResult` naming the written schematic PNG path.
 
     Raises:
         JoltyError: When the optional `matplotlib` extra is missing, a file is missing
@@ -1136,12 +1248,24 @@ class ViewResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the 3D viewer output path as a single line."""
+        """Formats the 3D viewer output path as a single line.
+
+        Returns:
+            Single-line confirmation naming `viewer`.
+        """
         return f"wrote the 3D viewer {self.viewer}"
 
 
 async def view(request: ViewRequest, settings: Settings) -> ViewResult:
     """Writes a 3D HTML viewer for a saved circuit and its results; settings unused.
+
+    Args:
+        request: View command parameters naming the circuit, optional results, and
+            title.
+        settings: Runtime settings, unused by 3D viewer generation.
+
+    Returns:
+        Structured `ViewResult` naming the written HTML viewer path.
 
     Raises:
         JoltyError: When a file is missing or contains no valid circuit or results.
@@ -1185,12 +1309,23 @@ class CostResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the bill of materials, one line per instance."""
+        """Formats the bill of materials, one line per instance.
+
+        Returns:
+            Human-readable bill of materials summary and total cost.
+        """
         return self.bill.describe()
 
 
 async def cost(request: CostRequest, settings: Settings) -> CostResult:
     """Prices a component of a saved circuit using a catalog; settings are unused.
+
+    Args:
+        request: Cost command parameters naming the circuit, catalog, and instance.
+        settings: Runtime settings, unused by catalog pricing.
+
+    Returns:
+        Structured `CostResult` containing the priced bill of materials.
 
     Raises:
         JoltyError: When a file is missing or contains no valid circuit or catalog, or
@@ -1249,7 +1384,11 @@ class ExportKicadResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the written netlist summary or each export blocker."""
+        """Formats the written netlist summary or each export blocker.
+
+        Returns:
+            Summary of the exported KiCad netlist, or an indented blocker list.
+        """
         if self.netlist is None or self.path is None:
             listed = "".join(f"\n  {problem}" for problem in self.problems)
             return f"cannot write the netlist:{listed}"
@@ -1260,6 +1399,15 @@ async def export_kicad(
     request: ExportKicadRequest, settings: Settings
 ) -> ExportKicadResult:
     """Writes a component of a saved circuit as a KiCad netlist; settings are unused.
+
+    Args:
+        request: KiCad export parameters naming the circuit, catalog, instance, and
+            output.
+        settings: Runtime settings, unused by KiCad netlist export.
+
+    Returns:
+        Structured `ExportKicadResult` containing the written netlist or export
+        blockers.
 
     Raises:
         JoltyError: When a file is missing or contains no valid circuit or catalog, or
@@ -1370,7 +1518,11 @@ class CheckResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the check report or elaboration problems as text."""
+        """Formats the check report or elaboration problems as text.
+
+        Returns:
+            Formatted structural check report, or elaboration failure summary.
+        """
         if self.report is None:
             return _unelaborated(str(self.circuit), self.problems)
         return self.report.describe()
@@ -1378,6 +1530,13 @@ class CheckResult(CommandResult):
 
 async def check(request: CheckRequest, settings: Settings) -> CheckResult:
     """Elaborates a saved circuit and checks its structure.
+
+    Args:
+        request: Check command parameters naming the circuit file and rule overrides.
+        settings: Runtime settings supplying default rule levels and diagnostic limits.
+
+    Returns:
+        Structured `CheckResult` reporting elaboration errors or structural diagnostics.
 
     Raises:
         JoltyError: When the file is missing or contains no valid circuit, or a named
@@ -1424,7 +1583,11 @@ class ExplainResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the explained rules as text, one paragraph each."""
+        """Formats the explained rules as text, one paragraph each.
+
+        Returns:
+            Blank-line-separated paragraphs explaining every selected rule.
+        """
         return "\n\n".join(
             f"{rule.name} ({rule.level}"
             + (
@@ -1439,6 +1602,13 @@ class ExplainResult(CommandResult):
 
 async def explain(request: ExplainRequest, settings: Settings) -> ExplainResult:
     """Explains the rules named in `request`, or all rules when none are listed.
+
+    Args:
+        request: Explain command parameters listing optional rule names.
+        settings: Runtime settings supplying active rule severity overrides.
+
+    Returns:
+        Structured `ExplainResult` summarizing each rule's level and condition.
 
     Raises:
         JoltyError: When a requested or configured rule name does not exist.
@@ -1479,7 +1649,11 @@ class ReadDocsResult(CommandResult):
 
     @override
     def describe(self) -> str:
-        """Formats the requested document text or the grouped topic listing."""
+        """Formats the requested document text or the grouped topic listing.
+
+        Returns:
+            Full document content without trailing newlines, or grouped topic listing.
+        """
         if self.document is not None:
             return self.document.content.rstrip("\n")
         return _docs.describe_entries(self.entries)
@@ -1487,6 +1661,13 @@ class ReadDocsResult(CommandResult):
 
 async def read_docs(request: ReadDocsRequest, settings: Settings) -> ReadDocsResult:
     """Lists available offline documents or reads the topic named in `request`.
+
+    Args:
+        request: Documentation query parameters naming an optional topic and section.
+        settings: Runtime settings, unused by offline documentation queries.
+
+    Returns:
+        Structured `ReadDocsResult` holding either summary entries or one `Document`.
 
     Raises:
         JoltyError: When the offline bundle is unavailable or the requested topic is
@@ -1607,7 +1788,7 @@ async def _run(
 async def _child(directory: Path, limit: int) -> tuple[ScriptOutput, int]:
     """Runs the runner on `directory` and returns its output and exit code.
 
-    When the caller stops waiting, through a timeout or a cancelled request, the child
+    When the caller stops waiting, through a timeout or a canceled request, the child
     is killed before the cancellation goes on, so no script outlives its command.
     """
     process = await asyncio.create_subprocess_exec(

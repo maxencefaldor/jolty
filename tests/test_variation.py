@@ -37,8 +37,8 @@ def cell(c: Builder) -> None:
 def pair(c: Builder) -> None:
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(1 * V), name="V1")
-    for id in ("X1", "X2"):
-        placed = c.place(cell(), name=id)
+    for name in ("X1", "X2"):
+        placed = c.place(cell(), name=name)
         c.connect(source.positive, placed.a)
         c.connect(placed.ground, ground)
     c.connect(source.negative, ground)
@@ -227,11 +227,11 @@ def test_the_parts_of_a_lot_share_its_factor() -> None:
     @component
     def integrated(c: Builder, lot: ir.Lot = die) -> None:
         ground = c.port("ground", Role.GROUND)
-        for id in ("R1", "R2"):
+        for name in ("R1", "R2"):
             matched = devices.resistor(1 * kohm).toleranced(
                 "resistance", 0.001, lot=lot
             )
-            placed = c.place(matched, name=id)
+            placed = c.place(matched, name=name)
             c.connect(placed.a, placed.b, ground)
         held = devices.capacitor(1 * nF).toleranced("capacitance", 0.001, lot=lot)
         capacitor = c.place(held, name="C1")
@@ -240,7 +240,8 @@ def test_the_parts_of_a_lot_share_its_factor() -> None:
     varied = toleranced(circuit(integrated()))
     drawn = [sample(varied, 0, index) for index in range(2000)]
     first, second = (
-        np.array([d[id]["resistance"] for d in drawn]) / 1e3 - 1 for id in ("R1", "R2")
+        np.array([d[name]["resistance"] for d in drawn]) / 1e3 - 1
+        for name in ("R1", "R2")
     )
     capacitance = np.array([d["C1"]["capacitance"] for d in drawn]) / 1e-9 - 1
     # Shared lot cancels: max independent +-0.001 ratio error is 1.001/0.999 - 1
@@ -254,8 +255,8 @@ def test_the_parts_of_a_lot_share_its_factor() -> None:
     @component
     def mixed(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        for id, lot in (("X1", die), ("X2", wider)):
-            placed = c.place(integrated(lot), name=id)
+        for name, lot in (("X1", die), ("X2", wider)):
+            placed = c.place(integrated(lot), name=name)
             c.connect(placed.ground, ground)
 
     with pytest.raises(ElaborationError, match="spread `resistance` of lot `die`"):
@@ -271,16 +272,16 @@ def test_an_exponentials_argument_spreads_in_its_logarithm() -> None:
     @component
     def pair(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)
-        for id in ("Q1", "Q2"):
-            placed = c.place(transistor, name=id)
+        for name in ("Q1", "Q2"):
+            placed = c.place(transistor, name=name)
             c.connect(placed.collector, placed.base, placed.emitter, ground)
 
     varied = toleranced(circuit(pair()))
     nominal = varied[0].nominal
     drawn = [sample(varied, 0, index) for index in range(2000)]
     first, second = (
-        np.log(np.array([d[id]["saturation_current"] for d in drawn]) / nominal)
-        for id in ("Q1", "Q2")
+        np.log(np.array([d[name]["saturation_current"] for d in drawn]) / nominal)
+        for name in ("Q1", "Q2")
     )
     # Support is exact log(36) lot + 1 mV/Vt mismatch (+ 1e-12 f64 log rounding);
     # at N=2000 draws, uniform std SE is ~1%, so rel=0.05 is ~5 standard errors.

@@ -68,8 +68,8 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     - **BSIM3 `capmod 0` (1.4e-4) and small-`vds` precision:** three numerical bugs were fixed across `bsim3/channel.rs`, `bsim3/charges.rs`, `bsim4/channel.rs`, and `bsim4/charges.rs`.
         First, `capmod_zero` branched on strict `channel.vbseff < 0.0`, sending `vbs == 0` into `(-channel.phis).plus(self.phi)` with left `vbseff` slope `0.9998515` instead of `b3ld.c` slope `1.0`.
         The mismatched branch caused a `1.48e-4` error (`1.85e-18 F` on `10u x 1u`).
-        Second, `smooth_positive + vbsc` cancelled roughly 12 digits near `vbs = 0`, causing branch chatter within `6e-12 V` (fixed via rationalized `smooth_floor` shared by BSIM3 and BSIM4).
-        Third, `vdsat - (t1 + t2) * 0.5` cancelled at small `vds`, losing 5 to 14 digits (`37,886 ε` swap error at `[1e-9, 2, 0, -0.5]` and `1.51%` error on `Ids(1e-15)/1e-15`).
+        Second, `smooth_positive + vbsc` canceled roughly 12 digits near `vbs = 0`, causing branch chatter within `6e-12 V` (fixed via rationalized `smooth_floor` shared by BSIM3 and BSIM4).
+        Third, `vdsat - (t1 + t2) * 0.5` canceled at small `vds`, losing 5 to 14 digits (`37,886 ε` swap error at `[1e-9, 2, 0, -0.5]` and `1.51%` error on `Ids(1e-15)/1e-15`).
         Replacing all five BSIM3/BSIM4 sites with two-sided rationalized `effective_drain` fixed the cancellation and removed manual `vds == 0.0` special cases.
         Currents, charges, and conductances now swap cleanly at `vds = 0` across all `capmod 0..=3`.
         Remaining capacitance asymmetries are inherent to Berkeley `b3ld.c` equations.
@@ -123,7 +123,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Why:** four CircuitSim90 decks (`arom`, `gm17`, `rich3`, `jge`) require these features and were previously unsupported in the corpus.
 - **Done when:** the corpus parses all four decks and agrees with ngspice.
 - **Result** (`294189a` to `af5dc2d`, 16 November): added `Transient(initial_conditions={net: V}, operating_point=True)` (`operating_point=False` for SPICE `UIC`) and `Options(nodesets={net: V})`.
-    Initial conditions enforce `v − v0 = 0` exactly during initialization and report conflicting fixed sources, whereas ngspice pulls with 1e10 S; nodesets apply during initial convergence and then release, matching ngspice.
+    Initial conditions enforce `v - v0 = 0` exactly during initialization and report conflicting fixed sources, whereas ngspice pulls with 1e10 S; nodesets apply during initial convergence and then release, matching ngspice.
     The `EXP` waveform works across devices, reader, and exporter, rejecting zero delay or time constant where ngspice substitutes the step size (measured).
     Against ngspice, `EXP` into an RC agrees within 4.9e-9 of swing, and RC/RLC initial conditions agree within 1e-3 under both operating-point and `UIC` modes.
     Nodesets select each of the three solutions of `v = 2 tanh v` within 1e-6.
@@ -157,7 +157,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Documented departure: ngspice `capmod` 2 body capacitances diverge by 1.2e-4 from exact charge derivatives at 0.2 V forward body bias.
     Noise (`3d3b0ae`): `tnoimod` 0 and 1, `fnoimod` 0 and 1, and resistor thermal noise match `b4v5noi.c` within 1.0e-7 to 3.5e-7 of ngspice (the Boltzmann constant difference).
     Documented departure: ngspice inserts 1 mΩ behind drain and source at `tnoimod` 1 in noise decks only.
-    `rdsmod` 1 (`b65b0ab`): bias-dependent drain and source resistances use internal nodes and agree within 1e-6 on curves at −40, 27, and 125 °C and 1e-5 on noise.
+    `rdsmod` 1 (`b65b0ab`): bias-dependent drain and source resistances use internal nodes and agree within 1e-6 on curves at -40, 27, and 125 °C and 1e-5 on noise.
     Kit native counts stayed unchanged at that step because SKY130 16 V devices still stopped on the accompanying level 3 diode.
     Gate resistances (`6531907`): `rgatemod` 1 to 3 match `b4v5temp.c` and `b4v5ld.c`, adding a second gate node at mode 3 along with gate noise.
     All 74 SKY130 RF transistors became native (SKY130 143 → 217 of 263), agreeing within 2e-6 on operating points, admittances to 10 GHz, and noise.
@@ -198,7 +198,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Remaining first refusals at that point were SKY130 `rgatemod` 3 (74), level 3 diodes (31 + 13 + 11), diode `ISR`/`IK` (12), and HSPICE bipolar temperature terms (17).
     Other refusals were 25 GF180MCU instance-sized resistors, BSIM4 4.6 (7), BSIM3 3.2 (5), and voltage-dependent capacitors (13).
     Documented departures: element `m` multiplies by subcircuit `m` in all modes, and quoted card values evaluate where ngspice 47 drops them.
-    Next (`e20de6d`): HSPICE bipolar temperature terms (`TREF`, `TLEV` 0/1, `TLEVC` 0/1, linear/quadratic coefficients, `NKF`) matched `bjttemp.c` within the Boltzmann bound at −40, 27, and 125 °C (`TLEV` 3 refused).
+    Next (`e20de6d`): HSPICE bipolar temperature terms (`TREF`, `TLEV` 0/1, `TLEVC` 0/1, linear/quadratic coefficients, `NKF`) matched `bjttemp.c` within the Boltzmann bound at -40, 27, and 125 °C (`TLEV` 3 refused).
     Reading GF180MCU resistors at first-placement size or the ngspice 10 µm square default raised native counts to 221 in SKY130 (from 217), 33 in GF180MCU (from 7), and 14 in SG13G2 (from 13).
     Documented departure: ngspice treats GF180MCU poly resistor `l=r_l` as body resistance (`inpcom.c` line 6841).
     Adding level 3 diodes (`b888055`) and charge/voltage-dependent capacitors (`04fb223`) brought typical-corner native counts to 251 of 263 in SKY130 and 65 of 72 in GF180MCU (`docs/guide/foundry.md`).
@@ -301,8 +301,8 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Done when:** closed-form checks (matched delay, reflections, quarter-wave inverter) and ngspice simulations agree.
     **Source:** row 16.
 - **State** (`a39a72f`, 16 November): implemented lossless line `T` (`devices.transmission_line(characteristic_impedance, delay)`) matching ngspice 47 `tra/`.
-    Each port computes `v − Z₀ i` from the opposite port's delayed wave using method-order interpolation over bounded accepted-step history without crossing corners, propagating corners as delayed breakpoints.
-    At DC the lossless line acts as a short-through, and in AC the delayed parts of `G` apply `e^{−sτ}`.
+    Each port computes `v - Z₀ i` from the opposite port's delayed wave using method-order interpolation over bounded accepted-step history without crossing corners, propagating corners as delayed breakpoints.
+    At DC the lossless line acts as a short-through, and in AC the delayed parts of `G` apply `e^{-sτ}`.
     Matched, open, and shorted lines match closed forms within 3.4e-15 V, and a quarter-wave inverter input impedance agrees within 1e-9.
     At default step settings, ngspice errs by 61 mV on the open-end reflection and becomes exact at a 20 ps step limit.
     Pole-zero, growing-mode, periodic steady-state, and sensitivity analyses refuse delayed circuits by name.

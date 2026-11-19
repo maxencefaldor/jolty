@@ -100,7 +100,7 @@ impl Square {
     }
 
     /// Rotates rows `first` and `second` over `columns`: `(x, y)` becomes
-    /// `(c x + s y, c y − s̄ x)`, as LAPACK's ZROT.
+    /// `(c x + s y, c y - s̄ x)`, as LAPACK's ZROT.
     fn rotate_rows(
         &mut self,
         (first, second): (usize, usize),
@@ -146,7 +146,7 @@ fn norm1(value: Complex64) -> f64 {
 }
 
 /// Computes a scaling-safe complex Givens rotation `(c, s, r)` satisfying
-/// `[c, s; −s̄, c] [first; second] = [r; 0]`, following LAPACK `ZLARTG` (Anderson, "Algorithm
+/// `[c, s; -s̄, c] [first; second] = [r; 0]`, following LAPACK `ZLARTG` (Anderson, "Algorithm
 /// 978: Safe scaling in the level 1 BLAS", ACM TOMS 44(1), 2017).
 fn rotation(first: Complex64, second: Complex64) -> (f64, Complex64, Complex64) {
     let (safe_min, safe_max) = (f64::MIN_POSITIVE, f64::MIN_POSITIVE.recip());
@@ -589,8 +589,8 @@ mod tests {
     #[test]
     fn finds_every_pole_of_a_long_rc_ladder() {
         // A voltage source drives 80 stages of a 1 kΩ resistor into 1 mF to ground.
-        // Poles are −(2/RC)(1 − cos((2k − 1)π / 161)) for k = 1..=80, forming the pencil
-        // (G, −C) with the source node first and source current last.
+        // Poles are -(2/RC)(1 - cos((2k - 1)π / 161)) for k = 1..=80, forming the pencil
+        // (G, -C) with the source node first and source current last.
         let stages = 80;
         let size = stages + 2;
         let (conductance, capacitance) = (1e-3, 1e-3);

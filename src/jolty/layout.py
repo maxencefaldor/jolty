@@ -166,6 +166,12 @@ def _box(ports: list[tuple[str, ir.Role]], name: str, instance: str) -> Shape:
 def split_name(name: str) -> tuple[str, str]:
     """Splits a component `name` into its base function name and formatted arguments.
 
+    Args:
+        name: Parameterized or bare component name string.
+
+    Returns:
+        Pair of base component title and comma-space-separated argument text.
+
     Examples:
         >>> split_name("divider[ratio=0.5,load=1000.0]")
         ('divider', 'ratio=0.5, load=1000.0')
@@ -186,7 +192,14 @@ class Orientation:
     """Flag indicating a vertical flip applied before quarter-turn rotation."""
 
     def apply[N: (int, float)](self, point: tuple[N, N]) -> tuple[N, N]:
-        """Transforms a local symbol `point` by flip and rotation."""
+        """Transforms a local symbol `point` by flip and rotation.
+
+        Args:
+            point: Two-dimensional local coordinate pair `(x, y)`.
+
+        Returns:
+            Transformed coordinate pair after optional vertical flip and rotation.
+        """
         x, y = (point[0], -point[1]) if self.flipped else point
         match self.turns % 4:
             case 0:
@@ -211,16 +224,34 @@ class Placed:
     column: int
 
     def at[N: (int, float)](self, point: tuple[N, N]) -> tuple[N, N]:
-        """Transforms a local symbol `point` into schematic sheet coordinates."""
+        """Transforms a local symbol `point` into schematic sheet coordinates.
+
+        Args:
+            point: Local symbol coordinate pair `(x, y)`.
+
+        Returns:
+            Sheet coordinate pair after orientation and origin translation.
+        """
         x, y = self.orientation.apply(point)
         return self.origin[0] + x, self.origin[1] + y
 
     def pin(self, terminal: str) -> Point:
-        """Returns the schematic sheet coordinates of the `terminal` pin."""
+        """Returns the schematic sheet coordinates of the `terminal` pin.
+
+        Args:
+            terminal: Terminal or port name defined on `shape.pins`.
+
+        Returns:
+            Grid coordinate pair of `terminal` on the schematic sheet.
+        """
         return self.at(self.shape.pins[terminal])
 
     def body(self) -> tuple[Point, Point]:
-        """Returns the lower-left and upper-right body corners on the sheet."""
+        """Returns the lower-left and upper-right body corners on the sheet.
+
+        Returns:
+            Pair of lower-left and upper-right grid corners bounding the symbol body.
+        """
         corners = [self.at(corner) for corner in self.shape.body]
         xs, ys = [x for x, _ in corners], [y for _, y in corners]
         return (min(xs), min(ys)), (max(xs), max(ys))
@@ -259,7 +290,11 @@ class Layout:
     nets: tuple[Net, ...]
 
     def bounds(self) -> tuple[Point, Point]:
-        """Returns lower-left and upper-right corners bounding all drawn elements."""
+        """Returns lower-left and upper-right corners bounding all drawn elements.
+
+        Returns:
+            Axis-aligned lower-left and upper-right grid corners enclosing the layout.
+        """
         points = [point for net in self.nets for point in net.pins]
         points += [flag.point for flag in self.flags]
         for placed in self.instances:
@@ -273,6 +308,13 @@ class Layout:
 
 def layout(circuit: ir.Circuit, name: str) -> Layout:
     """Computes the schematic `Layout` for component `name` in `circuit`.
+
+    Args:
+        circuit: Circuit IR containing the definition of `name`.
+        name: Component key in `circuit.components` to lay out and route.
+
+    Returns:
+        Completed schematic `Layout` with placed instances, port flags, and nets.
 
     Raises:
         KeyError: When `circuit` contains no component named `name`.

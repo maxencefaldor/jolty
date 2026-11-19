@@ -23,8 +23,8 @@
 module diode(anode, cathode);
     inout anode, cathode;
     electrical anode, cathode, junction, sidewall;
-    // The series resistance's current, an unknown of its own below jolty's small
-    // resistance.
+    // Explicit branch-current unknown used when series resistance falls below jolty's
+    // small-resistance threshold.
     branch (anode, junction) junction_current;
     // The sidewall's own series resistance's current alike.
     branch (anode, sidewall) sidewall_current;
@@ -288,7 +288,8 @@ module diode(anode, cathode);
                 iteration = iteration + 1;
             end
         end
-        // A sidewall behind a resistance of its own does not break down.
+        // Sidewall reverse breakdown is disabled when an explicit sidewall series
+        // resistance is specified.
         sidewall_breaks = breaks != 0 && separate == 0;
 
         if (series_resistance == 0)
@@ -328,14 +329,15 @@ module diode(anode, cathode);
             id = id / (sqrt(-id / reverse_knee_current) + 1);
         if (capacitance > 0) begin
             if (vd < threshold) begin
-                // 1 − (1 − v/φ)^(1−m) through jolty's `expm1` and `ln1p`, which keep its
+                // 1 - (1 - v/φ)^(1-m) through jolty's `expm1` and `ln1p`, which keep its
                 // digits near zero volts, where the difference from 1 loses them.
                 qd = capacitance * potential * -expm1((1 - grading) * ln1p(-(vd / potential))) / (1 - grading);
             end else
                 qd = capacitance * (charge_at_threshold + (offset * (vd - threshold) + grading / (potential * 2) * (vd * vd - threshold * threshold)) / divisor);
         end
 
-        // The sidewall, at the junction's voltage unless it has a resistance of its own.
+        // Sidewall diode branch, sharing the main junction node unless sidewall series
+        // resistance is specified.
         if (separate != 0) begin
             vs = $limit(V(sidewall, cathode), junction_limit, sidewall_slope, sidewall_critical, 0, 0, 0);
         end else begin

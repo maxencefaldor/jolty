@@ -263,6 +263,14 @@ def parse_periodic_steady_state(
 ) -> PeriodicSteadyStateCard:
     """Parses a ``.pss`` statement into a [`PeriodicSteadyStateCard`].
 
+    Args:
+        statement: Logical ``.pss`` statement to parse.
+        scope: Case-folded global parameter values in scope for option expressions.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        Validated `PeriodicSteadyStateCard` populated from `statement`.
+
     Raises:
         SpiceError: When tokens, options, expressions or values are invalid.
     """

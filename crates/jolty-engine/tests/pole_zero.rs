@@ -128,7 +128,7 @@ fn a_ladder_matches_ngspice() {
 
 #[test]
 fn a_long_rc_ladder_has_every_pole_its_closed_form_gives() {
-    // 120 stages of 1 kΩ into 1 nF: the poles are −(2/RC)(1 − cos((2k − 1)π / 241)).
+    // 120 stages of 1 kΩ into 1 nF: the poles are -(2/RC)(1 - cos((2k - 1)π / 241)).
     let stages: u32 = 120;
     let mut instances = vec![voltage_dc("V1", "n0", 1.0)];
     for stage in 1..=stages {
@@ -171,7 +171,7 @@ fn growing_modes(instances: impl IntoIterator<Item = Instance>) -> Vec<jolty_eng
 
 #[test]
 fn a_negative_conductance_grows_and_a_lossless_resonator_does_not() {
-    // 1 kΩ against a 2 mS negative conductance across 1 nF: s = (2e-3 − 1e-3) / 1e-9.
+    // 1 kΩ against a 2 mS negative conductance across 1 nF: s = (2e-3 - 1e-3) / 1e-9.
     let latch = growing_modes([
         resistor("R1", 1e3, "n", "0"),
         capacitor("C1", 1e-9, "n", "0"),
@@ -180,7 +180,7 @@ fn a_negative_conductance_grows_and_a_lossless_resonator_does_not() {
     assert_eq!(latch.len(), 1, "{latch:?}");
     assert_roots(&[latch[0].pole], &[real(1e6)]);
     assert!((latch[0].shape[0].norm() - 1.0).abs() < 1e-12);
-    // The same across 1 mH too: C s² − 1e-4 s + 1/L = 0, a pair that grows as it rings.
+    // The same across 1 mH too: C s² - 1e-4 s + 1/L = 0, a pair that grows as it rings.
     let oscillator = growing_modes([
         resistor("R1", 1e4, "n", "0"),
         capacitor("C1", 1e-9, "n", "0"),
@@ -310,9 +310,9 @@ fn a_pencil_that_would_fill_the_memory_fails_at_once() {
 #[test]
 fn a_symmetric_rings_growing_mode_has_its_stages_swing_in_turn() {
     // Three stages, each drawing 3 mS times the previous voltage from 1 kΩ and 1 nF, form a
-    // rotationally symmetric ring with loop gain −3. The 120-degree phase-shifted mode grows
-    // at C s = −1/R + 3 mS e^(±2πi/3) = 5e5 ± 2.6e6i per second. The equal-amplitude mode
-    // decays at −4e6 per second and has no projection onto the growing mode.
+    // rotationally symmetric ring with loop gain -3. The 120-degree phase-shifted mode grows
+    // at C s = -1/R + 3 mS e^(±2πi/3) = 5e5 ± 2.6e6i per second. The equal-amplitude mode
+    // decays at -4e6 per second and has no projection onto the growing mode.
     let stages = ["a", "b", "c"];
     let mut instances = Vec::new();
     for (index, node) in stages.iter().enumerate() {

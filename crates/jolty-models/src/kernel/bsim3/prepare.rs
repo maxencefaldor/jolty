@@ -23,7 +23,7 @@ pub(super) struct Core<R: Real> {
     pub(super) mobmod: Mobility,
     pub(super) capmod: Charges,
     pub(super) xpart: f64,
-    /// The channel's sign, 1 for an n-channel and −1 for a p-channel.
+    /// The channel's sign, 1 for an n-channel and -1 for a p-channel.
     pub(super) sign: f64,
     pub(super) tox: R,
     /// The oxide capacitance per area.
@@ -32,7 +32,7 @@ pub(super) struct Core<R: Real> {
     pub(super) factor1: R,
     /// Thermal voltage `k·T / q` using BSIM3's `k / q`.
     pub(super) vtm: R,
-    /// Relative temperature rise `T / Tnom − 1`.
+    /// Relative temperature rise `T / Tnom - 1`.
     pub(super) temperature_rise: R,
     pub(super) leff: R,
     pub(super) weff: R,

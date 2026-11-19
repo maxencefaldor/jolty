@@ -79,27 +79,62 @@ SHARD_PATTERN: Final = "shard-*-*.npz"
 
 
 def circuit_path(script: Path) -> Path:
-    """Returns the default circuit JSON path ``<stem>.jolty.json`` for `script`."""
+    """Returns the default circuit JSON path ``<stem>.jolty.json`` for `script`.
+
+    Args:
+        script: Build script path whose directory and stem determine the circuit path.
+
+    Returns:
+        Sibling path ending with `.jolty.json`.
+    """
     return script.with_name(script.stem + CIRCUIT_SUFFIX)
 
 
 def results_path(script: Path) -> Path:
-    """Returns the default results archive path ``<stem>.results.npz`` for `script`."""
+    """Returns the default results archive path ``<stem>.results.npz`` for `script`.
+
+    Args:
+        script: Build script path whose directory and stem determine the archive path.
+
+    Returns:
+        Sibling path ending with `.results.npz`.
+    """
     return script.with_name(script.stem + RESULTS_SUFFIX)
 
 
 def raw_path(script: Path) -> Path:
-    """Returns the default SPICE raw path ``<stem>.raw`` for `script`."""
+    """Returns the default SPICE raw path ``<stem>.raw`` for `script`.
+
+    Args:
+        script: Build script path whose directory and stem determine the raw path.
+
+    Returns:
+        Sibling path ending with `.raw`.
+    """
     return script.with_name(script.stem + RAW_SUFFIX)
 
 
 def shards_path(script: Path) -> Path:
-    """Returns the default shard directory path ``<stem>.shards`` for `script`."""
+    """Returns the default shard directory path ``<stem>.shards`` for `script`.
+
+    Args:
+        script: Build script path whose directory and stem determine the directory path.
+
+    Returns:
+        Sibling directory path ending with `.shards`.
+    """
     return script.with_name(script.stem + SHARDS_SUFFIX)
 
 
 def shard_name(start: int, stop: int) -> str:
     """Returns the shard filename for sample indices from `start` up to `stop`.
+
+    Args:
+        start: Inclusive starting Monte Carlo sample index.
+        stop: Exclusive ending Monte Carlo sample index.
+
+    Returns:
+        Shard archive filename ``shard-<start>-<stop>.npz``.
 
     Examples:
         >>> shard_name(0, 1000)
@@ -111,6 +146,12 @@ def shard_name(start: int, stop: int) -> str:
 def merged_path(shards: Path) -> Path:
     """Returns the merged batch archive path next to the `shards` directory.
 
+    Args:
+        shards: Monte Carlo shards directory path.
+
+    Returns:
+        Sibling batch archive path ending with `.batches.npz`.
+
     Examples:
         >>> merged_path(Path("amp.shards")).name
         'amp.batches.npz'
@@ -120,6 +161,12 @@ def merged_path(shards: Path) -> Path:
 
 def batches_path(results: Path) -> Path:
     """Returns the sibling batch archive path ``<stem>.batches.npz`` for `results`.
+
+    Args:
+        results: Results archive path whose stem names the batch archive.
+
+    Returns:
+        Sibling batch archive path ending with `.batches.npz`.
 
     Examples:
         >>> batches_path(Path("rc.results.npz")).name
@@ -131,6 +178,13 @@ def batches_path(results: Path) -> Path:
 
 def plot_path(results: Path, analysis: str) -> Path:
     """Returns the plot path ``<stem>.<analysis>.plot.png`` next to `results`.
+
+    Args:
+        results: Results or batch archive path whose stem prefixes the plot filename.
+        analysis: Analysis or batch name embedded in the plot filename.
+
+    Returns:
+        Sibling PNG path ending with `.<analysis>.plot.png`.
 
     Examples:
         >>> plot_path(Path("rc.results.npz"), "step").name
@@ -146,6 +200,12 @@ def plot_path(results: Path, analysis: str) -> Path:
 
 def viewer_path(circuit: Path) -> Path:
     """Returns the 3D viewer path ``<stem>.view.html`` next to `circuit`.
+
+    Args:
+        circuit: Circuit JSON path whose stem prefixes the viewer filename.
+
+    Returns:
+        Sibling HTML path ending with `.view.html`.
 
     Examples:
         >>> viewer_path(Path("rc.jolty.json")).name
@@ -169,6 +229,13 @@ def schematic_path(circuit: Path, instance: str = "") -> Path:
     segments with dots, such as ``<stem>.X1.X2.schematic.png``. Distinct suffixes keep
     schematic files separate from plot files regardless of component or analysis names.
 
+    Args:
+        circuit: Circuit JSON path whose stem prefixes the schematic filename.
+        instance: Hierarchical component instance path, or empty for the top component.
+
+    Returns:
+        Sibling PNG path ending with `.schematic.png`.
+
     Examples:
         >>> schematic_path(Path("rc.jolty.json")).name
         'rc.schematic.png'
@@ -184,6 +251,13 @@ def netlist_path(circuit: Path, instance: str = "") -> Path:
     The top component uses ``<stem>.net``; nested instances join their path segments
     with dots, such as ``<stem>.X1.X2.net``.
 
+    Args:
+        circuit: Circuit JSON path whose stem prefixes the netlist filename.
+        instance: Hierarchical component instance path, or empty for the top component.
+
+    Returns:
+        Sibling KiCad netlist path ending with `.net`.
+
     Examples:
         >>> netlist_path(Path("amp.jolty.json")).name
         'amp.net'
@@ -194,12 +268,24 @@ def netlist_path(circuit: Path, instance: str = "") -> Path:
 
 
 def save_circuit(path: Path, circuit: ir.Circuit) -> None:
-    """Writes `circuit` to `path` as JSON."""
+    """Writes `circuit` to `path` as JSON.
+
+    Args:
+        path: Destination file path for the serialized circuit JSON.
+        circuit: Circuit IR to write.
+    """
     path.write_text(circuit.model_dump_json(indent=2) + "\n", encoding="utf-8")
 
 
 def load_circuit(path: Path) -> ir.Circuit:
-    """Reads the circuit file at `path`."""
+    """Reads the circuit file at `path`.
+
+    Args:
+        path: Source JSON file path to read and validate.
+
+    Returns:
+        Validated `Circuit` loaded from `path`.
+    """
     return ir.Circuit.model_validate_json(path.read_bytes())
 
 

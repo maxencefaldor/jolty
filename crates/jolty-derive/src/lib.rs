@@ -274,7 +274,7 @@ fn holds(field_type: &Type, number: &Ident) -> bool {
         Type::Ptr(pointer) => holds(&pointer.elem, number),
         Type::Paren(paren) => holds(&paren.elem, number),
         Type::Group(group) => holds(&group.elem, number),
-        Type::BareFn(function) => {
+        Type::FnPtr(function) => {
             function.inputs.iter().any(|arg| holds(&arg.ty, number))
                 || return_type_holds(&function.output, number)
         }
@@ -300,7 +300,7 @@ fn path_arguments_hold(path: &Path, number: &Ident) -> bool {
                 parenthesized
                     .inputs
                     .iter()
-                    .any(|input| holds(input, number))
+                    .any(|input| holds(&input.ty, number))
                     || return_type_holds(&parenthesized.output, number)
             }
         })
@@ -1257,6 +1257,7 @@ mod tests {
             "foo::Bar<R>",
             "dyn Iterator<Item = R>",
             "impl Fn(R) -> f64",
+            "fn(x: R) -> f64",
             "fn(R) -> i32",
             "fn(i32) -> R",
             "R<R>",

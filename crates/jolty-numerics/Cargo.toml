@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+readme.workspace = true
 repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
@@ -15,7 +16,6 @@ dyn-stack.workspace = true
 faer.workspace = true
 num-complex.workspace = true
 rayon.workspace = true
-serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

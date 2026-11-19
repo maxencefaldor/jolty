@@ -234,6 +234,10 @@ class Library:
         Any ``.include`` or ``.lib`` directive, outside or inside a subcircuit, expands
         in place relative to the directory of `file`.
 
+        Args:
+            text: SPICE library or netlist source text to parse.
+            file: Source file path used for diagnostics and relative includes.
+
         Raises:
             SpiceError: When a statement is not a definition jolty reads, an included
                 file is missing, a section is not in the file, or files include one
@@ -244,6 +248,10 @@ class Library:
 
     def include(self, path: Path, section: str | None = None) -> None:
         """Adds the definitions of the file at `path`, or of its section `section`.
+
+        Args:
+            path: Filesystem path to the SPICE file to include.
+            section: Optional ``.lib`` section name to extract from `path`.
 
         Raises:
             SpiceError: When a statement is not a definition jolty reads, a file is
@@ -376,6 +384,13 @@ class Library:
 
         Keyword `parameters` override the subcircuit's default parameter values.
 
+        Args:
+            name: Subcircuit name to instantiate (matched case-insensitively).
+            **parameters: Numeric overrides for subcircuit formal parameters or `m`.
+
+        Returns:
+            Translated jolty `Component` evaluated at nominal parameter values.
+
         Raises:
             SpiceError: When `name` is undefined or contains unsupported SPICE syntax.
         """
@@ -389,6 +404,15 @@ class Library:
         Statistical functions inside `name` draw from `sample` for `path` (such as
         ``X1``), while global library parameters draw for path ``""``. Keyword
         `parameters` override the subcircuit's default parameter values.
+
+        Args:
+            name: Subcircuit name to instantiate (matched case-insensitively).
+            sample: Monte Carlo sample supplying statistical draws per placement path.
+            path: Hierarchical instance path identifying the placement in `sample`.
+            **parameters: Numeric overrides for subcircuit formal parameters or `m`.
+
+        Returns:
+            Translated jolty `Component` evaluated with statistical draws from `sample`.
 
         Raises:
             SpiceError: When `name` is undefined or contains unsupported SPICE syntax.
@@ -430,6 +454,18 @@ class Library:
         nonzero inductor ``IC=`` currents raise an error because
         `Transient.initial_conditions` accepts net voltages alone (use
         [`initial_currents_of`][jolty.spice.Library.initial_currents_of] for currents).
+
+        Args:
+            name: Subcircuit name whose initial conditions are gathered.
+            path: Hierarchical placement path, or empty when `name` is the top circuit.
+            operating_point: When `True`, omits capacitor ``IC=`` values and returns
+                ``.ic`` node voltages alone.
+            connections: Optional mapping from subcircuit pin names to external nets
+                when `path` is non-empty.
+            **parameters: Numeric overrides for subcircuit formal parameters or `m`.
+
+        Returns:
+            Mapping from circuit net paths to initial voltages in volts.
 
         Raises:
             SpiceError: When `name` is undefined, `connections` names an unknown pin,
@@ -478,6 +514,16 @@ class Library:
         [`initial_conditions_of`][jolty.spice.Library.initial_conditions_of]. When
         `path` is empty, top-level `self.nodesets` override inner declarations.
 
+        Args:
+            name: Subcircuit name whose nodesets are gathered.
+            path: Hierarchical placement path, or empty when `name` is the top circuit.
+            connections: Optional mapping from subcircuit pin names to external nets
+                when `path` is non-empty.
+            **parameters: Numeric overrides for subcircuit formal parameters or `m`.
+
+        Returns:
+            Mapping from circuit net paths to nodeset voltages in volts.
+
         Raises:
             SpiceError: When `name` is undefined, `connections` names an unknown pin,
                 or a nodeset assigns a nonzero voltage to ground.
@@ -503,6 +549,14 @@ class Library:
         is non-empty. Currents include each inductor's parallel multiplier `M` and
         enclosing subcircuit multipliers.
 
+        Args:
+            name: Subcircuit name whose inductor ``IC=`` currents are gathered.
+            path: Hierarchical placement path prefixing returned unknown names.
+            **parameters: Numeric overrides for subcircuit formal parameters or `m`.
+
+        Returns:
+            Mapping from inductor current unknown names to initial currents in amperes.
+
         Raises:
             SpiceError: When `name` is undefined or contains unsupported SPICE syntax.
         """
@@ -526,6 +580,14 @@ class Library:
         open PDKs. Calls with zero standard deviation, calls with no device effect, and
         shared global library parameters are excluded. Keyword `parameters` override
         subcircuit defaults.
+
+        Args:
+            name: Subcircuit name to inspect for statistical variation.
+            path: Non-empty hierarchical placement path assigned to `name`.
+            **parameters: Numeric overrides for subcircuit formal parameters or `m`.
+
+        Returns:
+            Random variables affecting device parameters within the placement.
 
         Raises:
             SpiceError: When `name` is undefined, contains unsupported syntax, or a
@@ -593,6 +655,14 @@ class Library:
         `parameters`, recording each element's required model and any translation error.
         Subcircuit placements report their passed parameters and placement errors.
         Subcircuit-level definition errors appear as a `Use` with an empty element path.
+
+        Args:
+            name: Subcircuit name to survey.
+            **parameters: Numeric overrides for subcircuit formal parameters or `m`.
+
+        Returns:
+            Recorded element, placement, and definition `Use` entries in traversal
+            order.
         """
         uses: list[Use] = []
         try:
@@ -606,6 +676,12 @@ class Library:
 
         Evaluates the model against an empty instance parameter map and formats any
         diagnostic identically to [`survey`][jolty.spice.Library.survey].
+
+        Args:
+            name: Global model or binned model base name to survey.
+
+        Returns:
+            `Use` entry recording the model description and any translation error.
 
         Raises:
             SpiceError: When no model is named `name`.
@@ -692,6 +768,12 @@ class Library:
 
         Includes ``temper`` alongside parsed `.param` values. Statistical functions
         draw from `sample` at path ``""``, or use nominal values when `sample` is None.
+
+        Args:
+            sample: Optional Monte Carlo sample supplying global statistical draws.
+
+        Returns:
+            Evaluated global parameter dictionary keyed by case-folded name.
 
         Raises:
             SpiceError: When parameters form a dependency cycle or fail evaluation.
@@ -873,12 +955,27 @@ class Library:
         return built
 
     def known_models(self, local: Mapping[str, ModelCard]) -> dict[str, ModelCard]:
-        """Returns all models visible inside a subcircuit, with `local` shadowing."""
+        """Returns all models visible inside a subcircuit, with `local` shadowing.
+
+        Args:
+            local: Subcircuit-local model cards keyed by case-folded name.
+
+        Returns:
+            Combined global and local model dictionary keyed by case-folded name.
+        """
         with self._cache_lock:
             return {**self._models, **local}
 
     def model(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
-        """Looks up model `name` in `local` scope first, then global library models."""
+        """Looks up model `name` in `local` scope first, then global library models.
+
+        Args:
+            name: Model name to look up (matched case-insensitively).
+            local: Subcircuit-local model cards keyed by case-folded name.
+
+        Returns:
+            Matching `ModelCard`, or `None` when undefined in both scopes.
+        """
         key = name.casefold()
         return local.get(key) or self._models.get(key)
 
@@ -902,7 +999,15 @@ class Library:
             return (self._bins or built).get(base, ())
 
     def card(self, name: str, local: Mapping[str, ModelCard]) -> ModelCard | None:
-        """Looks up model `name` or its first bin in `local` then global scope."""
+        """Looks up model `name` or its first bin in `local` then global scope.
+
+        Args:
+            name: Exact model name or binned model base name.
+            local: Subcircuit-local model cards keyed by case-folded name.
+
+        Returns:
+            Exact `ModelCard` or first matching bin card, or `None` when absent.
+        """
         found = self.model(name, local)
         if found is not None:
             return found
@@ -919,7 +1024,11 @@ class Library:
         return self._uses is not None
 
     def use(self, use: Use) -> None:
-        """Records `use` of the survey being made."""
+        """Records `use` of the survey being made.
+
+        Args:
+            use: Diagnostic or element usage record to append when surveying.
+        """
         if self._uses is not None:
             self._uses.append(use)
 
@@ -938,6 +1047,16 @@ class Library:
         ``WMIN``..``WMAX`` ranges contain `l` and ``w / fingers(instance)`` inclusive
         of boundaries. Checks local definitions in reverse definition order first,
         then global definitions in reverse order.
+
+        Args:
+            name: Base model name without numeric bin suffix.
+            local: Subcircuit-local model cards keyed by case-folded name.
+            instance: Evaluated MOSFET instance attributes including `l`, `w`, and `nf`.
+            scope: Case-folded parameter values in scope for evaluating bin bounds.
+            functions: Case-folded user-defined functions inlined before evaluation.
+
+        Returns:
+            Matching binned `ModelCard`, or `None` when no bin matches `instance`.
         """
         if "l" not in instance or "w" not in instance:
             return None
@@ -966,6 +1085,12 @@ class Library:
         width by ``nf`` when `instance` provides ``nf`` and either ``.option wnflag``
         or HSPICE compatibility (`hsa`) is enabled, and returns 1 otherwise.
         Instance-level ``wnflag`` applies only to unmodeled BSIM4.8.
+
+        Args:
+            instance: Evaluated MOSFET instance parameter dictionary.
+
+        Returns:
+            Effective finger divisor applied to instance width during bin lookup.
         """
         if "nf" not in instance:
             return 1.0
@@ -973,7 +1098,14 @@ class Library:
         return instance["nf"] if self.options.get("wnflag", hspice) else 1.0
 
     def subcircuit(self, name: str) -> Subcircuit | None:
-        """Looks up subcircuit definition `name` by case-folded name."""
+        """Looks up subcircuit definition `name` by case-folded name.
+
+        Args:
+            name: Subcircuit name to look up.
+
+        Returns:
+            Parsed `Subcircuit` definition, or `None` when undefined.
+        """
         return self._subcircuits.get(name.casefold())
 
     def place(  # noqa: PLR0913 - subcircuit placement state and optional survey list
@@ -989,6 +1121,17 @@ class Library:
         """Builds a child `Component` for a placement of `subcircuit` with `given`.
 
         Statistical functions sample according to `drawing`.
+
+        Args:
+            subcircuit: Target subcircuit definition to instantiate.
+            scope: Enclosing global parameter values in scope.
+            given: Evaluated parameter overrides passed on the instance line.
+            drawing: Statistical sampling context and hierarchical placement path.
+            instantiating: Active chain of subcircuit names used to detect recursion.
+            uses: Optional list collecting survey records rather than raising on errors.
+
+        Returns:
+            Translated child `Component` for the placement.
         """
         return self._build(
             subcircuit, scope, given, drawing, instantiating, uses=uses
@@ -1004,12 +1147,30 @@ class Library:
         *,
         uses: list[Use] | None = None,
     ) -> Built:
-        """Builds a child `Built` placement (component, nets, and initial state)."""
+        """Builds a child `Built` placement (component, nets, and initial state).
+
+        Args:
+            subcircuit: Target subcircuit definition to instantiate.
+            scope: Enclosing global parameter values in scope.
+            given: Evaluated parameter overrides passed on the instance line.
+            drawing: Statistical sampling context and hierarchical placement path.
+            instantiating: Active chain of subcircuit names used to detect recursion.
+            uses: Optional list collecting survey records rather than raising on errors.
+
+        Returns:
+            Full `Built` record bundling the component, net names, and initial state.
+        """
         return self._build(subcircuit, scope, given, drawing, instantiating, uses=uses)
 
 
 def load(*paths: Path | str) -> Library:
     """Loads SPICE files at `paths` and their transitive includes into a `Library`.
+
+    Args:
+        *paths: Filesystem paths to SPICE library or netlist files loaded in order.
+
+    Returns:
+        Populated `Library` containing all definitions read from `paths`.
 
     Raises:
         SpiceError: When any file is unreadable or contains unsupported SPICE syntax.

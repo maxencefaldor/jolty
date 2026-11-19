@@ -951,10 +951,11 @@ def _card(built: Built) -> list[str]:
         if drawn is not None
         else "-   "
     )
-    summary = built.summary
+    summary_lines = [f"    {built.summary}"]
     if entry.discovered:
         findings = (DISCOVERY / entry.name / "findings.md").read_text(encoding="utf-8")
-        summary = " ".join(findings.split("\n## ")[0].splitlines()[1:]).strip()
+        intro = _trimmed(findings.split("\n## ")[0].splitlines()[1:])
+        summary_lines = [f"    {line}" for line in intro]
     return [
         image,
         "",
@@ -963,7 +964,7 @@ def _card(built: Built) -> list[str]:
             f"{passed}/{len(built.verdicts)} specs{replicated}"
         ),
         "",
-        f"    {summary}",
+        *summary_lines,
         "",
         (f"    [Open in 3D]({entry.folder}/{entry.viewer}) · [Script]({entry.source})"),
         "",
@@ -1013,33 +1014,38 @@ def discoveries(built: Sequence[Built]) -> str:
         "# Discovery",
         "",
         (
-            "Some circuits are famous for being hard to get right with few parts: a "
-            "current source that ignores its supply and its temperature, a sine wave "
-            "that holds its amplitude without distorting it, a notch that stays deep "
-            "with real tolerances, a reference without an op-amp, an oscillator whose "
-            "frequency follows its control in a straight line, a logic gate of "
-            "memristors that tolerates its drive."
+            "Classic analog and mixed-signal design problems become difficult under "
+            "strict part budgets: supply- and temperature-insensitive current sources, "
+            "low-distortion sine oscillators, and tolerance-immune notch filters."
         ),
         (
-            "For each, a prompt states the bounds as an engineer would, and an agent, "
-            "Claude, searched for a circuit with nothing but jolty: it wrote "
-            "candidates as components, ran experiments with jolty's Python API and "
-            "command line, read the exact currents, delays and drifts jolty reports, "
-            "and kept what the numbers supported."
+            "Three additional problems cover op-amp-free voltage references, linear "
+            "voltage-controlled oscillators, and three-memristor NOR gates with wide "
+            "pulse-amplitude margins."
         ),
         (
-            "Each page holds the prompt, every experiment's result and what it "
-            "showed; the final design runs through `jolty simulate` and again in "
-            "ngspice. Where no design met a bound, the page says so, and why."
+            "For each problem, an engineering prompt states quantitative bounds, and "
+            "Claude searched for a circuit using only jolty."
         ),
         (
-            "None of these runs was blind: the agent wrote each prompt knowing the "
-            "textbook answers, so they show what jolty lets an agent see rather than "
-            "what an agent can invent, and each page's limits say what a built circuit "
-            "would add."
+            "Claude wrote candidate components, ran Python API and CLI experiments, "
+            "inspected reported currents, delays, and drifts, and kept designs backed "
+            "by measurements."
         ),
         (
-            "The prompts, candidates, experiments and designs are all in "
+            "Each page presents the prompt, experimental results, and findings, "
+            "running the final design through `jolty simulate` and replicating every "
+            "analog analysis in ngspice."
+        ),
+        "Missed bounds and limiting physical mechanisms are documented explicitly.",
+        (
+            "None of the runs was blind: the agent wrote each prompt knowing textbook "
+            "topologies, demonstrating what jolty reveals during design rather than "
+            "autonomous invention."
+        ),
+        (
+            "Each page ends with hardware caveats, and all prompts, candidates, "
+            "experiments, and designs live in "
             "[`docs/discovery/`](https://github.com/maxencefaldor/jolty/tree/main/docs/discovery)."
         ),
         "",

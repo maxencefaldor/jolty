@@ -1,10 +1,12 @@
 # CMOS inverter
 
-The CMOS inverter: its transfer curve, its switching threshold, its edges.
+The CMOS inverter: transfer curve, switching threshold, and transient edges.
 
-A p-channel transistor twice as wide as its n-channel partner, which offsets the holes' lower mobility only partly here, as both share one transconductance parameter: the p-channel is the stronger, so the switching threshold, where both saturate,
-Vm = (VDD - |Vtp| + Vtn·√(βn/βp))/(1 + √(βn/βp)), sits at 1.81 V of 3.3 V. Simulate it
-with `jolty simulate examples/cmos_inverter.py`.
+The p-channel transistor is twice as wide as the n-channel transistor while sharing the same transconductance parameter, making the pull-up stronger.
+Both transistors saturate
+at the switching threshold Vm = (VDD - |Vtp| + Vtn·√(βn/βp))/(1 + √(βn/βp)), which sits
+at 1.81 V on a 3.3 V supply.
+Simulate with `jolty simulate examples/cmos_inverter.py`.
 
 [Open in 3D](cmos-inverter.view.html){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/cmos_inverter.py){ .md-button }
 

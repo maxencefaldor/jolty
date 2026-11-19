@@ -7,6 +7,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.100.0"
 license = "Apache-2.0"
+readme = "README.md"
 repository = "https://github.com/maxencefaldor/jolty"
 authors = ["Maxence Faldor"]
 keywords = ["circuit", "simulation", "spice", "electronics", "agents"]
@@ -30,7 +31,7 @@ mimalloc = { version = "0.1.52", default-features = false }
 num-complex = "0.4"
 numpy = "0.30"
 proc-macro2 = "1.0.107"
-proptest = "1.12"
+proptest = { version = "1.12", default-features = false, features = ["std"] }
 pyo3 = "0.30"
 quote = "1.0.47"
 rand = { version = "0.10", default-features = false }
@@ -40,7 +41,7 @@ rayon = "1.12"
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
-syn = "2.0.119"
+syn = "3.0.10"
 thiserror = "2.0.21"
 
 [workspace.lints.rust]

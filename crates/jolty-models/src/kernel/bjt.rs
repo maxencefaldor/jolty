@@ -62,7 +62,7 @@ pub enum Construction {
 /// matching ngspice `bjttemp.c`, lines 162 to 253).
 ///
 /// Both models scale each saturation current of emission coefficient `n` by
-/// `exp(((T/Tn − 1) · Eg / Vt + XTI · ln(T/Tn)) / n)` and divide `ISE` and `ISC` by the
+/// `exp(((T/Tn - 1) · Eg / Vt + XTI · ln(T/Tn)) / n)` and divide `ISE` and `ISC` by the
 /// beta temperature factor. Ngspice `TLEV = 2` (computing no saturation scaling) and
 /// `TLEV = 3` (with exponent `1 + TIS1·ΔT + TIS2·ΔT²` breaking area scaling) are omitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize, JsonSchema)]
@@ -108,13 +108,13 @@ super::numbered_enum!(
 );
 
 /// Upper clamp applied to temperature-scaled grading coefficients (`bjttemp.c`, lines 133 to
-/// 146) because depletion charge divides by `1 − m`.
+/// 146) because depletion charge divides by `1 - m`.
 const MAX_GRADING: f64 = 0.999;
 
 /// Bipolar junction transistor implementing the SPICE Gummel-Poon model from ngspice 47.
 ///
 /// Base-emitter and base-collector junctions carry ideal and leakage currents, while
-/// transport current `(Ibe − Ibc) / qb` incorporates Early effect and high injection via
+/// transport current `(Ibe - Ibc) / qb` incorporates Early effect and high injection via
 /// base charge `qb`. Base resistance transitions from `rb` toward `rbm` with base charge or
 /// base current. Each junction stores depletion charge and transit-time diffusion charge,
 /// with forward transit time modulated by current and `vbc`, and a fraction of
@@ -700,7 +700,7 @@ struct State<R: Real> {
     /// Base current components toward emitter and collector, each differentiated over its
     /// corresponding junction voltage.
     base: [Dual<R, 1>; 2],
-    /// Collector-to-emitter transport current `(Ibe − Ibc) / qb`.
+    /// Collector-to-emitter transport current `(Ibe - Ibc) / qb`.
     transport: Dual<R, 2>,
     /// Forward transport component `Ibe / qb` subject to excess-phase delay.
     forward_transport: Dual<R, 2>,
@@ -779,7 +779,7 @@ enum BaseForm {
     /// Conductance stamped directly between external and internal base.
     Conductance,
     /// Explicit base-current unknown used when `RBM` lies below [`SMALL_RESISTANCE`],
-    /// constrained by `drop − r · i = 0`.
+    /// constrained by `drop - r · i = 0`.
     Current(BaseCurrent),
 }
 
@@ -839,7 +839,7 @@ impl BaseCurrent {
         }
     }
 
-    /// Stamps the explicit base-current equation `drop − resistance · i = 0` and junction
+    /// Stamps the explicit base-current equation `drop - resistance · i = 0` and junction
     /// voltage derivatives for `added`.
     fn add<R: Real>(
         &self,
@@ -890,7 +890,7 @@ impl<R: Real> BaseResistance<R> {
     }
 }
 
-/// Computes SPICE parameter `z = (√(1 + 144 x / π²) − 1) / ((24 / π²) · √x)` for normalized
+/// Computes SPICE parameter `z = (√(1 + 144 x / π²) - 1) / ((24 / π²) · √x)` for normalized
 /// base current `ratio`.
 fn z_of<R: Real>(ratio: Dual<R, 1>) -> Dual<R, 1> {
     const A: f64 = 14.590_25;
@@ -899,7 +899,7 @@ fn z_of<R: Real>(ratio: Dual<R, 1>) -> Dual<R, 1> {
     (root - 1.0) / (ratio.sqrt() * B)
 }
 
-/// Evaluates `(tan z − z) / (z · tan² z)` for current-modulated base resistance.
+/// Evaluates `(tan z - z) / (z · tan² z)` for current-modulated base resistance.
 ///
 /// Below `z = 0.25`, switches to a power series in `z²` to avoid `3ε / z²` cancellation,
 /// maintaining accuracy within a few ULPs.
@@ -929,8 +929,8 @@ fn shape<R: Real>(z: Dual<R, 1>) -> Dual<R, 1> {
 
 /// Second-order Bessel excess-phase filter delaying forward transport current `u`.
 ///
-/// Unknowns `x` (delayed current) and `y = td · dx/dt` satisfy `td · dx/dt − y = 0` and
-/// `td · dy/dt + 3 · y + 3 · x − 3 · u = 0`. At DC, the filter reduces to `x = u`. Both
+/// Unknowns `x` (delayed current) and `y = td · dx/dt` satisfy `td · dx/dt - y = 0` and
+/// `td · dy/dt + 3 · y + 3 · x - 3 · u = 0`. At DC, the filter reduces to `x = u`. Both
 /// unknowns carry collector-to-emitter sign orientation matching the transistor polarity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExcessPhase {
@@ -2120,7 +2120,7 @@ mod tests {
         );
         let at = [3.0, 0.7, 0.0];
         let rest = plain.settle(&at);
-        // The `y` residual equals `3 · (x + y − u)`, yielding forward transport `u = Ibe / qb`
+        // The `y` residual equals `3 · (x + y - u)`, yielding forward transport `u = Ibe / qb`
         // at `x = y = 0`. At DC equilibrium `x = u` and terminal currents match the undelayed
         // transistor.
         let forward = -delayed.settle(&[at[0], at[1], at[2], 0.0, 0.0]).residual[4] / 3.0;
@@ -2144,7 +2144,7 @@ mod tests {
     #[test]
     fn its_delay_is_a_second_order_bessel_filter() {
         // Linearized, the delayed current responds to the forward transport current
-        // through 3 / (s² td² + 3 s td + 3): y's row holds −3 u.
+        // through 3 / (s² td² + 3 s td + 3): y's row holds -3 u.
         let mut delayed = Bench::new::<BipolarTransistor>(&excess());
         let evaluation = delayed.settle(&[3.0, 0.7, 0.0, 1e-3, 0.0]);
         let delay = 30.0 * std::f64::consts::PI / 180.0 * 4e-10;

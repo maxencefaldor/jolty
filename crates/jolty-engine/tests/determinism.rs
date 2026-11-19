@@ -29,7 +29,9 @@ use dc::voltage_dc;
 use inductor::inductor;
 use jolty_engine::batch::{Batch, Measured, Run, Sink, Summary, Variants};
 use jolty_engine::measure::{Measure, Signal};
-use jolty_engine::variants::{Axis, Explicit, Grid, MonteCarlo, Product, Toleranced, toleranced};
+use jolty_engine::variants::{
+    Axis, Explicit, Grid, GridChain, MonteCarlo, Product, Toleranced, toleranced,
+};
 use jolty_engine::{
     Analysis, AnalysisResult, BREAK_EVENS, Elaborated, OperatingPoints, Options, Parallelism,
     Record, Simulator, Values,
@@ -268,7 +270,7 @@ proptest! {
 /// Verifies that parallel frequency sweeps match sequential execution even when `G + jωC`
 /// pivots switch between low and high frequencies.
 ///
-/// Inductor diagonal entries `−jωL` cross the `0.1` pivot threshold relative to adjacent
+/// Inductor diagonal entries `-jωL` cross the `0.1` pivot threshold relative to adjacent
 /// unit entries as frequencies sweep up and back down.
 #[test]
 fn frequencies_whose_pivots_change_find_the_same_in_any_spread() {
@@ -705,7 +707,7 @@ fn a_warm_grid_runs_its_lines_as_chains() {
     } else {
         axes.push((Axis::Temperature, vec![290.0, 300.0, 310.0]));
     }
-    let grid = Grid::new(axes, true).expect("a grid");
+    let grid = Grid::new(axes, GridChain::Warm).expect("a grid");
     assert!(grid.chain() > 1);
     let analyses = vec![Analysis::OperatingPoint];
     let batch = Batch::new(
@@ -729,7 +731,11 @@ fn a_chain_of_levels_is_the_dc_sweep_of_them() {
     let elaborated = shared(&divider());
     let level = elaborated.parameter("V1", "waveform.dc").expect("a level");
     let levels: Vec<f64> = (0..21).map(|step| f64::from(step) * 0.25).collect();
-    let grid = Grid::new(vec![(Axis::Parameter(level), levels.clone())], true).expect("a grid");
+    let grid = Grid::new(
+        vec![(Axis::Parameter(level), levels.clone())],
+        GridChain::Warm,
+    )
+    .expect("a grid");
     let batch = Batch::new(
         Arc::clone(&elaborated),
         with(vec![Analysis::OperatingPoint], &Options::default()),
@@ -843,7 +849,7 @@ fn a_warm_chain_through_a_kernels_numbers_evaluates_each_runs() {
         .expect("a saturation current");
     let grid = Grid::new(
         vec![(Axis::Parameter(parameter), SATURATION_CURRENTS.to_vec())],
-        true,
+        GridChain::Warm,
     )
     .expect("a grid");
     assert_eq!(grid.chain(), SATURATION_CURRENTS.len() as u64);

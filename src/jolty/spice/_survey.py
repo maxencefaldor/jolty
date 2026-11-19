@@ -131,7 +131,14 @@ class UnbinnedError(SpiceError):
 
 
 def bin_base(key: str) -> str | None:
-    """Returns the case-folded base model name for a binned key, or None."""
+    """Returns the case-folded base model name for a binned key, or None.
+
+    Args:
+        key: Case-folded model card key (such as ``"nmos_3p3.12"``).
+
+    Returns:
+        Prefix preceding the numeric `.N` bin suffix, or `None` when unbinned.
+    """
     base, dot, suffix = key.rpartition(".")
     if not dot or not suffix or not (suffix.isascii() and suffix.isdigit()):
         return None
@@ -141,7 +148,16 @@ def bin_base(key: str) -> str | None:
 def checked_device(
     statement: Statement, model: str, parameters: dict[str, JsonValue]
 ) -> Device:
-    """Constructs a `model` device, raising `SpiceError` on validation failure."""
+    """Constructs a `model` device, raising `SpiceError` on validation failure.
+
+    Args:
+        statement: Element statement used for error attribution on failure.
+        model: Target jolty device model name.
+        parameters: SI device parameter dictionary validated by the engine.
+
+    Returns:
+        Validated jolty `Device` instance.
+    """
     try:
         return device(model, parameters)
     except ValueError as error:
@@ -157,6 +173,14 @@ def describe_card(
 
     MOSFETs, bipolar transistors, and diodes include their evaluated level (such as
     ``BSIM4 4.5 (level 54)``) using `scope` and inlined `functions`.
+
+    Args:
+        card: Parsed SPICE `.model` card to describe.
+        scope: Case-folded parameter values used to evaluate `LEVEL`.
+        functions: Case-folded user-defined functions inlined in `LEVEL` expressions.
+
+    Returns:
+        Human-readable model family, optional version, and level string.
     """
     family = _FAMILIES.get(card.kind, f"`{card.kind}`")
     if family not in {*_LEVELS, "diode"}:
@@ -186,6 +210,15 @@ def needed_model(
     Verilog-A module; cardless elements report their element kind (distinguishing
     charge-based and voltage-dependent capacitors). Subcircuit placements (`X`) return
     an empty string because their inner elements report individually.
+
+    Args:
+        statement: Element statement being surveyed.
+        find_card: Lookup callback resolving a candidate token to a `ModelCard`.
+        scope: Case-folded parameter values used when formatting model descriptions.
+        functions: Case-folded user-defined functions inlined during card description.
+
+    Returns:
+        Model or element description string, or `""` for subcircuit placements.
     """
     element_letter = letter(statement)
     if element_letter == "x":
@@ -220,6 +253,14 @@ def raise_unbinned(
     """Fails where `name` has bins, none of which holds the size of `instance`.
 
     The error states the size, and carries `middle` scaled by `fingers`.
+
+    Args:
+        statement: Element statement used for error attribution.
+        name: Base binned model name referenced by the element.
+        instance: Evaluated element dimension attributes (`l`, `w`).
+        middle: Midpoint `(length, width)` of the first model bin, or `None` when
+            `name` has no bins.
+        fingers: Effective finger divisor scaling the reported midpoint width.
 
     Raises:
         UnbinnedError: When `middle` is not None.

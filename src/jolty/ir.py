@@ -160,6 +160,12 @@ class RandomVariable(FrozenModel):
 def part_number(number: str) -> str:
     """Validates and returns manufacturer part number `number`.
 
+    Args:
+        number: Candidate manufacturer part identifier.
+
+    Returns:
+        Validated non-empty, untrimmed `number` string.
+
     Raises:
         ValueError: When `number` is empty or has leading or trailing whitespace.
     """
@@ -270,7 +276,14 @@ class Component(FrozenModel):
     instances: tuple[Instance, ...] = ()
 
     def instance(self, name: str) -> Instance | None:
-        """Returns the placed instance named `name`, or ``None`` if absent."""
+        """Returns the placed instance named `name`, or ``None`` if absent.
+
+        Args:
+            name: Local placement name within the component.
+
+        Returns:
+            Matching `Instance`, or ``None`` when no child bears `name`.
+        """
         return next(
             (instance for instance in self.instances if instance.name == name), None
         )
@@ -285,7 +298,14 @@ class Circuit(FrozenModel):
     components: dict[str, Component]
 
     def find(self, path: str) -> Instance | None:
-        """Returns the instance at hierarchical `path` (such as ``X1/R1``), or None."""
+        """Returns the instance at hierarchical `path` (such as ``X1/R1``), or None.
+
+        Args:
+            path: Slash-separated instance path relative to `self.top`.
+
+        Returns:
+            Resolved `Instance` at `path`, or ``None`` when any segment is missing.
+        """
         component = self.components.get(self.top)
         found = None
         for name in path.split(SEPARATOR):
@@ -300,7 +320,15 @@ class Circuit(FrozenModel):
         return found
 
     def ground_port(self, component: str | None = None) -> str | None:
-        """Returns the ground port name of `component`, defaulting to the top."""
+        """Returns the ground port name of `component`, defaulting to the top.
+
+        Args:
+            component: Component name to inspect, defaulting to `self.top` when
+                ``None``.
+
+        Returns:
+            Name of the first port with `Role.GROUND`, or ``None`` when absent.
+        """
         found = self.components.get(self.top if component is None else component)
         if found is None:
             return None
@@ -323,6 +351,16 @@ class Circuit(FrozenModel):
         path. Traverses depth-first in placement order by default, or breadth-first
         (outer instances first) when `breadth_first` is true. Descends into a
         `ComponentOf` instance when `descend` is None or `descend(instance)` is true.
+
+        Args:
+            component: Root component name, defaulting to `self.top` when ``None``.
+            prefix: Path prefix prepended to every yielded instance path.
+            breadth_first: When ``True``, visits outer hierarchy levels before children.
+            descend: Optional predicate controlling child-component descent; ``None``
+                descends into every `ComponentOf` placement.
+
+        Returns:
+            Iterator of `(path, instance)` pairs across the traversed hierarchy.
         """
         root = self.top if component is None else component
         if breadth_first:
@@ -381,6 +419,13 @@ def parameter(parameters: Mapping[str, JsonValue], path: str) -> JsonValue | Non
     Path segments traverse mapping keys and zero-based list indices, matching the
     parameter-path format used by sensitivity analyses.
 
+    Args:
+        parameters: Device or instance parameter mapping in canonical JSON form.
+        path: Dot-separated key and list-index path (such as `"waveform.dc"`).
+
+    Returns:
+        Nested JSON value at `path`, or ``None`` when any segment does not resolve.
+
     Examples:
         >>> parameter({"waveform": {"dc": 5.0}}, "waveform.dc")
         5.0
@@ -408,6 +453,12 @@ def numbers(parameters: Mapping[str, JsonValue]) -> dict[str, float]:
     """Collects all numeric entries in `parameters` keyed by dotted path in order.
 
     Path formatting matches [`parameter`][jolty.ir.parameter]; booleans are excluded.
+
+    Args:
+        parameters: Device or instance parameter mapping in canonical JSON form.
+
+    Returns:
+        Ordered dictionary mapping dotted parameter paths to floating-point values.
 
     Examples:
         >>> numbers({"resistance": 1e3, "waveform": {"dc": 5, "on": True}})

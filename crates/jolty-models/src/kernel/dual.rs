@@ -86,7 +86,7 @@ impl<R: Real, const N: usize> Dual<R, N> {
         self.chain((self.value.ln_1p(), (self.value + 1.0).recip()))
     }
 
-    /// Computes `e^self − 1` accurately near zero using [`Real::exp_m1`].
+    /// Computes `e^self - 1` accurately near zero using [`Real::exp_m1`].
     pub(crate) fn exp_m1(self) -> Self {
         self.chain((self.value.exp_m1(), self.value.exp()))
     }
@@ -252,7 +252,7 @@ dual_ops! {
         }
     }
 
-    // The quotient `a / b`, with the derivatives `(a′ − (a / b) · b′) / b`, each
+    // The quotient `a / b`, with the derivatives `(a′ - (a / b) · b′) / b`, each
     // multiplied by the reciprocal of `b`, so that one division serves them all.
     Div::div(self: Dual<R, N>, other: Dual<R, N>) {
         let value = self.value / other.value;
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn derivatives_follow_the_rules_of_calculus() {
         let [x, y] = Dual::<f64, 2>::variables([3.0, 2.0]);
-        // f = x² y / (1 + y) − √x
+        // f = x² y / (1 + y) - √x
         let f = x * x * y / (y + 1.0) - x.sqrt();
         let expected_x = 2.0 * 3.0 * 2.0 / 3.0 - 0.5 / 3.0_f64.sqrt();
         let expected_y = 9.0 / 9.0;

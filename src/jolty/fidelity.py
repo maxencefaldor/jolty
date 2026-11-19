@@ -114,7 +114,11 @@ class Characterization(ir.FrozenModel):
     )
 
     def device(self) -> devices.Device:
-        """Builds a characterized ``logic_cell`` device matching the component ports."""
+        """Builds a characterized ``logic_cell`` device matching the component ports.
+
+        Returns:
+            Characterized electrical `logic_cell` `Device` matching component ports.
+        """
         parameters: dict[str, JsonValue] = {
             "inputs": list(self.inputs),
             "outputs": [
@@ -137,7 +141,11 @@ class Characterization(ir.FrozenModel):
         return devices.device("logic_cell", parameters)
 
     def mean_delay(self) -> float:
-        """Computes the mean propagation delay across all timing arcs, in seconds."""
+        """Computes the mean propagation delay across all timing arcs, in seconds.
+
+        Returns:
+            Arithmetic mean propagation delay across all arc table entries in seconds.
+        """
         delays = [value for arc in self.arcs for row in arc.delay for value in row]
         return float(np.mean(delays)) if delays else 0.0
 
@@ -476,6 +484,9 @@ def characterize(
         settings: Supply voltage, slew multipliers, and load fanouts for the grid.
         temperature: Simulation temperature, defaulting to 27 °C when ``None``.
 
+    Returns:
+        `Characterization` holding truth tables, capacitances, arcs, and grid errors.
+
     Raises:
         CharacterizationError: If component ports are incompatible, an output fails to
             settle to a valid rail, or inputs have zero capacitance.
@@ -605,7 +616,14 @@ def _interpolate(
 
 
 def instances(built: ir.Circuit) -> list[tuple[str, str]]:
-    """Collects component instances in `built` breadth-first as `(path, component)`."""
+    """Collects component instances in `built` breadth-first as `(path, component)`.
+
+    Args:
+        built: Circuit IR traversed breadth-first from `built.top`.
+
+    Returns:
+        Breadth-first list of `(path, component_name)` pairs for component placements.
+    """
     return [
         (path, instance.of.component)
         for path, instance in built.walk(breadth_first=True)
@@ -619,6 +637,13 @@ def scopes(
     """Resolves outermost component instances matched by each scope in `fidelity`.
 
     Returns a mapping from instance path to its matched `(scope, component)` pair.
+
+    Args:
+        built: Circuit IR whose component placements are matched.
+        fidelity: Mapping from instance-path glob scopes to `Characterized`.
+
+    Returns:
+        Dictionary mapping outermost matched paths to `(scope, component_name)`.
 
     Raises:
         PlanError: If any scope matches no component instance in `built`.
@@ -679,7 +704,15 @@ class Fidelity:
     """Cache of elaborated circuits keyed by the instance path kept at full fidelity."""
 
     def substitutes(self, opened: str | None = None) -> dict[str, devices.Device]:
-        """Returns logic-cell devices for every matched path except `opened`."""
+        """Returns logic-cell devices for every matched path except `opened`.
+
+        Args:
+            opened: Optional matched instance path kept at full circuit fidelity.
+
+        Returns:
+            Dictionary mapping substituted instance paths to characterized `Device`
+            cells.
+        """
         return {
             path: self.models[component].device()
             for path, (_, component) in self.matched.items()
@@ -689,7 +722,14 @@ class Fidelity:
     def overrides(
         self, sampled: Mapping[str, Mapping[str, float]]
     ) -> dict[str, Mapping[str, float]]:
-        """Returns parameter overrides from `sampled` outside modeled instances."""
+        """Returns parameter overrides from `sampled` outside modeled instances.
+
+        Args:
+            sampled: Nested parameter overrides keyed by instance and parameter path.
+
+        Returns:
+            Filtered override dictionary excluding paths enclosed by modeled instances.
+        """
         return {
             path: parameters
             for path, parameters in sampled.items()
@@ -707,6 +747,14 @@ class Fidelity:
         Elaboration is cached per `opened` value, while parameter `overrides` rebuild
         device instances for each run. Foundry devices sample process mismatch using
         `mismatch` as the random seed.
+
+        Args:
+            overrides: Optional nested parameter overrides in SI base units.
+            opened: Optional matched instance path restored to transistor level.
+            mismatch: Optional 64-bit random seed for foundry mismatch sampling.
+
+        Returns:
+            Configured `Simulation` reusing the cached elaboration for `opened`.
 
         Raises:
             ElaborationError: If the substituted circuit or overridden parameters fail
@@ -743,6 +791,9 @@ def resolve(
         temperature: Simulation temperature used during characterization.
         cache: Mutable cache reusing characterizations across runs.
         process: Optional foundry process corner name.
+
+    Returns:
+        Resolved `Fidelity` mapping matched paths to cached characterizations.
 
     Raises:
         JoltyError: If a fidelity scope matches no component instance.
@@ -781,7 +832,11 @@ class CharacterizedModel(ir.FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats the characterized model summary as human-readable text."""
+        """Formats the characterized model summary as human-readable text.
+
+        Returns:
+            Human-readable summary of arcs, slew/load domain, and interpolation bounds.
+        """
         listed = ", ".join(self.instances)
         return (
             f"{self.component}: a logic cell of {self.arcs} arcs for {listed}, over "
@@ -812,7 +867,11 @@ class Contract(ir.FrozenModel):
         return not self.divergences
 
     def describe(self) -> str:
-        """Formats the spot-check contract outcome as human-readable text."""
+        """Formats the spot-check contract outcome as human-readable text.
+
+        Returns:
+            Pass line or compiler-style ``contract-violated`` error report.
+        """
         if self.held:
             return (
                 f"{self.instance}: its model agrees with its circuit within "
@@ -833,7 +892,11 @@ class Outside(ir.FrozenModel):
     excursion: Excursion
 
     def describe(self) -> str:
-        """Formats the out-of-domain warning for the ``outside-validity`` rule."""
+        """Formats the out-of-domain warning for the ``outside-validity`` rule.
+
+        Returns:
+            Compiler-style ``outside-validity`` warning line for the domain excursion.
+        """
         found = self.excursion
         unit = _UNITS[found.bound]
         times = "once" if found.count == 1 else f"{found.count} times"
@@ -856,7 +919,11 @@ class Dependence(ir.FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats the verdict change warning for the ``fidelity-dependence`` rule."""
+        """Formats the verdict change warning for the ``fidelity-dependence`` rule.
+
+        Returns:
+            Compiler-style ``fidelity-dependence`` warning comparing verdict statuses.
+        """
         return (
             f"warn[fidelity-dependence]: {self.modeled.requirement}: "
             f"{self.modeled.status}{_reading(self.modeled)} with every model, "
@@ -879,6 +946,14 @@ def dependences(
 
     Compares `modeled` verdicts (with all models active) against `exact` verdicts
     (with `instance` simulated at full circuit fidelity).
+
+    Args:
+        instance: Hierarchical path of the spot-checked instance.
+        modeled: Requirement verdicts evaluated with all models active.
+        exact: Requirement verdicts evaluated with `instance` at circuit level.
+
+    Returns:
+        List of `Dependence` records for requirements whose pass/fail status flipped.
     """
     return [
         Dependence(instance=instance, modeled=first, exact=second)
@@ -909,7 +984,11 @@ class FidelityReport(ir.FrozenModel):
         return all(contract.held for contract in self.contracts)
 
     def describe(self) -> str:
-        """Formats the complete fidelity report as human-readable text."""
+        """Formats the complete fidelity report as human-readable text.
+
+        Returns:
+            Multi-line ``fidelity:`` report summarizing models, contracts, and warnings.
+        """
         lines = ["fidelity:"]
         lines.extend(f"  {model.describe()}" for model in self.models)
         lines.extend(
@@ -922,7 +1001,14 @@ class FidelityReport(ir.FrozenModel):
 
 
 def models(fidelity: Fidelity) -> tuple[CharacterizedModel, ...]:
-    """Builds report summaries for every characterized component in `fidelity`."""
+    """Builds report summaries for every characterized component in `fidelity`.
+
+    Args:
+        fidelity: Resolved `Fidelity` containing matched paths and models.
+
+    Returns:
+        Tuple of `CharacterizedModel` report summaries in characterization order.
+    """
     found = []
     for component, model in fidelity.models.items():
         paths = tuple(
@@ -943,7 +1029,15 @@ def models(fidelity: Fidelity) -> tuple[CharacterizedModel, ...]:
 
 
 def sampled(fidelity: Fidelity, plan: Plan) -> list[str]:
-    """Selects spot-check instance paths deterministically for each scope in `plan`."""
+    """Selects spot-check instance paths deterministically for each scope in `plan`.
+
+    Args:
+        fidelity: Resolved `Fidelity` mapping matched paths to scopes.
+        plan: Simulation `Plan` defining per-scope `spot_checks` and `seed`.
+
+    Returns:
+        Deterministically sampled instance paths selected for contract spot checks.
+    """
     chosen: list[str] = []
     for scope, settings in plan.fidelity.items():
         paths = [
@@ -978,6 +1072,9 @@ def contract(
         path: Hierarchical path of the spot-checked component instance.
         modeled: Analysis results run with all characterized models substituted.
         opened: Analysis results run with `path` restored to its circuit.
+
+    Returns:
+        `Contract` recording allowed timing slack and any observed divergences.
     """
     scope, component = fidelity.matched[path]
     model = fidelity.models[component]

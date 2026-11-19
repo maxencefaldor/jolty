@@ -27,7 +27,14 @@ class Dc:
     value: Quantity
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """Serializes the DC waveform to IR JSON after checking `dimension`."""
+        """Serializes the DC waveform to IR JSON after checking `dimension`.
+
+        Args:
+            dimension: Expected physical dimension (`VOLTAGE` or `CURRENT`).
+
+        Returns:
+            JSON-serializable mapping `{"dc": ...}` in SI base units.
+        """
         return {"dc": self.value.to(dimension, "a DC level")}
 
 
@@ -44,7 +51,14 @@ class Pulse:
     period: Quantity | None = None
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """Serializes the pulse waveform to IR JSON after checking `dimension`."""
+        """Serializes the pulse waveform to IR JSON after checking `dimension`.
+
+        Args:
+            dimension: Expected physical dimension (`VOLTAGE` or `CURRENT`).
+
+        Returns:
+            JSON-serializable mapping `{"pulse": ...}` with SI levels and timings.
+        """
         pulse: dict[str, JsonValue] = {
             "initial": self.initial.to(dimension, "a pulse's initial level"),
             "pulsed": self.pulsed.to(dimension, "a pulse's pulsed level"),
@@ -76,7 +90,14 @@ class Sine:
     phase: float = 0.0
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """Serializes the sine waveform to IR JSON after checking `dimension`."""
+        """Serializes the sine waveform to IR JSON after checking `dimension`.
+
+        Args:
+            dimension: Expected physical dimension (`VOLTAGE` or `CURRENT`).
+
+        Returns:
+            JSON-serializable mapping `{"sine": ...}` in SI base units and radians.
+        """
         return {
             "sine": {
                 "offset": self.offset.to(dimension, "a sine's offset"),
@@ -96,7 +117,14 @@ class Piecewise:
     points: Sequence[tuple[Quantity, Quantity]]
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """Serializes the piecewise waveform to IR JSON after checking `dimension`."""
+        """Serializes the piecewise waveform to IR JSON after checking `dimension`.
+
+        Args:
+            dimension: Expected physical dimension (`VOLTAGE` or `CURRENT`).
+
+        Returns:
+            JSON-serializable mapping `{"piecewise": {"points": ...}}` in SI units.
+        """
         points: list[JsonValue] = [
             [time.to(TIME, "a point's time"), value.to(dimension, "a point's level")]
             for time, value in self.points
@@ -122,7 +150,14 @@ class Exponential:
     rise_delay: Quantity = field(default_factory=lambda: Quantity(0.0, TIME))
 
     def to_json(self, dimension: Dimension) -> JsonValue:
-        """Serializes the exponential waveform to IR JSON checking `dimension`."""
+        """Serializes the exponential waveform to IR JSON checking `dimension`.
+
+        Args:
+            dimension: Expected physical dimension (`VOLTAGE` or `CURRENT`).
+
+        Returns:
+            JSON-serializable mapping `{"exponential": ...}` in SI base units.
+        """
         return {
             "exponential": {
                 "initial": self.initial.to(dimension, "an exponential's initial level"),

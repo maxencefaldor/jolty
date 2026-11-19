@@ -49,7 +49,7 @@ As of 18 November 2026, `main` includes the following completed capabilities:
 - **Device models and Verilog-A:** the full ngspice 47 diode model, process-kit capacitors with charge or voltage-dependent values, and Verilog-A `localparam` and static-scaled `ddt` support compiling both IHP SG13G2 MOM capacitors.
 - **Differentiation engine:** per-device dual-number derivatives in chunks of up to eight parameters, transient discrete adjoints, and exact AC VJP (`device-derivatives.md` steps 1, 2, and 2b).
 - **Differentiation API and ML bridges:** unified JVP and VJP for every analysis (`agentic.md` 12b), Python `jolty.function`, `jolty.jvp`, and `jolty.vjp`, batched runs and pullbacks, and the JAX bridge (`agentic.md` 19).
-- **Benchmarks and determinism:** the alternating timing protocol for deciding a 5% change, peak-memory and concurrent-copy throughput efficiency (`benchmarks.md` 6), and deterministic CI counts and fingerprints (`benchmarks.md` 5b).
+- **Benchmarks and determinism:** the alternating timing protocol for deciding a 5% change, peak-memory and concurrent-copy throughput efficiency (`benchmarks.md` 6), and deterministic CI counts and digests (`benchmarks.md` 5b).
     Coverage matrix v2 adds 80 rows and an exact VBIC closed form (`benchmarks.md` 9b).
 - **Accuracy and periodic steady state:** per-node charge leak reporting in format v20 (`accuracy.md` 12) and two-stage lossless oscillation versus numerical ringing detection (`accuracy.md` 16).
     Periodic steady state adds `.pss` SPICE reader support, autonomous time-varying detection, and `max_memory` enforcement (`agentic.md` 22).
@@ -70,8 +70,6 @@ As of 18 November 2026, `main` includes the following completed capabilities:
 
 Each open decision awaits owner approval:
 
-- **PyTorch bridge** (`agentic.md` 19): the JAX bridge (`jolty.jax.function`, optional extra `jolty[jax]`) is complete.
-    Wrapping `torch.autograd.Function` around the same batch pullback awaits approval of `torch` as an optional dependency.
 - **Device derivatives** (`device-derivatives.md`): three items await decision.
     First, whether exact-by-construction Gummel-Poon and JFET derivatives justify 2 to 8% more instructions per evaluation (step 1.3).
     Second, whether the largest chunk stays at 8 (recommended) or grows to 16, which runs 5 to 24% faster than two 8-wide twins while building `jolty-models` 23% slower (step 2.3).
@@ -82,6 +80,5 @@ Each open decision awaits owner approval:
 - **`ln1p` and `expm1` in jolty's Verilog-A:** both extensions sit outside the Verilog-AMS standard and remain reversible.
 - **Generated kernel parameters:** whether generated kernels may declare parameters via a table rather than derived serialization.
     A table cuts a third of PSP's 1.54 MB footprint and 122 s release build time, while giving generated and hand-written kernels two different forms.
-- **`measure::Signal`:** the type serves as both an output and the denominator of a gain, so the glossary term `Output` does not fit and a replacement name is needed.
 - **CMC QA files:** R3_CMC 1.1.2 QA tests are distributed only through an Si2 form requiring the owner's name and email, blocking the compiler QA harness (`models.md` 12, 15).
 - **Item 8 paid run** (`agentic.md` 14): deferred pending owner go-ahead.

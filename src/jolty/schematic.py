@@ -94,6 +94,9 @@ def draw(
         marked: Instance paths highlighted in red, propagating up to enclosing
             instances.
 
+    Returns:
+        Rendered Matplotlib `Figure` depicting the component schematic.
+
     Raises:
         JoltyError: If `path` does not refer to a component instance in `circuit`.
     """

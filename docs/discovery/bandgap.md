@@ -1,10 +1,12 @@
 # A reference without an op-amp
 
-The best reference found: Widlar's three-transistor bandgap, fed by a JFET.
+JFET-fed Widlar three-transistor bandgap voltage reference.
 
-Q1, diode-connected, and Q2 over 155 Ω form a Widlar current source, so R2 holds Vt·ln(I1/I2), and Q3 holds the output at its own Vbe plus Q2's current across 2.4 kΩ: a falling voltage and a rising one, summed near the band gap.
-Fed by a resistor, the cell's output moves 44 mV for each volt of supply; fed by a 2N5457 whose gate is on its source, a current source of its Idss, it moves 0.31 mV, and the JFET's own drift turns out to straighten the bandgap's curvature: 1.2414 V within 1.08 mV from -40 °C to 125 °C, 5.3 ppm/K, with seven parts.
-Simulate it with `jolty simulate docs/discovery/bandgap/design.py`.
+Diode-connected Q1 and Q2 over 155 Ω form a Widlar current source, dropping Vt·ln(I1/I2) across R2.
+Transistor Q3 sums its Vbe with Q2 collector current across 2.4 kΩ to produce a temperature-compensated output near the silicon bandgap.
+Resistor bias moves the output by 44 mV/V on the supply, whereas a zero-Vgs 2N5457 JFET bias reduces line sensitivity to 0.31 mV/V.
+Thermal drift in JFET current also straightens bandgap curvature to 1.2414 V within 1.08 mV from -40 °C to 125 °C (5.3 ppm/K) using seven parts.
+Simulate via `jolty simulate docs/discovery/bandgap/design.py`.
 
 [Open in 3D](bandgap.view.html#view=X1){ .md-button .md-button--primary } [Script](https://github.com/maxencefaldor/jolty/blob/main/docs/discovery/bandgap/design.py){ .md-button } [Every experiment](https://github.com/maxencefaldor/jolty/tree/main/docs/discovery/bandgap){ .md-button }
 
@@ -14,22 +16,22 @@ Simulate it with `jolty simulate docs/discovery/bandgap/design.py`.
 
 ## The prompt
 
-> Design a voltage reference near 1.2 V from a 5 V supply, with no op-amp.
+> Design a voltage reference near 1.2 V from a 5 V supply without an op-amp.
 >
-> - Its output drifts less than 50 ppm/K from -40 °C to 125 °C: a span under 10 mV.
-> - It moves less than 1 mV for each volt the supply moves between 4.5 V and 5.5 V.
-> - It starts by itself, and takes ten parts or fewer: the transistors, diodes and resistors of `examples/common.py`, and the 2N5457 JFET.
+> - Output drift stays below 50 ppm/K from -40 °C to 125 °C (a span under 10 mV).
+> - Line regulation stays below 1 mV per volt across 4.5 V to 5.5 V.
+> - The reference self-starts reliably and uses ten parts or fewer from `examples/common.py` (transistors, diodes, and resistors) plus the 2N5457 JFET.
 >
-> Use jolty to find the best design you can, and report what limits it.
+> Use jolty to find the best design you can, and report what limits performance.
 
-The prompt asks for a reference near 1.2 V from 5 V, drifting less than 50 ppm/K from -40 °C to 125 °C and moving less than 1 mV per volt of supply, with ten parts or fewer and no op-amp.
-Widlar's three-transistor bandgap fed by a JFET met both bounds with seven parts and a wide margin: 5.3 ppm/K and 0.31 mV/V.
+The prompt requires a ~1.2 V reference from 5 V using at most ten parts and no op-amp, drifting under 50 ppm/K (-40 °C to 125 °C) and under 1 mV/V on the supply.
+Widlar's three-transistor bandgap fed by a JFET met both bounds using seven parts with wide margin: 5.3 ppm/K and 0.31 mV/V.
 
 ## Method
 
-`candidates.py` writes each reference as a component of `vcc`, `out` and `ground`.
-`explore.py` reads the output at eight temperatures and over a DC sweep of the supply from 4.5 V to 5.5 V, under a 100 kΩ load.
-To flatten a bandgap, it bisects on its Widlar resistor R2 until the output at 125 °C equals the output at -40 °C, for each ratio of R3 to R1.
+`candidates.py` implements each reference as a component exposing `vcc`, `out`, and `ground`.
+`explore.py` measures output voltage at eight temperatures and over a 4.5 V to 5.5 V supply DC sweep under a 100 kΩ load.
+To flatten each bandgap for a given `R3/R1` ratio, `explore.py` bisects Widlar resistor R2 until the 125 °C output equals the -40 °C output.
 
 ## Results
 
@@ -37,38 +39,39 @@ To flatten a bandgap, it bisects on its Widlar resistor R2 until the output at 1
 | --- | --- | --- | --- | --- | --- |
 | A diode fed by 4.3 kΩ | 2 | 0.586 V | 329 mV | 3400 ppm/K | 10.4 mV/V |
 | Widlar bandgap, R3 = 6 kΩ, R2 = 500 Ω, fed by 1 kΩ | 7 | 1.510 V | 10.8 mV | 43.5 ppm/K | 57.7 mV/V |
-| The same, R3 = 3.6 kΩ, R2 flattened to 255 Ω | 7 | 1.422 V | 6.0 mV | 25.7 ppm/K | 44.4 mV/V |
-| The same, fed by a JFET instead, R2 kept | 7 | 1.341 V | 45.7 mV | 207 ppm/K | 0.36 mV/V |
+| Same topology, R3 = 3.6 kΩ, R2 flattened to 255 Ω | 7 | 1.422 V | 6.0 mV | 25.7 ppm/K | 44.4 mV/V |
+| Same topology, fed by a JFET instead, R2 kept | 7 | 1.341 V | 45.7 mV | 207 ppm/K | 0.36 mV/V |
 | Fed by a JFET, R3 = 2.4 kΩ, R2 flattened to 155.0 Ω | 7 | 1.2417 V | 1.12 mV | 5.5 ppm/K | 0.31 mV/V |
-| **The same, R2 = 155.1 Ω** | **7** | **1.2414 V** | **1.08 mV** | **5.3 ppm/K** | **0.31 mV/V** |
-| The same, R3 = 3.6 kΩ, R2 = 298 Ω | 7 | 1.261 V | 2.2 mV | 10.4 ppm/K | 0.32 mV/V |
-| The same, R3 = 6 kΩ, R2 = 618 Ω | 7 | 1.299 V | 3.9 mV | 18.2 ppm/K | 0.38 mV/V |
+| **Fed by a JFET, R3 = 2.4 kΩ, R2 = 155.1 Ω** | **7** | **1.2414 V** | **1.08 mV** | **5.3 ppm/K** | **0.31 mV/V** |
+| Fed by a JFET, R3 = 3.6 kΩ, R2 = 298 Ω | 7 | 1.261 V | 2.2 mV | 10.4 ppm/K | 0.32 mV/V |
+| Fed by a JFET, R3 = 6 kΩ, R2 = 618 Ω | 7 | 1.299 V | 3.9 mV | 18.2 ppm/K | 0.38 mV/V |
 
-Flattening sets the ends equal, which leaves the span 0.04 mV wider than at 155.1 Ω, the design's.
-A 1 % error in R2 or R1 leaves it within 14.2 ppm/K.
+Endpoint flattening leaves a span 0.04 mV wider than the final `R2 = 155.1 Ω` design.
+A 1% error in R2 or R1 still keeps drift within 14.2 ppm/K.
 
 ## What the experiments showed
 
-1. **A resistor-fed Widlar bandgap cannot regulate its line.**
-    Its output impedance is Q3's 1/gm times the loop's PTAT gain, and Q3's current is the feed's: whatever the feed resistor, the output moves by about that gain times Vt over the headroom, 44 to 58 mV per volt here.
-1. **A JFET's Idss is a current source in one part.**
-    Its gate on its source, it takes 2 mA whatever its drain, within its 2.3e-3/V of channel-length modulation, and the line regulation falls 140-fold, to 0.31 mV/V.
-1. **The feed's drift is part of the bandgap.**
-    Q3's Vbe follows its current, so changing the feed from a resistor to a JFET moved the flat point: the R2 that flattened one leaves the other at 207 ppm/K.
-    Flattened again with the JFET in place, the span fell to 1 mV: the JFET's Idss drifts so as to bend Q3's Vbe against the bandgap's curvature, which a resistor-fed cell leaves as a 6 mV bowl.
-1. **The flat output depends on the PTAT ratio.**
-    The smaller R3, the lower the voltage at which the drift flattens, from 1.30 V to 1.24 V, and the smaller the remaining curvature.
+1. **A resistor-fed Widlar bandgap cannot regulate line voltage.**
+    Output impedance equals `1/gm` of Q3 times the loop PTAT gain, and Q3 current tracks the feed resistor directly.
+    Regardless of feed resistance, output shifts by roughly loop gain times `Vt` over headroom (44 to 58 mV/V).
+1. **A JFET's `Idss` forms a single-part current source.**
+    With gate tied to source, the JFET draws 2 mA across drain voltages within `2.3e-3`/V channel-length modulation, cutting line regulation 140× to 0.31 mV/V.
+1. **Feed temperature drift participates in the bandgap balance.**
+    Q3 `Vbe` varies with bias current, so swapping the resistor feed for a JFET shifted the flat point and left the old R2 at 207 ppm/K.
+    Reflattening with the JFET dropped the span to 1 mV because JFET `Idss` drift bends Q3 `Vbe` against the 6 mV bandgap curvature bowl.
+1. **Flat output voltage depends on the PTAT ratio.**
+    Lowering R3 lowers the zero-TC voltage from 1.30 V to 1.24 V and reduces residual curvature.
 
 ## Conclusion
 
-`design.py` meets the prompt with seven parts: 1.2414 V at 27 °C, 5.3 ppm/K and 0.31 mV/V, as its specs confirm at every corner.
-The curvature cancellation rests on the JFET's and the 2N3904's temperature models; a real part's spread of Idss would move the flat point, which a trimmed R2 would restore.
+`design.py` meets every specification with seven parts: 1.2414 V at 27 °C, 5.3 ppm/K drift, and 0.31 mV/V line regulation, verified across all corners.
+Curvature cancellation relies on JFET and 2N3904 temperature models; real-part `Idss` variation shifts the flat point and would require trimming R2.
 
 ## Limits
 
-The agent that wrote this prompt also designed the circuit, knowing the textbook answers, and judged the result itself: this is a showcase of what jolty lets an agent see, not a blind result.
-Widlar's three-transistor cell is from 1971, and a JFET's Idss as a feed is common.
-The 5.3 ppm/K comes from trimming R2 to 0.1 Ω on nominal models: the spread of Vbe and Idss between parts, and the transistors' differing temperatures, would put an untrimmed circuit well above it, and the curvature cancellation rests on two models' temperature terms.
+The agent that wrote the prompt also designed the circuit using textbook knowledge and judged the output, making this a capability showcase rather than a blind benchmark.
+Widlar's three-transistor cell dates to 1971, and JFET `Idss` current feeds are standard practice.
+Achieving 5.3 ppm/K requires trimming R2 to 0.1 Ω on nominal models; part-to-part `Vbe`/`Idss` spread and thermal gradients would raise untrimmed drift substantially.
 
 ## Specs
 

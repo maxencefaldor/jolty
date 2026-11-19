@@ -176,7 +176,7 @@ jobs:
             || (github.ref != 'refs/heads/main' && 'origin/main')
             || github.event.before
             || 'HEAD~1' }}
-        # A change of many mutants outlasts the job, which would end the run cancelled:
+        # A change of many mutants outlasts the job, which would end the run canceled:
         # stopped 15 minutes short of the job's limit, cargo-mutants keeps the outcomes it
         # has, and the report says which mutants it reached.
         run: timeout --signal=INT 45m scripts/mutants "$BASE" || [ "$?" -eq 124 ]

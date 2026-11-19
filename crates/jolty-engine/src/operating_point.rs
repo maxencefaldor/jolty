@@ -675,18 +675,18 @@ impl Simulator {
         }
         for root in known.iter().rev() {
             for sign in [1.0, -1.0] {
-                let mut beside = root.clone();
+                let mut neighbor = root.clone();
                 let voltages = self
                     .elaborated
                     .unknowns
                     .iter()
-                    .zip(&mut beside)
+                    .zip(&mut neighbor)
                     .filter(|(unknown, _)| unknown.nature == Nature::Voltage);
                 for (turn, (_, value)) in voltages.enumerate() {
                     let alternate = if turn % 2 == 0 { 1.0 } else { -1.0 };
                     *value += sign * alternate * NUDGE;
                 }
-                starts.push(beside);
+                starts.push(neighbor);
             }
         }
         let direct = Mode::direct(known);
@@ -1142,7 +1142,7 @@ mod tests {
             .pseudo_transient(&mut values, &options, &[])
             .expect("pseudo-transient continuation converges");
         let x = values[simulator.unknown("x").expect("a node").index()];
-        // Past the fold, the solution lies where D1 conducts: (3 − x)/1 kΩ + 2 mS · x
+        // Past the fold, the solution lies where D1 conducts: (3 - x)/1 kΩ + 2 mS · x
         // flows into it.
         let slope = jolty_models::thermal_voltage(jolty_models::REFERENCE_TEMPERATURE);
         let diode = 1e-14 * ((x / slope).exp() - 1.0);

@@ -293,10 +293,10 @@ binned_parameters! {
         /// default 0.
         binned pub voffcv: R = R::constant(0.0) [VOLTAGE],
         /// Fixed gate-source overlap capacitance per unit width, `cgso`, in farads per
-        /// meter; default `dlc` · Cox − `cgsl` when `dlc > 0`, otherwise 0.6 · `xj` · Cox.
+        /// meter; default `dlc` · Cox - `cgsl` when `dlc > 0`, otherwise 0.6 · `xj` · Cox.
         pub cgso: Option<R> = None [CAPACITANCE.div(LENGTH)],
         /// Fixed gate-drain overlap capacitance per unit width, `cgdo`, in farads per
-        /// meter; default `dlc` · Cox − `cgdl` when `dlc > 0`, otherwise 0.6 · `xj` · Cox.
+        /// meter; default `dlc` · Cox - `cgdl` when `dlc > 0`, otherwise 0.6 · `xj` · Cox.
         pub cgdo: Option<R> = None [CAPACITANCE.div(LENGTH)],
         /// The gate-bulk overlap capacitance per length, `cgbo`, in farads per meter;
         /// default 2 · `dwc` · Cox.

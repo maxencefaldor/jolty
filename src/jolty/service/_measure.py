@@ -173,6 +173,9 @@ class MeasureRequest(FrozenModel):
 def check_options(request: MeasureRequest) -> None:
     """Rejects options that do not apply to `request.measure`.
 
+    Args:
+        request: Measure query request whose optional fields are checked.
+
     Raises:
         JoltyError: When an option inapplicable to the chosen measure is supplied.
     """
@@ -203,6 +206,15 @@ def select_analysis(
     analysis: str | None,
 ) -> tuple[str, results.AnalysisResult]:
     """Returns the named analysis from `loaded`, or the sole entry when omitted.
+
+    Args:
+        path: Source results archive path used in diagnostic messages.
+        loaded: Mapping from analysis names to loaded analysis results.
+        analysis: Explicit analysis key to select, or ``None`` when `loaded` has one
+            entry.
+
+    Returns:
+        Pair of resolved analysis name and corresponding `AnalysisResult`.
 
     Raises:
         JoltyError: Naming available analyses when selection is missing or ambiguous.
@@ -243,6 +255,16 @@ def evaluate_measure(
     max_unknowns: int,
 ) -> tuple[str, float, str, str]:
     """Evaluates `request` on `result`, returning description, value, unit, formatted.
+
+    Args:
+        request: Validated measure request specifying measure kind and options.
+        analysis_name: Resolved analysis name inside the results file.
+        result: Loaded analysis result on which the measure is evaluated.
+        max_unknowns: Maximum number of available unknowns listed in error messages.
+
+    Returns:
+        Four-tuple of human-readable description, numeric value, unit string, and
+        SI-formatted reading.
 
     Raises:
         JoltyError: When required inputs are missing, unknown names fail to resolve, or

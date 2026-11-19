@@ -30,7 +30,7 @@ const TOXE: f64 = 30.0e-10;
 /// Concentrations are per cubic centimeter, as the equations of `b4v5ld.c` take them.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Core<R: Real> {
-    /// The channel's sign, 1 for an n-channel and −1 for a p-channel.
+    /// The channel's sign, 1 for an n-channel and -1 for a p-channel.
     pub(super) sign: f64,
     pub(super) toxe: R,
     pub(super) toxp: R,
@@ -40,7 +40,7 @@ pub(super) struct Core<R: Real> {
     pub(super) factor1: R,
     /// Thermal voltage `k·T / q` at device temperature using BSIM4's `k / q`.
     pub(super) vtm: R,
-    /// Relative temperature rise `T / Tnom − 1`.
+    /// Relative temperature rise `T / Tnom - 1`.
     pub(super) temperature_rise: R,
     pub(super) leff: R,
     pub(super) weff: R,
@@ -79,7 +79,7 @@ pub(super) struct Core<R: Real> {
     pub(super) ud: R,
     pub(super) u0temp: R,
     pub(super) vsattemp: R,
-    /// Source-end velocity-limit factor `(1 − T0) / (1 + T0)` when `vtl > 0`.
+    /// Source-end velocity-limit factor `(1 - T0) / (1 + T0)` when `vtl > 0`.
     pub(super) tfactor: Option<R>,
     /// The threshold at zero bias of a long, wide channel, negative for a p-channel as the
     /// card's `vth0` is, the stress effect and `delvto` added.

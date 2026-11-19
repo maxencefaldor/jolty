@@ -12,7 +12,7 @@ use crate::{
 ///
 /// The device exposes `positive` and `negative` terminals, followed by each referenced
 /// voltage terminal and each sensing port's `p_positive` and `p_negative` terminals. Each
-/// port acts as a short circuit with a branch-current unknown labelled `p` flowing from
+/// port acts as a short circuit with a branch-current unknown labeled `p` flowing from
 /// `p_positive` to `p_negative`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(try_from = "String")]
@@ -522,8 +522,8 @@ behavioral_kernel! {
 /// Behavioral voltage source whose terminal voltage follows an expression of sensed voltages,
 /// port currents, and time; see [`Behavior`].
 ///
-/// Constrains `v_positive − v_negative` to the evaluated expression value. The branch current
-/// flowing from `positive` through the source to `negative` is an unknown labelled `current`.
+/// Constrains `v_positive - v_negative` to the evaluated expression value. The branch current
+/// flowing from `positive` through the source to `negative` is an unknown labeled `current`.
 #[derive(Debug, Clone, Copy)]
 pub struct BehavioralVoltageSource;
 

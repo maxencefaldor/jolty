@@ -38,6 +38,13 @@ def rated_instances(
 
     The traversal skips subtrees replaced by `substituted` models as well as
     components containing no rated instances.
+
+    Args:
+        circuit: Elaborated circuit whose component hierarchy is traversed.
+        substituted: Component instance paths replaced by substitute device models.
+
+    Returns:
+        Iterator of `(path, instance)` pairs for active rated instances.
     """
     prefixes = tuple(f"{path}/" for path in substituted)
     holds: dict[str, bool] = {}
@@ -160,7 +167,11 @@ class Stressed:
     """Time point array for transient analyses, or None for an operating point."""
 
     def diagnostics(self) -> list[checks.Diagnostic]:
-        """Collects over-rating and near-rating diagnostics, at most one per bound."""
+        """Collects over-rating and near-rating diagnostics, at most one per bound.
+
+        Returns:
+            Rating diagnostics triggered at maximum or minimum stress extremes.
+        """
         found: list[checks.Diagnostic] = []
         high = int(np.argmax(self.stress))
         low = int(np.argmin(self.stress))
@@ -227,7 +238,18 @@ def check_results(
     joined: Callable[[str, str], Joined | None],
     solved: Mapping[str, results.AnalysisResult],
 ) -> tuple[checks.Diagnostic, ...]:
-    """Evaluates result-level rules across `solved` and returns all diagnostics."""
+    """Evaluates result-level rules across `solved` and returns all diagnostics.
+
+    Args:
+        circuit: Elaborated circuit containing device rating declarations.
+        substituted: Component instance paths replaced by substitute device models.
+        conditions: Simulation temperature and parameter overrides.
+        joined: Lookup returning the connected `Joined` node for an instance terminal.
+        solved: Mapping from analysis names to completed analysis results.
+
+    Returns:
+        Stability-margin and device-stress diagnostics collected across `solved`.
+    """
     found = list(specs.diagnose(solved))
     cached_joined = functools.cache(joined)
     rated = [

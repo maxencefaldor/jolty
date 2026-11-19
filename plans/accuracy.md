@@ -109,17 +109,17 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 ### 🚧 6. Newton's iteration stopped by observed contraction
 
 - **What:** replace a fixed per-step iteration count (SPICE's 10) by measuring the contraction rate `θ = ‖δₖ‖/‖δₖ₋₁‖`.
-    Newton continues while `θ < 1` and predicted iterations fit, stops immediately when `θ ≥ 1`, and accepts when the remaining-error bound `θ/(1−θ)·‖δ‖` lies within tolerance.
+    Newton continues while `θ < 1` and predicted iterations fit, stops immediately when `θ ≥ 1`, and accepts when the remaining-error bound `θ/(1-θ)·‖δ‖` lies within tolerance.
 - **Why:** removes arbitrary limits so hopeless iterations stop immediately while slowly converging gate-edge iterations continue.
 - **State** (`f673b49`): inside a time step, iteration continued past `transient_iterations` (later renamed `max_transient_iterations` in `be0de7d`) while steps shrank, whereas operating points kept a fixed count.
-    Once contraction exceeded a factor of two, acceptance required `θ/(1−θ)` times the step to lie within tolerance.
+    Once contraction exceeded a factor of two, acceptance required `θ/(1-θ)` times the step to lie within tolerance.
     On the inverter chain, that rule trades accuracy for work (0.085 ns mean edge error at 2,705 steps without contraction vs 0.23 ns at 2,448 steps with contraction), listed in `README.md` open decisions.
 - **Owner design** (15 November), simple and orthogonal: `max_transient_iterations` acts as a hard cap, and contraction tests form the always-on convergence criterion within that cap.
-    Newton accepts when `θ/(1−θ)·‖δ‖` falls within tolerance and cuts the step when `θ ≥ 1` or when remaining iterations at rate `θ` cannot reach tolerance (Hairer and Wanner IV.8, as in RADAU5).
+    Newton accepts when `θ/(1-θ)·‖δ‖` falls within tolerance and cuts the step when `θ ≥ 1` or when remaining iterations at rate `θ` cannot reach tolerance (Hairer and Wanner IV.8, as in RADAU5).
     The cap default is chosen by measurement: SPICE's 10 if every suite passes, otherwise the lowest measured value documented explicitly.
     The accuracy trade on the chain is retained so tolerances, rather than Newton failures, control accuracy.
     Exact ngspice iteration behavior is not replicated, matching the decision on Gear2's constant.
-- **Result, in part** (on `main`, `6e01688` and `da286de`, 16 November; raw logs not kept): `max_transient_iterations` is now a true cap of 10, and acceptance checks `θ/(1−θ)·‖δ‖` within tolerance without the old `max(·,1)` floor.
+- **Result, in part** (on `main`, `6e01688` and `da286de`, 16 November; raw logs not kept): `max_transient_iterations` is now a true cap of 10, and acceptance checks `θ/(1-θ)·‖δ‖` within tolerance without the old `max(·,1)` floor.
     Contraction rate `θ` is measured only across unlimited steps, while first, limited, or non-contracting steps use SPICE's step test, and the final iterate is judged in DC as well.
     Every suite passes at cap 10: all Rust tests, all 765 precision suite runs to the same digits, and all 40 hard-circuit corpus runs.
     The 500-inverter chain takes 16% fewer iterations and 13% less time (mean edge error 0.228 to 0.229 ns), while the buck takes +4.8% time with output error improving from 21.5 to 15.2 mV.
@@ -138,8 +138,8 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Why:** the buck at `reltol` 3e-6 and 1e-6 stops at 1.7 ns where M1's Meyer capacitance turns on with a kink.
 - **Done when:** the buck runs at every `reltol` down to 1e-6.
 - **Result** (`da286de`, 16 November): the initial diagnosis did not hold, because an exact rounding floor still left the buck stopping at 1.70 ns.
-    The true cause was junction depletion charge `1 − (1 − v/φ)^(1−m)` losing precision near 0 V (3.5e-25 C at 1 nF, yielding 5e-12 A through step weighting).
-    Rewriting that term as `−expm1((1−m)·ln1p(−v/φ))` via `ln_1p` and `exp_m1` on `Real` and `Dual` lets the buck run at `1.25e-4`, `1e-5`, `3e-6`, and `1e-6` with 13 to 15% fewer iterations.
+    The true cause was junction depletion charge `1 - (1 - v/φ)^(1-m)` losing precision near 0 V (3.5e-25 C at 1 nF, yielding 5e-12 A through step weighting).
+    Rewriting that term as `-expm1((1-m)·ln1p(-v/φ))` via `ln_1p` and `exp_m1` on `Real` and `Dual` lets the buck run at `1.25e-4`, `1e-5`, `3e-6`, and `1e-6` with 13 to 15% fewer iterations.
     No rounding floor was added.
 - **Source:** second attempt on `charge_tolerance`.
 

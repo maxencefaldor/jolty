@@ -85,7 +85,7 @@ pub trait Real:
         self.chain((value.ln_1p(), base.recip(), -(base * base).recip()))
     }
 
-    /// Computes `e^self − 1` accurately near zero without catastrophic cancellation.
+    /// Computes `e^self - 1` accurately near zero without catastrophic cancellation.
     #[must_use]
     fn exp_m1(self) -> Self {
         let value = self.value();
@@ -169,7 +169,7 @@ pub trait Real:
     }
 
     /// Computes the least non-negative Euclidean remainder
-    /// `self − divisor · floor(self / divisor)`.
+    /// `self - divisor · floor(self / divisor)`.
     #[must_use]
     fn rem_euclid(self, divisor: Self) -> Self {
         let quotient = self.value().div_euclid(divisor.value());

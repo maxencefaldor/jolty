@@ -123,7 +123,8 @@ Feedback circuits can possess multiple DC operating points: bistable latches hol
 Plan({"states": OperatingPoints(max_solutions=8)})
 ```
 
-Deflation modifies the residual to `m(x)·f(x) = 0` with `m(x) = Π (1/‖x - r‖² + 1)` over found voltage vectors `r`, scaling each Newton step by `1 / (1 - ∇m·δ/m)` to repel converged roots (Farrell, Birkisson, and Funke, *SIAM Journal on Scientific Computing* 37(4), 2015).
+Deflation modifies the residual to `m(x)·f(x) = 0` with `m(x) = Π (1/‖x - r‖² + 1)` over converged voltage vectors `r`.
+Each Newton step scales by `1 / (1 - ∇m·δ/m)` to repel previously found roots (Farrell, Birkisson, and Funke, *SIAM Journal on Scientific Computing* 37(4), 2015).
 Each search attempts Newton, node/junction gmin stepping, source stepping, and pseudo-transient continuation from zero, followed by reflections across prior solutions and alternating ±0.1 V perturbations to break latch symmetry.
 Search stops at `max_solutions` or once no candidate yields a new root separated by at least ten tolerances in some unknown.
 `OperatingPointsResult.points` lists every `OperatingPointResult`, `voltages(net)` returns net voltages across roots, reports print every solution, and `specs.solutions` returns the solution count.
@@ -236,7 +237,8 @@ Plan({"drift": Sensitivity(["out"], of=Transient(stop=1 * ms))})
 
 `Sensitivity` automatically chooses VJP or JVP to minimize total linear solves.
 At DC and AC points, `k` outputs require `k` transposed solves versus `P` forward solves for `P` parameters, selecting VJP whenever `k ≤ P`.
-In transients and periodic steady states, `N + 1` points cost `k (N + 1)(N + 2) / 2` backward solves versus `P (N + 1)` forward solves; `Sensitivity` selects JVP upfront when cheaper at minimum step count (or when logic is present) and chooses dynamically after step recording otherwise.
+In transients and periodic steady states, `N + 1` points cost `k (N + 1)(N + 2) / 2` backward solves versus `P (N + 1)` forward solves.
+`Sensitivity` selects JVP upfront when cheaper at minimum step count (or when logic is present) and chooses dynamically after step recording otherwise.
 
 `SensitivityResult.derivative(output, instance, parameter)` returns one SI derivative (scalar at DC, array otherwise), and `gradient(output)` returns all derivatives ordered by `parameters`.
 `SensitivityResult.result` holds the differentiated base analysis, while autonomous oscillators additionally expose `period_derivative(instance, parameter)` and `period_derivatives`:
@@ -378,7 +380,7 @@ def plan() -> Plan:
 ```
 
 At nominal conditions and every corner, one probe run per toleranced parameter (perturbed by `step` times tolerance) determines the direction in which each requirement moves.
-For each requirement bound, every independent parameter moves to its worst extreme and each shared lot moves to the net worst extreme of its members (leaving cancelling matched pairs nominal), deduplicating identical extreme runs.
+For each requirement bound, every independent parameter moves to its worst extreme and each shared lot moves to the net worst extreme of its members (leaving canceling matched pairs nominal), deduplicating identical extreme runs.
 Normal extremes sit at ±3σ and logarithmic extremes at the specified factor.
 Probe runs and extreme runs execute as explicit [batches](#batches) per circuit.
 Extremes extrapolate from first-order slopes as in PSpice, so strongly nonlinear optima may lie inside the tolerance box; use Monte Carlo to probe interior points.
@@ -449,7 +451,7 @@ found = simulation.batch(
 )
 gains = found.measured[:, 0]  # each run's gain at 1 kHz, in dB
 resistances = found.parameter("R1 resistance")  # each run's R1
-failed = found.failed  # whether each run failed; found.failure(run) says why
+failed = found.failed  # failure flags; found.failure(run) returns the failure message
 responses = found.traces[1].values_of("out")  # a row per run, a column per frequency
 ```
 

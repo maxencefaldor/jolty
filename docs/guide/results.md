@@ -159,9 +159,9 @@ kept = point.recording.devices[0].variables  # ("region", "overdrive_voltage", .
 
 | Model | Regions | Margins |
 | --- | --- | --- |
-| `mosfet` | `off` at or below its threshold, or `weak_inversion` below it at level 3 with fast surface states; then `linear` with the drain below saturation, `saturated` at or past it, as `mos1load.c` and `mos3load.c` switch | `overdrive_voltage`, `vgs − von`, and `saturation_margin`, `vds − vdsat` |
-| `jfet` | `off` at or below its threshold, then `linear` with the drain within `vgs − vto`, `saturated` past it, as `jfetload.c` switches | `overdrive_voltage`, `vgs − vto`, and `saturation_margin`, `vds − max(vgs − vto, 0)` |
-| `bsim3` | `weak_inversion` below its threshold, then `linear` below its saturation voltage, `saturated` at or past it | `overdrive_voltage`, `Vgs_eff − Vth`, and `saturation_margin`, `Vds − Vdsat` |
+| `mosfet` | `off` at or below its threshold, or `weak_inversion` below it at level 3 with fast surface states; then `linear` with the drain below saturation, `saturated` at or past it, as `mos1load.c` and `mos3load.c` switch | `overdrive_voltage`, `vgs - von`, and `saturation_margin`, `vds - vdsat` |
+| `jfet` | `off` at or below its threshold, then `linear` with the drain within `vgs - vto`, `saturated` past it, as `jfetload.c` switches | `overdrive_voltage`, `vgs - vto`, and `saturation_margin`, `vds - max(vgs - vto, 0)` |
+| `bsim3` | `weak_inversion` below its threshold, then `linear` below its saturation voltage, `saturated` at or past it | `overdrive_voltage`, `Vgs_eff - Vth`, and `saturation_margin`, `Vds - Vdsat` |
 | `vdmos` | `linear` with the drain below its softened overdrive, `saturated` at or past it, as `VDMOSload` switches | `saturation_margin`, `vds` less the softened overdrive over the triode's multiplier |
 | `bipolar_transistor`, `vbic` | `cut_off`, neither junction injecting, `active`, the base-emitter junction alone, `saturated`, both, and `reversed`, the base-collector junction alone | `base_emitter_voltage` and `base_collector_voltage`, its intrinsic junctions' |
 

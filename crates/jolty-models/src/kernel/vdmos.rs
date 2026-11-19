@@ -38,18 +38,18 @@ const MAX_DEPLETION_THRESHOLD: f64 = 2.5;
 /// matching ngspice 47.
 ///
 /// Channel conduction follows a Shichman-Hodges square law without body effect, softened
-/// below threshold via `vgst' = k · ln(1 + e^{(vgst − shift) / k})` where `vgst = vgs − vto`
+/// below threshold via `vgst' = k · ln(1 + e^{(vgst - shift) / k})` where `vgst = vgs - vto`
 /// and `k` is the subthreshold slope. Drain current uses
 /// `β' = kp · m · (1 + λ · vds) / (1 + θ · max(vgst, 0))` and `vdss = mtriode · vds`.
 /// Saturation gives `β' · vgst'² / 2`, and linear mode gives
-/// `β' · vdss · (vgst' − vdss / 2)`. Drain and source swap when `vds < 0`, while `vds`
+/// `β' · vdss · (vgst' - vdss / 2)`. Drain and source swap when `vds < 0`, while `vds`
 /// retains its sign in channel-length modulation. When quasi-saturation parameters are
 /// provided, forward drain resistance increases as `rd + rq · vds / (vds + vq)`.
 ///
 /// Gate-source capacitance is constant, while gate-drain capacitance transitions smoothly
 /// from `cgdmin` (negative `vgd`) to `cgdmax` (positive `vgd`). Negative `vgd` uses
 /// `s · atan(a · vgd) + y` and positive `vgd` uses `s · tanh(a · vgd) + y`. The scale and
-/// offset are `s = (cgdmax − cgdmin) / (1 + π/2)` and `y = cgdmax − s`. Integrating
+/// offset are `s = (cgdmax - cgdmin) / (1 + π/2)` and `y = cgdmax - s`. Integrating
 /// capacitance analytically conserves charge.
 ///
 /// A dedicated body diode joins the source (behind body resistance) to the drain terminal,
@@ -134,7 +134,7 @@ enum Region {
     Saturated,
 }
 
-/// Operating-region metadata for [`Vdmos`] reporting `vds − vdsat` in n-channel sign
+/// Operating-region metadata for [`Vdmos`] reporting `vds - vdsat` in n-channel sign
 /// convention per [`Regions::margins`], swapping drain and source when `vds < 0`.
 ///
 /// The boundary `vdsat` equals the softened overdrive divided by the triode multiplier.
@@ -167,7 +167,7 @@ pub struct VdmosParameters<R: Real = f64> {
     pub channel: Channel,
     /// The number of identical transistors in parallel, `M`; default 1.
     pub multiplier: R,
-    /// The threshold voltage, `VTO`, in volts; default 3 for an n-channel and −3 for a
+    /// The threshold voltage, `VTO`, in volts; default 3 for an n-channel and -3 for a
     /// p-channel, an IRF540's and an IRF9540's.
     #[dimension(VOLTAGE)]
     pub threshold_voltage: Option<R>,
@@ -273,7 +273,7 @@ pub struct VdmosParameters<R: Real = f64> {
     #[dimension(VOLTS_PER_KELVIN)]
     pub threshold_voltage_temperature_coefficient: R,
     /// The exponent of the temperature ratio that scales the transconductance parameter,
-    /// `MU` or `BEX`; default −1.5.
+    /// `MU` or `BEX`; default -1.5.
     pub transconductance_parameter_temperature_exponent: R,
     /// The subthreshold slope's linear temperature coefficient, `TKSUBTHRES1`, per kelvin;
     /// default 0.
@@ -408,7 +408,7 @@ struct Conduction<R: Real> {
     /// Flag indicating forward mode (`vds >= 0`); when `false`, drain and source swap.
     forward: bool,
     region: Region,
-    /// Saturation margin `vds − vdsat` in forward orientation.
+    /// Saturation margin `vds - vdsat` in forward orientation.
     margin: f64,
 }
 
@@ -474,9 +474,9 @@ fn softplus<R: Real, const N: usize>(x: Dual<R, N>) -> Dual<R, N> {
 struct Gate<R: Real> {
     /// Constant gate-source capacitance.
     source: R,
-    /// Gate-drain capacitance swing `s = (cgdmax − cgdmin) / (1 + π/2)`.
+    /// Gate-drain capacitance swing `s = (cgdmax - cgdmin) / (1 + π/2)`.
     swing: R,
-    /// Midpoint gate-drain capacitance `y = cgdmax − s` at `vgd = 0`.
+    /// Midpoint gate-drain capacitance `y = cgdmax - s` at `vgd = 0`.
     middle: R,
     /// Transition steepness `a` with respect to `vgd`.
     rate: R,
@@ -494,7 +494,7 @@ impl<R: Real> Gate<R> {
         } = *self;
         let u = vgd.value * rate;
         let at = u.value();
-        // Above zero, ∫ tanh(u) du = ln cosh(u), and below, ∫ atan(u) du = u · atan(u) −
+        // Above zero, ∫ tanh(u) du = ln cosh(u), and below, ∫ atan(u) du = u · atan(u) -
         // ln(1 + u²) / 2: each written where it neither overflows nor cancels.
         let (integral, shape) = if at > 0.0 {
             let tanh = at.tanh();
@@ -1086,7 +1086,7 @@ mod tests {
     #[test]
     fn reversed_it_keeps_the_sign_of_the_drain_voltage_in_its_length_modulation() {
         // With the drain 0.5 V below the source, the gate's overdrive is over the drain, and
-        // `1 + λ · vds` is ngspice's `1 − 0.005`.
+        // `1 + λ · vds` is ngspice's `1 - 0.005`.
         let current = drain_current(BARE, 5.0, -0.5);
         let vgst = 5.5 - 3.0;
         let overdrive = 0.1 * (vgst / 0.1).exp().ln_1p();
@@ -1147,7 +1147,7 @@ mod tests {
             assert_close(&[evaluation.capacitance[1][1]], &[capacitance]);
         }
         // Far above the drain, the capacitance is the maximum, and far below it tends to
-        // the minimum, `y − s · π/2`.
+        // the minimum, `y - s · π/2`.
         let above = bench.settle(&[0.0, 100.0, -50.0]).capacitance[1][1];
         assert!((above / 2e-9 - 1.0).abs() < 1e-12, "{above}");
         assert!(((middle - swing * FRAC_PI_2) / 1e-10 - 1.0).abs() < 1e-12);

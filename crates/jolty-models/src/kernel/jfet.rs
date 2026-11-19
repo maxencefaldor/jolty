@@ -50,8 +50,8 @@ impl Channel {
 ///
 /// Two pn junctions join the gate to the drain and source with grading coefficient `½`.
 /// Drain current follows a square law softened near threshold by doping tail `b`. With
-/// `vgst = vgs − vto` and `β' = β · (1 + λ · vds)`, saturation current equals
-/// `β' · vgst² · (b + (1 − b) · vgst / (pb − vto))`. The channel is symmetric and swaps
+/// `vgst = vgs - vto` and `β' = β · (1 + λ · vds)`, saturation current equals
+/// `β' · vgst² · (b + (1 - b) · vgst / (pb - vto))`. The channel is symmetric and swaps
 /// drain and source when `vds < 0`. Positive drain or source resistance adds an internal
 /// node (`drain` or `source`), and resistance below
 /// [`SMALL_RESISTANCE`](crate::SMALL_RESISTANCE) adds a branch-current unknown
@@ -115,8 +115,8 @@ enum Region {
     Saturated,
 }
 
-/// Operating-region metadata for [`Jfet`] reporting `vgs − vto` and `vds − vdsat`
-/// (`vdsat = max(vgs − vto, 0)`) in n-channel sign convention per [`Regions::margins`],
+/// Operating-region metadata for [`Jfet`] reporting `vgs - vto` and `vds - vdsat`
+/// (`vdsat = max(vgs - vto, 0)`) in n-channel sign convention per [`Regions::margins`],
 /// swapping drain and source when `vds < 0`.
 const REGIONS: Regions = Regions {
     names: &["off", "linear", "saturated"],
@@ -161,7 +161,7 @@ const CHANNEL: [usize; 2] = [VGS, VDS];
 pub struct JfetParameters<R: Real = f64> {
     /// Channel polarity; default `n`.
     pub channel: Channel,
-    /// Threshold voltage `vto`, in volts; default −2.
+    /// Threshold voltage `vto`, in volts; default -2.
     #[dimension(VOLTAGE)]
     pub threshold_voltage: R,
     /// Transconductance parameter `β`, in amperes per square volt; default 1e-4.
@@ -247,12 +247,12 @@ struct DrainCurrent<R: Real> {
     threshold: R,
     lambda: R,
     tail: R,
-    /// Doping tail factor `(1 − b) / (pb − vto)`.
+    /// Doping tail factor `(1 - b) / (pb - vto)`.
     tail_factor: R,
 }
 
 impl<R: Real> DrainCurrent<R> {
-    /// Determines the channel [`Region`] and boundary margins `[vgs − vto, vds − vdsat]` at
+    /// Determines the channel [`Region`] and boundary margins `[vgs - vto, vds - vdsat]` at
     /// `vgs` and `vds`, swapping drain and source when `vds < 0`.
     fn region(&self, vgs: f64, vds: f64) -> (Region, [f64; 2]) {
         let (control, across) = if vds >= 0.0 {
@@ -539,7 +539,7 @@ impl<R: Real> JfetParameters<R> {
         ParameterError::positive("saturation_current", saturation_current)?;
         crate::kernel::junction::below_one("depletion_coefficient", depletion_coefficient)?;
         ParameterError::non_negative("energy_gap", energy_gap)?;
-        // The doping tail's factor, `(1 − b) / (pb − vto)`, which vanishes at `b = 1`.
+        // The doping tail's factor, `(1 - b) / (pb - vto)`, which vanishes at `b = 1`.
         let (tail_excess, gap) = (-(doping_tail - 1.0), junction_potential - threshold_voltage);
         if gap.value() == 0.0 && tail_excess.value() != 0.0 {
             return Err(ParameterError(
@@ -619,7 +619,7 @@ mod tests {
     fn follows_the_square_law_in_saturation() {
         let mut bench = Bench::new::<Jfet>(r#"{"transconductance_parameter": 1e-3}"#);
         let evaluation = bench.settle(&[5.0, 0.0, 0.0]);
-        // vgs = 0, vto = −2: β · vgst² = 1e-3 · 4.
+        // vgs = 0, vto = -2: β · vgst² = 1e-3 · 4.
         let drain_current = evaluation.residual[0];
         assert!((drain_current - 4e-3).abs() < 1e-12, "{drain_current}");
     }
@@ -627,7 +627,7 @@ mod tests {
     /// Verifies that [`Jfet`] classifies off, linear, and saturated regions with symmetric
     /// drain/source swap and p-channel polarity inversion.
     ///
-    /// Margins `vgs − vto` and `vds − max(vgs − vto, 0)` vanish at `jfetload.c` boundaries.
+    /// Margins `vgs - vto` and `vds - max(vgs - vto, 0)` vanish at `jfetload.c` boundaries.
     #[test]
     fn reports_its_region_and_margins() {
         // The drain, the gate and the source, about the threshold of -2 V.

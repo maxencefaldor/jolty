@@ -1296,7 +1296,7 @@ impl Simulator {
         self.replay(&mut forward, trajectory, options)?;
         forward.tangents.clear();
         forward.tangents.shrink_to_fit();
-        // (Φ − I) ẋ₀ + ∂φ/∂T Ṫ = −∂φ/∂p t, in shooting's units, bordered for an
+        // (Φ - I) ẋ₀ + ∂φ/∂T Ṫ = -∂φ/∂p t, in shooting's units, bordered for an
         // oscillator by the phase condition's row.
         let mut columns: Vec<Vec<f64>> = forward
             .ends
@@ -1490,7 +1490,7 @@ impl Simulator {
 
     /// Carries the direct method over the step a transient accepted at `point` by `step`.
     /// While an oscillator's period stretches, each direction's history also takes the charges'
-    /// terms the steps divide, `α q_{n+1} + β₀ q_n + β₁ q_{n-1}`, times `−Ṫ / T`.
+    /// terms the steps divide, `α q_{n+1} + β₀ q_n + β₁ q_{n-1}`, times `-Ṫ / T`.
     pub(crate) fn advance_forward(
         &mut self,
         forward: &mut Forward,

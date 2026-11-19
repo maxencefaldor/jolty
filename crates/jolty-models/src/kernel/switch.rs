@@ -12,14 +12,14 @@ use crate::{
 /// PSpice smooth resistance transition law for switches `S` and `W` (PSpice A/D Reference
 /// Guide, "Voltage-controlled switch equations").
 ///
-/// Let `s` be the normalized control fraction from off to on, `m = s − ½`, and
+/// Let `s` be the normalized control fraction from off to on, `m = s - ½`, and
 /// `L = ln(r_on / r_off)`. Between thresholds, log-resistance follows the cubic
-/// `ln √(r_on · r_off) + L · (3/2 · m − 2 · m³)`, reaching both endpoints with zero slope
+/// `ln √(r_on · r_off) + L · (3/2 · m - 2 · m³)`, reaching both endpoints with zero slope
 /// and clamping outside `[0, 1]`.
 #[derive(Debug, Clone, Copy)]
 struct Law<R: Real> {
     off: R,
-    /// Control span `on − off`.
+    /// Control span `on - off`.
     span: R,
     on_conductance: R,
     off_conductance: R,
@@ -82,7 +82,7 @@ impl<R: Real> Law<R> {
 
 /// Voltage-controlled switch implementing the PSpice `VSWITCH` model.
 ///
-/// Control voltage `v(control_positive) − v(control_negative)` smoothly interpolates
+/// Control voltage `v(control_positive) - v(control_negative)` smoothly interpolates
 /// log-resistance between `positive` and `negative` along a zero-slope cubic from off to
 /// on. The control terminals draw zero current.
 #[derive(Debug, Clone, Copy)]

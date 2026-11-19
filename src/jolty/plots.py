@@ -131,6 +131,9 @@ def plot(name: str, result: Plotted, traces: Sequence[str]) -> Figure:
         result: Simulation analysis result to render.
         traces: Unknown or logic net names to include in the plot.
 
+    Returns:
+        Rendered Matplotlib `Figure` plotting `result`.
+
     Raises:
         JoltyError: If a trace does not match an unknown or logic net, or if `traces`
             exceeds [`MAX_SERIES`][jolty.plots.MAX_SERIES].
@@ -428,6 +431,13 @@ def histograms(name: str, batch: files.Batch) -> Figure:
     Each panel bins finite readings with numpy's ``auto`` rule and marks specification
     bounds with dashed lines. Panel titles report counts of missing or infinite
     readings.
+
+    Args:
+        name: Batch name shown in the figure title.
+        batch: Saved batch result paired with requirement labels and bounds.
+
+    Returns:
+        Rendered Matplotlib `Figure` with one histogram panel per requirement.
     """
     found = batch.result
     title = f"{name}: {found.runs} runs, each measure's values"
@@ -483,6 +493,13 @@ def envelope(name: str, traces: results.Traces) -> Figure:
     that completed the analysis, omitting incomplete runs. Frequency-domain responses
     unwrap each run's phase before rendering magnitude and phase panels grouped by
     physical quantity.
+
+    Args:
+        name: Batch name shown in the figure title.
+        traces: Batched unknown waveforms recorded along a shared analysis axis.
+
+    Returns:
+        Rendered Matplotlib `Figure` shading min-to-max bands around median curves.
     """
     natures = list(dict.fromkeys(unknown.nature for unknown in traces.unknowns))
     response = traces.along == "frequency"
@@ -571,7 +588,12 @@ def _band(
 
 
 def save(figure: Figure, path: Path) -> None:
-    """Writes `figure` to `path` as a PNG image."""
+    """Writes `figure` to `path` as a PNG image.
+
+    Args:
+        figure: Matplotlib figure to export.
+        path: Destination PNG file path.
+    """
     figure.savefig(path, format="png", facecolor=figure.get_facecolor())
 
 

@@ -1368,7 +1368,7 @@ fn block_value(mut statements: Vec<Rust>, value: String) -> (Vec<Rust>, String) 
     (statements, value)
 }
 
-/// Negates `operand`, folding constants and cancelling double negation.
+/// Negates `operand`, folding constants and canceling double negation.
 fn negate(operand: Operand) -> Operand {
     match operand.kind {
         Kind::Float(Some(value)) => float(-value),

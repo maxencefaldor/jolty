@@ -146,7 +146,11 @@ class OperatingPointReport(ir.FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats the operating-point report as human-readable text."""
+        """Formats the operating-point report as human-readable text.
+
+        Returns:
+            Multi-line human-readable operating-point summary.
+        """
         rows = [
             [value.unknown, _shown(value.value, value.nature)] for value in self.values
         ]
@@ -207,7 +211,11 @@ class OperatingPointsReport(ir.FrozenModel):
     unlisted: int = Field(description="Number of unknowns omitted from the report.")
 
     def describe(self) -> str:
-        """Formats the multi-solution DC report as human-readable text."""
+        """Formats the multi-solution DC report as human-readable text.
+
+        Returns:
+            Multi-line human-readable summary across all solved DC points.
+        """
         count = len(self.strategies)
         found = "solution" if count == 1 else "solutions"
         head = f"{self.name}: {count} DC {found}, the operating point first"
@@ -260,7 +268,11 @@ class DcSweepReport(ir.FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats the DC sweep report as human-readable text."""
+        """Formats the DC sweep report as human-readable text.
+
+        Returns:
+            Multi-line human-readable DC sweep summary.
+        """
         if self.nature is None:
             swept = f"{self.source}'s {self.parameter}"
             first, last = f"{self.first:.4g}", f"{self.last:.4g}"
@@ -309,7 +321,11 @@ class AcReport(_FrequencyReport):
     unlisted: int = Field(description="Number of unknowns omitted from the report.")
 
     def describe(self) -> str:
-        """Formats the AC frequency-response report as human-readable text."""
+        """Formats the AC frequency-response report as human-readable text.
+
+        Returns:
+            Multi-line human-readable AC frequency-response summary.
+        """
         head = (
             f"{self.name}: response to {self.source} at {self.frequencies} "
             "frequencies from "
@@ -385,7 +401,11 @@ class TransientReport(_WaveformReport):
     activities: tuple[Activity, ...] = ()
 
     def describe(self) -> str:
-        """Formats the transient analysis report as human-readable text."""
+        """Formats the transient analysis report as human-readable text.
+
+        Returns:
+            Multi-line human-readable transient waveform summary.
+        """
         head = (
             f"{self.name}: transient to {format_si(self.stop, 's')} "
             f"{self._steps_text()}"
@@ -409,7 +429,11 @@ class PeriodicSteadyStateReport(_WaveformReport):
     )
 
     def describe(self) -> str:
-        """Formats the periodic steady-state report as human-readable text."""
+        """Formats the periodic steady-state report as human-readable text.
+
+        Returns:
+            Multi-line human-readable periodic steady-state summary.
+        """
         head = (
             f"{self.name}: periodic steady state of period "
             f"{format_si(self.period, 's')}, {format_si(1 / self.period, 'Hz')}, "
@@ -443,7 +467,11 @@ class StabilityReport(_FrequencyReport):
     )
 
     def describe(self) -> str:
-        """Formats the stability analysis report as human-readable text."""
+        """Formats the stability analysis report as human-readable text.
+
+        Returns:
+            Multi-line human-readable loop-gain and stability-margin summary.
+        """
         lowest, highest = format_si(self.start, "Hz"), format_si(self.stop, "Hz")
         head = (
             f"{self.name}: loop gain through {self.probe} at {self.frequencies} "
@@ -494,7 +522,11 @@ class TransferFunctionReport(ir.FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats the transfer-function report as human-readable text."""
+        """Formats the transfer-function report as human-readable text.
+
+        Returns:
+            Multi-line human-readable small-signal transfer-function summary.
+        """
         over = "" if self.reference is None else f" over {self.reference}"
         header = (
             f"{self.name}: transfer function from {self.source} to {self.output}{over}"
@@ -570,7 +602,11 @@ class NoiseReport(_FrequencyReport):
     )
 
     def describe(self) -> str:
-        """Formats the noise analysis report as human-readable text."""
+        """Formats the noise analysis report as human-readable text.
+
+        Returns:
+            Multi-line human-readable output-noise and contributor summary.
+        """
         lowest, highest = format_si(self.start, "Hz"), format_si(self.stop, "Hz")
         over = "" if self.reference is None else f" over {self.reference}"
         unit = unknowns.SYMBOLS[self.nature]
@@ -622,7 +658,14 @@ class Root(ir.FrozenModel):
     )
 
     def written(self, kind: str) -> list[str]:
-        """Formats the root as a table row of kind, value, frequency, and damping."""
+        """Formats the root as a table row of kind, value, frequency, and damping.
+
+        Args:
+            kind: Root label such as ``"pole"`` or ``"zero"``.
+
+        Returns:
+            Four-cell row listing root kind, s-plane value, frequency, and damping.
+        """
         value = format_si(self.real, "rad/s")
         if self.imaginary:
             value += f" ± j{format_si(self.imaginary, 'rad/s')}"
@@ -658,7 +701,11 @@ class PoleZeroReport(ir.FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats the pole-zero analysis report as human-readable text."""
+        """Formats the pole-zero analysis report as human-readable text.
+
+        Returns:
+            Multi-line human-readable pole and zero summary.
+        """
         count = sum(2 if root.imaginary else 1 for root in self.poles)
         head = f"{self.name}: {count} poles listed"
         if self.zeros is not None:
@@ -777,7 +824,11 @@ class SensitivityReport(_DifferentiatedReport):
     )
 
     def describe(self) -> str:
-        """Formats the sensitivity report as human-readable text."""
+        """Formats the sensitivity report as human-readable text.
+
+        Returns:
+            Multi-line human-readable first-order sensitivity summary.
+        """
         header = (
             f"{self.name}: derivatives with respect to {self.parameters} parameters "
             f"{self._where()}"
@@ -892,7 +943,11 @@ class MismatchReport(_DifferentiatedReport):
     )
 
     def describe(self) -> str:
-        """Formats the mismatch analysis report as human-readable text."""
+        """Formats the mismatch analysis report as human-readable text.
+
+        Returns:
+            Multi-line human-readable statistical mismatch summary.
+        """
         header = (
             f"{self.name}: standard deviations, to first order, with "
             f"{self.random_variables} random variables {self._where()}"
@@ -944,7 +999,11 @@ class FailureReport(ir.FrozenModel):
     error: str = Field(description="Error message explaining the analysis failure.")
 
     def describe(self) -> str:
-        """Formats the failure report as human-readable text."""
+        """Formats the failure report as human-readable text.
+
+        Returns:
+            Single-line failure summary pairing analysis name and error message.
+        """
         return f"{self.name}: failed: {self.error}"
 
 
@@ -975,7 +1034,11 @@ class CornerReport(ir.FrozenModel):
         return not self.problems and not self.failures
 
     def describe(self) -> str:
-        """Formats the corner report as human-readable text."""
+        """Formats the corner report as human-readable text.
+
+        Returns:
+            Human-readable corner elaboration and analysis status summary.
+        """
         head = f"corner {self.name}, at {self.temperature - 273.15:.4g} °C"
         if self.process is not None:
             head += f", process {self.process}"
@@ -992,7 +1055,7 @@ class _BatchReport(ir.FrozenModel):
     """Shared fields and rendering for Monte Carlo and variant batch reports."""
 
     model_config = ConfigDict(
-        frozen=True, extra="forbid", validate_by_name=True, serialize_by_alias=True
+        **ir.FrozenModel.model_config, validate_by_name=True, serialize_by_alias=True
     )
 
     corners: tuple[str, ...] = Field(
@@ -1036,7 +1099,11 @@ class MonteCarloReport(_BatchReport):
     )
 
     def describe(self) -> str:
-        """Formats the Monte Carlo report as human-readable text."""
+        """Formats the Monte Carlo report as human-readable text.
+
+        Returns:
+            Multi-line human-readable Monte Carlo spread and yield summary.
+        """
         at = "".join(f", at {name}" for name in self.corners)
         mismatch = (
             f" and the mismatch of {self.mismatched} foundry's devices"
@@ -1089,7 +1156,11 @@ class ShardReport(ir.FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats the Monte Carlo shard report as human-readable text."""
+        """Formats the Monte Carlo shard report as human-readable text.
+
+        Returns:
+            Human-readable Monte Carlo shard summary, including any size warning.
+        """
         at = "".join(f", at {name}" for name in self.corners)
         head = (
             f"shard: samples {self.start} up to {self.stop} of {self.samples}{at}; "
@@ -1116,7 +1187,11 @@ class VariantsReport(_BatchReport):
     )
 
     def describe(self) -> str:
-        """Formats the variants batch report as human-readable text."""
+        """Formats the variants batch report as human-readable text.
+
+        Returns:
+            Multi-line human-readable parameter-variants spread and yield summary.
+        """
         at = "".join(f", at {name}" for name in self.corners)
         varied = " and ".join(self.parameters) or "nothing"
         head = f"variants: {self.runs} runs of {varied}{at}; {self.failed} failed"
@@ -1154,7 +1229,11 @@ class WorstCaseReport(ir.FrozenModel):
         )
 
     def describe(self) -> str:
-        """Formats the worst-case report as human-readable text."""
+        """Formats the worst-case report as human-readable text.
+
+        Returns:
+            Multi-line human-readable worst-case requirement verdict summary.
+        """
         at = "".join(f", at {name}" for name in self.corners)
         head = (
             f"worst case: {self.toleranced} toleranced parameters, each moved "
@@ -1251,6 +1330,14 @@ def report(
 
     The report lists up to `max_unknowns` circuit unknowns followed by logic nets
     within the same combined limit.
+
+    Args:
+        name: Plan key naming the solved analysis.
+        result: Solved analysis result to summarize.
+        max_unknowns: Maximum number of unknowns, nets, or contributors to list.
+
+    Returns:
+        Structured report variant matching `result`.
     """
     listed_unknowns = result.unknowns[:max_unknowns]
     all_nets = results.nets_of(result)

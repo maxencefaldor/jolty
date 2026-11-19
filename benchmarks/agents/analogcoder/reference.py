@@ -41,32 +41,32 @@ def ports(c: Builder, *names: str) -> dict[str, Net]:
 
 
 def mosfet(
-    c: Builder, id: str, terminals: tuple[Net, Net, Net], made: devices.Device
+    c: Builder, name: str, terminals: tuple[Net, Net, Net], made: devices.Device
 ) -> None:
-    """Places `made` as `id` on its drain, gate and source, its bulk on its source."""
+    """Places `made` as `name` on its drain, gate, and source, tying bulk to source."""
     drain, gate, source = terminals
-    placed = c.place(made, name=id)
+    placed = c.place(made, name=name)
     c.connect(placed.drain, drain)
     c.connect(placed.gate, gate)
     c.connect(placed.source, placed.bulk, source)
 
 
-def two_terminal(c: Builder, id: str, made: devices.Device, a: Net, b: Net) -> None:
-    """Places the two-terminal `made` as `id`, from `a` to `b`."""
-    placed = c.place(made, name=id)
-    terminals = [getattr(placed, name) for name in made.terminals]
+def two_terminal(c: Builder, name: str, made: devices.Device, a: Net, b: Net) -> None:
+    """Places two-terminal device `made` as `name` from `a` to `b`."""
+    placed = c.place(made, name=name)
+    terminals = [getattr(placed, terminal) for terminal in made.terminals]
     c.connect(terminals[0], a)
     c.connect(terminals[1], b)
 
 
-def resistor(c: Builder, id: str, kilohms: float, a: Net, b: Net) -> None:
-    """Places a resistor of `kilohms` kΩ named `id` between `a` and `b`."""
-    two_terminal(c, id, devices.resistor(kilohms * kohm), a, b)
+def resistor(c: Builder, name: str, kilohms: float, a: Net, b: Net) -> None:
+    """Places a resistor of `kilohms` kΩ named `name` between `a` and `b`."""
+    two_terminal(c, name, devices.resistor(kilohms * kohm), a, b)
 
 
-def capacitor(c: Builder, id: str, made: devices.Device, a: Net, b: Net) -> None:
-    """Places capacitor `made` named `id` between `a` and `b`."""
-    two_terminal(c, id, made, a, b)
+def capacitor(c: Builder, name: str, made: devices.Device, a: Net, b: Net) -> None:
+    """Places capacitor `made` named `name` between `a` and `b`."""
+    two_terminal(c, name, made, a, b)
 
 
 def dc_source(
@@ -344,15 +344,15 @@ def schmitt(c: Builder) -> None:
     resistor(c, "RB", 10, inn, p["ground"])
 
 
-def inverter(c: Builder, p: dict[str, Net], id: str, gate: Net, drain: Net) -> None:
+def inverter(c: Builder, p: dict[str, Net], name: str, gate: Net, drain: Net) -> None:
     """Places a CMOS inverter from `gate` to `drain` with a 50 fF output load capacitor.
 
     The 50 fF load replaces missing intrinsic MOSFET capacitances so transient time
     steps remain smooth across switching transitions.
     """
-    mosfet(c, f"{id}N", (drain, gate, p["ground"]), nmos(10))
-    mosfet(c, f"{id}P", (drain, gate, p["vdd"]), pmos(20))
-    capacitor(c, f"{id}C", devices.capacitor(50 * fF), drain, p["ground"])
+    mosfet(c, f"{name}N", (drain, gate, p["ground"]), nmos(10))
+    mosfet(c, f"{name}P", (drain, gate, p["vdd"]), pmos(20))
+    capacitor(c, f"{name}C", devices.capacitor(50 * fF), drain, p["ground"])
 
 
 @component

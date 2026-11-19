@@ -37,13 +37,30 @@ class Executed[Value]:
 def thermal_option_temperature(
     temperature: float, simulator_thermal_voltage_per_kelvin: float
 ) -> float:
-    """Computes Celsius temperature matching jolty thermal voltage at `temperature`."""
+    """Computes Celsius temperature matching jolty thermal voltage at `temperature`.
+
+    Args:
+        temperature: Target jolty temperature in kelvins.
+        simulator_thermal_voltage_per_kelvin: Simulator `k / q` constant in volts per
+            kelvin.
+
+    Returns:
+        Simulator option temperature in degrees Celsius producing identical thermal
+        voltage.
+    """
     thermal_voltage = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
     return thermal_voltage / simulator_thermal_voltage_per_kelvin - ZERO_CELSIUS
 
 
 def decode_expired(expired: subprocess.TimeoutExpired) -> str:
-    """Decodes partial stdout and stderr captured on a subprocess timeout."""
+    """Decodes partial stdout and stderr captured on a subprocess timeout.
+
+    Args:
+        expired: Timeout exception raised by `subprocess.run`.
+
+    Returns:
+        Concatenated decoded stdout and stderr captured before timeout.
+    """
     # The output so far: bytes on POSIX, text where communicate gathered it.
     return "".join(
         part.decode(errors="replace") if isinstance(part, bytes) else part or ""
@@ -52,14 +69,29 @@ def decode_expired(expired: subprocess.TimeoutExpired) -> str:
 
 
 def probe_version(executable: str, flag: str) -> str:
-    """Captures stdout from invoking `executable` with its version `flag`."""
+    """Captures stdout from invoking `executable` with its version `flag`.
+
+    Args:
+        executable: Path to the simulator executable.
+        flag: Command-line flag requesting version output (such as ``"--version"``).
+
+    Returns:
+        Standard output text printed by the version command.
+    """
     return subprocess.run(  # noqa: S603 - external simulator states its version
         [executable, flag], capture_output=True, check=False, text=True
     ).stdout
 
 
 def read_text_utf8(path: Path) -> str:
-    """Reads `path` as UTF-8 text."""
+    """Reads `path` as UTF-8 text.
+
+    Args:
+        path: Filesystem path to read.
+
+    Returns:
+        Decoded UTF-8 file contents.
+    """
     return path.read_text(encoding="utf-8")
 
 
@@ -75,6 +107,20 @@ def run_deck[Value](  # noqa: PLR0913 - simulator command, deck, output, and tim
     extra_files: Mapping[str, str] = _NO_EXTRA_FILES,
 ) -> Executed[Value]:
     """Runs an external simulator on `deck` in an isolated temporary directory.
+
+    Args:
+        name: Human-readable simulator name used in timeout diagnostics.
+        command: Base command tokens preceding ``"circuit.cir"``.
+        deck: SPICE deck lines written to ``circuit.cir``.
+        values_file: Relative filename of the simulator output file to read back.
+        read_values: Reader converting the output file path into `Value`.
+        timeout: Subprocess timeout in seconds, or `None` for no limit.
+        timeout_error: Exception class raised when the subprocess exceeds `timeout`.
+        extra_files: Optional mapping of auxiliary filenames to UTF-8 contents written
+            alongside ``circuit.cir``.
+
+    Returns:
+        `Executed` record bundling combined output, exit code, runtime, and payload.
 
     Raises:
         JoltyError: Instance of `timeout_error` when the simulator exceeds `timeout`.

@@ -233,7 +233,7 @@ fn an_analog_edge_crosses_into_logic_and_back_at_half_the_supply() {
 }
 
 /// Verifies that an inverter charging its input through an RC network oscillates with
-/// half-period `d + RC ln(2 − exp(−d/RC))`.
+/// half-period `d + RC ln(2 - exp(-d/RC))`.
 #[test]
 fn an_inverter_and_an_rc_oscillate_at_their_closed_form_period() {
     let (resistance, capacitance) = (1e3, 1e-9);

@@ -111,7 +111,7 @@ Transistors and op-amps, biased and amplifying.
 
     **[Bandgap reference](gallery/bandgap-reference.md)** · 1/1 specs · ngspice within 8.1e-12
 
-    A bandgap voltage reference: two transistors' base-emitter voltages cancelling drift.
+    A bandgap voltage reference: two transistors' base-emitter voltages canceling drift.
 
     [Open in 3D](gallery/bandgap-reference.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/bandgap_reference.py)
 
@@ -151,7 +151,7 @@ Circuits with no stable state, running at the rate they set.
 
     **[Colpitts oscillator](gallery/colpitts-oscillator.md)** · 2/2 specs · ngspice agrees on its specs
 
-    A Colpitts oscillator: a 2N3904 in common base, its tank a coil and two capacitors.
+    A Colpitts oscillator: a common-base 2N3904 with an LC tank and capacitive divider.
 
     [Open in 3D](gallery/colpitts-oscillator.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/colpitts_oscillator.py)
 
@@ -231,7 +231,7 @@ CMOS at transistor level, and logic at event speed beside analog circuits.
 
     **[CMOS inverter](gallery/cmos-inverter.md)** · 3/3 specs · ngspice within 3.0e-04
 
-    The CMOS inverter: its transfer curve, its switching threshold, its edges.
+    The CMOS inverter: transfer curve, switching threshold, and transient edges.
 
     [Open in 3D](gallery/cmos-inverter.view.html) · [Script](https://github.com/maxencefaldor/jolty/blob/main/examples/cmos_inverter.py)
 

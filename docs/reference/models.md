@@ -157,9 +157,9 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `cf` |  | The fringing capacitance per width, `cf`, in farads per meter; default 2 · εox / π · ln(1 + 0.4 µm / `tox`). |
 | `cgbo` |  | The gate-bulk overlap capacitance per length, `cgbo`, in farads per meter; default 2 · `dwc` · Cox. |
 | `cgdl` | `0` | The bias-dependent overlap capacitance between the gate and the lightly doped drain, `cgdl`, in farads per meter; default 0. |
-| `cgdo` |  | Fixed gate-drain overlap capacitance per unit width, `cgdo`, in farads per meter; default `dlc` · Cox − `cgdl` when `dlc &gt; 0`, otherwise 0.6 · `xj` · Cox. |
+| `cgdo` |  | Fixed gate-drain overlap capacitance per unit width, `cgdo`, in farads per meter; default `dlc` · Cox - `cgdl` when `dlc &gt; 0`, otherwise 0.6 · `xj` · Cox. |
 | `cgsl` | `0` | The bias-dependent overlap capacitance between the gate and the lightly doped source, `cgsl`, in farads per meter; default 0. |
-| `cgso` |  | Fixed gate-source overlap capacitance per unit width, `cgso`, in farads per meter; default `dlc` · Cox − `cgsl` when `dlc &gt; 0`, otherwise 0.6 · `xj` · Cox. |
+| `cgso` |  | Fixed gate-source overlap capacitance per unit width, `cgso`, in farads per meter; default `dlc` · Cox - `cgsl` when `dlc &gt; 0`, otherwise 0.6 · `xj` · Cox. |
 | `channel` | `n` | The channel; default `n`. One of `n`, `p`. |
 | `charge_partition` | `0` | The share of the channel's charge the drain takes in saturation, `xpart`: 0.4 below 0.5, 0.5 at 0.5 and none above it, and no channel charge at all below 0; default 0. |
 | `check_parameters` | `false` | Flag enabling range checking and clamping of size-dependent parameters (`paramchk = 1`); default false. |
@@ -1503,7 +1503,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
 | `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 | `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
-| `threshold_voltage` | `-2` | Threshold voltage `vto`, in volts; default −2. |
+| `threshold_voltage` | `-2` | Threshold voltage `vto`, in volts; default -2. |
 | `threshold_voltage_temperature_coefficient` | `0` | Linear threshold voltage temperature coefficient, in volts per kelvin; default 0. |
 | `transconductance_parameter` | `0.0001` | Transconductance parameter `β`, in amperes per square volt; default 1e-4. |
 | `transconductance_parameter_temperature_exponent` | `0` | Temperature-ratio exponent scaling the transconductance parameter; default 0. |
@@ -1665,14 +1665,14 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | --- | --- | --- |
 | `activation_energy` | `1.12` | The activation energy of the transport saturation current and of the epitaxial doping, `EA`, in volts; default 1.12. |
 | `avalanche_coefficient` | `0` | The weak avalanche's coefficient, `AVC1`, per volt; default 0, no avalanche. |
-| `avalanche_exponent_coefficient` | `0` | The weak avalanche's exponent coefficient, `AVC2`, in volts to the power `1 − MC`; default 0. |
+| `avalanche_exponent_coefficient` | `0` | The weak avalanche's exponent coefficient, `AVC2`, in volts to the power `1 - MC`; default 0. |
 | `avalanche_temperature_coefficient` | `0` | The linear temperature coefficient of the avalanche's exponent coefficient, `TAVC`, per kelvin; default 0. |
 | `base_charge` | `vbic` | Normalized base-charge formulation selected by `QBM`; default `vbic`. One of `vbic`, `gummel_poon`. |
 | `base_collector_capacitance` | `0` | The zero-bias intrinsic base-collector depletion capacitance, `CJC`, in farads; default 0. |
 | `base_collector_grading` | `0.33` | The base-collector grading coefficient, `MC`, below 1; default 0.33. |
 | `base_collector_overlap_capacitance` | `0` | The base-collector overlap capacitance, `CBCO`, in farads, between the terminals; default 0. |
 | `base_collector_potential` | `0.75` | The base-collector built-in potential, `PC`, in volts; default 0.75. |
-| `base_collector_smoothing` | `-0.5` | The base-collector capacitances' smoothing, `AJC`, in volts; default −0.5. |
+| `base_collector_smoothing` | `-0.5` | The base-collector capacitances' smoothing, `AJC`, in volts; default -0.5. |
 | `base_emitter_breakdown_current` | `1e-06` | The base-emitter breakdown current, `IBBE`, in amperes; default 1e-6. |
 | `base_emitter_breakdown_emission_coefficient` | `1` | The base-emitter breakdown's emission coefficient, `NBBE`; default 1. |
 | `base_emitter_breakdown_voltage` |  | The base-emitter breakdown voltage, `VBBE`, in volts; without it, the junction never breaks down. |
@@ -1680,7 +1680,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `base_emitter_grading` | `0.33` | The base-emitter grading coefficient, `ME`, below 1; default 0.33. |
 | `base_emitter_overlap_capacitance` | `0` | The base-emitter overlap capacitance, `CBEO`, in farads, between the terminals; default 0. |
 | `base_emitter_potential` | `0.75` | The base-emitter built-in potential, `PE`, in volts; default 0.75. |
-| `base_emitter_smoothing` | `-0.5` | The base-emitter capacitance's smoothing, `AJE`, in volts: SPICE's linear extension above `FC · PE` at zero or below; default −0.5. |
+| `base_emitter_smoothing` | `-0.5` | The base-emitter capacitance's smoothing, `AJE`, in volts: SPICE's linear extension above `FC · PE` at zero or below; default -0.5. |
 | `breakdown_emission_temperature_coefficient` | `0` | The linear temperature coefficient of the breakdown's emission coefficient, `TNBBE`, per kelvin; default 0. |
 | `breakdown_voltage_quadratic_temperature_coefficient` | `0` | The quadratic temperature coefficient of the base-emitter breakdown voltage, `TVBBE2`, per square kelvin; default 0. |
 | `breakdown_voltage_temperature_coefficient` | `0` | The linear temperature coefficient of the base-emitter breakdown voltage, `TVBBE1`, per kelvin; default 0. |
@@ -1688,7 +1688,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `collector_substrate_fixed_capacitance` | `0` | The fixed collector-substrate capacitance, `CCSO`, in farads; default 0. |
 | `collector_substrate_grading` | `0.33` | The collector-substrate grading coefficient, `MS`, below 1; default 0.33. |
 | `collector_substrate_potential` | `0.75` | The collector-substrate built-in potential, `PS`, in volts; default 0.75. |
-| `collector_substrate_smoothing` | `-0.5` | The collector-substrate capacitance's smoothing, `AJS`, in volts; default −0.5. |
+| `collector_substrate_smoothing` | `-0.5` | The collector-substrate capacitance's smoothing, `AJS`, in volts; default -0.5. |
 | `depletion_coefficient` | `0.9` | The fraction of each junction's potential where its depletion capacitance's smoothing sets in, `FC`, below 1; default 0.9. |
 | `emission_coefficient_temperature_coefficient` | `0` | The linear temperature coefficient of the forward and reverse emission coefficients, `TNF`, per kelvin; default 0. |
 | `emitter_resistance` | `0` | The emitter resistance, `RE`, in ohms; default 0. |
@@ -1820,10 +1820,10 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
 | `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 | `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
-| `threshold_voltage` |  | The threshold voltage, `VTO`, in volts; default 3 for an n-channel and −3 for a p-channel, an IRF540's and an IRF9540's. |
+| `threshold_voltage` |  | The threshold voltage, `VTO`, in volts; default 3 for an n-channel and -3 for a p-channel, an IRF540's and an IRF9540's. |
 | `threshold_voltage_temperature_coefficient` | `0` | Linear threshold voltage temperature coefficient `TCVTH` (`VTOTC`), in volts per kelvin; default 0. |
 | `transconductance_parameter` |  | The transconductance parameter, `KP`, in amperes per square volt; default 20 for an n-channel and 10 for a p-channel. |
-| `transconductance_parameter_temperature_exponent` | `-1.5` | The exponent of the temperature ratio that scales the transconductance parameter, `MU` or `BEX`; default −1.5. |
+| `transconductance_parameter_temperature_exponent` | `-1.5` | The exponent of the temperature ratio that scales the transconductance parameter, `MU` or `BEX`; default -1.5. |
 | `transit_time` | `0` | The body diode's transit time, `TT`, in seconds; default 0. |
 | `triode_conductance_multiplier` | `1` | The factor on the drain-source voltage below saturation, `MTRIODE`; default 1. |
 

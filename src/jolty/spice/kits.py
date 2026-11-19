@@ -107,6 +107,13 @@ def root(kit: Kit, settings: Settings | None = None) -> Path:
     Uses ``settings.pdk_root`` when configured; otherwise downloads, verifies, and
     caches the pinned release on first call.
 
+    Args:
+        kit: Process design kit specification to locate or fetch.
+        settings: Optional runtime settings overriding `Settings.load()`.
+
+    Returns:
+        Filesystem directory containing the verified model files for `kit`.
+
     Raises:
         DownloadError: When a download fails or fails SHA-256 verification.
         JoltyError: When ``pdk_root`` lacks a required library or settings are invalid.
@@ -166,6 +173,15 @@ def read(
     Includes top-level kit files first, then loads `sections` (defaulting to each
     library's typical section) in the kit's compatibility mode with ``temper`` set to
     `temperature` in kelvins.
+
+    Args:
+        kit: Process design kit specification to load.
+        sections: Optional `(library, section)` pairs overriding `kit.typical`.
+        temperature: Circuit temperature in kelvins assigned to SPICE ``temper``.
+        settings: Optional runtime settings overriding `Settings.load()`.
+
+    Returns:
+        `Library` populated with `kit` includes and selected corner sections.
 
     Raises:
         DownloadError: When a download fails or fails SHA-256 verification.
@@ -249,6 +265,14 @@ def inventory(
     Subcircuits whose defaults miss MOSFET bins retry at the first bin midpoint in
     library ``scale`` units. Subcircuits with undefined defaults retry with parameters
     from their first call site or the 10 µm square fallback in ``scale`` units.
+
+    Args:
+        kit: Process design kit specification to survey.
+        sections: Optional `(library, section)` pairs overriding `kit.typical`.
+        settings: Optional runtime settings overriding `Settings.load()`.
+
+    Returns:
+        Surveyed `Device` records for every top-level subcircuit and global model.
 
     Raises:
         DownloadError: When a download fails or fails SHA-256 verification.

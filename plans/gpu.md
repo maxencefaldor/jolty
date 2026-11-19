@@ -24,7 +24,7 @@ A small circuit may run slower on a GPU than on a CPU, as a small array does in 
     A GPU runs those same kernels compiled for the target device, because the kernel rules (pure, no allocation, no panic) match GPU execution requirements.
 - **Results agree across devices to rounding, not to the bit:** GPU `exp` and `log` round differently, and `AGENTS.md` documents this owner-approved allowance since 15 November.
 - **TPUs are out:** circuit simulation requires 64-bit floats, which TPUs lack.
-    Only data-centre GPUs (A100, H100, MI300) run 64-bit floats at full rate.
+    Only data-center GPUs (A100, H100, MI300) run 64-bit floats at full rate.
     Consumer GPUs run 64-bit floats at 1/32 to 1/64 of the 32-bit rate, and Apple GPUs lack 64-bit support.
 
 ## Design
@@ -32,8 +32,8 @@ A small circuit may run slower on a GPU than on a CPU, as a small array does in 
 **Shared representation:** the circuit, elaboration, and structure (unknowns and matrix sparsity pattern) stay identical across devices.
 Only data storage location and execution kernels differ by device.
 
-**Device-specific memory layout:** a CPU groups values for a single circuit contiguously, whereas a GPU groups the same value across many samples so neighbouring threads access contiguous memory.
-For a single circuit on a GPU, neighbouring instances of the same model fill adjacent lanes instead.
+**Device-specific memory layout:** a CPU groups values for a single circuit contiguously, whereas a GPU groups the same value across many samples so neighboring threads access contiguous memory.
+For a single circuit on a GPU, neighboring instances of the same model fill adjacent lanes instead.
 
 **Numeric core behind a device interface:** evaluation, assembly, sparse solves, and step control become device operations.
 The CPU serves as the first device backend by moving existing code behind that interface.

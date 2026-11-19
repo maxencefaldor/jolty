@@ -717,7 +717,7 @@ fn observed_orders(errors: &[f64]) -> Vec<f64> {
 #[test]
 fn each_method_converges_at_its_order_as_the_step_halves() {
     // An RC low-pass's response to a sine starting at zero, `out` from rest:
-    // (sin ωt − ωτ cos ωt + ωτ e^(−t/τ)) / (1 + (ωτ)²).
+    // (sin ωt - ωτ cos ωt + ωτ e^(-t/τ)) / (1 + (ωτ)²).
     let circuit = sine_low_pass(1.0, false);
     let (omega, tau) = (TAU * 1e5, 1e-6);
     let exact = |time: f64| {
@@ -1574,7 +1574,7 @@ fn a_gate_converges_as_its_supply_powers_up() {
 #[test]
 fn a_heated_resistor_settles_where_its_power_flows_through_its_sink() {
     // 10 V across 100 Ω with tc1 = 4e-3 /K, held to the ambient by 50 K/W: the rise solves
-    // `tc · ΔT² + ΔT − 50 · v² / r = 0`.
+    // `tc · ΔT² + ΔT - 50 · v² / r = 0`.
     let circuit = circuit([
         voltage_dc("V1", "top", 10.0),
         device(
@@ -1672,7 +1672,7 @@ fn rc_from(initial: f64) -> (Circuit, BTreeMap<String, f64>) {
     (circuit, BTreeMap::from([("out".to_owned(), initial)]))
 }
 
-/// Verifies that an RC transient follows `1 − 0.8 e^{−t/τ}` from initial condition `out = 0.2 V`
+/// Verifies that an RC transient follows `1 - 0.8 e^{-t/τ}` from initial condition `out = 0.2 V`
 /// both with and without an initial DC operating point solve.
 ///
 /// Both modes remain within the 2e-3 default trapezoidal error bound established in

@@ -223,6 +223,14 @@ def flatten(circuit: ir.Circuit, subcircuits: Collection[str] = ()) -> ir.Circui
     with underscores. Internal nets are similarly prefixed, while component port nets
     map directly to their connected outer nets.
 
+    Args:
+        circuit: Circuit IR whose component hierarchy is flattened.
+        subcircuits: Component names preserved as unexpanded subcircuit instances.
+
+    Returns:
+        Flattened circuit IR containing the expanded top-level component and any
+        preserved subcircuits.
+
     Examples:
         >>> from jolty import Builder, Role, circuit, component, devices
         >>> from jolty.units import ohm
@@ -788,6 +796,13 @@ _EXPRESSED: Final = frozenset(
 def element(instance: ir.Instance, dialect: Dialect = NGSPICE) -> str:
     """Returns the SPICE element name formed from the model prefix letter and name.
 
+    Args:
+        instance: Device instance in a flattened component.
+        dialect: Target simulator dialect checking model and thermal support.
+
+    Returns:
+        SPICE element name prefixed with the device model letter.
+
     Raises:
         JoltyError: When `instance` is not a device or `dialect` does not support the
             device model or thermal coupling.
@@ -906,6 +921,9 @@ def netlist(
         transient: When `True`, emits dynamic memristor state integration rather than
             holding initial state fixed for DC and small-signal analyses.
         dialect: Target simulator dialect, defaulting to `NGSPICE`.
+
+    Returns:
+        SPICE netlist lines representing `circuit` in `dialect`.
 
     Raises:
         JoltyError: When `circuit` contains an unsupported device, thermal coupling,
@@ -1701,6 +1719,15 @@ def vector(
     in ngspice or ``xu1:11`` in Xyce). Device states such as ``M1:state`` map to the
     auxiliary node voltage ``v(_m1_state)``.
 
+    Args:
+        circuit: Circuit IR defining the unknown.
+        unknown: Circuit unknown (net voltage, branch current, or device state).
+        subcircuits: Component names kept unexpanded during netlist export.
+        dialect: Target simulator dialect supplying hierarchy separators and rules.
+
+    Returns:
+        Simulator vector name corresponding to `unknown`.
+
     Raises:
         JoltyError: When `unknown` is a device-internal unknown whose simulator vector
             naming is not portable.
@@ -1745,6 +1772,17 @@ def node_voltages(
     Net paths in `voltages` are mapped through [`vector`][jolty.spice.export.vector]
     for `circuit` with `subcircuits` in `dialect`. Returns an empty list when
     `voltages` is empty.
+
+    Args:
+        keyword: SPICE directive name (``".ic"`` or ``".nodeset"``).
+        circuit: Circuit IR whose net names are resolved.
+        voltages: Mapping from circuit net paths to target voltages in volts.
+        subcircuits: Component names kept unexpanded during netlist export.
+        dialect: Target simulator dialect supplying subcircuit separators.
+
+    Returns:
+        Single-element list with the formatted directive line, or an empty list when
+        `voltages` is empty.
 
     Examples:
         >>> from jolty import Builder, Role, circuit, devices

@@ -1,6 +1,6 @@
 //! The `initial_events` kernel, compiled by jolty-veriloga from `crates/jolty-veriloga/tests/fixtures/initial_events.va`.
 //!
-//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Its source says:
+//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Original source notice:
 //!
 //! ```text
 //! A resistor of whole fingers, written to exercise the events and tasks of the CMC's

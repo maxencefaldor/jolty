@@ -326,8 +326,8 @@ fn reshuffled_pair() -> impl Strategy<Value = (Matrix<f64>, Matrix<f64>)> {
     })
 }
 
-/// Random modified-nodal circuit generating `G + s C` over `nodes` non-reference nodes,
-/// reference node `nodes`, and trailing branch unknowns.
+/// Random modified-nodal circuit generating `G + s C` over `nodes` non-ground nodes,
+/// ground node `nodes`, and trailing branch unknowns.
 #[derive(Debug, Clone)]
 struct Circuit {
     nodes: usize,
@@ -860,7 +860,7 @@ fn falls_back_to_a_search_when_a_kept_pivot_becomes_too_small() {
     let (mut lu, _, first) = two_by_two([[4.0, 1.0], [1.0, 3.0]]);
     let x = solution(&mut lu, &first).unwrap();
     assert!((x[0] - 1.0 / 11.0).abs() < 1e-15 && (x[1] - 7.0 / 11.0).abs() < 1e-15);
-    // By Cramer's rule, [[a, b], [c, d]] x = [1, 2] has x = [d − 2b, 2a − c] / (ad − bc).
+    // By Cramer's rule, [[a, b], [c, d]] x = [1, 2] has x = [d - 2b, 2a - c] / (ad - bc).
     let small = 1e-14;
     let second = Matrix {
         values: vec![small, 1.0, 1.0, small],

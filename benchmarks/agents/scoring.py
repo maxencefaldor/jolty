@@ -301,17 +301,17 @@ class Board:
         """
         top = built.components[built.top]
         levels: dict[str, Mapping[str, float]] = {}
-        for id in supplies:
-            instance = top.instance(id)
+        for name in supplies:
+            instance = top.instance(name)
             match (
                 None
                 if instance is None
                 else ir.parameter(instance.parameters, "waveform.dc")
             ):
                 case float() | int() as level:
-                    levels[id] = {"waveform.dc": level * self.corner.supply}
+                    levels[name] = {"waveform.dc": level * self.corner.supply}
                 case _:
-                    message = f"{id} is no DC source at the top of the bench"
+                    message = f"{name} is no DC source at the top of the bench"
                     raise KeyError(message)
         return Simulation(
             built,
@@ -451,8 +451,8 @@ def planned(result: service.SimulateResult) -> list[Shortfall]:
 def count_devices(circuit: ir.Circuit, path: str) -> int:
     """Counts leaf device instances recursively inside the component at `path`."""
     component = circuit.components[circuit.top]
-    for id in path.split("/"):
-        instance = component.instance(id)
+    for name in path.split("/"):
+        instance = component.instance(name)
         if instance is None or not isinstance(instance.of, ir.ComponentOf):
             message = f"no component instance at {path}"
             raise KeyError(message)

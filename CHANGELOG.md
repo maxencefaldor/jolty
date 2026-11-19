@@ -304,7 +304,8 @@ The first release, 0.1.0.
 - Fixed `benchmarks/coverage/capabilities.py` `tline` probe to run `Transient` and read declared keys (`4.4e-16` relative agreement vs ngspice 47; 50 agreed, 1 solved, 0 disagreed).
 - Enabled parallel release codegen (`CARGO_PROFILE_RELEASE_LTO=false`, `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`) in `ci.yml` and `docs.yml` (leaving `release.yml` untouched for PyPI wheels) and restricted non-gating `coverage` and `mutants` jobs to `main`, weekly schedules, and manual runs.
 - Initialized transient derivatives directly from the constrained starting state: using a DC Jacobian whose initial-condition rows are fixed during operating-point solves, or zero for `UIC` starts.
-  Previously derivatives started from the unconstrained operating point, causing a 1 kΩ, 1 nF RC started at `out = 0 V` to show `d out/dR = -1 mV/Ω` at `t = 0` and 2× error at one time constant; both start modes now match `-(t/(R²C)) e^(-t/RC)` within `1e-5`.
+  Previously derivatives started from the unconstrained operating point, giving `d out/dR = -1 mV/Ω` at `t = 0` and 2× error at `t = RC` on a 1 kΩ, 1 nF RC started at `0 V`.
+  Both start modes now match the closed form `-(t/(R²C)) e^(-t/RC)` within `1e-5`.
 - Removed the `1/FC` upper bound on diode junction potential to match ngspice 47, and allowed zero diode breakdown current without shifting the breakdown voltage.
 - Promoted periodic steady state from `Transient(..., periodic=True)` to a standalone analysis `PeriodicSteadyState(period=...)` (kind `periodic_steady_state`) across the engine, Python API, results files, reports, and viewer without aliases, moving shooting period counts from `Statistics.periods` to `PeriodicSteadyStateResult.periods`.
 - Seeded growing-mode inverse iteration with pseudo-random amplitudes (matching LAPACK) instead of uniform ones, fixing symmetric circuits such as a five-stage ring oscillator where uniform seeds missed rotating modes.
@@ -386,3 +387,4 @@ The first release, 0.1.0.
 - Wrapped `Bsim4` in `Thermal::<Bsim4>` for self-heating parity across all eight native transistor models, unified BSIM3/BSIM4 binning macros, and exported parameter dimension and BSIM card metadata from `jolty._core`.
 - Made `matplotlib` an optional `jolty[plots]` extra (included in `jolty[mcp]`) with PEP 810 lazy imports so core `jolty` requires only `numpy`, `pydantic`, and `pydantic-settings`.
 - Shared `viewer.css` and `viewer.js` across static `.view.html` pages and compacted tracked benchmark and catalog JSON fixtures diffably, cutting repository text footprint by over 65,000 lines.
+- Replaced `Grid` `warm: bool` with `GridChain::{Independent, Warm}` in `jolty-engine`, removed `serde` from `jolty-numerics` and runtime `serde_json` from `jolty-checks`, upgraded `jolty-derive` to `syn` 3, simplified `jolty.cli` onto a declarative command table, and added Google-style `Args:`/`Returns:` docstrings across `jolty`.

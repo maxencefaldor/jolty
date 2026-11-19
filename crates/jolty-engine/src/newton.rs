@@ -488,7 +488,7 @@ impl Simulator {
             let largest = self.take_step(x, options, grain);
             iteration += 1;
             // An iteration that contracts by `rate` from one step to the next lies within
-            // `rate/(1 − rate)` times its last step of the solution. A DC solution's steps,
+            // `rate/(1 - rate)` times its last step of the solution. A DC solution's steps,
             // a time step's first, a step from a limited evaluation or after one, and a
             // step no shorter than the one before are judged alone, as SPICE judges them.
             let rate = moved
@@ -522,7 +522,7 @@ impl Simulator {
             let distance = sum(x.len(), |index| apart(index) * apart(index), grain);
             let along = sum(x.len(), |index| apart(index) * step[index], grain);
             if distance > 0.0 {
-                // ∇(1/d² + SHIFT)·δ = −2 (x − r)·δ / d⁴.
+                // ∇(1/d² + SHIFT)·δ = -2 (x - r)·δ / d⁴.
                 slope += -2.0 * along / (distance * distance) / (distance.recip() + SHIFT);
             }
         }
@@ -581,7 +581,7 @@ impl Simulator {
                         *scale = scale.max(current.abs());
                     }
                 }
-                // A forced node's equation is its voltage's, `v − v₀ = 0`, in place of its
+                // A forced node's equation is its voltage's, `v - v₀ = 0`, in place of its
                 // currents' sum: an ideal source holds it, whose current the sum would be.
                 for &(unknown, voltage) in &self.state.forced {
                     let index = unknown.index();
@@ -742,7 +742,7 @@ mod tests {
     }
 
     /// Builds a simulator with a behavioral current source (`expression`) from `a` to ground
-    /// reading `v(a)` and a grounded reference node `c` at 0 V.
+    /// reading `v(a)` and a grounded node `c` at 0 V.
     fn root(expression: &str) -> Simulator {
         grounded_simulator(
             "root",

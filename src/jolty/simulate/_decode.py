@@ -45,6 +45,12 @@ from jolty.units import (
 def kelvins(temperature: Quantity | None) -> float:
     """Converts `temperature` to kelvins, defaulting to 27 °C when None.
 
+    Args:
+        temperature: Ambient temperature quantity, or ``None`` for 27 °C (300.15 K).
+
+    Returns:
+        Temperature in kelvins.
+
     Raises:
         DimensionError: When `temperature` does not carry temperature dimensions.
     """
@@ -59,6 +65,12 @@ def pool(count: int | None = None) -> _core.Pool:
 
     Pools are cached once per process so concurrent Python threads share worker
     threads instead of spawning duplicate pools.
+
+    Args:
+        count: Positive worker thread count, or ``None`` for one thread per CPU core.
+
+    Returns:
+        Cached engine thread pool configured for `count`.
 
     Raises:
         ValueError: When `count` is not positive.
@@ -79,6 +91,13 @@ def threads(count: int | None) -> Generator[None]:
 
     Outside any `threads` context, the engine uses the configured ``threads`` setting.
     Numerical results are independent of thread count.
+
+    Args:
+        count: Positive worker thread count for the active block, or ``None`` for one
+            per processor.
+
+    Returns:
+        Context manager binding the chosen thread pool for the duration of the block.
 
     Raises:
         ValueError: When `count` is not positive.
@@ -102,6 +121,9 @@ def _settings() -> Settings:
 
 def engine_pool() -> _core.Pool:
     """Returns the active engine thread pool from context or configured settings.
+
+    Returns:
+        Active context-bound thread pool, or the default settings-configured pool.
 
     Raises:
         JoltyError: When settings validation fails.
@@ -130,6 +152,10 @@ class Logged(ir.FrozenModel):
 def log_analyses(analyses: Iterable[Analysis], runs: int) -> None:
     """Appends start records for `analyses` across `runs` to the configured log.
 
+    Args:
+        analyses: Analysis specifications starting execution.
+        runs: Number of runs started per analysis.
+
     Raises:
         JoltyError: When settings are invalid or the log file cannot be written.
     """
@@ -151,7 +177,15 @@ def log_analyses(analyses: Iterable[Analysis], runs: int) -> None:
 
 
 def substitutes_json(substitutes: Mapping[str, Device] | None) -> str:
-    """Serializes `substitutes` device models keyed by instance path as JSON."""
+    """Serializes `substitutes` device models keyed by instance path as JSON.
+
+    Args:
+        substitutes: Optional mapping from component instance paths to replacement
+            devices.
+
+    Returns:
+        JSON object string encoding replacement device models and parameters.
+    """
     encoded = {
         path: {"model": device.model, "parameters": device.parameters}
         for path, device in (substitutes or {}).items()
@@ -162,6 +196,10 @@ def substitutes_json(substitutes: Mapping[str, Device] | None) -> str:
 @contextlib.contextmanager
 def elaborating() -> Generator[None]:
     """Translates engine elaboration failures into `ElaborationError` with locations.
+
+    Returns:
+        Context manager converting raw engine elaboration exceptions into
+        `ElaborationError`.
 
     Raises:
         ElaborationError: Lists every problem reported by the engine, naming the
@@ -175,7 +213,15 @@ def elaborating() -> Generator[None]:
 
 
 def source_dimension(built: ir.Circuit, path: str) -> Dimension | None:
-    """Returns the physical dimension of the independent source at `path`, if any."""
+    """Returns the physical dimension of the independent source at `path`, if any.
+
+    Args:
+        built: Circuit containing the candidate source instance.
+        path: Hierarchical instance path to inspect.
+
+    Returns:
+        `VOLTAGE` or `CURRENT` for an independent source, or ``None`` otherwise.
+    """
     match built.find(path):
         case ir.Instance(of=ir.DeviceOf(model="current_source")):
             return CURRENT
@@ -185,7 +231,15 @@ def source_dimension(built: ir.Circuit, path: str) -> Dimension | None:
 
 
 def swept_dimension(built: ir.Circuit, sweep: DcSweep) -> Dimension:
-    """Returns the physical dimension of the quantity swept by `sweep` in `built`."""
+    """Returns the physical dimension of the quantity swept by `sweep` in `built`.
+
+    Args:
+        built: Circuit containing the swept source or device.
+        sweep: DC sweep analysis specification.
+
+    Returns:
+        Physical dimension expected for each value along `sweep`.
+    """
     if sweep.parameter is not None:
         return sweep.values[0].dimension if sweep.values else DIMENSIONLESS
     if (dimension := source_dimension(built, sweep.source)) is not None:
@@ -197,7 +251,16 @@ def swept_dimension(built: ir.Circuit, sweep: DcSweep) -> Dimension:
 
 
 def sweep_nature(built: ir.Circuit, sweep: DcSweep) -> results.Nature | None:
-    """Returns whether `sweep` varies a voltage or current, or None for parameters."""
+    """Returns whether `sweep` varies a voltage or current, or None for parameters.
+
+    Args:
+        built: Circuit containing the swept source or device.
+        sweep: DC sweep analysis specification.
+
+    Returns:
+        ``"voltage"`` or ``"current"`` for source sweeps, or ``None`` for parameter
+        sweeps.
+    """
     if sweep.parameter is not None:
         return None
     source = source_dimension(built, sweep.source)
@@ -209,7 +272,15 @@ def sweep_nature(built: ir.Circuit, sweep: DcSweep) -> results.Nature | None:
 def toleranced_payload(
     built: ir.Circuit, substituted: Collection[str]
 ) -> list[JsonValue]:
-    """Extracts toleranced parameter payloads, skipping substituted subtrees."""
+    """Extracts toleranced parameter payloads, skipping substituted subtrees.
+
+    Args:
+        built: Circuit whose toleranced device parameters are collected.
+        substituted: Component instance paths replaced by substitute device models.
+
+    Returns:
+        JSON-serializable payloads describing active toleranced parameters.
+    """
     prefixes = tuple(f"{inside}/" for inside in substituted)
     return variation.payload(
         parameter
@@ -221,7 +292,16 @@ def toleranced_payload(
 def encode_analysis(
     built: ir.Circuit, substituted: Collection[str], analysis: Analysis
 ) -> JsonValue:
-    """Encodes `analysis` as the JSON payload expected by the engine."""
+    """Encodes `analysis` as the JSON payload expected by the engine.
+
+    Args:
+        built: Circuit resolving swept source dimensions and toleranced parameters.
+        substituted: Component instance paths replaced by substitute device models.
+        analysis: Analysis specification to serialize for the engine.
+
+    Returns:
+        JSON-compatible value representing `analysis`.
+    """
     match analysis:
         case DcSweep():
             return analysis.to_json(swept_dimension(built, analysis))
@@ -236,7 +316,14 @@ def encode_analysis(
 
 
 def points_of(analysis: Analysis) -> int:
-    """Returns the number of traced points for `analysis` in a batch."""
+    """Returns the number of traced points for `analysis` in a batch.
+
+    Args:
+        analysis: Analysis specification whose axis length is queried.
+
+    Returns:
+        Number of sweep levels, frequencies, or breakpoints, or 1 for scalar analyses.
+    """
     match analysis:
         case DcSweep(values=values):
             return len(values)
@@ -254,7 +341,18 @@ def build_recording(
     *,
     regions: bool,
 ) -> results.Recording:
-    """Decodes the engine's recording metadata for `record` and `regions`."""
+    """Decodes the engine's recording metadata for `record` and `regions`.
+
+    Args:
+        core: Engine simulator supplying device and terminal recording layouts.
+        unknowns: Ordered circuit unknowns indexing internal device unknowns.
+        record: JSON-encoded instance selection passed to the engine.
+        regions: Flag including operating-region and boundary-margin variables.
+
+    Returns:
+        Decoded `Recording` layout for recorded devices, summed ports, and thermal
+        leads.
+    """
     devices, summed_terminals = core.recording(record, regions)
     thermal = {name for name, heat in summed_terminals if heat}
     recorded = []
@@ -294,7 +392,15 @@ def build_recording(
 def recorded(
     outcome: _core.RecordedValues, recording: results.Recording
 ) -> results.RecordedValues:
-    """Extracts recorded device arrays from `outcome` paired with `recording`."""
+    """Extracts recorded device arrays from `outcome` paired with `recording`.
+
+    Args:
+        outcome: Engine result mapping holding recorded terminal and state arrays.
+        recording: Decoded `Recording` metadata describing column positions.
+
+    Returns:
+        Keyword-argument mapping ready for result dataclass construction.
+    """
     return {
         "recording": recording,
         "currents": outcome["currents"],
@@ -306,7 +412,14 @@ def recorded(
 
 
 def statistics(outcome: _core.Statistics) -> results.Statistics:
-    """Decodes transient integration statistics, profile, and charge-leak data."""
+    """Decodes transient integration statistics, profile, and charge-leak data.
+
+    Args:
+        outcome: Raw engine statistics dictionary from a transient or PSS run.
+
+    Returns:
+        Typed `Statistics` record including step counts, work, profile, and charge leak.
+    """
     profile = outcome["profile"]
     leak = outcome["charge_leak"]
     return results.Statistics(
@@ -327,7 +440,17 @@ def decode_point(
     solved: _core.SolvedPoint,
     recording: results.Recording,
 ) -> results.OperatingPointResult:
-    """Decodes one engine operating-point payload into `OperatingPointResult`."""
+    """Decodes one engine operating-point payload into `OperatingPointResult`.
+
+    Args:
+        unknowns: Circuit unknowns aligned with `solved["values"]`.
+        nets: Logic net names aligned with `solved["logic"]`.
+        solved: Raw engine operating-point dictionary.
+        recording: Recording metadata indexing recorded device columns.
+
+    Returns:
+        Decoded `OperatingPointResult` for the solved point.
+    """
     return results.OperatingPointResult(
         unknowns,
         solved["values"],
@@ -345,7 +468,17 @@ def decode_result(
     outcome: _core.AnalysisResult,
     recording: results.Recording,
 ) -> results.AnalysisResult:
-    """Decodes an engine `outcome` payload into its typed `AnalysisResult`."""
+    """Decodes an engine `outcome` payload into its typed `AnalysisResult`.
+
+    Args:
+        unknowns: Circuit unknowns aligned with unknown columns in `outcome`.
+        nets: Logic net names aligned with logic traces in `outcome`.
+        outcome: Discriminated raw engine result dictionary.
+        recording: Recording metadata indexing recorded device columns.
+
+    Returns:
+        Typed `AnalysisResult` matching `outcome["kind"]`.
+    """
     match outcome["kind"]:
         case "operating_point":
             return decode_point(unknowns, nets, outcome, recording)
@@ -548,7 +681,16 @@ def analysis_shape(
     unknowns: tuple[results.Unknown, ...],
     analysis: Analysis,
 ) -> results.AnalysisResult:
-    """Builds a zero-point result carrying the shape and metadata of `analysis`."""
+    """Builds a zero-point result carrying the shape and metadata of `analysis`.
+
+    Args:
+        built: Circuit resolving swept source nature and noise input dimensions.
+        unknowns: Circuit unknowns attached to the prototype result.
+        analysis: Analysis specification whose result variant is constructed.
+
+    Returns:
+        Zero-point `AnalysisResult` prototype for static measure validation.
+    """
     width = len(unknowns)
     point = results.OperatingPointResult(unknowns, np.zeros(width), "")
     empty, rows = np.empty(0), np.empty((0, width))

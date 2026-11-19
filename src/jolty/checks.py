@@ -88,6 +88,9 @@ def rules() -> dict[str, Rule]:
 
     Engine rules covering circuit topology and operating-point checks appear first,
     followed by post-simulation rules evaluated on analysis results.
+
+    Returns:
+        Ordered dictionary mapping every check rule name to its `Rule` metadata.
     """
     engine = {
         name: Rule(name, Level(level), condition)
@@ -130,7 +133,11 @@ class Diagnostic(ir.FrozenModel):
     )
 
     def describe(self) -> str:
-        """Formats the diagnostic in compiler style with one instance per line."""
+        """Formats the diagnostic in compiler style with one instance per line.
+
+        Returns:
+            Compiler-style multi-line string listing severity, rule, message, and paths.
+        """
         lines = [f"{self.level}[{self.rule}]: {self.message}"]
         lines.extend(f"  = {instance}" for instance in self.instances)
         return "\n".join(lines)
@@ -154,7 +161,11 @@ class CheckReport(ir.FrozenModel):
         return self.errors == 0
 
     def describe(self) -> str:
-        """Formats all listed diagnostics followed by summary severity counts."""
+        """Formats all listed diagnostics followed by summary severity counts.
+
+        Returns:
+            Formatted diagnostic report ending with error, warning, and omitted counts.
+        """
         counts = f"{_plural(self.errors, 'error')}, {_plural(self.warnings, 'warning')}"
         if self.unlisted:
             counts += f" ({self.unlisted} not listed)"
@@ -168,6 +179,12 @@ def problem(found: _core.Problem) -> str:
 
     Output starts with the error message and appends the instance path and script
     source line when available.
+
+    Args:
+        found: Raw elaboration problem dictionary returned by the Rust engine.
+
+    Returns:
+        Compiler-style error string with optional instance path and source location.
 
     Examples:
         >>> source = {"file": "amp.py", "line": 9, "function": "amp"}
@@ -186,7 +203,14 @@ def problem(found: _core.Problem) -> str:
 
 
 def diagnostics(found: Iterable[_core.Diagnostic]) -> tuple[Diagnostic, ...]:
-    """Converts raw engine diagnostics `found` into models with default levels."""
+    """Converts raw engine diagnostics `found` into models with default levels.
+
+    Args:
+        found: Raw structural diagnostic records emitted by the Rust engine.
+
+    Returns:
+        Tuple of `Diagnostic` models populated with default rule severities.
+    """
     known = rules()
     return tuple(
         Diagnostic(
@@ -225,6 +249,15 @@ def levels(
     options. The ``all`` wildcard applies to every rule and is overridden by explicit
     rule entries in the same layer.
 
+    Args:
+        configured: Rule severity overrides loaded from `Settings.rules`.
+        error: Rule names or `'all'` promoted to `Level.ERROR` via CLI flags.
+        warn: Rule names or `'all'` set to `Level.WARN` via CLI flags.
+        ignore: Rule names or `'all'` silenced to `Level.IGNORE` via CLI flags.
+
+    Returns:
+        Dictionary mapping every known check rule name to its resolved `Level`.
+
     Raises:
         JoltyError: When a name matches no rule or CLI options assign conflicting
             levels to the same rule.
@@ -260,7 +293,16 @@ def _apply(
 def report(
     diagnostics: Iterable[Diagnostic], chosen: Mapping[str, Level], limit: int
 ) -> CheckReport:
-    """Builds a `CheckReport` from `diagnostics` using `chosen` levels up to `limit`."""
+    """Builds a `CheckReport` from `diagnostics` using `chosen` levels up to `limit`.
+
+    Args:
+        diagnostics: Unfiltered diagnostics prior to severity overrides.
+        chosen: Effective `Level` per rule name as resolved by `levels`.
+        limit: Maximum number of non-ignored diagnostics retained in output.
+
+    Returns:
+        `CheckReport` sorted errors-first with total and unlisted counts.
+    """
     leveled = [
         diagnostic.model_copy(update={"level": chosen[diagnostic.rule]})
         for diagnostic in diagnostics

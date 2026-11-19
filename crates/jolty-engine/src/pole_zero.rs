@@ -78,7 +78,7 @@ const GROWING: f64 = 1e-6;
 /// Source: shifted inverse iteration (Golub and Van Loan, *Matrix Computations*, 4th ed.,
 /// 2013); `1e-6` amplifies the target mode by `~1e6` per solve while keeping `G + sC`
 /// conditioned to ~10 digits in `f64`.
-const BESIDE: f64 = 1e-6;
+const PERTURBATION: f64 = 1e-6;
 
 /// Number of shifted inverse-iteration solves per growing mode.
 ///
@@ -256,9 +256,9 @@ impl Simulator {
             growing
                 .into_iter()
                 .map(|pole| {
-                    let beside = pole * Complex64::new(1.0, BESIDE);
+                    let shifted = pole * Complex64::new(1.0, PERTURBATION);
                     let mut factors =
-                        linearization.factor_at(&self.state.workspace.contributions, beside)?;
+                        linearization.factor_at(&self.state.workspace.contributions, shifted)?;
                     // Any seed serves: a draw has a part along every mode.
                     let mut draws = ChaCha20Rng::seed_from_u64(0);
                     let mut shape: Vec<Complex64> = (0..n)

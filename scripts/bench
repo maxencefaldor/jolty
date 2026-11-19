@@ -28,10 +28,10 @@
 #   scripts/bench --coverage          the coverage matrix, each row's fixture in each simulator
 #   scripts/bench --precision         each simulator's error against exact answers, and its cost
 #
-# benchmarks/speed/README.md says what each fixture stresses, and holds the baseline;
-# benchmarks/precision/README.md says what each fixture measures, and what it found;
-# benchmarks/robustness/README.md says what the corpus holds and how it judges;
-# benchmarks/coverage/README.md says how the coverage matrix's fixtures are made and judged.
+# benchmarks/speed/README.md documents what each fixture stresses and holds the baseline;
+# benchmarks/precision/README.md documents what each fixture measures and reports findings;
+# benchmarks/robustness/README.md documents the corpus contents and evaluation criteria;
+# benchmarks/coverage/README.md specifies how coverage matrix fixtures are built and scored.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

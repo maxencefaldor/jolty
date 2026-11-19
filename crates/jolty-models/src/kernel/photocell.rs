@@ -16,11 +16,11 @@ const DARKNESS: f64 = 1e-6;
 /// power law of illuminance, following standard cadmium sulfide datasheet parameters (such
 /// as Senba GL55 series: 10 lux resistance and log-log slope `γ = lg(R₁₀ / R₁₀₀)`).
 ///
-/// The voltage `v(light_positive) − v(light_negative)` encodes illuminance at 1 V per lux
+/// The voltage `v(light_positive) - v(light_negative)` encodes illuminance at 1 V per lux
 /// without drawing current. Conductance equals `1/r_dark + s/r`, where response `s` tracks
 /// `(E/E₀)^γ` with illuminance `E` smoothly floored near 1 microlux. A positive response
 /// time `τ` adds an internal state unknown `response` governed by
-/// `τ · ds/dt = (E/E₀)^γ − s`; zero response time tracks illuminance instantaneously.
+/// `τ · ds/dt = (E/E₀)^γ - s`; zero response time tracks illuminance instantaneously.
 #[derive(Debug, Clone, Copy)]
 pub struct Photocell;
 
@@ -99,7 +99,7 @@ impl<R: Real> PreparedPhotocell<R> {
     /// Computes the steady-state normalized response `(E/E₀)^γ` for illuminance `light`.
     ///
     /// Smoothly floors illuminance via `(E + √(E² + d²)) / 2` (with `d = DARKNESS`). For
-    /// negative `E`, uses the algebraically equivalent form `d² / (2 · (√(E² + d²) − E))`
+    /// negative `E`, uses the algebraically equivalent form `d² / (2 · (√(E² + d²) - E))`
     /// to avoid catastrophic cancellation past `-67` lux.
     ///
     /// Passes the exact slope `γ · response / √(E² + d²)` directly to [`Dual::chain`] so
@@ -218,7 +218,7 @@ impl Kernel for Photocell {
             for (&entry, sign) in lag.terminals.iter().zip([1.0, -1.0]) {
                 stamp.add_conductance(entry, by_response * sign);
             }
-            // τ · ds/dt + s − (E/E₀)^γ = 0.
+            // τ · ds/dt + s - (E/E₀)^γ = 0.
             let lagged = response - settled;
             let [_, by_light, by_response] = lagged.gradient;
             stamp.add_residual(row, lagged.value);

@@ -34,8 +34,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     for (source, kernel, named) in models {
         let text = std::fs::read_to_string(&source)?;
-        let beside = source.parent().map_or_default(Path::to_path_buf);
-        let files = |name: &str| std::fs::read_to_string(beside.join(name)).ok();
+        let directory = source.parent().map_or_default(Path::to_path_buf);
+        let files = |name: &str| std::fs::read_to_string(directory.join(name)).ok();
         let compiled = jolty_veriloga::compile(&text, &named, &files)?;
         std::fs::write(kernel, compiled)?;
     }

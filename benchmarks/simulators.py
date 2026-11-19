@@ -354,15 +354,15 @@ def _decades(frequencies: Sequence[Quantity]) -> str:
     return f"dec {per_decade} {first!r} {last!r}"
 
 
-def _instance(top: ir.Component, id: str) -> ir.Instance:
-    """Returns instance `id` from top component `top` of a flattened circuit.
+def _instance(top: ir.Component, name: str) -> ir.Instance:
+    """Returns instance `name` from top component `top` of a flattened circuit.
 
     Raises:
-        KeyError: When `top` contains no instance matching `id`.
+        KeyError: When `top` contains no instance matching `name`.
     """
-    found = top.instance(id)
+    found = top.instance(name)
     if found is None:
-        message = f"the circuit has no instance {id!r}"
+        message = f"the circuit has no instance {name!r}"
         raise KeyError(message)
     return found
 

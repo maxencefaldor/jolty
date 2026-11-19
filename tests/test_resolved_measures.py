@@ -91,11 +91,11 @@ MATH_DOMAIN: Final = "expected a "
 MATH_RANGE: Final = {("OverflowError", "math range error")}
 """Exception type and message pair Python `math` raises on finite-argument overflow."""
 
-type Outcome = tuple[str, str]
-"""What a measure read: its value's bits and its unit, or its error and message."""
+type VerdictPair = tuple[str, str]
+"""Evaluated measure value bits and unit, or raised exception name and message."""
 
 
-def outcome(measure: Measure, result: results.AnalysisResult) -> Outcome:
+def outcome(measure: Measure, result: results.AnalysisResult) -> VerdictPair:
     """Returns the evaluated value or error tuple of `measure` on `result`.
 
     NumPy floating-point warnings for overflow and indeterminate infinity arithmetic are
@@ -115,7 +115,7 @@ def alike(
     result: results.AnalysisResult,
     *args: Any,  # noqa: ANN401 - the measure's own arguments
     **kwargs: Any,  # noqa: ANN401 - the measure's own arguments
-) -> Outcome:
+) -> VerdictPair:
     """Returns the shared outcome of measure `name` on `result` across both engines."""
     resolved = getattr(specs, name)(*args, **kwargs)
     numpy = getattr(reference, name)(*args, **kwargs)

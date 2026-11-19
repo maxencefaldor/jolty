@@ -206,6 +206,16 @@ class Simulation:
     ) -> Simulation:
         """Creates a simulation from `elaborated` with parameter `overrides` applied.
 
+        Args:
+            elaborated: Previously elaborated circuit topology and temperature.
+            overrides: Nested mapping of instance paths to parameter overrides in SI
+                base units.
+            process: Optional foundry process corner name.
+            mismatch: Optional foundry statistical mismatch seed.
+
+        Returns:
+            Simulation configured with `overrides`, `process`, and `mismatch`.
+
         Raises:
             ElaborationError: Lists unknown parameters in `overrides` or devices whose
                 overridden parameters fall out of range.
@@ -274,6 +284,10 @@ class Simulation:
     ) -> None:
         """Checks `analysis` and `options` against this circuit before running.
 
+        Args:
+            analysis: Analysis specification to validate against circuit topology.
+            options: Optional solver tolerances, iteration limits, and nodesets.
+
         Raises:
             DimensionError: When the sole problem is a DC sweep level's dimension.
             PlanError: With every problem found, each naming close valid names.
@@ -301,6 +315,15 @@ class Simulation:
         check_temperature: bool = False,
     ) -> None:
         """Checks every name and setting `plan`, `specs`, and `traces` name upfront.
+
+        Args:
+            plan: Simulation plan whose analyses, options, fidelity scopes, and
+                variants are validated.
+            specs: Optional specification requirements validated against planned
+                analyses.
+            traces: Unknown or logic net names requested for plotting or batch tracing.
+            check_temperature: Flag enforcing equality between `plan.temperature` and
+                the simulation ambient temperature.
 
         Raises:
             PlanError: With every problem found, each naming close valid names.
@@ -361,18 +384,37 @@ class Simulation:
             raise PlanError(problems)
 
     def joined(self, instance: str, terminal: str) -> Joined | None:
-        """Returns the node and thermal status for `terminal` on `instance`, if any."""
+        """Returns the node and thermal status for `terminal` on `instance`, if any.
+
+        Args:
+            instance: Hierarchical device, component, or logic instance path.
+            terminal: Terminal or port name on `instance`.
+
+        Returns:
+            Connected node descriptor, or ``None`` when `terminal` is unconnected or
+            logic-only.
+        """
         found = self._core.terminal(instance, terminal)
         return None if found is None else Joined(*found)
 
     def check(self) -> tuple[checks.Diagnostic, ...]:
-        """Runs structural checks and returns all diagnostics at default levels."""
+        """Runs structural checks and returns all diagnostics at default levels.
+
+        Returns:
+            Structural check diagnostics produced by the engine.
+        """
         return checks.diagnostics(self._core.check())
 
     def check_operating_point(
         self, options: Options | None = None
     ) -> tuple[checks.Diagnostic, ...]:
         """Runs operating-point rule checks and returns every resulting diagnostic.
+
+        Args:
+            options: Optional solver tolerances, iteration limits, and nodesets.
+
+        Returns:
+            Operating-point structural diagnostics produced by the engine.
 
         Raises:
             SimulationError: When the circuit has no operating point.
@@ -391,7 +433,14 @@ class Simulation:
     def check_results(
         self, solved: Mapping[str, results.AnalysisResult]
     ) -> tuple[checks.Diagnostic, ...]:
-        """Evaluates result-level rules on `solved` and returns all diagnostics."""
+        """Evaluates result-level rules on `solved` and returns all diagnostics.
+
+        Args:
+            solved: Mapping from analysis names to completed analysis results.
+
+        Returns:
+            Stability-margin and device-rating diagnostics across `solved`.
+        """
         return _stress.check_results(
             self.circuit, self._substituted, self.conditions, self.joined, solved
         )
@@ -447,6 +496,13 @@ class Simulation:
     ) -> results.AnalysisResult:
         """Runs `analysis` with `options`, or with engine defaults when omitted.
 
+        Args:
+            analysis: Analysis specification to solve on the elaborated circuit.
+            options: Optional solver tolerances, iteration limits, and nodesets.
+
+        Returns:
+            Typed analysis result matching the kind of `analysis`.
+
         Raises:
             SimulationError: When the analysis fails or `record` names a nonexistent
                 instance.
@@ -497,6 +553,18 @@ class Simulation:
     ) -> results.BatchResult:
         """Runs `analyses`, by name, on each run of `variants`, as one batch.
 
+        Args:
+            analyses: Mapping from analysis names to specifications run per variant.
+            variants: Parameter sweep, Monte Carlo, explicit, or product variants.
+            options: Optional solver tolerances, iteration limits, and nodesets.
+            measures: Measures evaluated across every run of the batch.
+            traces: Circuit unknown names whose waveforms are retained across runs.
+            each: Optional callback invoked with each decoded `Run` upon completion.
+            runs: Optional contiguous slice of variant indices to execute.
+
+        Returns:
+            Aggregated batch result containing parameter values, measures, and traces.
+
         Raises:
             ElaborationError: When the variants name a number the circuit's devices do
                 not write.
@@ -535,7 +603,14 @@ class Simulation:
         return planned.result(found)
 
     def varied(self, variants: Variants) -> tuple[str, ...]:
-        """Returns the column labels for parameters varied by `variants`."""
+        """Returns the column labels for parameters varied by `variants`.
+
+        Args:
+            variants: Parameter variation specification to inspect.
+
+        Returns:
+            Ordered parameter column labels such as ``"R1 resistance"``.
+        """
         return _batch.labels(self._variants(variants).parameters)
 
     def run_plan(
@@ -545,6 +620,13 @@ class Simulation:
 
         Checks `plan` (and `specs`, when provided) once against this circuit before
         running the first analysis.
+
+        Args:
+            plan: Simulation plan whose analyses and shared options are executed.
+            specs: Optional specifications validated upfront before execution.
+
+        Returns:
+            Mapping from analysis names in `plan` to solved analysis results.
 
         Raises:
             PlanError: With every problem found in `plan` or `specs`, including a

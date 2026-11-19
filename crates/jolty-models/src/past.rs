@@ -13,7 +13,7 @@ const MAX_NODES: usize = 3;
 /// column unknown `delay` seconds in the past.
 ///
 /// In small-signal analysis at complex frequency `s`, the contribution equals
-/// `conductance · e^{−s·delay}`. At DC, past equals present, so the normal evaluation
+/// `conductance · e^{-s·delay}`. At DC, past equals present, so the normal evaluation
 /// includes `conductance` directly.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Delayed {
@@ -49,7 +49,7 @@ pub struct DelayedEntry {
 /// points via [`Past::forget_before`].
 #[derive(Debug, Clone, Default)]
 pub struct Past {
-    /// Degree of the interpolating polynomials, at most [`MAX_NODES`] − 1.
+    /// Degree of the interpolating polynomials, at most [`MAX_NODES`] - 1.
     order: usize,
     /// Packed column index for each circuit unknown, or [`UNMAPPED`] when not recorded.
     columns: Vec<u32>,
@@ -120,8 +120,8 @@ impl Past {
     /// last `order` samples at or before `horizon`.
     ///
     /// Interpolating at `τ` uses `order + 1` points: the bracketing pair around `τ` plus
-    /// `order − 1` neighboring points inside the same corner-free segment. The earliest
-    /// reachable node is `order − 1` samples before the latest point at or before `horizon`.
+    /// `order - 1` neighboring points inside the same corner-free segment. The earliest
+    /// reachable node is `order - 1` samples before the latest point at or before `horizon`.
     pub fn forget_before(&mut self, horizon: f64) {
         let before = self.times.partition_point(|&each| each <= horizon);
         let forgotten = before.saturating_sub(self.order);
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn no_interpolation_spans_a_corner() {
-        // |t − 1|, a corner at 1: each side is a line, read exactly at second order.
+        // |t - 1|, a corner at 1: each side is a line, read exactly at second order.
         let points: Vec<(f64, f64, bool)> = [
             (0.0, true),
             (0.4, false),

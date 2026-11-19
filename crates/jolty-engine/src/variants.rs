@@ -49,27 +49,36 @@ pub enum Axis {
     Temperature,
 }
 
+/// Execution mode along the fastest-varying axis of a [`Grid`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridChain {
+    /// Independent cold-started solve at every grid point.
+    Independent,
+    /// Sequential warm-started chain along each line of the last axis.
+    Warm,
+}
+
 /// Cartesian grid over parameter and temperature axes in mixed-radix order (last axis
 /// varying fastest).
 ///
-/// When `warm` is enabled, runs along each line of the last axis execute as a warm-started
-/// chain.
+/// Under [`GridChain::Warm`], runs along each line of the last axis execute as a
+/// warm-started chain.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Grid {
     axes: Vec<(Axis, Vec<f64>)>,
-    warm: bool,
+    chain: GridChain,
     len: u64,
 }
 
 impl Grid {
     /// Creates a [`Grid`] from ordered `(axis, values)` pairs; an empty axis list yields a
-    /// single nominal point, and `warm` chains runs along the last axis.
+    /// single nominal point, and `chain` selects whether runs chain along the last axis.
     ///
     /// # Errors
     ///
     /// Returns [`VariantsError::Empty`] for an empty axis or [`VariantsError::TooMany`]
     /// when total points overflow `u64`.
-    pub fn new(axes: Vec<(Axis, Vec<f64>)>, warm: bool) -> Result<Self, VariantsError> {
+    pub fn new(axes: Vec<(Axis, Vec<f64>)>, chain: GridChain) -> Result<Self, VariantsError> {
         let mut len: u64 = 1;
         for (index, (_, values)) in axes.iter().enumerate() {
             if values.is_empty() {
@@ -79,7 +88,7 @@ impl Grid {
                 .checked_mul(values.len() as u64)
                 .ok_or(VariantsError::TooMany)?;
         }
-        Ok(Self { axes, warm, len })
+        Ok(Self { axes, chain, len })
     }
 }
 
@@ -106,7 +115,7 @@ impl Variants for Grid {
 
     fn chain(&self) -> u64 {
         match self.axes.last() {
-            Some((_, steps)) if self.warm => steps.len() as u64,
+            Some((_, steps)) if self.chain == GridChain::Warm => steps.len() as u64,
             _ => 1,
         }
     }
@@ -168,7 +177,7 @@ pub enum VariantsError {
     #[error("axis {0} of the grid has no values")]
     Empty(usize),
     /// Total number of variants overflows `u64`.
-    #[error("the variants are more than 2⁶⁴ − 1")]
+    #[error("the variants are more than 2⁶⁴ - 1")]
     TooMany,
 }
 
@@ -575,7 +584,7 @@ mod tests {
                 (Axis::Temperature, vec![300.0, 310.0, 320.0]),
                 (Axis::Parameter(second), vec![5.0]),
             ],
-            true,
+            GridChain::Warm,
         )
         .unwrap();
         assert_eq!((grid.len(), grid.chain()), (6, 1));
@@ -583,7 +592,7 @@ mod tests {
         assert_eq!(values.patches(), [(first, 2.0), (second, 5.0)]);
         assert_eq!(values.temperature, Some(310.0));
         assert_eq!(
-            Grid::new(vec![(Axis::Temperature, vec![])], false),
+            Grid::new(vec![(Axis::Temperature, vec![])], GridChain::Independent),
             Err(VariantsError::Empty(0))
         );
     }

@@ -792,7 +792,7 @@ impl Condensation {
     /// Recovers all eliminated unknowns into `right_hand_side` from the kept solution and
     /// reduced buffer in `solved` (in reverse elimination order).
     ///
-    /// Evaluates `(b_r − Σ A_rc x_c) / p` for direct solves, or `b_e / p − Σ (A_ke / p) x_k`
+    /// Evaluates `(b_r - Σ A_rc x_c) / p` for direct solves, or `b_e / p - Σ (A_ke / p) x_k`
     /// when `transposed` is true, reading unshared entries directly from `right_hand_side`.
     pub(super) fn expand<T: Scalar>(
         &self,
@@ -916,7 +916,7 @@ mod tests {
     #[test]
     fn eliminates_a_series_current_by_its_inner_nodes_row() {
         // Terminal 0 (conductance 1), inner node 1 (conductance 2), and current 2 through
-        // 0.5 ohm between them. Current 2 eliminates via node 1's row (entry −1), and the
+        // 0.5 ohm between them. Current 2 eliminates via node 1's row (entry -1), and the
         // current row takes node 1's place.
         let positions = [
             ((0, 0), 1.0),
@@ -943,7 +943,7 @@ mod tests {
         assert_eq!(ordering.factored().dimension(), 2);
         let mut lu = SparseLu::new(Arc::new(ordering));
         let mut factors = lu.factor(&values).expect("regular");
-        // x = (2, 1, −1), and y = (1, 1, 2) of the transpose, every step exact.
+        // x = (2, 1, -1), and y = (1, 1, 2) of the transpose, every step exact.
         let mut x = [1.0, 3.0, 1.5];
         factors.solve(&mut x).expect("finite");
         assert_eq!(x, [2.0, 1.0, -1.0]);
@@ -965,7 +965,7 @@ mod tests {
         lu.factor(&[2.0, 1.0, 1.0, 1.0])
             .and_then(|mut factors| factors.solve(&mut x))
             .expect("regular");
-        // 2a + b = 3 and a + b = 1: a = 2, b = −1, exactly.
+        // 2a + b = 3 and a + b = 1: a = 2, b = -1, exactly.
         assert_eq!(x, [2.0, -1.0]);
     }
 

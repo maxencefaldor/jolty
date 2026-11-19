@@ -13,7 +13,7 @@ use crate::lu::finite;
 /// Matrix `a` holds `right_hand_side.len()` rows in column-major order. When `A` is
 /// nonsingular, `x = A⁻¹ b`. When `A` is singular, `x` is the minimum-norm least-squares
 /// solution orthogonal to every left null vector `u` (`uᵀ A = 0`), preserving invariants
-/// conserved by a map `Φ` when `A = Φ − I`.
+/// conserved by a map `Φ` when `A = Φ - I`.
 ///
 /// Using the SVD `A = U Σ Vᵀ`, singular values at most `n ε σ_max` are treated as zero.
 /// Additional trailing singular values at most `cutoff` are dropped under the discrepancy
@@ -275,8 +275,8 @@ mod tests {
     #[test]
     fn leaves_alone_what_a_singular_map_conserves() {
         // Φ = [[0.5, 0.2], [0, 1]]: the second component repeats whatever the first, so
-        // Φ − I = [[−0.5, 0.2], [0, 0]] is singular, and every x with x₂ fixed and
-        // −0.5 x₁ + 0.2 x₂ = 1 solves it. The step in its range keeps x₂ as it is, where
+        // Φ - I = [[-0.5, 0.2], [0, 0]] is singular, and every x with x₂ fixed and
+        // -0.5 x₁ + 0.2 x₂ = 1 solves it. The step in its range keeps x₂ as it is, where
         // the least-norm solution would move it.
         let mut right_hand_side = [1.0, 0.0];
         assert_eq!(
@@ -302,10 +302,10 @@ mod tests {
 
     #[test]
     fn keeps_the_conserved_quantity_of_a_singular_map_in_any_coordinates() {
-        // The same map in the coordinates x' = M x, M = [[1, 0], [1, 1]]: M (Φ − I) M⁻¹ =
-        // [[−0.7, 0.2], [−0.7, 0.2]], and M [1, 0] = [1, 1]. The conserved quantity is now
-        // x₂' − x₁', and the solution M [−2, 0] = [−2, −2] keeps it, where the least-norm
-        // solution, along [−0.7, 0.2], would not.
+        // The same map in the coordinates x' = M x, M = [[1, 0], [1, 1]]: M (Φ - I) M⁻¹ =
+        // [[-0.7, 0.2], [-0.7, 0.2]], and M [1, 0] = [1, 1]. The conserved quantity is now
+        // x₂' - x₁', and the solution M [-2, 0] = [-2, -2] keeps it, where the least-norm
+        // solution, along [-0.7, 0.2], would not.
         let mut right_hand_side = [1.0, 1.0];
         assert_eq!(
             solve_in_range(&[-0.7, -0.7, 0.2, 0.2], &mut right_hand_side, EXACT),

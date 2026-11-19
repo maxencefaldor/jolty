@@ -24,16 +24,16 @@ const PORTS: [[usize; 2]; 2] = [[0, 1], [2, 3]];
 /// 55(11), 1967), matching the ngspice `T` element.
 ///
 /// Port `k` spans `positive{k}` and `negative{k}` with branch-current unknown `current{k}`
-/// and obeys `v_k − Z₀ i_k = v_l(t − τ) + Z₀ i_l(t − τ)` against the opposite port `l`,
+/// and obeys `v_k - Z₀ i_k = v_l(t - τ) + Z₀ i_l(t - τ)` against the opposite port `l`,
 /// characteristic impedance `Z₀`, and propagation delay `τ`. Eliminating ngspice's internal
 /// nodes `int1` and `int2` (`traload.c`, lines 36 to 51 and 144 to 145) yields two direct
 /// port equations. Past waves are interpolated via [`Local::delayed`], resting at the DC
 /// operating point for `t <= 0`.
 ///
 /// At DC, delayed samples equal present values, yielding the exact zero-frequency short
-/// `v₁ = v₂` and `i₁ = −i₂` (omitting ngspice's `1 − gmin` scaling at line 56, a `1e-12`
+/// `v₁ = v₂` and `i₁ = -i₂` (omitting ngspice's `1 - gmin` scaling at line 56, a `1e-12`
 /// relative difference). Small-signal AC analysis multiplies each delayed coupling by
-/// `e^{−jωτ}`, matching ngspice `traacld.c`.
+/// `e^{-jωτ}`, matching ngspice `traacld.c`.
 #[derive(Debug, Clone, Copy)]
 pub struct TransmissionLine;
 

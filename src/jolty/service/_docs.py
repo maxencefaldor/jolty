@@ -97,7 +97,14 @@ class ReadDocsRequest(FrozenModel):
 
 
 def describe_entries(entries: tuple[DocumentSummary, ...]) -> str:
-    """Formats a grouped listing of offline documentation topics."""
+    """Formats a grouped listing of offline documentation topics.
+
+    Args:
+        entries: Offline document summaries grouped and rendered by section.
+
+    Returns:
+        Human-readable multi-section listing of guide pages and example scripts.
+    """
     sections: list[str] = []
     for name in _DOCS_SECTIONS:
         grouped = [entry for entry in entries if entry.section == name]
@@ -404,6 +411,12 @@ def document_summaries(
 ) -> tuple[DocumentSummary, ...]:
     """Lists available offline guide pages and examples in deterministic order.
 
+    Args:
+        section: Optional section filter (``"guide"`` or ``"examples"``).
+
+    Returns:
+        Ordered `DocumentSummary` entries matching `section`.
+
     Raises:
         JoltyError: When neither a readable checkout nor a packaged bundle exists.
     """
@@ -419,6 +432,13 @@ def document_summaries(
 def read_document(section: DocumentSection, slug: str) -> Document:
     """Reads one offline document from `section` by exact validated `slug`.
 
+    Args:
+        section: Target offline documentation section (``"guide"`` or ``"examples"``).
+        slug: Validated relative document slug within `section`.
+
+    Returns:
+        Loaded `Document` combining summary metadata and full UTF-8 content.
+
     Raises:
         JoltyError: When `slug` is invalid, attempts path traversal, or matches no
             document in `section`.
@@ -428,6 +448,13 @@ def read_document(section: DocumentSection, slug: str) -> Document:
 
 def resolve_document(topic: str, section: DocumentSection | None = None) -> Document:
     """Resolves a bare slug, qualified name or ``jolty://docs/...`` URI to a document.
+
+    Args:
+        topic: Bare slug, section-prefixed path, or ``jolty://docs/...`` resource URI.
+        section: Optional section filter disambiguating bare slugs.
+
+    Returns:
+        Matched `Document` with full UTF-8 text.
 
     Raises:
         JoltyError: When `topic` is invalid, mismatches `section`, is ambiguous, or

@@ -58,6 +58,12 @@ def option_temperature(temperature: float) -> float:
 
     Accepts `temperature` in kelvins. Adjusting simulation and nominal temperatures
     aligns thermal voltages so comparisons reflect device models rather than constants.
+
+    Args:
+        temperature: Target jolty temperature in kelvins.
+
+    Returns:
+        Celsius ``.options temp`` value for ngspice with matching thermal voltage.
     """
     return _process.thermal_option_temperature(
         temperature, _SPICE_THERMAL_VOLTAGE_PER_KELVIN
@@ -69,6 +75,13 @@ def same_kelvins(temperature: float) -> float:
 
     Inverts `option_temperature` so ngspice executes at exact `temperature` in kelvins,
     which matches models such as BSIM3 that embed fixed Boltzmann and charge constants.
+
+    Args:
+        temperature: Desired exact ngspice temperature in kelvins.
+
+    Returns:
+        Adjusted kelvin value whose `option_temperature` equals `temperature` in
+        Celsius.
 
     Examples:
         >>> round(option_temperature(same_kelvins(300.15)), 9)
@@ -92,7 +105,14 @@ class Result:
     """Wall-clock runtime of the ngspice process in seconds, or None for file reads."""
 
     def real(self, name: str) -> Real:
-        """Returns the real part of the vector `name`."""
+        """Returns the real part of the vector `name`.
+
+        Args:
+            name: Lowercase vector name in `vectors` (such as ``"v(out)"``).
+
+        Returns:
+            Real-part `float64` array of the named vector.
+        """
         return self.vectors[name].real
 
 
@@ -150,6 +170,9 @@ VALUES: Final = "result.raw"
 def version() -> str | None:
     """Returns the installed ngspice version and build banner, or None if unavailable.
 
+    Returns:
+        Semicolon-joined ngspice version and build lines, or `None` when uninstalled.
+
     Examples:
         >>> version() is None or version().startswith("ngspice")
         True
@@ -175,6 +198,14 @@ def execute(
     reads back `VALUES` written by ``write``, and enforces `timeout` seconds unless
     None. Serves as the single ngspice process entry point parallel to
     [`xyce.execute`][jolty.spice.xyce.execute].
+
+    Args:
+        deck: Complete SPICE deck lines written to ``circuit.cir``.
+        compatibility: Optional ngspice compatibility mode written to ``.spiceinit``.
+        timeout: Subprocess timeout in seconds, or `None` for no limit.
+
+    Returns:
+        `Executed` record containing stdout/stderr, exit code, wall time, and raw bytes.
 
     Raises:
         JoltyError: When ngspice is unavailable.
@@ -210,6 +241,16 @@ def run(
 
     Accepts the same `running` options as [`runs`][jolty.spice.ngspice.runs].
 
+    Args:
+        deck: SPICE netlist lines starting with a title line.
+        analysis: Interactive ngspice analysis command (such as ``"op"`` or
+            ``"tran 1n 1u"``).
+        **running: Optional library, corner, tolerance, temperature, seed, and timeout
+            settings.
+
+    Returns:
+        Parsed `Result` plot and runtime for `analysis`.
+
     Raises:
         JoltyError: Under the same failure conditions as `runs`.
     """
@@ -228,6 +269,15 @@ def runs(
     replaces default tight tolerances with `options`, aligns thermal voltage with
     `temperature` (in kelvins) and nominal 27 °C, and enforces `timeout`. Returns one
     parsed `Result` per plot along with the process runtime.
+
+    Args:
+        deck: SPICE netlist lines starting with a title line.
+        analyses: Interactive ngspice analysis commands executed in sequence.
+        **running: Optional library, corner, tolerance, temperature, seed, and timeout
+            settings.
+
+    Returns:
+        Tuple of parsed `Result` plots in execution order.
 
     Raises:
         JoltyError: When `deck` is empty, ngspice is unavailable, times out, writes no
@@ -335,6 +385,12 @@ def parse_raw(data: str | bytes) -> tuple[RawPlot, ...]:
     Supports both ASCII (``Values:``) and binary (``Binary:``, little-endian IEEE-754
     doubles) plots, including multi-plot files written with ``appendwrite`` or
     [`save_raw`][jolty.files.save_raw].
+
+    Args:
+        data: Raw file payload as UTF-8 text or raw bytes.
+
+    Returns:
+        Parsed `RawPlot` records in file order.
 
     Raises:
         JoltyError: When `data` holds malformed headers, mismatched variable counts,
@@ -469,6 +525,13 @@ def read(data: str | bytes, printed: str = "") -> tuple[Result, ...]:
 
     Supports both ASCII and binary (little-endian double) SPICE raw formats, including
     multi-plot files appended by ``appendwrite``.
+
+    Args:
+        data: Raw file payload as UTF-8 text or raw bytes.
+        printed: Combined stdout and stderr text attached to each returned `Result`.
+
+    Returns:
+        Parsed `Result` objects with normalized SPICE vector names in file order.
 
     Raises:
         JoltyError: When a plot header is malformed or values end before ``No. Points``.

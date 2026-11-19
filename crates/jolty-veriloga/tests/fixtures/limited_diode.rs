@@ -1,6 +1,6 @@
 //! The `diode` kernel, compiled by jolty-veriloga from `crates/jolty-veriloga/tests/fixtures/limited_diode.va`.
 //!
-//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Its source says:
+//! Written by `cargo run -p jolty-veriloga --bin compile`, never by hand. Original source notice:
 //!
 //! ```text
 //! jolty's junction diode at its defaults, its steps limited by the simulator's own

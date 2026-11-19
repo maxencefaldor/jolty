@@ -16,7 +16,7 @@ Each transient drives `Iin = 100 µA + 90 µA · sin(2π f t)` at `f` = 1 MHz, 1
 In each case the scorer measures the mean absolute error of `Iout` against `Iin³ / Iref²`, divides it by a reference circuit's error on the same case in the same conditions, and averages the four ratios: the score, lower being better.
 The design passes when it uses only allowed parts and achieves a score of at most 1 across all operating conditions below, both with nominal parts and on at least 95 % of 100 Monte Carlo boards.
 The circuit must pass from 0 °C to 70 °C across a ±5 % supply variation.
-The scorer evaluates 27 °C at nominal supply alongside 0 °C and 70 °C at both −5 % and +5 % supply.
+The scorer evaluates 27 °C at nominal supply alongside 0 °C and 70 °C at both -5 % and +5 % supply.
 On each integrated board, resistors share a common ±20 % process shift while matching within 0.1 % (3σ normal spread) regardless of declared tolerances.
 Each capacitor varies within ±5 % of nominal regardless of declared tolerance, while transistors remain at nominal parameters.
 At an equal score, fewer parts are better.

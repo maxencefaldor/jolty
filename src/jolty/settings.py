@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     def load(cls) -> Self:
         """Loads and validates settings from all configured sources.
 
+        Returns:
+            Validated `Settings` instance populated from configured sources.
+
         Raises:
             JoltyError: When a source specifies an unknown setting or an invalid value.
         """
@@ -134,7 +137,18 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Reads explicit arguments, then environment variables, then pyproject.toml."""
+        """Reads explicit arguments, then environment variables, then pyproject.toml.
+
+        Args:
+            settings_cls: Settings model class being loaded.
+            init_settings: Explicit keyword-argument settings source.
+            env_settings: Environment-variable settings source (`JOLTY_*`).
+            dotenv_settings: Unused `.env` settings source supplied by Pydantic.
+            file_secret_settings: Unused secrets-directory source supplied by Pydantic.
+
+        Returns:
+            Ordered tuple of active settings sources from highest to lowest precedence.
+        """
         return (
             init_settings,
             env_settings,

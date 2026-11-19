@@ -46,7 +46,7 @@ pub(super) struct Operating<R: Real> {
     pub(super) rds: D<R>,
 }
 
-/// Evaluates `t · (1 + 2t)` at `t = e^x`, flooring `e^x` below `−EXP_THRESHOLD`.
+/// Evaluates `t · (1 + 2t)` at `t = e^x`, flooring `e^x` below `-EXP_THRESHOLD`.
 fn falloff<R: Real>(x: D<R>) -> D<R> {
     let t = if x.value.value() > -EXP_THRESHOLD {
         x.exp()

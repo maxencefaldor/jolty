@@ -230,9 +230,9 @@ def burning(c: Builder) -> None:
     """Builds 10 V across two 100 Ω resistors rated at 0.5 W and 1.2 W."""
     ground = c.port("ground", Role.GROUND)
     source = c.place(devices.voltage_source(10 * V), name="V1")
-    for id, rating in (("R1", 0.5), ("R2", 1.2)):
+    for name, rating in (("R1", 0.5), ("R2", 1.2)):
         resistor = c.place(
-            devices.resistor(100 * ohm).rated("power", rating * W), name=id
+            devices.resistor(100 * ohm).rated("power", rating * W), name=name
         )
         c.connect(source.positive, resistor.a)
         c.connect(source.negative, resistor.b, ground)

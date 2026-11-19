@@ -26,7 +26,7 @@ pub(crate) const Q: f64 = 1.602_19e-19;
 pub(crate) const INTRINSIC: f64 = 1.45e10;
 /// Upper exponential ceiling `e^34` used by ngspice `b3ld.c` and `b4v5ld.c`.
 pub(crate) const MAX_EXP: f64 = 5.834_617_425e14;
-/// Lower exponential floor `e^−34` used by ngspice `b3ld.c` and `b4v5ld.c`.
+/// Lower exponential floor `e^-34` used by ngspice `b3ld.c` and `b4v5ld.c`.
 pub(crate) const MIN_EXP: f64 = 1.713_908_431e-15;
 /// The argument beyond which ngspice's `b3ld.c` and `b4v5ld.c` stop their exponentials.
 pub(crate) const EXP_THRESHOLD: f64 = 34.0;
@@ -57,7 +57,7 @@ pub(crate) const VARIABLE_NAMES: [&str; 5] = [
 ];
 
 /// Operating regions distinguished by BSIM equations and boundary margins
-/// `Vgst = Vgs_eff − Vth` and `Vds − Vdsat`, signed as n-channel [`Regions::margins`].
+/// `Vgst = Vgs_eff - Vth` and `Vds - Vdsat`, signed as n-channel [`Regions::margins`].
 /// Drain and source swap whenever the drain lies below the source, matching the equations.
 pub(crate) const REGIONS: Regions = Regions {
     names: &["weak_inversion", "linear", "saturated"],
@@ -215,7 +215,7 @@ pub(crate) fn lost<R: Real>(
 }
 
 /// Computes the silicon band gap in electronvolts at `temperature` as
-/// `1.16 − 7.02e-4 · T² / (T + 1108)`, matching `b3temp.c` and `b4v5temp.c`.
+/// `1.16 - 7.02e-4 · T² / (T + 1108)`, matching `b3temp.c` and `b4v5temp.c`.
 pub(crate) fn band_gap<R: Real>(temperature: R) -> R {
     -(temperature * temperature * 7.02e-4 / (temperature + 1108.0)) + 1.16
 }
@@ -330,7 +330,7 @@ pub(crate) fn heated_potential<R: Real>(potential: R, coefficient: R, delta_temp
 }
 
 /// Evaluates the reciprocal `1 / (1 + x)` clamped smoothly above 0.1 in `b3ld.c` and
-/// `b4v5ld.c`, continuing below `x = −0.9` via `(17 + 20x) / (0.8 + x)`.
+/// `b4v5ld.c`, continuing below `x = -0.9` via `(17 + 20x) / (0.8 + x)`.
 pub(crate) fn reciprocal_above_tenth<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() >= -0.9 {
         (x + 1.0).recip()
@@ -339,7 +339,7 @@ pub(crate) fn reciprocal_above_tenth<R: Real>(x: D<R>) -> D<R> {
     }
 }
 
-/// Evaluates `1 + x` continued smoothly below `x = −0.9` by `(0.8 + x) / (17 + 20x)` to
+/// Evaluates `1 + x` continued smoothly below `x = -0.9` by `(0.8 + x) / (17 + 20x)` to
 /// keep the factor positive in `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn factor_above_tenth<R: Real>(x: D<R>, inclusive: bool) -> D<R> {
     let above = if inclusive {
@@ -354,7 +354,7 @@ pub(crate) fn factor_above_tenth<R: Real>(x: D<R>, inclusive: bool) -> D<R> {
     }
 }
 
-/// Evaluates `x` continued smoothly below 0.1 by `(0.2 − x) / (3 − 20x)`.
+/// Evaluates `x` continued smoothly below 0.1 by `(0.2 - x) / (3 - 20x)`.
 pub(crate) fn above_tenth<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() < 0.1 {
         (-x + 0.2) / (-(x * 20.0) + 3.0)
@@ -363,7 +363,7 @@ pub(crate) fn above_tenth<R: Real>(x: D<R>) -> D<R> {
     }
 }
 
-/// Evaluates `1 + x` continued smoothly below `x = −0.8` by `(0.6 + x) / (7 + 10x)`,
+/// Evaluates `1 + x` continued smoothly below `x = -0.8` by `(0.6 + x) / (7 + 10x)`,
 /// keeping the mobility denominator positive in `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn above_fifth<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() >= -0.8 {
@@ -373,7 +373,7 @@ pub(crate) fn above_fifth<R: Real>(x: D<R>) -> D<R> {
     }
 }
 
-/// Evaluates `1 + x` continued smoothly below `x = −0.5` by `(1 + 3x) / (3 + 8x)`.
+/// Evaluates `1 + x` continued smoothly below `x = -0.5` by `(1 + 3x) / (3 + 8x)`.
 pub(crate) fn above_half<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() >= -0.5 {
         x + 1.0
@@ -382,7 +382,7 @@ pub(crate) fn above_half<R: Real>(x: D<R>) -> D<R> {
     }
 }
 
-/// Evaluates `x` continued smoothly below `1e-4` by `(2e-4 − x) / (3 − 2e4 · x)`, keeping
+/// Evaluates `x` continued smoothly below `1e-4` by `(2e-4 - x) / (3 - 2e4 · x)`, keeping
 /// the drain-induced barrier lowering factor positive in `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn above_dibl_floor<R: Real>(x: D<R>) -> D<R> {
     if x.value.value() < 1.0e-4 {
@@ -393,7 +393,7 @@ pub(crate) fn above_dibl_floor<R: Real>(x: D<R>) -> D<R> {
 }
 
 /// Evaluates effective channel `width` continued smoothly below 20 nm by
-/// `2e-8 · (4e-8 − width) / (6e-8 − 2 · width)` as in `b3ld.c` and `b4v5ld.c`.
+/// `2e-8 · (4e-8 - width) / (6e-8 - 2 · width)` as in `b3ld.c` and `b4v5ld.c`.
 pub(crate) fn effective_width<R: Real>(width: D<R>) -> D<R> {
     if width.value.value() < 2.0e-8 {
         (4.0e-8 - width) * 2.0e-8 / (6.0e-8 - width * 2.0)
@@ -403,7 +403,7 @@ pub(crate) fn effective_width<R: Real>(width: D<R>) -> D<R> {
 }
 
 /// Evaluates the smooth positive clamp `(x + √(x² + spread)) / 2`, rationalized as
-/// `(spread / 2) / (√(x² + spread) − x)` for `x < 0` to avoid cancellation.
+/// `(spread / 2) / (√(x² + spread) - x)` for `x < 0` to avoid cancellation.
 pub(crate) fn smooth_positive<R: Real>(x: D<R>, spread: D<R>) -> D<R> {
     let root = (x * x + spread).sqrt();
     if x.value.value() >= 0.0 {
@@ -413,13 +413,13 @@ pub(crate) fn smooth_positive<R: Real>(x: D<R>, spread: D<R>) -> D<R> {
     }
 }
 
-/// Evaluates the smooth lower clamp `bound + (shifted + √(shifted² − 0.004 · bound)) / 2`
-/// with `shifted = x − bound − 0.001` and `bound < 0`, shared by `b3ld.c` and `b4v5ld.c`.
+/// Evaluates the smooth lower clamp `bound + (shifted + √(shifted² - 0.004 · bound)) / 2`
+/// with `shifted = x - bound - 0.001` and `bound < 0`, shared by `b3ld.c` and `b4v5ld.c`.
 ///
-/// By `(shifted² − 0.004 · bound) − (x − bound + 0.001)² = −0.004 · x`, the curve passes
+/// By `(shifted² - 0.004 · bound) - (x - bound + 0.001)² = -0.004 · x`, the curve passes
 /// through zero, lies strictly above `x` for `x < 0`, and lies strictly below `x` for
 /// `x > 0`. For `x >= bound / 2`, rationalizing as
-/// `x − 0.002 · x / (root + x − bound + 0.001)` avoids `bound` cancellation near `x = 0`
+/// `x - 0.002 · x / (root + x - bound + 0.001)` avoids `bound` cancellation near `x = 0`
 /// (~12-digit loss and `vbseff < vbs` chatter). Below `bound / 2`,
 /// `smooth_positive(shifted, ...) + bound` stays exact through the knee and at large
 /// negative `x`.
@@ -462,17 +462,17 @@ pub(crate) fn poly_depletion<R: Real>(
     }
 }
 
-/// Evaluates the smooth minimum `vdsat − (shifted + root) / 2` of `vds >= 0` and
+/// Evaluates the smooth minimum `vdsat - (shifted + root) / 2` of `vds >= 0` and
 /// `vdsat >= 0` with smoothing `delta >= 0`, shared by BSIM3 and BSIM4 for `Vdseff` and
-/// `VdseffCV`. Both branches use `shifted = vdsat − vds − delta` and
+/// `VdseffCV`. Both branches use `shifted = vdsat - vds - delta` and
 /// `root = √(shifted² + 4 · delta · vdsat)`.
 ///
 /// Rationalization around `vds = vdsat + delta`:
 /// - For `vds <= vdsat + delta`, `2 · vdsat · vds / (vdsat + vds + delta + root)` avoids
 ///   `vdsat` cancellation near `vds = 0`. Both `gate` and `bulk` derivatives vanish exactly
 ///   at `vds = 0`, preventing ~8-digit loss at `vds = 1e-9` V.
-/// - For `vds > vdsat + delta`, `vdsat · (1 − 2 · delta / (root − shifted))` keeps
-///   `2 · delta / (root − shifted) <= 0.5` and preserves full precision on `d/d(vds)` at
+/// - For `vds > vdsat + delta`, `vdsat · (1 - 2 · delta / (root - shifted))` keeps
+///   `2 · delta / (root - shifted) <= 0.5` and preserves full precision on `d/d(vds)` at
 ///   large `vds`.
 pub(crate) fn effective_drain<R: Real>(vds: D<R>, vdsat: D<R>, delta: R) -> D<R> {
     let shifted = vdsat - vds - D::constant(delta);
@@ -490,8 +490,8 @@ pub(crate) fn effective_drain<R: Real>(vds: D<R>, vdsat: D<R>, delta: R) -> D<R>
     }
 }
 
-/// Computes `1 / λ − 1`, the non-saturation factor `λ` of `b3ld.c` and `b4v5ld.c` shifted
-/// from unity so `1 − λ` and `1 / λ − 1` avoid cancellation as `λ → 1`.
+/// Computes `1 / λ - 1`, the non-saturation factor `λ` of `b3ld.c` and `b4v5ld.c` shifted
+/// from unity so `1 - λ` and `1 / λ - 1` avoid cancellation as `λ → 1`.
 pub(crate) fn non_saturation_excess<R: Real>(a1: R, a2: R, vgsteff: D<R>) -> D<R> {
     let slope = a1.value();
     if slope == 0.0 {
@@ -509,8 +509,8 @@ pub(crate) fn non_saturation_excess<R: Real>(a1: R, a2: R, vgsteff: D<R>) -> D<R
 }
 
 /// Computes the saturation voltage `Vdsat` of `b3ld.c` and `b4v5ld.c`, rationalized to
-/// `2 · c / (b + √(b² − 2·a·c))` when `b ≥ 0`. Rationalization prevents `b` and its root
-/// from cancelling for small `a` (`rds = 0`, `λ → 1`) and remains continuous at `a = 0`.
+/// `2 · c / (b + √(b² - 2·a·c))` when `b ≥ 0`. Rationalization prevents `b` and its root
+/// from canceling for small `a` (`rds = 0`, `λ → 1`) and remains continuous at `a = 0`.
 pub(crate) fn saturation_voltage<R: Real>(
     vgst2vtm: D<R>,
     esat_l: D<R>,
@@ -549,7 +549,7 @@ pub(crate) fn substrate_early_voltage<R: Real>(
 }
 
 /// Computes the impact-ionization multiplier
-/// `(alpha0 / leff + alpha1) · diff_vds · exp(−beta0 / diff_vds)` of `b3ld.c` and
+/// `(alpha0 / leff + alpha1) · diff_vds · exp(-beta0 / diff_vds)` of `b3ld.c` and
 /// `b4v5ld.c`, returning `None` when impact ionization is inactive.
 pub(crate) fn impact_ionization_factor<R: Real>(
     diff_vds: D<R>,
@@ -570,8 +570,8 @@ pub(crate) fn impact_ionization_factor<R: Real>(
     Some(factor)
 }
 
-/// Evaluates the smooth minimum `x0 − ½ · (v + √(v² ± 4δ · x0))` for the effective
-/// flat-band voltage in `b3ld.c` and `b4v5ld.c`. The shifted argument is `v = x0 − x − δ`,
+/// Evaluates the smooth minimum `x0 - ½ · (v + √(v² ± 4δ · x0))` for the effective
+/// flat-band voltage in `b3ld.c` and `b4v5ld.c`. The shifted argument is `v = x0 - x - δ`,
 /// and the root term sign matches the sign of `x0`.
 pub(crate) fn flat_band<R: Real>(vfb: R, v3: D<R>) -> D<R> {
     let t0 = if vfb.value() <= 0.0 {
@@ -582,7 +582,7 @@ pub(crate) fn flat_band<R: Real>(vfb: R, v3: D<R>) -> D<R> {
     (-((v3 + t0) * 0.5)).plus(vfb)
 }
 
-/// Evaluates depletion charge `CoxWL · k1ox · (√(k1ox²/4 + v) − k1ox/2)` under the gate
+/// Evaluates depletion charge `CoxWL · k1ox · (√(k1ox²/4 + v) - k1ox/2)` under the gate
 /// with oxide `capacitance`, continued linearly below `v = 0`.
 pub(crate) fn depletion<R: Real>(k1ox: R, voltage: D<R>, capacitance: D<R>) -> D<R> {
     let t0 = k1ox * 0.5;
@@ -692,7 +692,7 @@ pub(crate) fn surface_potential_overdrive<R: Real>(
 /// Computes the source share of inversion charge under Ward-Dutton partitioning (`xpart`)
 /// from `partition`, oxide capacitance `cox_wl`, and total `inversion` charge. The voltage
 /// tuple `(overdrive, scaled_drain, denominator)` supplies `scaled_drain = Abulk · Vds`
-/// and `denominator = 12 · (overdrive − scaled_drain / 2 + 1e-20)`.
+/// and `denominator = 12 · (overdrive - scaled_drain / 2 + 1e-20)`.
 pub(crate) fn source_partition_charge<R: Real>(
     partition: Partition,
     (overdrive, scaled_drain, denominator): (D<R>, D<R>, D<R>),

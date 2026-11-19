@@ -130,6 +130,15 @@ pub use values::{ParameterId, Values};
 
 use state::State;
 
+/// Remote `serde` deserialization specification for [`Method`].
+#[derive(Deserialize)]
+#[serde(remote = "Method", rename_all = "snake_case")]
+pub(crate) enum MethodSerde {
+    BackwardEuler,
+    Trapezoidal,
+    Gear2,
+}
+
 // An elaborated circuit is shared by every thread that runs it, and a simulator, holding a
 // run's state, moves to the thread that runs it.
 const _: () = {
@@ -619,8 +628,8 @@ pub enum SimulationError {
     #[error(
         "the oscillation from the operating point, kicked along its fastest-growing mode, \
          did not stop growing in {time:e} s: none of its {returns} returns to the hyperplane \
-         through the operating point across the kick came as near the return before as \
-         that one came to its own"
+         through the operating point across the kick converged closer to the preceding \
+         crossing"
     )]
     Unsettled {
         /// Elapsed startup transient duration, in seconds.

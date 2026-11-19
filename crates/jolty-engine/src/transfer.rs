@@ -43,7 +43,7 @@ pub struct TransferFunctionResult {
     pub input: Nature,
     /// Output node or current unknown name.
     pub output: String,
-    /// Optional reference node for differential voltage outputs.
+    /// Optional negative reference net for differential voltage outputs.
     pub reference: Option<String>,
     /// Operating point around which the circuit was linearized.
     pub operating_point: OperatingPointResult,
@@ -219,7 +219,7 @@ impl Input {
 /// Measurement handle for extracting the transfer-function output from a solution vector.
 #[derive(Debug, Clone, Copy)]
 enum Output {
-    /// Node voltage relative to an optional reference node or ground.
+    /// Node voltage relative to an optional negative reference net or ground.
     Voltage {
         node: Option<UnknownIndex>,
         reference: Option<UnknownIndex>,

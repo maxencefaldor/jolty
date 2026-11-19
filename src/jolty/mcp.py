@@ -100,6 +100,16 @@ def tool_from[Request: BaseModel, Result: service.CommandResult](
     tool schema preserves descriptions, defaults, and constraints. Calling the tool
     returns formatted result text, generated images, and structured output validated
     against `result_type`.
+
+    Args:
+        name: MCP tool name assigned to the generated callable.
+        request_type: Pydantic request model defining tool keyword arguments.
+        handler: Async service handler invoked with validated request and settings.
+        result_type: Pydantic command result class annotating structured output.
+        settings: Runtime settings passed to `handler` on every invocation.
+
+    Returns:
+        Async tool callable with dynamically synthesized signature and metadata.
     """
     parameters = [
         inspect.Parameter(
@@ -195,7 +205,14 @@ def _register_resources(server: MCPServer) -> None:
 
 
 def create_server(settings: Settings) -> MCPServer:
-    """Creates the jolty MCP server with all tools and offline doc resources."""
+    """Creates the jolty MCP server with all tools and offline doc resources.
+
+    Args:
+        settings: Runtime settings bound to every registered MCP tool handler.
+
+    Returns:
+        Configured `MCPServer` ready to serve over stdio.
+    """
     server = MCPServer(
         "jolty", version=version("jolty"), instructions=build_instructions()
     )
@@ -312,6 +329,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Serves over stdio, or answers ``--help`` or ``--version``.
 
     The exit status is 2 for invalid arguments or settings.
+
+    Args:
+        argv: Command-line tokens to parse, defaulting to ``sys.argv[1:]`` when
+            ``None``.
     """
     arguments = sys.argv[1:] if argv is None else list(argv)
     if arguments == ["--version"]:

@@ -30,7 +30,7 @@ const CAPACITANCE: f64 = 1e-9;
 /// capacitive divider (`UPPER`, `LOWER`, `CAPACITANCE`) and probe `VP` at `level` between
 /// output `y` and divider `x`.
 ///
-/// Net overrides in `names` allow selecting any net as the reference node.
+/// Net overrides in `names` allow selecting any net as ground.
 fn amplifier(names: &[(&str, &str)], level: f64) -> Circuit {
     let net = |name: &str| {
         names
