@@ -21,7 +21,7 @@ use crate::closed::Closed;
 
 /// How far a value the compiled model computes may lie from the closed form computed
 /// here, in units of the machine epsilon times its magnitude: the model computes the
-/// resistance in some eight operations, its geometry scaled to micrometres and back,
+/// resistance in some eight operations, its geometry scaled to micrometers and back,
 /// each rounding by half an epsilon.
 const CLOSED: Closed = Closed(8.0);
 

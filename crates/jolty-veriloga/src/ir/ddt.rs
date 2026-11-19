@@ -3,8 +3,6 @@
 
 use crate::ast::Expression;
 
-use super::Expr;
-
 /// One multiplicative or divisive factor wrapped around a contribution term.
 #[derive(Clone, Copy)]
 pub(super) enum Factor<'a> {
@@ -20,11 +18,15 @@ impl<'a> Factor<'a> {
         }
     }
 
-    pub(super) fn apply(self, scale: Expr, inner: Expr) -> Expr {
+    pub(super) fn apply(
+        self,
+        scale: super::Expression,
+        inner: super::Expression,
+    ) -> super::Expression {
         match self {
-            Self::LeftMul(_) => Expr::Binary("*", Box::new(scale), Box::new(inner)),
-            Self::RightMul(_) => Expr::Binary("*", Box::new(inner), Box::new(scale)),
-            Self::RightDiv(_) => Expr::Binary("/", Box::new(inner), Box::new(scale)),
+            Self::LeftMul(_) => super::Expression::Binary("*", Box::new(scale), Box::new(inner)),
+            Self::RightMul(_) => super::Expression::Binary("*", Box::new(inner), Box::new(scale)),
+            Self::RightDiv(_) => super::Expression::Binary("/", Box::new(inner), Box::new(scale)),
         }
     }
 }

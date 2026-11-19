@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ir::{Expr, Module, Probe, Stmt, constant};
+use crate::ir::{Expression, Module, Probe, Statement, constant};
 
 /// How an expression depends on the probes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,17 +27,21 @@ pub(crate) enum Form {
 
 /// The forms an expression can take, each with the static expressions that must be zero
 /// for it, the fewest for each form.
-pub(crate) type Options = BTreeMap<Form, Vec<Expr>>;
+pub(crate) type TermOptions = BTreeMap<Form, Vec<Expression>>;
 
 /// The options of an expression that is `form` whatever the static numbers are.
-fn only(form: Form) -> Options {
-    Options::from([(form, Vec::new())])
+fn only(form: Form) -> TermOptions {
+    TermOptions::from([(form, Vec::new())])
 }
 
 /// The options of each pair of an option of `left` and one of `right`, combined by
 /// `combine`, each requiring what both do.
-fn product(left: &Options, right: &Options, combine: impl Fn(Form, Form) -> Form) -> Options {
-    let mut options = Options::new();
+fn product(
+    left: &TermOptions,
+    right: &TermOptions,
+    combine: impl Fn(Form, Form) -> Form,
+) -> TermOptions {
+    let mut options = TermOptions::new();
     for (&first, first_zero) in left {
         for (&second, second_zero) in right {
             let mut zero = first_zero.clone();
@@ -86,7 +90,7 @@ fn either(left: Form, right: Form) -> Form {
 /// The forms of each dynamic variable of a module, found from its assignments.
 pub(crate) struct Linearity<'m> {
     module: &'m Module,
-    variables: Vec<Options>,
+    variables: Vec<TermOptions>,
 }
 
 impl<'m> Linearity<'m> {
@@ -111,10 +115,10 @@ impl<'m> Linearity<'m> {
         None
     }
 
-    fn flow(&mut self, statements: &[Stmt], dynamic: bool) {
+    fn flow(&mut self, statements: &[Statement], dynamic: bool) {
         for statement in statements {
             match statement {
-                Stmt::Assign(variable, value) if self.module.dynamic[*variable] => {
+                Statement::Assign(variable, value) if self.module.dynamic[*variable] => {
                     let value = if dynamic {
                         only(Form::Other)
                     } else {
@@ -123,21 +127,24 @@ impl<'m> Linearity<'m> {
                     let joined = product(&self.variables[*variable], &value, either);
                     self.variables[*variable] = joined;
                 }
-                Stmt::If(_, condition, then, otherwise) => {
+                Statement::If(_, condition, then, otherwise) => {
                     let dynamic = dynamic || self.module.is_dynamic(condition);
                     self.flow(then, dynamic);
                     self.flow(otherwise, dynamic);
                 }
-                Stmt::While(condition, body) => {
+                Statement::While(condition, body) => {
                     self.flow(body, dynamic || self.module.is_dynamic(condition));
                 }
-                Stmt::Assign(..) | Stmt::Contribute { .. } | Stmt::Fail(..) | Stmt::Warn(..) => {}
+                Statement::Assign(..)
+                | Statement::Contribute { .. }
+                | Statement::Fail(..)
+                | Statement::Warn(..) => {}
             }
         }
     }
 
     /// The forms `expr` can take.
-    pub(crate) fn options(&self, expr: &Expr) -> Options {
+    pub(crate) fn options(&self, expr: &Expression) -> TermOptions {
         if !self.module.is_dynamic(expr) {
             return match constant(expr) {
                 Some(value) => only(if value == 0.0 {
@@ -145,24 +152,24 @@ impl<'m> Linearity<'m> {
                 } else {
                     Form::Constant
                 }),
-                None => Options::from([
+                None => TermOptions::from([
                     (Form::Constant, Vec::new()),
                     (Form::Zero, vec![expr.clone()]),
                 ]),
             };
         }
         match expr {
-            Expr::Probe(Probe::Voltage(..) | Probe::Current(_)) => only(Form::Linear),
-            Expr::Variable(variable) => self.variables[*variable].clone(),
-            Expr::Unary("-", operand) => self.options(operand),
-            Expr::Binary("+" | "-", left, right) => {
+            Expression::Probe(Probe::Voltage(..) | Probe::Current(_)) => only(Form::Linear),
+            Expression::Variable(variable) => self.variables[*variable].clone(),
+            Expression::Unary("-", operand) => self.options(operand),
+            Expression::Binary("+" | "-", left, right) => {
                 product(&self.options(left), &self.options(right), sum)
             }
-            Expr::Binary("*", left, right) => {
+            Expression::Binary("*", left, right) => {
                 product(&self.options(left), &self.options(right), times)
             }
             // A quotient keeps its numerator's form where its divisor is a constant.
-            Expr::Binary("/", left, right) => product(
+            Expression::Binary("/", left, right) => product(
                 &self.options(left),
                 &self.options(right),
                 |numerator, divisor| {
@@ -174,11 +181,11 @@ impl<'m> Linearity<'m> {
                 },
             ),
             // A choice the shape makes is one of its two forms.
-            Expr::Conditional(condition, then, otherwise) if shaped(condition) => {
+            Expression::Conditional(condition, then, otherwise) if shaped(condition) => {
                 product(&self.options(then), &self.options(otherwise), either)
             }
             // A function of constants is a constant, of anything else any form.
-            Expr::Call(_, arguments) => {
+            Expression::Call(_, arguments) => {
                 arguments
                     .iter()
                     .fold(only(Form::Constant), |options, argument| {
@@ -199,11 +206,11 @@ impl<'m> Linearity<'m> {
 }
 
 /// Whether `condition` reads the shape's conditions alone.
-fn shaped(condition: &Expr) -> bool {
+fn shaped(condition: &Expression) -> bool {
     match condition {
-        Expr::Shape(_) => true,
-        Expr::Unary("!", operand) => shaped(operand),
-        Expr::Binary("&&" | "||", left, right) => shaped(left) && shaped(right),
+        Expression::Shape(_) => true,
+        Expression::Unary("!", operand) => shaped(operand),
+        Expression::Binary("&&" | "||", left, right) => shaped(left) && shaped(right),
         _ => false,
     }
 }

@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn setting_a_path_keeps_its_neighbours() {
+    fn setting_a_path_keeps_its_neighbors() {
         let mut parameters = source();
         set_parameter(&mut parameters, "waveform.pulse.pulsed", json!(3.3)).unwrap();
         set_parameter(&mut parameters, "waveform.pulse.width", json!(1e-6)).unwrap();

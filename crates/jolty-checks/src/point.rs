@@ -16,14 +16,14 @@ use crate::{Diagnostic, Level, Rule};
 /// Origin: jolty's own runtime budget for the `O(n^3)` dense QZ eigenvalue solve inside
 /// `check_operating_point` (`500^3 = 1.25e8` flops scale; matches the condition strings of
 /// `MULTIPLE_OPERATING_POINTS` and `UNSTABLE_POLE`).
-pub const MOST_LINEARIZED: usize = 500;
+pub const MAX_LINEARIZED: usize = 500;
 
 /// The fraction of a mode's largest net amplitude, or of the largest difference between two
 /// DC solutions, from which a net is named.
 ///
 /// Origin: jolty's own 50% (`-6 dB`) prominence threshold for diagnostic focus (matches the
 /// condition strings of `MULTIPLE_OPERATING_POINTS` and `UNSTABLE_POLE`).
-const LARGEST: f64 = 0.5;
+const PROMINENCE_THRESHOLD: f64 = 0.5;
 
 /// The fraction of the larger of a node's voltage and [`VOLT`] that doubling gmin may move
 /// it by before `gmin-dependence` names it.
@@ -53,7 +53,7 @@ pub(crate) const GMIN_DEPENDENCE: Rule = Rule {
 };
 
 /// Rule definition for `multiple-operating-points` (jolty operating-point rule; bounded by
-/// `MOST_LINEARIZED` and `LARGEST` per `AGENTS.md`, "Rules, as in ty").
+/// `MAX_LINEARIZED` and `PROMINENCE_THRESHOLD` per `AGENTS.md`, "Rules, as in ty").
 pub(crate) const MULTIPLE_OPERATING_POINTS: Rule = Rule {
     name: "multiple-operating-points",
     level: Level::Warn,
@@ -83,7 +83,7 @@ pub(crate) const UNSTABLE_POLE: Rule = Rule {
 
 /// Every diagnostic of the rules on the circuit `simulator` elaborated, at its operating
 /// point under `options` and linearized there, rule by rule: the nets gmin holds, then, on
-/// circuits of at most [`MOST_LINEARIZED`] unknowns, another DC solution and the modes
+/// circuits of at most [`MAX_LINEARIZED`] unknowns, another DC solution and the modes
 /// that grow, by decreasing growth.
 ///
 /// The operating point is the one the simulator remembers, if an analysis solved it under
@@ -103,7 +103,7 @@ pub fn check_operating_point(
     let mut diagnostics: Vec<Diagnostic> = gmin_dependence(simulator, &point.values, &moves)
         .into_iter()
         .collect();
-    if simulator.unknowns().len() <= MOST_LINEARIZED {
+    if simulator.unknowns().len() <= MAX_LINEARIZED {
         let points = simulator.operating_points(&OperatingPoints { max_solutions: 2 }, options)?;
         if let [point, other] = points.as_slice() {
             diagnostics.push(multiple_operating_points(simulator, point, other));
@@ -135,14 +135,14 @@ fn voltage_nets<T>(
         .map(|(unknown, item)| (unknown.name.as_str(), item))
 }
 
-/// Keeps the entries whose score is at least [`LARGEST`] times the maximum, sorted by
-/// decreasing score, dropping all entries when the maximum is zero.
+/// Keeps the entries whose score is at least [`PROMINENCE_THRESHOLD`] times the maximum,
+/// sorted by decreasing score, dropping all entries when the maximum is zero.
 fn retain_prominent<T>(entries: &mut Vec<(f64, T)>) {
     let largest = entries.iter().map(|&(score, _)| score).fold(0.0, f64::max);
     if largest == 0.0 {
         entries.clear();
     } else {
-        entries.retain(|&(score, _)| score >= LARGEST * largest);
+        entries.retain(|&(score, _)| score >= PROMINENCE_THRESHOLD * largest);
     }
     entries.sort_by(|a, b| b.0.total_cmp(&a.0));
 }
@@ -275,8 +275,8 @@ mod tests {
         assert_eq!(analyzed.operating_point_solves(), 1);
     }
 
-    fn two_terminal(id: &str, (device, parameter, value): (&str, &str, f64), a: &str) -> Value {
-        json!({"name": id, "of": {"model": device}, "parameters": {parameter: value},
+    fn two_terminal(name: &str, (device, parameter, value): (&str, &str, f64), a: &str) -> Value {
+        json!({"name": name, "of": {"model": device}, "parameters": {parameter: value},
                "terminals": {"a": a, "b": "0"}})
     }
 

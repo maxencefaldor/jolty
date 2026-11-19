@@ -671,13 +671,13 @@ mod tests {
     }
 
     fn voltage(name: &'static str, positive: &'static str, negative: &'static str) -> Device {
-        let level = json!({"waveform": {"dc": 1.0}});
-        device(name, "voltage_source", level, [positive, negative])
+        let parameters = json!({"waveform": {"dc": 1.0}});
+        device(name, "voltage_source", parameters, [positive, negative])
     }
 
     fn current(name: &'static str, positive: &'static str, negative: &'static str) -> Device {
-        let level = json!({"waveform": {"dc": 1e-3}});
-        device(name, "current_source", level, [positive, negative])
+        let parameters = json!({"waveform": {"dc": 1e-3}});
+        device(name, "current_source", parameters, [positive, negative])
     }
 
     fn rules(diagnostics: &[Diagnostic]) -> Vec<&'static str> {

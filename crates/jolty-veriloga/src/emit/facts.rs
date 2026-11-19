@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use jolty_models::Nature;
 
 use crate::Error;
-use crate::ir::{Branch, Expr, GROUND, Module, Stmt, constant, probed_currents};
+use crate::ir::{Branch, Expression, GROUND, Module, Statement, constant, probed_currents};
 
 use super::types::{Activity, Place, Site};
 
@@ -17,7 +17,7 @@ pub(super) struct Facts<'m> {
     /// branch's flow or potential, by number, with their index among `conditions`.
     pub(super) shaped: BTreeMap<usize, usize>,
     /// The distinct static conditions that shape the kernel, in order of first appearance.
-    pub(super) conditions: Vec<Expr>,
+    pub(super) conditions: Vec<Expression>,
     /// Whether each branch adds to the equations only under some of the shape's
     /// conditions, with its index among the shape's flags, for its flow or potential and
     /// for its collapse.
@@ -32,9 +32,9 @@ pub(super) struct Facts<'m> {
 
 /// Adds the message of each warning of `statements` that depends on the probes to
 /// `warned`, once, with the number of values it formats.
-fn collect_warned(statements: &[Stmt], warned: &mut Vec<(String, usize)>) {
-    Stmt::visit_stmts(statements, &mut |statement| {
-        if let Stmt::Warn(message, arguments, true) = statement {
+fn collect_warned(statements: &[Statement], warned: &mut Vec<(String, usize)>) {
+    Statement::visit_stmts(statements, &mut |statement| {
+        if let Statement::Warn(message, arguments, true) = statement {
             let found = (message.clone(), arguments.len());
             if !warned.contains(&found) {
                 warned.push(found);
@@ -44,19 +44,19 @@ fn collect_warned(statements: &[Stmt], warned: &mut Vec<(String, usize)>) {
 }
 
 /// Whether `statement` is a static `$warning` or its like, or holds one.
-pub(super) fn warns(statement: &Stmt) -> bool {
-    statement.any(&|inner| matches!(inner, Stmt::Warn(_, _, false)))
+pub(super) fn warns(statement: &Statement) -> bool {
+    statement.any(&|inner| matches!(inner, Statement::Warn(_, _, false)))
 }
 
 /// Whether `statement` adds to a branch's flow or potential, or holds one that does.
-pub(super) fn stamps(statement: &Stmt) -> bool {
+pub(super) fn stamps(statement: &Statement) -> bool {
     statement.any(&|inner| {
         matches!(
             inner,
-            Stmt::Contribute {
+            Statement::Contribute {
                 resistive: Some(_),
                 ..
-            } | Stmt::Contribute {
+            } | Statement::Contribute {
                 reactive: Some(_),
                 ..
             }
@@ -65,8 +65,10 @@ pub(super) fn stamps(statement: &Stmt) -> bool {
 }
 
 /// Whether `statement` adds a noise source, or holds one that does.
-pub(super) fn makes_noise(statement: &Stmt) -> bool {
-    statement.any(&|inner| matches!(inner, Stmt::Contribute { noise, .. } if !noise.is_empty()))
+pub(super) fn makes_noise(statement: &Statement) -> bool {
+    statement.any(&|inner| {
+        matches!(inner, Statement::Contribute { noise, .. } if !noise.is_empty())
+    })
 }
 
 impl<'m> Facts<'m> {
@@ -89,9 +91,9 @@ impl<'m> Facts<'m> {
 
     /// Numbers the conditionals of `statements` that shape the kernel, sharing an index
     /// among identical condition expressions.
-    fn find_shapes(&mut self, statements: &[Stmt]) {
-        Stmt::visit_stmts(statements, &mut |statement| {
-            if let Stmt::If(id, condition, then, otherwise) = statement
+    fn find_shapes(&mut self, statements: &[Statement]) {
+        Statement::visit_stmts(statements, &mut |statement| {
+            if let Statement::If(id, condition, then, otherwise) = statement
                 && then.iter().chain(otherwise).any(stamps)
                 && !self.module.is_dynamic(condition)
             {
@@ -115,8 +117,8 @@ impl<'m> Facts<'m> {
         &self,
         branch: usize,
         potential: bool,
-        resistive: Option<&Expr>,
-        reactive: Option<&Expr>,
+        resistive: Option<&Expression>,
+        reactive: Option<&Expression>,
     ) -> bool {
         let Branch { plus, minus, .. } = self.module.branches[branch];
         // The node that collapses: the later of two, or the one node of a branch to the
@@ -139,8 +141,8 @@ impl<'m> Facts<'m> {
         &self,
         branch: usize,
         potential: bool,
-        resistive: Option<&Expr>,
-        reactive: Option<&Expr>,
+        resistive: Option<&Expression>,
+        reactive: Option<&Expression>,
     ) -> Site {
         if self.collapses(branch, potential, resistive, reactive) {
             Site::Collapse
@@ -153,10 +155,10 @@ impl<'m> Facts<'m> {
 
     /// Finds each branch's role and which branches the shape switches, `shaped` saying
     /// whether `statements` lie under a shape's condition.
-    fn find_roles(&mut self, statements: &[Stmt], shaped: bool) -> Result<(), Error> {
+    fn find_roles(&mut self, statements: &[Statement], shaped: bool) -> Result<(), Error> {
         for statement in statements {
             match statement {
-                Stmt::Contribute {
+                Statement::Contribute {
                     branch,
                     potential,
                     resistive,
@@ -182,13 +184,16 @@ impl<'m> Facts<'m> {
                         self.flags.insert(key, usize::MAX);
                     }
                 }
-                Stmt::If(id, _, then, otherwise) => {
+                Statement::If(id, _, then, otherwise) => {
                     let inner = shaped || self.shaped.contains_key(id);
                     self.find_roles(then, inner)?;
                     self.find_roles(otherwise, inner)?;
                 }
-                Stmt::While(_, body) => self.find_roles(body, shaped)?,
-                Stmt::Assign(..) | Stmt::Contribute { .. } | Stmt::Fail(..) | Stmt::Warn(..) => {}
+                Statement::While(_, body) => self.find_roles(body, shaped)?,
+                Statement::Assign(..)
+                | Statement::Contribute { .. }
+                | Statement::Fail(..)
+                | Statement::Warn(..) => {}
             }
         }
         // An unconditional site makes its branch always active: no flag.
@@ -268,10 +273,10 @@ impl<'m> Facts<'m> {
 
     /// Whether `branch` has a resistive part, so that it conducts at DC.
     pub(super) fn conducts(&self, branch: usize) -> bool {
-        Stmt::any_in(&self.module.analog, &|statement| {
+        Statement::any_in(&self.module.analog, &|statement| {
             matches!(
                 statement,
-                Stmt::Contribute {
+                Statement::Contribute {
                     branch: to,
                     resistive: Some(_),
                     ..
@@ -356,16 +361,16 @@ impl<'m> Facts<'m> {
 /// its assignments, until none is added.
 fn first_order(module: &Module) -> Result<(), Error> {
     let mut reached = vec![false; module.variables.len()];
-    let reads_ddx = |expr: &Expr, reached: &[bool]| {
+    let reads_ddx = |expr: &Expression, reached: &[bool]| {
         expr.any(&|inner| {
-            matches!(inner, Expr::Ddx(..))
-                || matches!(inner, Expr::Variable(variable) if reached[*variable])
+            matches!(inner, Expression::Ddx(..))
+                || matches!(inner, Expression::Variable(variable) if reached[*variable])
         })
     };
     loop {
         let mut changed = false;
-        Stmt::visit_stmts(&module.analog, &mut |statement| {
-            if let Stmt::Assign(variable, value) = statement
+        Statement::visit_stmts(&module.analog, &mut |statement| {
+            if let Statement::Assign(variable, value) = statement
                 && !reached[*variable]
                 && reads_ddx(value, &reached)
             {
@@ -377,8 +382,8 @@ fn first_order(module: &Module) -> Result<(), Error> {
             break;
         }
     }
-    let refused = Stmt::any_in(&module.analog, &|statement| {
-        if !matches!(statement, Stmt::Contribute { .. }) {
+    let refused = Statement::any_in(&module.analog, &|statement| {
+        if !matches!(statement, Statement::Contribute { .. }) {
             return false;
         }
         let mut found = false;
@@ -397,10 +402,10 @@ fn first_order(module: &Module) -> Result<(), Error> {
 
 /// Checks that each `$error` and static `$warning` of `statements`, under a condition
 /// that is dynamic when `dynamic` is, depends on no probe, so that preparation states it.
-fn static_tasks(statements: &[Stmt], module: &Module, dynamic: bool) -> Result<(), Error> {
+fn static_tasks(statements: &[Statement], module: &Module, dynamic: bool) -> Result<(), Error> {
     for statement in statements {
         match statement {
-            Stmt::Fail(message, arguments) | Stmt::Warn(message, arguments, false) => {
+            Statement::Fail(message, arguments) | Statement::Warn(message, arguments, false) => {
                 if dynamic || arguments.iter().any(|argument| module.is_dynamic(argument)) {
                     return Err(Error::at(
                         0,
@@ -410,15 +415,17 @@ fn static_tasks(statements: &[Stmt], module: &Module, dynamic: bool) -> Result<(
                     ));
                 }
             }
-            Stmt::If(_, condition, then, otherwise) => {
+            Statement::If(_, condition, then, otherwise) => {
                 let dynamic = dynamic || module.is_dynamic(condition);
                 static_tasks(then, module, dynamic)?;
                 static_tasks(otherwise, module, dynamic)?;
             }
-            Stmt::While(condition, body) => {
+            Statement::While(condition, body) => {
                 static_tasks(body, module, dynamic || module.is_dynamic(condition))?;
             }
-            Stmt::Warn(_, _, true) | Stmt::Assign(..) | Stmt::Contribute { .. } => {}
+            Statement::Warn(_, _, true)
+            | Statement::Assign(..)
+            | Statement::Contribute { .. } => {}
         }
     }
     Ok(())

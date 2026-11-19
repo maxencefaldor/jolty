@@ -7,7 +7,7 @@ use jolty_models::Nature;
 
 use crate::Error;
 use crate::ast::Type;
-use crate::ir::{Branch, Expr, GROUND, Limiter, Module, Parameter, Stmt, constant};
+use crate::ir::{Branch, Expression, GROUND, Limiter, Module, Parameter, Statement, constant};
 
 use super::expr::Emitter;
 use super::facts::{Facts, warns};
@@ -199,7 +199,7 @@ impl Facts<'_> {
     }
 
     /// The kernel's output variables: their names, and how they are read from its memory.
-    pub(super) fn outputs_fns(&self, names: &Names, out: &mut CodeWriter) {
+    pub(super) fn output_functions(&self, names: &Names, out: &mut CodeWriter) {
         let module = self.module;
         if module.outputs.is_empty() {
             return;
@@ -625,10 +625,15 @@ impl Facts<'_> {
 
     /// The layout's walk of `statements`: each flag set once where the shape's conditions
     /// make its branch active.
-    fn walk_layout(&self, statements: &[Stmt], out: &mut Vec<Rust>, active: &mut BTreeSet<usize>) {
+    fn walk_layout(
+        &self,
+        statements: &[Statement],
+        out: &mut Vec<Rust>,
+        active: &mut BTreeSet<usize>,
+    ) {
         for statement in statements {
             match statement {
-                Stmt::Contribute {
+                Statement::Contribute {
                     branch,
                     potential,
                     resistive,
@@ -643,7 +648,7 @@ impl Facts<'_> {
                         out.push(Rust::Line(format!("active[{index}] = true;")));
                     }
                 }
-                Stmt::If(id, _, then, otherwise) => {
+                Statement::If(id, _, then, otherwise) => {
                     if let Some(index) = self.shaped.get(id) {
                         let (mut inner_then, mut inner_otherwise) = (Vec::new(), Vec::new());
                         let mut then_active = active.clone();
@@ -662,8 +667,11 @@ impl Facts<'_> {
                         self.walk_layout(otherwise, out, active);
                     }
                 }
-                Stmt::While(_, body) => self.walk_layout(body, out, active),
-                Stmt::Assign(..) | Stmt::Contribute { .. } | Stmt::Fail(..) | Stmt::Warn(..) => {}
+                Statement::While(_, body) => self.walk_layout(body, out, active),
+                Statement::Assign(..)
+                | Statement::Contribute { .. }
+                | Statement::Fail(..)
+                | Statement::Warn(..) => {}
             }
         }
     }
@@ -677,23 +685,26 @@ impl Facts<'_> {
         for (index, parameter) in self.module.parameters.iter().enumerate() {
             for (exclude, lower, upper) in &parameter.ranges {
                 let mut check_body = Vec::new();
-                let mut bound = |bound: &Option<(Expr, bool)>| -> Result<Option<Bound>, Error> {
-                    let Some((expr, included)) = bound else {
-                        return Ok(None);
+                let mut bound =
+                    |bound: &Option<(Expression, bool)>| -> Result<Option<Bound>, Error> {
+                        let Some((expr, included)) = bound else {
+                            return Ok(None);
+                        };
+                        let constant = constant(expr);
+                        let code = match constant {
+                            Some(value) => literal(value),
+                            None => {
+                                Emitter::value_of(&emitter.expression(expr, &mut check_body)?).code
+                            }
+                        };
+                        Ok(Some(Bound {
+                            code,
+                            constant,
+                            included: *included,
+                        }))
                     };
-                    let constant = constant(expr);
-                    let code = match constant {
-                        Some(value) => literal(value),
-                        None => Emitter::value_of(&emitter.expression(expr, &mut check_body)?).code,
-                    };
-                    Ok(Some(Bound {
-                        code,
-                        constant,
-                        included: *included,
-                    }))
-                };
                 let (lower, upper) = (bound(lower)?, bound(upper)?);
-                let value = emitter.expression(&Expr::Parameter(index), &mut check_body)?;
+                let value = emitter.expression(&Expression::Parameter(index), &mut check_body)?;
                 print(&check_body, out);
                 out.line(check(
                     (&value.code, &parameter.external),
@@ -767,7 +778,7 @@ impl Facts<'_> {
     fn prepared_values(
         &self,
         emitter: &mut Emitter<'_, '_>,
-        (mode, fields): (Mode, &[(String, Kind, Expr)]),
+        (mode, fields): (Mode, &[(String, Kind, Expression)]),
         body: &mut Vec<Rust>,
     ) -> Result<Vec<String>, Error> {
         let mut values = Vec::new();
@@ -817,7 +828,7 @@ impl Facts<'_> {
         let mut scratch = Prepared::default();
         let mut emitter = Emitter::new(self, mode, &mut scratch, &mut entries);
         let mut roots = BTreeSet::new();
-        let fields: &[(String, Kind, Expr)] = if mode == Mode::Prepare {
+        let fields: &[(String, Kind, Expression)] = if mode == Mode::Prepare {
             &prepared.fields
         } else {
             &[]

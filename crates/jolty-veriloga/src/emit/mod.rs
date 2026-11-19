@@ -82,7 +82,7 @@ pub(crate) fn emit(module: &Module, (source, header): (&str, &str)) -> Result<St
         ));
         out.blank();
         facts.interface(&names, out);
-        facts.outputs_fns(&names, out);
+        facts.output_functions(&names, out);
         if let Some(linear) = linear_body.as_deref() {
             write_linear(linear, &names, out);
         }

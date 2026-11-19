@@ -104,7 +104,7 @@ fn derived(input: &DeriveInput) -> Result<Tokens> {
     };
     let number = &number.ident;
     let name = &input.ident;
-    let container = Naming::of(&input.attrs)?;
+    let container = Naming::from_attributes(&input.attrs)?;
     let body = match &input.data {
         Data::Struct(data) => {
             let transparent = container.transparent || is_newtype(&data.fields);
@@ -123,7 +123,7 @@ fn derived(input: &DeriveInput) -> Result<Tokens> {
         Data::Enum(data) => {
             let mut arms = Vec::with_capacity(data.variants.len());
             for variant in &data.variants {
-                let naming = Naming::of(&variant.attrs)?;
+                let naming = Naming::from_attributes(&variant.attrs)?;
                 let ident = &variant.ident;
                 let key = naming.rename.unwrap_or_else(|| {
                     container
@@ -207,7 +207,7 @@ fn lifted_fields(
     let mut bindings = Vec::with_capacity(fields.len());
     let mut values = Vec::with_capacity(fields.len());
     for (index, field) in fields.iter().enumerate() {
-        let naming = Naming::of(&field.attrs)?;
+        let naming = Naming::from_attributes(&field.attrs)?;
         let binding = Ident::new(&format!("field{index}"), Span::call_site());
         let within = if let Some(ident) = &field.ident {
             let key = naming.rename.unwrap_or_else(|| {
@@ -386,7 +386,7 @@ struct Naming {
 impl Naming {
     /// What `attributes` say, failing on any that writes a value elsewhere than its path,
     /// as `flatten` or `with` do, which `Lift` does not follow.
-    fn of(attributes: &[Attribute]) -> Result<Self> {
+    fn from_attributes(attributes: &[Attribute]) -> Result<Self> {
         let mut naming = Self::default();
         for attribute in attributes
             .iter()
@@ -600,7 +600,7 @@ fn parameter_kind_tokens(
 /// Resolves the serialized key name of `ident` from its field `attributes` and container
 /// `rename_all`.
 fn field_key(ident: &Ident, attributes: &[Attribute], rename_all: Option<Case>) -> Result<String> {
-    let naming = Naming::of(attributes)?;
+    let naming = Naming::from_attributes(attributes)?;
     Ok(naming.rename.unwrap_or_else(|| {
         rename_all.map_or_else(|| unraw(ident), |case| case.field(&unraw(ident)))
     }))
@@ -631,7 +631,7 @@ fn expand_parameter_metadata(input: &DeriveInput) -> Result<Tokens> {
             ));
         }
     };
-    let container = Naming::of(&input.attrs)?;
+    let container = Naming::from_attributes(&input.attrs)?;
     let mut entries = Vec::with_capacity(named.named.len());
     for field in &named.named {
         let Some(ident) = &field.ident else {
@@ -976,7 +976,7 @@ impl ExpandedFields {
             );
             return Err(Error::new_spanned(binned_number, message));
         }
-        let container = Naming::of(&specification.parameters_attributes)?;
+        let container = Naming::from_attributes(&specification.parameters_attributes)?;
         let mut expanded = Self {
             parameter_fields: Vec::with_capacity(specification.fields.len()),
             default_fields: Vec::with_capacity(specification.fields.len()),

@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::Error;
-use crate::ir::{Branch, Expr, GROUND, Noise, Probe, Stmt, visit_contributions};
+use crate::ir::{Branch, Expression, GROUND, Noise, Probe, Statement, visit_contributions};
 use crate::linear::{Form, Linearity};
 
 use super::decl::{format_message, write_locals_struct};
@@ -23,7 +23,7 @@ impl Emitter<'_, '_> {
     )]
     pub(super) fn statements(
         &mut self,
-        statements: &[Stmt],
+        statements: &[Statement],
         out: &mut Vec<Rust>,
     ) -> Result<(), Error> {
         let module = self.facts.module;
@@ -32,7 +32,7 @@ impl Emitter<'_, '_> {
                 continue;
             }
             match statement {
-                Stmt::Assign(variable, value) => {
+                Statement::Assign(variable, value) => {
                     if self
                         .function
                         .is_some_and(|function| *variable < module.functions[function].inputs)
@@ -45,8 +45,8 @@ impl Emitter<'_, '_> {
                         None => module.variables[*variable].0.clone(),
                     };
                     // `x = x + e` adds in place, where the kind does: the same sum.
-                    if let Expr::Binary(operator @ ("+" | "-"), left, right) = value
-                        && matches!(**left, Expr::Variable(read) if read == *variable)
+                    if let Expression::Binary(operator @ ("+" | "-"), left, right) = value
+                        && matches!(**left, Expression::Variable(read) if read == *variable)
                         && matches!(kind, Kind::Real | Kind::Float(_))
                     {
                         let right = self.expression(right, out)?;
@@ -58,7 +58,7 @@ impl Emitter<'_, '_> {
                     let operand = Self::convert(operand, &kind)?;
                     out.push(Rust::Line(format!("v.{name} = {};", operand.code)));
                 }
-                Stmt::Contribute {
+                Statement::Contribute {
                     branch,
                     potential,
                     resistive,
@@ -89,7 +89,7 @@ impl Emitter<'_, '_> {
                     }
                     Mode::Prepare | Mode::Warnings | Mode::Function => {}
                 },
-                Stmt::If(id, condition, then, otherwise) => {
+                Statement::If(id, condition, then, otherwise) => {
                     let dynamic = module.is_dynamic(condition);
                     if self.mode.prepares() && dynamic {
                         self.statements(then, out)?;
@@ -114,7 +114,7 @@ impl Emitter<'_, '_> {
                     self.statements(otherwise, &mut second)?;
                     out.push(Rust::If(condition, first, second));
                 }
-                Stmt::While(condition, body) => {
+                Statement::While(condition, body) => {
                     if self.mode.prepares() && module.is_dynamic(condition) {
                         self.statements(body, out)?;
                         continue;
@@ -132,17 +132,17 @@ impl Emitter<'_, '_> {
                     self.statements(body, &mut inner)?;
                     out.push(Rust::While(condition, inner));
                 }
-                Stmt::Fail(message, arguments) => {
+                Statement::Fail(message, arguments) => {
                     let message = self.message(message, arguments, out)?;
                     out.push(Rust::Line(format!(
                         "return Err(ParameterError({message}));"
                     )));
                 }
-                Stmt::Warn(message, arguments, false) => {
+                Statement::Warn(message, arguments, false) => {
                     let message = self.message(message, arguments, out)?;
                     out.push(Rust::Line(format!("found.push({message});")));
                 }
-                Stmt::Warn(message, arguments, true) => {
+                Statement::Warn(message, arguments, true) => {
                     let index = self
                         .facts
                         .warned
@@ -173,7 +173,7 @@ impl Emitter<'_, '_> {
     fn message(
         &mut self,
         message: &str,
-        arguments: &[Expr],
+        arguments: &[Expression],
         out: &mut Vec<Rust>,
     ) -> Result<String, Error> {
         let mut values = Vec::new();
@@ -200,7 +200,7 @@ impl Emitter<'_, '_> {
         &mut self,
         (branch, site): (usize, Site),
         charge: bool,
-        part: &Expr,
+        part: &Expression,
         out: &mut Vec<Rust>,
     ) -> Result<(), Error> {
         let kind = self
@@ -284,7 +284,7 @@ impl Emitter<'_, '_> {
         let module = self.facts.module;
         let mut probes: BTreeMap<(usize, Site, bool), BTreeSet<Probe>> = BTreeMap::new();
         visit_contributions(&module.analog, &mut |statement| {
-            if let Stmt::Contribute {
+            if let Statement::Contribute {
                 branch,
                 potential,
                 resistive,
@@ -597,13 +597,13 @@ impl Emitter<'_, '_> {
     /// What the contributions of `statements` require to be linear.
     fn linear_requirement(
         &mut self,
-        statements: &[Stmt],
+        statements: &[Statement],
         linearity: &Linearity<'_>,
     ) -> Requirement {
         let mut all = Requirement::Always;
         for statement in statements {
             let requirement = match statement {
-                Stmt::Contribute {
+                Statement::Contribute {
                     branch,
                     potential,
                     resistive,
@@ -616,10 +616,10 @@ impl Emitter<'_, '_> {
                     reactive.as_ref(),
                 ) =>
                 {
-                    let parts: Vec<&Expr> = resistive.iter().chain(reactive).collect();
+                    let parts: Vec<&Expression> = resistive.iter().chain(reactive).collect();
                     self.site_requirement(&parts, linearity)
                 }
-                Stmt::If(id, _, then, otherwise) => match self.facts.shaped.get(id) {
+                Statement::If(id, _, then, otherwise) => match self.facts.shaped.get(id) {
                     Some(&index) => {
                         let first = self.linear_requirement(then, linearity);
                         let second = self.linear_requirement(otherwise, linearity);
@@ -634,11 +634,11 @@ impl Emitter<'_, '_> {
                     None if stamps(statement) => Requirement::Never,
                     None => Requirement::Always,
                 },
-                Stmt::Contribute { .. }
-                | Stmt::Assign(..)
-                | Stmt::While(..)
-                | Stmt::Fail(..)
-                | Stmt::Warn(..) => Requirement::Always,
+                Statement::Contribute { .. }
+                | Statement::Assign(..)
+                | Statement::While(..)
+                | Statement::Fail(..)
+                | Statement::Warn(..) => Requirement::Always,
             };
             all = all.and(requirement);
         }
@@ -649,11 +649,15 @@ impl Emitter<'_, '_> {
     /// linear: one of the ways each part is zero or linear, each requiring its static
     /// numbers zero. Since `linear` receives `&Prepared<f64>`, `Kind::Real` fields are
     /// already `f64` and compare directly without `.value()`.
-    fn site_requirement(&mut self, parts: &[&Expr], linearity: &Linearity<'_>) -> Requirement {
-        let mut ways: Vec<Vec<Expr>> = vec![Vec::new()];
+    fn site_requirement(
+        &mut self,
+        parts: &[&Expression],
+        linearity: &Linearity<'_>,
+    ) -> Requirement {
+        let mut ways: Vec<Vec<Expression>> = vec![Vec::new()];
         for part in parts {
             let options = linearity.options(part);
-            let acceptable: Vec<&Vec<Expr>> = options
+            let acceptable: Vec<&Vec<Expression>> = options
                 .iter()
                 .filter(|&(form, _)| matches!(form, Form::Zero | Form::Linear))
                 .map(|(_, required)| required)
@@ -806,7 +810,7 @@ impl Emitter<'_, '_> {
         self.statements(&analog, &mut statements)?;
         self.stamps(&mut statements);
         for &output in &module.outputs {
-            let operand = self.expression(&Expr::Variable(output), &mut statements)?;
+            let operand = self.expression(&Expression::Variable(output), &mut statements)?;
             let value = Self::value_of(&operand).code;
             statements.push(Rust::Line(format!(
                 "memory.{} = {value};",

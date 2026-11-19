@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 
 use crate::ast::{self, Type};
 
-use super::{Builtin, Expr, LocalParameter};
+use super::{Builtin, Expression, LocalParameter};
 
 /// A compile-time constant folded from an IR expression.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -77,7 +77,7 @@ fn finite(value: f64) -> Result<f64, String> {
 }
 
 /// Evaluates a built-in function on constant `f64` arguments.
-fn eval_builtin(builtin: Builtin, arguments: &[f64]) -> Option<f64> {
+fn evaluate_builtin(builtin: Builtin, arguments: &[f64]) -> Option<f64> {
     Some(match (builtin, arguments) {
         (Builtin::Exp, &[x]) => x.exp(),
         (Builtin::Expm1, &[x]) => x.exp_m1(),
@@ -106,16 +106,16 @@ fn eval_builtin(builtin: Builtin, arguments: &[f64]) -> Option<f64> {
 
 /// Evaluates `expr` as a compile-time constant (`Ok(None)` when non-constant, `Err` on
 /// integer overflow, integer divide-by-zero, or a non-finite real result).
-pub(crate) fn fold_const(expr: &Expr) -> Result<Option<ConstVal>, String> {
+pub(crate) fn fold_const(expr: &Expression) -> Result<Option<ConstVal>, String> {
     let overflow = || "overflows an integer".to_owned();
     match expr {
-        Expr::Real(value) => Ok(Some(ConstVal::Real(finite(*value)?))),
-        Expr::Integer(value) => Ok(Some(ConstVal::Int(*value))),
-        Expr::Unary("!", operand) => {
+        Expression::Real(value) => Ok(Some(ConstVal::Real(finite(*value)?))),
+        Expression::Integer(value) => Ok(Some(ConstVal::Int(*value))),
+        Expression::Unary("!", operand) => {
             Ok(fold_const(operand)?.map(|value| ConstVal::Bool(!value.as_bool())))
         }
-        Expr::Unary("+", operand) => fold_const(operand),
-        Expr::Unary("-", operand) => {
+        Expression::Unary("+", operand) => fold_const(operand),
+        Expression::Unary("-", operand) => {
             let Some(value) = fold_const(operand)? else {
                 return Ok(None);
             };
@@ -126,24 +126,24 @@ pub(crate) fn fold_const(expr: &Expr) -> Result<Option<ConstVal>, String> {
                 None => Ok(Some(ConstVal::Real(finite(-value.as_real())?))),
             }
         }
-        Expr::Binary("&&", left, right) => match fold_const(left)? {
+        Expression::Binary("&&", left, right) => match fold_const(left)? {
             Some(value) if !value.as_bool() => Ok(Some(ConstVal::Bool(false))),
             Some(_) => Ok(fold_const(right)?.map(|value| ConstVal::Bool(value.as_bool()))),
             None => Ok(None),
         },
-        Expr::Binary("||", left, right) => match fold_const(left)? {
+        Expression::Binary("||", left, right) => match fold_const(left)? {
             Some(value) if value.as_bool() => Ok(Some(ConstVal::Bool(true))),
             Some(_) => Ok(fold_const(right)?.map(|value| ConstVal::Bool(value.as_bool()))),
             None => Ok(None),
         },
-        Expr::Binary(operator @ ("<" | "<=" | ">" | ">=" | "==" | "!="), left, right) => {
+        Expression::Binary(operator @ ("<" | "<=" | ">" | ">=" | "==" | "!="), left, right) => {
             let (Some(left), Some(right)) = (fold_const(left)?, fold_const(right)?) else {
                 return Ok(None);
             };
             let result = compare_order(operator, left.as_real(), right.as_real());
             Ok(Some(ConstVal::Bool(result)))
         }
-        Expr::Binary(operator @ ("+" | "-" | "*" | "/"), left, right) => {
+        Expression::Binary(operator @ ("+" | "-" | "*" | "/"), left, right) => {
             let (Some(left), Some(right)) = (fold_const(left)?, fold_const(right)?) else {
                 return Ok(None);
             };
@@ -162,12 +162,12 @@ pub(crate) fn fold_const(expr: &Expr) -> Result<Option<ConstVal>, String> {
             let value = fold(operator, left.as_real(), right.as_real());
             Ok(Some(ConstVal::Real(finite(value)?)))
         }
-        Expr::Conditional(condition, then, otherwise) => match fold_const(condition)? {
+        Expression::Conditional(condition, then, otherwise) => match fold_const(condition)? {
             Some(value) if value.as_bool() => fold_const(then),
             Some(_) => fold_const(otherwise),
             None => Ok(None),
         },
-        Expr::Call(builtin, arguments) => {
+        Expression::Call(builtin, arguments) => {
             let mut evaluated = Vec::with_capacity(arguments.len());
             for argument in arguments {
                 let Some(value) = fold_const(argument)? else {
@@ -175,7 +175,7 @@ pub(crate) fn fold_const(expr: &Expr) -> Result<Option<ConstVal>, String> {
                 };
                 evaluated.push(value.as_real());
             }
-            let Some(value) = eval_builtin(*builtin, &evaluated) else {
+            let Some(value) = evaluate_builtin(*builtin, &evaluated) else {
                 return Ok(None);
             };
             Ok(Some(ConstVal::Real(finite(value)?)))
@@ -185,31 +185,33 @@ pub(crate) fn fold_const(expr: &Expr) -> Result<Option<ConstVal>, String> {
 }
 
 /// The value of `expr` if it folds to a finite compile-time constant.
-pub(crate) fn constant(expr: &Expr) -> Option<f64> {
+pub(crate) fn constant(expr: &Expression) -> Option<f64> {
     fold_const(expr).ok().flatten().map(ConstVal::as_real)
 }
 
 /// The Verilog-A numeric type of `expr` (boolean expressions count as `Type::Integer`).
 pub(super) fn expr_type(
-    expr: &Expr,
+    expr: &Expression,
     module: &ast::Module,
     local_parameters: &[LocalParameter],
 ) -> Type {
     match expr {
-        Expr::Integer(_)
-        | Expr::Given(_)
-        | Expr::Shape(_)
-        | Expr::Unary("!", _)
-        | Expr::Binary("<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||", ..) => Type::Integer,
-        Expr::Parameter(index) => module
+        Expression::Integer(_)
+        | Expression::Given(_)
+        | Expression::Shape(_)
+        | Expression::Unary("!", _)
+        | Expression::Binary("<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||", ..) => {
+            Type::Integer
+        }
+        Expression::Parameter(index) => module
             .parameters
             .get(*index)
             .map_or(Type::Real, |parameter| parameter.kind),
-        Expr::LocalParameter(index) => local_parameters
+        Expression::LocalParameter(index) => local_parameters
             .get(*index)
             .map_or(Type::Real, |local| local.kind),
-        Expr::Unary(_, operand) => expr_type(operand, module, local_parameters),
-        Expr::Binary(_, left, right) | Expr::Conditional(_, left, right) => {
+        Expression::Unary(_, operand) => expr_type(operand, module, local_parameters),
+        Expression::Binary(_, left, right) | Expression::Conditional(_, left, right) => {
             if expr_type(left, module, local_parameters) == Type::Real
                 || expr_type(right, module, local_parameters) == Type::Real
             {

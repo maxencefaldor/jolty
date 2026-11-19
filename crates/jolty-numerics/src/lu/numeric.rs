@@ -576,13 +576,14 @@ impl<T: Scalar> Numeric<T> {
         Ok(())
     }
 
-    /// Solves `A x = rhs` and leaves `x` in `rhs`, for the matrix of `ordering`'s pattern
-    /// with `values` whose factors these are, writing to `workspace` as it goes, its
-    /// dissected blocks spread over `threads` threads as [`super::SparseLu::spread`] says.
+    /// Solves `A x = right_hand_side` and leaves `x` in `right_hand_side`, for the matrix of
+    /// `ordering`'s pattern with `values` whose factors these are, writing to `workspace` as it
+    /// goes, its dissected blocks spread over `threads` threads as [`super::SparseLu::spread`]
+    /// says.
     pub(super) fn solve(
         &self,
         (ordering, values): (&Ordering, &[T]),
-        rhs: &mut [T],
+        right_hand_side: &mut [T],
         workspace: &mut Workspace<T>,
         threads: usize,
     ) {
@@ -593,7 +594,7 @@ impl<T: Scalar> Numeric<T> {
             ..
         } = workspace;
         scratch.resize_with(self.trees.len(), Vec::new);
-        gather(by_row, rhs, ordering.rows(), threads);
+        gather(by_row, right_hand_side, ordering.rows(), threads);
         for (block, range) in ordering.block_starts().windows(2).enumerate().rev() {
             let positions = range[0]..range[1];
             if let Some(dissection) = ordering.dissection(block) {
@@ -623,14 +624,15 @@ impl<T: Scalar> Numeric<T> {
                 threads,
             );
         }
-        gather(rhs, by_position, ordering.column_positions(), threads);
+        gather(right_hand_side, by_position, ordering.column_positions(), threads);
     }
 
-    /// Solves `Aᵀ x = rhs` and leaves `x` in `rhs`, as [`Numeric::solve`] does `A x = rhs`.
+    /// Solves `Aᵀ x = right_hand_side` and leaves `x` in `right_hand_side`, as
+    /// [`Numeric::solve`] does `A x = right_hand_side`.
     pub(super) fn solve_transpose(
         &self,
         (ordering, values): (&Ordering, &[T]),
-        rhs: &mut [T],
+        right_hand_side: &mut [T],
         workspace: &mut Workspace<T>,
         threads: usize,
     ) {
@@ -641,7 +643,7 @@ impl<T: Scalar> Numeric<T> {
             ..
         } = workspace;
         scratch.resize_with(self.trees.len(), Vec::new);
-        gather(by_position, rhs, ordering.columns(), threads);
+        gather(by_position, right_hand_side, ordering.columns(), threads);
         for (block, range) in ordering.block_starts().windows(2).enumerate() {
             let positions = range[0]..range[1];
             if let Some(dissection) = ordering.dissection(block) {
@@ -680,12 +682,12 @@ impl<T: Scalar> Numeric<T> {
                 by_position[position] = value / self.factors.pivots[position];
             }
             for position in positions.rev() {
-                let rhs = by_position[position];
-                let value = self.factors.lower.subtract_dot(position, rhs, by_row);
+                let entry = by_position[position];
+                let value = self.factors.lower.subtract_dot(position, entry, by_row);
                 by_row[self.factors.pivot_rows[position]] = value;
             }
         }
-        gather(rhs, by_row, ordering.row_positions(), threads);
+        gather(right_hand_side, by_row, ordering.row_positions(), threads);
     }
 }
 

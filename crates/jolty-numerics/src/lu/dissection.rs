@@ -20,7 +20,7 @@ use super::ordering::Entries;
 /// A symmetric graph on the vertices of a block, by adjacency lists.
 pub(super) struct Graph {
     starts: Vec<usize>,
-    neighbours: Vec<usize>,
+    neighbors: Vec<usize>,
 }
 
 impl Graph {
@@ -35,20 +35,20 @@ impl Graph {
             }
         }
         let mut starts = Vec::with_capacity(size + 1);
-        let mut neighbours = Vec::new();
+        let mut neighbors = Vec::new();
         starts.push(0);
         for (vertex, list) in all.iter_mut().enumerate() {
             list.sort_unstable();
             list.dedup();
-            neighbours.extend(list.iter().copied().filter(|&other| other != vertex));
-            starts.push(neighbours.len());
+            neighbors.extend(list.iter().copied().filter(|&other| other != vertex));
+            starts.push(neighbors.len());
         }
-        Self { starts, neighbours }
+        Self { starts, neighbors }
     }
 
     /// The vertices joined to `vertex`.
     fn of(&self, vertex: usize) -> &[usize] {
-        &self.neighbours[self.starts[vertex]..self.starts[vertex + 1]]
+        &self.neighbors[self.starts[vertex]..self.starts[vertex + 1]]
     }
 
     /// The number of vertices.
@@ -131,9 +131,9 @@ impl Dissector<'_> {
             self.part[vertex] = separated;
         }
         // Each component of the rest, in the order of its first vertex in the levels.
-        let levelled = self.order.clone();
+        let leveled = self.order.clone();
         let mut components = Vec::new();
-        for start in levelled {
+        for start in leveled {
             if self.part[start] != part {
                 continue;
             }
@@ -330,7 +330,7 @@ impl Dissection {
         within: impl Fn(usize) -> &'a [(usize, usize)],
     ) -> Self {
         let size = end - start;
-        // Each position's neighbours within the block, both ways.
+        // Each position's neighbors within the block, both ways.
         let mut lists = vec![Vec::new(); size];
         for column in start..end {
             for &(row, _) in within(column) {
@@ -438,7 +438,7 @@ mod tests {
 
     use super::*;
 
-    /// The graph of a `width` × `height` grid, each vertex joined to its neighbours.
+    /// The graph of a `width` × `height` grid, each vertex joined to its neighbors.
     fn grid(width: usize, height: usize) -> Graph {
         let lists: Vec<Vec<usize>> = (0..width * height)
             .map(|vertex| {
@@ -544,7 +544,7 @@ mod tests {
         // A complete graph has two levels from any vertex: it cannot split.
         let complete: Vec<Vec<usize>> = (0..6).map(|vertex| (vertex + 1..6).collect()).collect();
         assert_eq!(dissect(&Graph::symmetric(&complete), 1).len(), 1);
-        // A star has three from a leaf: its centre separates every leaf from the others.
+        // A star has three from a leaf: its center separates every leaf from the others.
         let star: Vec<Vec<usize>> = (0..8)
             .map(|vertex| {
                 if vertex == 0 {

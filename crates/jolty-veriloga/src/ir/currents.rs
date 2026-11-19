@@ -8,7 +8,7 @@ use jolty_models::Nature;
 use crate::Error;
 
 use super::analysis::{visit_contributions, visit_contributions_mut};
-use super::{Branch, Expr, GROUND, Module, Probe, Stmt};
+use super::{Branch, Expression, GROUND, Module, Probe, Statement};
 
 /// A contribution to a branch's flow or potential, and the conditions it lies under:
 /// those that shape the kernel, each by its number and whether it holds, and whether
@@ -16,7 +16,7 @@ use super::{Branch, Expr, GROUND, Module, Probe, Stmt};
 struct Site {
     branch: usize,
     potential: bool,
-    resistive: Option<Expr>,
+    resistive: Option<Expression>,
     reactive: bool,
     shape: Vec<(usize, bool)>,
     dynamic: bool,
@@ -25,13 +25,13 @@ struct Site {
 /// The sites of `statements`, under `shape` and `dynamic`.
 fn sites(
     module: &Module,
-    statements: &[Stmt],
+    statements: &[Statement],
     (shape, dynamic): (&[(usize, bool)], bool),
     found: &mut Vec<Site>,
 ) {
     for statement in statements {
         match statement {
-            Stmt::Contribute {
+            Statement::Contribute {
                 branch,
                 potential,
                 resistive,
@@ -45,7 +45,7 @@ fn sites(
                 shape: shape.to_vec(),
                 dynamic,
             }),
-            Stmt::If(id, condition, then, otherwise) => {
+            Statement::If(id, condition, then, otherwise) => {
                 if module.is_dynamic(condition) {
                     sites(module, then, (shape, true), found);
                     sites(module, otherwise, (shape, true), found);
@@ -57,30 +57,37 @@ fn sites(
                     }
                 }
             }
-            Stmt::While(_, body) => sites(module, body, (shape, true), found),
-            Stmt::Assign(..) | Stmt::Contribute { .. } | Stmt::Fail(..) | Stmt::Warn(..) => {}
+            Statement::While(_, body) => sites(module, body, (shape, true), found),
+            Statement::Assign(..)
+            | Statement::Contribute { .. }
+            | Statement::Fail(..)
+            | Statement::Warn(..) => {}
         }
     }
 }
 
 /// The truth of the shape's conditions `shape`, all of them.
-fn guard(shape: &[(usize, bool)]) -> Option<Expr> {
+fn guard(shape: &[(usize, bool)]) -> Option<Expression> {
     shape
         .iter()
         .map(|&(id, holds)| {
             if holds {
-                Expr::Shape(id)
+                Expression::Shape(id)
             } else {
-                Expr::Unary("!", Box::new(Expr::Shape(id)))
+                Expression::Unary("!", Box::new(Expression::Shape(id)))
             }
         })
-        .reduce(|left, right| Expr::Binary("&&", Box::new(left), Box::new(right)))
+        .reduce(|left, right| Expression::Binary("&&", Box::new(left), Box::new(right)))
 }
 
 /// The current of `branch`, as a probe reads it: the sum of its flow's contributions,
 /// each where the shape makes it, and its own unknown where the shape makes it hold a
 /// potential; `None` when it carries no flow, so that the probe reads its unknown.
-fn flow_current(module: &Module, branch: usize, found: &[Site]) -> Result<Option<Expr>, Error> {
+fn flow_current(
+    module: &Module,
+    branch: usize,
+    found: &[Site],
+) -> Result<Option<Expression>, Error> {
     let name = &module.branches[branch].name;
     let of = |potential: bool| {
         found
@@ -90,7 +97,7 @@ fn flow_current(module: &Module, branch: usize, found: &[Site]) -> Result<Option
     if of(false).next().is_none() {
         return Ok(None);
     }
-    let mut flow: Option<Expr> = None;
+    let mut flow: Option<Expression> = None;
     for site in of(false) {
         if site.dynamic || site.reactive {
             return Err(Error::at(
@@ -100,36 +107,36 @@ fn flow_current(module: &Module, branch: usize, found: &[Site]) -> Result<Option
                 ),
             ));
         }
-        let value = site.resistive.clone().unwrap_or(Expr::Real(0.0));
+        let value = site.resistive.clone().unwrap_or(Expression::Real(0.0));
         let term = match guard(&site.shape) {
-            Some(condition) => Expr::Conditional(
+            Some(condition) => Expression::Conditional(
                 Box::new(condition),
                 Box::new(value),
-                Box::new(Expr::Real(0.0)),
+                Box::new(Expression::Real(0.0)),
             ),
             None => value,
         };
         flow = Some(match flow {
-            Some(sum) => Expr::Binary("+", Box::new(sum), Box::new(term)),
+            Some(sum) => Expression::Binary("+", Box::new(sum), Box::new(term)),
             None => term,
         });
     }
-    let flow = flow.unwrap_or(Expr::Real(0.0));
-    let held: Option<Option<Expr>> =
+    let flow = flow.unwrap_or(Expression::Real(0.0));
+    let held: Option<Option<Expression>> =
         of(true)
             .map(|site| guard(&site.shape))
             .reduce(|left, right| match (left, right) {
                 (Some(left), Some(right)) => {
-                    Some(Expr::Binary("||", Box::new(left), Box::new(right)))
+                    Some(Expression::Binary("||", Box::new(left), Box::new(right)))
                 }
                 _ => None,
             });
     Ok(Some(match held {
         None => flow,
-        Some(None) => Expr::Probe(Probe::Current(branch)),
-        Some(Some(condition)) => Expr::Conditional(
+        Some(None) => Expression::Probe(Probe::Current(branch)),
+        Some(Some(condition)) => Expression::Conditional(
             Box::new(condition),
-            Box::new(Expr::Probe(Probe::Current(branch))),
+            Box::new(Expression::Probe(Probe::Current(branch))),
             Box::new(flow),
         ),
     }))
@@ -146,7 +153,7 @@ pub(super) fn flow_currents(module: &mut Module) -> Result<bool, Error> {
     let mut replacements = BTreeMap::new();
     for branch in read {
         if let Some(current) = flow_current(module, branch, &found)?
-            && current != Expr::Probe(Probe::Current(branch))
+            && current != Expression::Probe(Probe::Current(branch))
         {
             replacements.insert(branch, current);
         }
@@ -160,7 +167,7 @@ pub(super) fn flow_currents(module: &mut Module) -> Result<bool, Error> {
     let mut probed: Vec<(usize, usize)> = Vec::new();
     order(&module.analog, &mut position, &mut last, &mut |at, expr| {
         expr.walk(&mut |inner| {
-            if let Expr::Probe(Probe::Current(branch)) = inner {
+            if let Expression::Probe(Probe::Current(branch)) = inner {
                 probed.push((*branch, at));
             }
         });
@@ -171,7 +178,7 @@ pub(super) fn flow_currents(module: &mut Module) -> Result<bool, Error> {
         };
         let mut late = None;
         current.walk(&mut |inner| {
-            if let Expr::Variable(variable) = inner
+            if let Expression::Variable(variable) = inner
                 && last[*variable] >= at
             {
                 late = Some(*variable);
@@ -194,9 +201,9 @@ pub(super) fn flow_currents(module: &mut Module) -> Result<bool, Error> {
 /// The branches whose currents `module` probes.
 pub(crate) fn probed_currents(module: &Module) -> BTreeSet<usize> {
     let mut read = BTreeSet::new();
-    let mut visit = |expr: &Expr| {
+    let mut visit = |expr: &Expression| {
         expr.walk(&mut |inner| {
-            if let Expr::Probe(Probe::Current(branch)) = inner {
+            if let Expression::Probe(Probe::Current(branch)) = inner {
                 read.insert(*branch);
             }
         });
@@ -215,7 +222,7 @@ pub(crate) fn probed_currents(module: &Module) -> BTreeSet<usize> {
 fn collect_noisy_branches(module: &mut Module) -> Result<BTreeMap<usize, (usize, usize)>, Error> {
     let (mut noisy, mut potential) = (BTreeSet::new(), BTreeSet::new());
     visit_contributions(&module.analog, &mut |statement| {
-        if let Stmt::Contribute {
+        if let Statement::Contribute {
             branch,
             potential: is_potential,
             noise,
@@ -269,13 +276,13 @@ fn noisy_currents(module: &mut Module) -> Result<bool, Error> {
     if rewritten.is_empty() {
         return Ok(false);
     }
-    let negate = |expr: &mut Option<Expr>| {
+    let negate = |expr: &mut Option<Expression>| {
         if let Some(value) = expr.take() {
-            *expr = Some(Expr::Unary("-", Box::new(value)));
+            *expr = Some(Expression::Unary("-", Box::new(value)));
         }
     };
     visit_contributions_mut(&mut module.analog, &mut |statement| {
-        if let Stmt::Contribute {
+        if let Statement::Contribute {
             branch,
             potential: false,
             resistive,
@@ -289,15 +296,15 @@ fn noisy_currents(module: &mut Module) -> Result<bool, Error> {
             negate(reactive);
         }
     });
-    let replacements: BTreeMap<usize, Expr> = rewritten
+    let replacements: BTreeMap<usize, Expression> = rewritten
         .iter()
-        .map(|(&branch, &(node, _))| (branch, Expr::Probe(Probe::Voltage(node, GROUND))))
+        .map(|(&branch, &(node, _))| (branch, Expression::Probe(Probe::Voltage(node, GROUND))))
         .collect();
     apply_replacements(module, &replacements);
     for (&branch, &(node, equation)) in &rewritten {
-        let current = Expr::Probe(Probe::Voltage(node, GROUND));
+        let current = Expression::Probe(Probe::Voltage(node, GROUND));
         for target in [branch, equation] {
-            module.analog.push(Stmt::Contribute {
+            module.analog.push(Statement::Contribute {
                 branch: target,
                 potential: false,
                 resistive: Some(current.clone()),
@@ -312,10 +319,10 @@ fn noisy_currents(module: &mut Module) -> Result<bool, Error> {
 
 /// Applies `replacements` to every current probe across `module`'s analog block and
 /// limited-probe arguments, leaving the replacements themselves untouched.
-fn apply_replacements(module: &mut Module, replacements: &BTreeMap<usize, Expr>) {
-    let mut replace = |expr: &mut Expr| {
+fn apply_replacements(module: &mut Module, replacements: &BTreeMap<usize, Expression>) {
+    let mut replace = |expr: &mut Expression| {
         expr.transform_mut(&mut |inner| {
-            if let Expr::Probe(Probe::Current(branch)) = inner
+            if let Expression::Probe(Probe::Current(branch)) = inner
                 && let Some(current) = replacements.get(branch)
             {
                 *inner = current.clone();
@@ -325,7 +332,7 @@ fn apply_replacements(module: &mut Module, replacements: &BTreeMap<usize, Expr>)
         });
     };
     for statement in &mut module.analog {
-        statement.exprs_mut(&mut replace);
+        statement.expressions_mut(&mut replace);
     }
     for limit in &mut module.limits {
         for argument in &mut limit.arguments {
@@ -338,29 +345,29 @@ fn apply_replacements(module: &mut Module, replacements: &BTreeMap<usize, Expr>)
 /// each variable is last assigned in `last`, and calls `visit` on each expression with
 /// the number of its statement.
 fn order(
-    statements: &[Stmt],
+    statements: &[Statement],
     position: &mut usize,
     last: &mut [usize],
-    visit: &mut impl FnMut(usize, &Expr),
+    visit: &mut impl FnMut(usize, &Expression),
 ) {
     for statement in statements {
         *position += 1;
         let at = *position;
         match statement {
-            Stmt::Assign(variable, value) => {
+            Statement::Assign(variable, value) => {
                 visit(at, value);
                 last[*variable] = at;
             }
-            Stmt::If(_, condition, then, otherwise) => {
+            Statement::If(_, condition, then, otherwise) => {
                 visit(at, condition);
                 order(then, position, last, visit);
                 order(otherwise, position, last, visit);
             }
-            Stmt::While(condition, body) => {
+            Statement::While(condition, body) => {
                 visit(at, condition);
                 order(body, position, last, visit);
             }
-            Stmt::Contribute { .. } | Stmt::Fail(..) | Stmt::Warn(..) => {
+            Statement::Contribute { .. } | Statement::Fail(..) | Statement::Warn(..) => {
                 statement.walk(&mut |expr| visit(at, expr));
             }
         }

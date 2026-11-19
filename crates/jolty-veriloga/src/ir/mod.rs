@@ -108,7 +108,7 @@ impl Builtin {
 
 /// An expression, its names resolved.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Expr {
+pub(crate) enum Expression {
     Real(f64),
     Integer(i32),
     Parameter(usize),
@@ -142,40 +142,40 @@ pub(crate) enum Expr {
 pub(crate) struct Noise {
     pub(crate) name: String,
     /// Its power spectral density at 1 Hz.
-    pub(crate) power: Expr,
+    pub(crate) power: Expression,
     /// For flicker noise, the power of the frequency its density falls with; `None` for
     /// white noise.
-    pub(crate) exponent: Option<Expr>,
+    pub(crate) exponent: Option<Expression>,
 }
 
 /// A statement, its names resolved.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Stmt {
-    Assign(usize, Expr),
+pub(crate) enum Statement {
+    Assign(usize, Expression),
     /// A contribution to a branch: of its flow, or of its potential.
     Contribute {
         branch: usize,
         potential: bool,
-        resistive: Option<Expr>,
+        resistive: Option<Expression>,
         /// The charge or flux whose time derivative it adds.
-        reactive: Option<Expr>,
+        reactive: Option<Expression>,
         /// Expressions factored from outside `ddt(...)` (`k * ddt(x)` folded into
         /// `ddt(k * x)`), each with its source line; verified static after analysis so
         /// reactive contributions stay charge-conserving.
-        reactive_factors: Vec<(Expr, usize)>,
+        reactive_factors: Vec<(Expression, usize)>,
         noise: Vec<Noise>,
     },
     /// A conditional, numbered in the order the analog block holds them, its condition
     /// and its two branches.
-    If(usize, Expr, Vec<Self>, Vec<Self>),
-    While(Expr, Vec<Self>),
+    If(usize, Expression, Vec<Self>, Vec<Self>),
+    While(Expression, Vec<Self>),
     /// `$error` or `$fatal`: preparation fails with the message, its `%g`s the
     /// arguments' values.
-    Fail(String, Vec<Expr>),
+    Fail(String, Vec<Expression>),
     /// `$warning`, `$strobe` and the like: a fact about the instance, as the message
     /// says, its `%g`s the arguments' values; and whether it depends on the probes, so
     /// that the evaluation, not the preparation, finds it.
-    Warn(String, Vec<Expr>, bool),
+    Warn(String, Vec<Expression>, bool),
 }
 
 /// The function that limits a probe's step: an analog function of the module's, by its
@@ -196,13 +196,17 @@ pub(crate) struct Limit {
     pub(crate) plus: usize,
     pub(crate) minus: usize,
     pub(crate) function: Limiter,
-    pub(crate) arguments: Vec<Expr>,
+    pub(crate) arguments: Vec<Expression>,
 }
 
 /// A range of a parameter: whether it excludes its values rather than admitting them,
 /// and its lower and upper bounds, each with whether it is included, `None` for an
 /// infinite one: a constant, or an expression of the parameters.
-pub(crate) type Bounds = (bool, Option<(Expr, bool)>, Option<(Expr, bool)>);
+pub(crate) type Bounds = (
+    bool,
+    Option<(Expression, bool)>,
+    Option<(Expression, bool)>,
+);
 
 /// A non-constant `localparam`, resolved: evaluated once during preparation in
 /// declaration order so its value and parameter derivatives propagate everywhere it is
@@ -214,7 +218,7 @@ pub(crate) struct LocalParameter {
     /// Its name in the source.
     pub(crate) external: String,
     pub(crate) kind: Type,
-    pub(crate) value: Expr,
+    pub(crate) value: Expression,
 }
 
 /// A parameter, resolved.
@@ -227,7 +231,7 @@ pub(crate) struct Parameter {
     pub(crate) kind: Type,
     /// Its default: a constant, or an expression of the parameters before it, which makes
     /// it optional.
-    pub(crate) default: Expr,
+    pub(crate) default: Expression,
     /// Whether it is optional: read as given or not, or defaulting to other parameters.
     pub(crate) optional: bool,
     pub(crate) ranges: Vec<Bounds>,
@@ -257,10 +261,10 @@ pub(crate) struct Function {
     pub(crate) name: String,
     pub(crate) inputs: usize,
     pub(crate) variables: Vec<(String, Type)>,
-    pub(crate) body: Vec<Stmt>,
+    pub(crate) body: Vec<Statement>,
 }
 
-/// A module, resolved and analysed.
+/// A module, resolved and analyzed.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Module {
     pub(crate) name: String,
@@ -282,7 +286,7 @@ pub(crate) struct Module {
     pub(crate) outputs: Vec<usize>,
     pub(crate) functions: Vec<Function>,
     pub(crate) limits: Vec<Limit>,
-    pub(crate) analog: Vec<Stmt>,
+    pub(crate) analog: Vec<Statement>,
     /// Whether each variable is dynamic.
     pub(crate) dynamic: Vec<bool>,
     /// The probes each variable depends on, through its values.
@@ -328,7 +332,7 @@ pub(crate) fn apart(name: &str, taken: impl Fn(&str) -> bool) -> String {
     unique
 }
 
-/// The module `module`, resolved and analysed.
+/// The module `module`, resolved and analyzed.
 ///
 /// # Errors
 ///
@@ -397,9 +401,9 @@ pub(crate) fn resolve(module: &ast::Module) -> Result<Module, Error> {
         dynamic: Vec::new(),
         probes: Vec::new(),
     };
-    analysis::analyse(&mut resolved);
+    analysis::analyze(&mut resolved);
     if currents::flow_currents(&mut resolved)? {
-        analysis::analyse(&mut resolved);
+        analysis::analyze(&mut resolved);
     }
     checks::check_reactive_factors(&resolved)?;
     checks::check_initial_variables(&resolved, &sink.initial, &origins)?;

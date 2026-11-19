@@ -6,15 +6,15 @@ use std::collections::BTreeSet;
 use jolty_models::{BOLTZMANN, ELEMENTARY_CHARGE};
 
 use crate::Error;
-use crate::ast::{self, Expression, Type};
+use crate::ast::{self, Type};
 
 use super::analysis::contributes;
 use super::checks::{check_block_duplicates, check_function_duplicates, node_index};
 use super::ddt::split_contribution;
 use super::fold::{constant, expr_type, fold_const};
 use super::{
-    Branch, Builtin, Expr, Function, GROUND, Limit, Limiter, LocalParameter, Noise, Parameter,
-    Probe, Stmt, apart, identifier,
+    Branch, Builtin, Expression, Function, GROUND, Limit, Limiter, LocalParameter, Noise,
+    Parameter, Probe, Statement, apart, identifier,
 };
 
 /// What a resolved `localparam` evaluates to: either a compile-time constant folded
@@ -44,7 +44,7 @@ pub(super) struct Sink {
     pub(super) variables: Vec<(String, Type)>,
     /// The statements the expression being read needs before it: the bodies of the
     /// analog functions it calls, inlined.
-    prelude: Vec<Stmt>,
+    prelude: Vec<Statement>,
     /// How many calls have been inlined, which numbers their variables.
     calls: usize,
     /// The variables that code under an initial event assigns.
@@ -62,7 +62,7 @@ impl Sink {
     }
 
     /// A new non-constant `localparam` of `kind`, named `name` unless that is taken.
-    fn local_parameter(&mut self, name: &str, kind: Type, value: Expr) -> usize {
+    fn local_parameter(&mut self, name: &str, kind: Type, value: Expression) -> usize {
         let unique = apart(&identifier(name), |taken| {
             self.local_parameters
                 .iter()
@@ -204,7 +204,7 @@ pub(super) fn resolve_declarations<'a>(
     let mut seen_parameters: BTreeSet<usize> = BTreeSet::new();
     let mut module_locals: Vec<(&'a str, LocalValue)> = Vec::new();
     let mut bindings: Vec<(&'a str, Binding)> = Vec::new();
-    let mut resolved_defaults: Vec<Option<Expr>> = vec![None; module.parameters.len()];
+    let mut resolved_defaults: Vec<Option<Expression>> = vec![None; module.parameters.len()];
     let local_names: Vec<&'a str> = module
         .declarations
         .iter()
@@ -261,7 +261,10 @@ pub(super) fn resolve_declarations<'a>(
 
 /// Constant-folds a parameter default expression when it has no runtime dependence,
 /// propagating any integer overflow, divide-by-zero, or non-finite error.
-fn fold_parameter_default(default: &mut Expr, parameter: &ast::Parameter) -> Result<(), Error> {
+fn fold_parameter_default(
+    default: &mut Expression,
+    parameter: &ast::Parameter,
+) -> Result<(), Error> {
     let folded = fold_const(default).map_err(|message| {
         Error::at(
             parameter.line,
@@ -271,10 +274,10 @@ fn fold_parameter_default(default: &mut Expr, parameter: &ast::Parameter) -> Res
     if let Some(folded) = folded {
         if parameter.kind == Type::Integer {
             if let Some(integer) = folded.as_int() {
-                *default = Expr::Integer(integer);
+                *default = Expression::Integer(integer);
             }
         } else {
-            *default = Expr::Real(folded.as_real());
+            *default = Expression::Real(folded.as_real());
         }
     }
     Ok(())
@@ -287,7 +290,7 @@ fn resolve_parameter_ranges<'a>(
     range_bindings: &[(&'a str, Binding)],
     module_locals: &[(&'a str, LocalValue)],
     given: &BTreeSet<String>,
-    resolved_defaults: &mut [Option<Expr>],
+    resolved_defaults: &mut [Option<Expression>],
     sink: &mut Sink,
 ) -> Result<Vec<Parameter>, Error> {
     let module = context.module;
@@ -303,7 +306,7 @@ fn resolve_parameter_ranges<'a>(
         let scope = Scope::constant(context, range_bindings, module_locals, &owner);
         let mut ranges = Vec::new();
         for range in &parameter.ranges {
-            let mut bound = |bound: &Option<(Expression, bool)>| -> Result<_, Error> {
+            let mut bound = |bound: &Option<(ast::Expression, bool)>| -> Result<_, Error> {
                 bound
                     .as_ref()
                     .map(|(value, included)| {
@@ -314,7 +317,7 @@ fn resolve_parameter_ranges<'a>(
                                 format!("{}'s range {message}", parameter.name),
                             )
                         })? {
-                            resolved = Expr::Real(folded.as_real());
+                            resolved = Expression::Real(folded.as_real());
                         }
                         Ok((resolved, *included))
                     })
@@ -567,11 +570,11 @@ fn collect_given_stmt(statement: &ast::Statement, given: &mut BTreeSet<String>) 
     }
 }
 
-fn collect_given_expr(expression: &Expression, given: &mut BTreeSet<String>) {
+fn collect_given_expr(expression: &ast::Expression, given: &mut BTreeSet<String>) {
     match expression {
-        Expression::Call(name, arguments) => {
+        ast::Expression::Call(name, arguments) => {
             if name == "$param_given"
-                && let [Expression::Name(parameter)] = arguments.as_slice()
+                && let [ast::Expression::Name(parameter)] = arguments.as_slice()
             {
                 given.insert(parameter.clone());
             }
@@ -579,12 +582,12 @@ fn collect_given_expr(expression: &Expression, given: &mut BTreeSet<String>) {
                 collect_given_expr(inner, given);
             }
         }
-        Expression::Unary(_, operand) => collect_given_expr(operand, given),
-        Expression::Binary(_, left, right) => {
+        ast::Expression::Unary(_, operand) => collect_given_expr(operand, given),
+        ast::Expression::Binary(_, left, right) => {
             collect_given_expr(left, given);
             collect_given_expr(right, given);
         }
-        Expression::Conditional(condition, then, otherwise) => {
+        ast::Expression::Conditional(condition, then, otherwise) => {
             collect_given_expr(condition, given);
             collect_given_expr(then, given);
             collect_given_expr(otherwise, given);
@@ -602,9 +605,9 @@ impl<'a> Scope<'a> {
         &self,
         statement: &'a ast::Statement,
         sink: &mut Sink,
-    ) -> Result<Vec<Stmt>, Error> {
+    ) -> Result<Vec<Statement>, Error> {
         // The statements an expression's inlined calls need come before the statement.
-        let before = |sink: &mut Sink, statement: Stmt| {
+        let before = |sink: &mut Sink, statement: Statement| {
             let mut resolved = std::mem::take(&mut sink.prelude);
             resolved.push(statement);
             resolved
@@ -656,7 +659,7 @@ impl<'a> Scope<'a> {
                 if self.initial {
                     sink.initial.insert(variable);
                 }
-                before(sink, Stmt::Assign(variable, value))
+                before(sink, Statement::Assign(variable, value))
             }
             ast::Statement::Contribute {
                 nature,
@@ -694,7 +697,7 @@ impl<'a> Scope<'a> {
                     None => Vec::new(),
                 };
                 sink.prelude = prelude;
-                before(sink, Stmt::If(0, condition, then, otherwise))
+                before(sink, Statement::If(0, condition, then, otherwise))
             }
             ast::Statement::While { condition, body } => {
                 let condition = self.expression(condition, 0, sink)?;
@@ -711,7 +714,7 @@ impl<'a> Scope<'a> {
                         "a contribution within a loop is not compiled yet".into(),
                     ));
                 }
-                vec![Stmt::While(condition, body)]
+                vec![Statement::While(condition, body)]
             }
             ast::Statement::Task {
                 name,
@@ -723,20 +726,20 @@ impl<'a> Scope<'a> {
                 if matches!(name.as_str(), "$finish" | "$stop") {
                     return Ok(before(
                         sink,
-                        Stmt::Fail(format!("the model calls {name}"), Vec::new()),
+                        Statement::Fail(format!("the model calls {name}"), Vec::new()),
                     ));
                 }
                 let mut arguments = arguments.iter();
-                let Some(Expression::Text(message)) = arguments.next() else {
+                let Some(ast::Expression::Text(message)) = arguments.next() else {
                     return Err(Error::at(*line, format!("{name} takes a message first")));
                 };
                 let values = arguments
                     .map(|argument| self.expression(argument, *line, sink))
                     .collect::<Result<_, _>>()?;
                 let task = match name.as_str() {
-                    "$error" | "$fatal" => Stmt::Fail(message.clone(), values),
+                    "$error" | "$fatal" => Statement::Fail(message.clone(), values),
                     "$warning" | "$strobe" | "$display" | "$write" | "$debug" => {
-                        Stmt::Warn(message.clone(), values, false)
+                        Statement::Warn(message.clone(), values, false)
                     }
                     _ => return Err(Error::at(*line, format!("{name} is not compiled yet"))),
                 };
@@ -828,10 +831,10 @@ impl<'a> Scope<'a> {
         &self,
         nature: &str,
         operands: &[String],
-        value: &Expression,
+        value: &ast::Expression,
         line: usize,
         sink: &mut Sink,
-    ) -> Result<Stmt, Error> {
+    ) -> Result<Statement, Error> {
         let potential = match nature {
             "V" | "Temp" => true,
             "I" | "Pwr" => false,
@@ -845,17 +848,17 @@ impl<'a> Scope<'a> {
         let branch = self.branch(nature, operands, line, sink)?;
         let (mut resistive, mut reactive, mut reactive_factors, mut noise) =
             (None, None, Vec::new(), Vec::new());
-        let add = |sum: &mut Option<Expr>, negative: bool, term: Expr| {
+        let add = |sum: &mut Option<Expression>, negative: bool, term: Expression| {
             *sum = Some(match (sum.take(), negative) {
                 (None, false) => term,
-                (None, true) => Expr::Unary("-", Box::new(term)),
-                (Some(sum), false) => Expr::Binary("+", Box::new(sum), Box::new(term)),
-                (Some(sum), true) => Expr::Binary("-", Box::new(sum), Box::new(term)),
+                (None, true) => Expression::Unary("-", Box::new(term)),
+                (Some(sum), false) => Expression::Binary("+", Box::new(sum), Box::new(term)),
+                (Some(sum), true) => Expression::Binary("-", Box::new(sum), Box::new(term)),
             });
         };
         for term in split_contribution(value) {
             match term.expression {
-                Expression::Call(name, arguments) if name == "ddt" => {
+                ast::Expression::Call(name, arguments) if name == "ddt" => {
                     let [argument] = arguments.as_slice() else {
                         return Err(Error::at(line, "ddt takes one argument".into()));
                     };
@@ -867,7 +870,7 @@ impl<'a> Scope<'a> {
                     }
                     add(&mut reactive, term.negative, resolved);
                 }
-                Expression::Call(name, arguments)
+                ast::Expression::Call(name, arguments)
                     if term.factors.is_empty()
                         && (name == "white_noise" || name == "flicker_noise") =>
                 {
@@ -889,7 +892,7 @@ impl<'a> Scope<'a> {
                 }
             }
         }
-        Ok(Stmt::Contribute {
+        Ok(Statement::Contribute {
             branch,
             potential,
             resistive,
@@ -903,7 +906,7 @@ impl<'a> Scope<'a> {
     fn noise(
         &self,
         name: &str,
-        arguments: &[Expression],
+        arguments: &[ast::Expression],
         line: usize,
         sink: &mut Sink,
     ) -> Result<Noise, Error> {
@@ -919,7 +922,7 @@ impl<'a> Scope<'a> {
         } else {
             (None, rest)
         };
-        let [Expression::Text(name)] = rest else {
+        let [ast::Expression::Text(name)] = rest else {
             return Err(Error::at(line, "a noise source is named".into()));
         };
         Ok(Noise {
@@ -931,22 +934,24 @@ impl<'a> Scope<'a> {
 
     fn expression(
         &self,
-        expression: &Expression,
+        expression: &ast::Expression,
         line: usize,
         sink: &mut Sink,
-    ) -> Result<Expr, Error> {
-        let mut recurse = |inner: &Expression| self.expression(inner, line, sink);
+    ) -> Result<Expression, Error> {
+        let mut recurse = |inner: &ast::Expression| self.expression(inner, line, sink);
         Ok(match expression {
-            Expression::Real(value) => Expr::Real(*value),
-            Expression::Integer(value) => Expr::Integer(
+            ast::Expression::Real(value) => Expression::Real(*value),
+            ast::Expression::Integer(value) => Expression::Integer(
                 i32::try_from(*value)
                     .map_err(|_| Error::at(line, format!("{value} exceeds an integer")))?,
             ),
-            Expression::Text(_) => return Err(Error::at(line, "a string is not a number".into())),
-            Expression::Unary(operator, operand) => {
-                Expr::Unary(operator, Box::new(recurse(operand)?))
+            ast::Expression::Text(_) => {
+                return Err(Error::at(line, "a string is not a number".into()));
             }
-            Expression::Binary(operator, left, right) => {
+            ast::Expression::Unary(operator, operand) => {
+                Expression::Unary(operator, Box::new(recurse(operand)?))
+            }
+            ast::Expression::Binary(operator, left, right) => {
                 let left = recurse(left)?;
                 let right = recurse(right)?;
                 if matches!(*operator, "%" | "**" | "&" | "|" | "^") {
@@ -955,15 +960,15 @@ impl<'a> Scope<'a> {
                         format!("the operator {operator} is not compiled yet"),
                     ));
                 }
-                Expr::Binary(operator, Box::new(left), Box::new(right))
+                Expression::Binary(operator, Box::new(left), Box::new(right))
             }
-            Expression::Conditional(condition, then, otherwise) => Expr::Conditional(
+            ast::Expression::Conditional(condition, then, otherwise) => Expression::Conditional(
                 Box::new(recurse(condition)?),
                 Box::new(recurse(then)?),
                 Box::new(recurse(otherwise)?),
             ),
-            Expression::Name(name) => return self.resolve_name(name, line, sink),
-            Expression::Call(name, arguments) => return self.call(name, arguments, line, sink),
+            ast::Expression::Name(name) => return self.resolve_name(name, line, sink),
+            ast::Expression::Call(name, arguments) => return self.call(name, arguments, line, sink),
         })
     }
 
@@ -983,7 +988,7 @@ impl<'a> Scope<'a> {
 
     /// Resolves an identifier `name` against the lexical scope, module parameters, and
     /// constant-context diagnostics.
-    fn resolve_name(&self, name: &str, line: usize, sink: &Sink) -> Result<Expr, Error> {
+    fn resolve_name(&self, name: &str, line: usize, sink: &Sink) -> Result<Expression, Error> {
         if let Some(owner) = self.constant_owner
             && self.later_locals.contains(&name)
         {
@@ -1014,12 +1019,14 @@ impl<'a> Scope<'a> {
                             ),
                         ));
                     }
-                    Ok(Expr::Variable(variable))
+                    Ok(Expression::Variable(variable))
                 }
-                Binding::LocalParameter(LocalValue::Real(value)) => Ok(Expr::Real(value)),
-                Binding::LocalParameter(LocalValue::Integer(value)) => Ok(Expr::Integer(value)),
+                Binding::LocalParameter(LocalValue::Real(value)) => Ok(Expression::Real(value)),
+                Binding::LocalParameter(LocalValue::Integer(value)) => {
+                    Ok(Expression::Integer(value))
+                }
                 Binding::LocalParameter(LocalValue::Prepared(index)) => {
-                    Ok(Expr::LocalParameter(index))
+                    Ok(Expression::LocalParameter(index))
                 }
             };
         }
@@ -1031,7 +1038,7 @@ impl<'a> Scope<'a> {
             .position(|parameter| parameter.name == name)
         {
             self.check_parameter_visible(parameter, name, line)?;
-            return Ok(Expr::Parameter(parameter));
+            return Ok(Expression::Parameter(parameter));
         }
         if let Some(owner) = self.constant_owner
             && self
@@ -1053,33 +1060,33 @@ impl<'a> Scope<'a> {
     fn access(
         &self,
         nature: &str,
-        arguments: &[Expression],
+        arguments: &[ast::Expression],
         line: usize,
         sink: &mut Sink,
-    ) -> Result<Expr, Error> {
+    ) -> Result<Expression, Error> {
         let operands = arguments
             .iter()
             .map(|argument| match argument {
-                Expression::Name(name) => Ok(name.clone()),
+                ast::Expression::Name(name) => Ok(name.clone()),
                 _ => Err(Error::at(line, "an access takes names".into())),
             })
             .collect::<Result<Vec<_>, _>>()?;
         let branch = self.branch(nature, &operands, line, sink)?;
         if matches!(nature, "V" | "Temp") {
             let Branch { plus, minus, .. } = sink.branches[branch];
-            Ok(Expr::Probe(Probe::Voltage(plus, minus)))
+            Ok(Expression::Probe(Probe::Voltage(plus, minus)))
         } else {
-            Ok(Expr::Probe(Probe::Current(branch)))
+            Ok(Expression::Probe(Probe::Current(branch)))
         }
     }
 
     fn call(
         &self,
         name: &str,
-        arguments: &[Expression],
+        arguments: &[ast::Expression],
         line: usize,
         sink: &mut Sink,
-    ) -> Result<Expr, Error> {
+    ) -> Result<Expression, Error> {
         if let Some(builtin) = Builtin::named(name) {
             let arity = builtin.arity();
             if arguments.len() != arity {
@@ -1089,7 +1096,7 @@ impl<'a> Scope<'a> {
                 .iter()
                 .map(|argument| self.expression(argument, line, sink))
                 .collect::<Result<_, _>>()?;
-            return Ok(Expr::Call(builtin, arguments));
+            return Ok(Expression::Call(builtin, arguments));
         }
         if let Some(function) = self
             .context
@@ -1122,28 +1129,31 @@ impl<'a> Scope<'a> {
             )),
             "V" | "I" | "Temp" | "Pwr" if self.probes => self.access(name, arguments, line, sink),
             "ddx" if self.probes => self.resolve_ddx(arguments, line, sink),
-            "$temperature" if arguments.is_empty() => Ok(Expr::Temperature),
+            "$temperature" if arguments.is_empty() => Ok(Expression::Temperature),
             // jolty's circuits place each instance once: none has a multiplicity but 1.
-            "$mfactor" if arguments.is_empty() => Ok(Expr::Real(1.0)),
+            "$mfactor" if arguments.is_empty() => Ok(Expression::Real(1.0)),
             // A jolty instance connects each of its terminals.
             "$port_connected" => match arguments {
-                [Expression::Name(port)] if self.context.module.ports.contains(port) => {
-                    Ok(Expr::Integer(1))
+                [ast::Expression::Name(port)] if self.context.module.ports.contains(port) => {
+                    Ok(Expression::Integer(1))
                 }
                 _ => Err(Error::at(line, "$port_connected takes a port".into())),
             },
             "$vt" => {
                 let temperature = match arguments {
-                    [] => Expr::Temperature,
+                    [] => Expression::Temperature,
                     [temperature] => self.expression(temperature, line, sink)?,
                     _ => return Err(Error::at(line, "$vt takes at most a temperature".into())),
                 };
-                let product =
-                    Expr::Binary("*", Box::new(temperature), Box::new(Expr::Real(BOLTZMANN)));
-                Ok(Expr::Binary(
+                let product = Expression::Binary(
+                    "*",
+                    Box::new(temperature),
+                    Box::new(Expression::Real(BOLTZMANN)),
+                );
+                Ok(Expression::Binary(
                     "/",
                     Box::new(product),
-                    Box::new(Expr::Real(ELEMENTARY_CHARGE)),
+                    Box::new(Expression::Real(ELEMENTARY_CHARGE)),
                 ))
             }
             "$param_given" => self.resolve_param_given(arguments, line),
@@ -1155,17 +1165,17 @@ impl<'a> Scope<'a> {
 
     fn resolve_ddx(
         &self,
-        arguments: &[Expression],
+        arguments: &[ast::Expression],
         line: usize,
         sink: &mut Sink,
-    ) -> Result<Expr, Error> {
-        let [operand, Expression::Call(nature, node)] = arguments else {
+    ) -> Result<Expression, Error> {
+        let [operand, ast::Expression::Call(nature, node)] = arguments else {
             return Err(Error::at(
                 line,
                 "ddx takes a value and a node's potential".into(),
             ));
         };
-        let (true, [Expression::Name(node)]) =
+        let (true, [ast::Expression::Name(node)]) =
             (matches!(nature.as_str(), "V" | "Temp"), node.as_slice())
         else {
             return Err(Error::at(
@@ -1174,15 +1184,19 @@ impl<'a> Scope<'a> {
             ));
         };
         let operand = self.expression(operand, line, sink)?;
-        Ok(Expr::Ddx(
+        Ok(Expression::Ddx(
             Box::new(operand),
             node_index(self.context.nodes, node, line)?,
         ))
     }
 
-    fn resolve_param_given(&self, arguments: &[Expression], line: usize) -> Result<Expr, Error> {
+    fn resolve_param_given(
+        &self,
+        arguments: &[ast::Expression],
+        line: usize,
+    ) -> Result<Expression, Error> {
         match arguments {
-            [Expression::Name(parameter)] => {
+            [ast::Expression::Name(parameter)] => {
                 let index = self
                     .context
                     .module
@@ -1191,7 +1205,7 @@ impl<'a> Scope<'a> {
                     .position(|declared| declared.name == *parameter)
                     .ok_or_else(|| Error::at(line, format!("{parameter} is not a parameter")))?;
                 self.check_parameter_visible(index, parameter, line)?;
-                Ok(Expr::Given(index))
+                Ok(Expression::Given(index))
             }
             _ => Err(Error::at(line, "$param_given takes one parameter".into())),
         }
@@ -1199,27 +1213,27 @@ impl<'a> Scope<'a> {
 
     fn resolve_simparam(
         &self,
-        arguments: &[Expression],
+        arguments: &[ast::Expression],
         line: usize,
         sink: &mut Sink,
-    ) -> Result<Expr, Error> {
+    ) -> Result<Expression, Error> {
         match arguments {
-            [Expression::Text(simparam), ..] if simparam == "gmin" => {
+            [ast::Expression::Text(simparam), ..] if simparam == "gmin" => {
                 if let Some(owner) = self.constant_owner {
                     return Err(Error::at(
                         line,
                         format!("{owner} reads $simparam(\"gmin\"), which is not a constant"),
                     ));
                 }
-                Ok(Expr::Gmin)
+                Ok(Expression::Gmin)
             }
-            [Expression::Text(simparam), ..] if simparam == "small_resistance" => {
-                Ok(Expr::SmallResistance)
+            [ast::Expression::Text(simparam), ..] if simparam == "small_resistance" => {
+                Ok(Expression::SmallResistance)
             }
             // A name the simulator does not define reads as the default given, as the
             // standard has it; jolty defines no other.
-            [Expression::Text(_), default] => self.expression(default, line, sink),
-            [Expression::Text(simparam)] => Err(Error::at(
+            [ast::Expression::Text(_), default] => self.expression(default, line, sink),
+            [ast::Expression::Text(simparam)] => Err(Error::at(
                 line,
                 format!("jolty defines no $simparam {simparam:?}"),
             )),
@@ -1229,15 +1243,21 @@ impl<'a> Scope<'a> {
 
     /// `$limit(arguments)`: a voltage limited from its last evaluation's, by an analog
     /// function of the module's or one of the simulator's, named as a string.
-    fn limit(&self, arguments: &[Expression], line: usize, sink: &mut Sink) -> Result<Expr, Error> {
+    fn limit(
+        &self,
+        arguments: &[ast::Expression],
+        line: usize,
+        sink: &mut Sink,
+    ) -> Result<Expression, Error> {
         let (access, rest) = arguments
             .split_first()
             .ok_or_else(|| Error::at(line, "$limit takes a probe".into()))?;
-        let Expr::Probe(Probe::Voltage(plus, minus)) = self.expression(access, line, sink)? else {
+        let Expression::Probe(Probe::Voltage(plus, minus)) = self.expression(access, line, sink)?
+        else {
             return Err(Error::at(line, "$limit limits a voltage".into()));
         };
         let (function, rest) = match rest.split_first() {
-            Some((Expression::Text(name), rest)) => match name.as_str() {
+            Some((ast::Expression::Text(name), rest)) => match name.as_str() {
                 "pnjlim" => (Limiter::Junction, rest),
                 "fetlim" => (Limiter::Gate, rest),
                 _ => {
@@ -1247,7 +1267,7 @@ impl<'a> Scope<'a> {
                     ));
                 }
             },
-            Some((Expression::Name(name), rest)) => {
+            Some((ast::Expression::Name(name), rest)) => {
                 let function = self
                     .context
                     .module
@@ -1280,7 +1300,7 @@ impl<'a> Scope<'a> {
             function,
             arguments,
         });
-        Ok(Expr::Probe(Probe::Limited(sink.limits.len() - 1)))
+        Ok(Expression::Probe(Probe::Limited(sink.limits.len() - 1)))
     }
 
     /// A call of the analog function `function` with `arguments`, inlined: its inputs
@@ -1289,10 +1309,10 @@ impl<'a> Scope<'a> {
     fn inline(
         &self,
         function: &'a ast::Function,
-        arguments: &[Expression],
+        arguments: &[ast::Expression],
         line: usize,
         sink: &mut Sink,
-    ) -> Result<Expr, Error> {
+    ) -> Result<Expression, Error> {
         if arguments.len() != function.inputs.len() {
             return Err(Error::at(
                 line,
@@ -1324,7 +1344,10 @@ impl<'a> Scope<'a> {
         )?;
         let mut inputs = Vec::new();
         for (argument, index) in arguments.iter().zip(input_indices) {
-            inputs.push(Stmt::Assign(index, self.expression(argument, line, sink)?));
+            inputs.push(Statement::Assign(
+                index,
+                self.expression(argument, line, sink)?,
+            ));
         }
         let scope = Scope::block(self.context, &bindings, self.module_locals, false);
         let outer = std::mem::take(&mut sink.prelude);
@@ -1333,6 +1356,6 @@ impl<'a> Scope<'a> {
         sink.prelude.extend(inputs);
         sink.prelude.extend(body);
         let result = scope.variable(&function.name, line)?;
-        Ok(Expr::Variable(result))
+        Ok(Expression::Variable(result))
     }
 }

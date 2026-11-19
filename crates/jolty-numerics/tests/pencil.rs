@@ -70,7 +70,7 @@ fn a_pencil_faer_did_not_converge_on_agrees_with_lapack() {
 }
 
 /// A real orthogonal matrix of `n` rows, column-major: the product of plane rotations by
-/// `angles`, each turning a pair of neighbouring rows, cycling through them.
+/// `angles`, each turning a pair of neighboring rows, cycling through them.
 fn orthogonal(n: usize, angles: &[f64]) -> Vec<f64> {
     let mut matrix = vec![0.0; n * n];
     for index in 0..n {

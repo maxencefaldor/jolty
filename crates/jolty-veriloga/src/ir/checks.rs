@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use crate::Error;
 use crate::ast::{self, Type};
 
-use super::{Branch, Module, Stmt, apart, identifier};
+use super::{Branch, Module, Statement, apart, identifier};
 
 /// Rejects duplicate `localparam` names in `local_parameters` and any name for which
 /// `collision` returns a conflict phrase.
@@ -174,9 +174,9 @@ pub(super) fn check_initial_variables(
 /// into `ddt(k * x)`) is static, so every reactive contribution conserves charge or flux.
 pub(super) fn check_reactive_factors(module: &Module) -> Result<(), Error> {
     let mut failure = None;
-    Stmt::visit_stmts(&module.analog, &mut |statement| {
+    Statement::visit_stmts(&module.analog, &mut |statement| {
         if failure.is_none()
-            && let Stmt::Contribute {
+            && let Statement::Contribute {
                 reactive_factors, ..
             } = statement
             && let Some((_, line)) = reactive_factors

@@ -601,11 +601,11 @@ impl Condensation {
                 });
             }
         }
-        Self::of(full, &taken)
+        Self::from_taken(full, &taken)
     }
 
     /// The condensation of `full`'s matrices that eliminates each step of `taken` in order.
-    fn of(full: Arc<Pattern>, taken: &[Step]) -> Self {
+    fn from_taken(full: Arc<Pattern>, taken: &[Step]) -> Self {
         let numbering = Numbering::new(full.dimension(), taken);
         let Layout {
             builder,
@@ -767,16 +767,16 @@ impl Condensation {
     }
 
     /// Writes into `into`, of [`Condensation::solved`] values, the right-hand side of the
-    /// kept unknowns' system of the full system whose right-hand side is `rhs`, one value per
-    /// kept unknown, as the eliminations make it of `b`, and after them what each
-    /// elimination left of its pivot's row's value; or, when `transposed`, the right-hand
+    /// kept unknowns' system of the full system whose right-hand side is `right_hand_side`,
+    /// one value per kept unknown, as the eliminations make it of `b`, and after them what
+    /// each elimination left of its pivot's row's value; or, when `transposed`, the right-hand
     /// side of the transposed kept system, each pivot's row `r` taking each other column
     /// `c` of the row's `A_rc/p` times its unknown's value, and after them what each left of
     /// its unknown's.
     pub(super) fn reduce<T: Scalar>(
         &self,
         saved: &Saved<T>,
-        (rhs, transposed): (&[T], bool),
+        (right_hand_side, transposed): (&[T], bool),
         into: &mut [T],
     ) {
         let count = self.unknowns.len();
@@ -786,7 +786,7 @@ impl Condensation {
             &self.rows
         };
         for (into, &index) in into.iter_mut().zip(kept_indices) {
-            *into = rhs[index];
+            *into = right_hand_side[index];
         }
         // The value each elimination takes, of its unknown or of its pivot's row: kept after
         // the kept unknowns' where an elimination before it changes it, and else the
@@ -804,13 +804,13 @@ impl Condensation {
             &self.shared.0
         };
         for &index in shared {
-            into[count + index] = rhs[taken(&self.eliminated[index]).0];
+            into[count + index] = right_hand_side[taken(&self.eliminated[index]).0];
         }
         let ranges = self.eliminated.iter().zip(&saved.pivots).enumerate();
         for (index, (eliminated, &pivot)) in ranges {
             let value = match taken(eliminated) {
                 (_, true) => into[count + index],
-                (row, false) => rhs[row],
+                (row, false) => right_hand_side[row],
             };
             if transposed {
                 let range = eliminated.entries();
@@ -828,16 +828,16 @@ impl Condensation {
         }
     }
 
-    /// Writes into `rhs` the solution of the full system from `solved`, the kept unknowns'
-    /// solution and what `reduce` kept beyond it, each eliminated unknown recovered from its
-    /// pivot's row, the last first: `(b_r − Σ A_rc x_c)/p`, or, when `transposed`,
-    /// `b_e/p − Σ (A_ke/p) x_k` for the row `r` of the pivot, where `b` is still `rhs`'s
-    /// value for a row or an unknown `reduce` kept nothing of.
+    /// Writes into `right_hand_side` the solution of the full system from `solved`, the kept
+    /// unknowns' solution and what `reduce` kept beyond it, each eliminated unknown recovered
+    /// from its pivot's row, the last first: `(b_r − Σ A_rc x_c)/p`, or, when `transposed`,
+    /// `b_e/p − Σ (A_ke/p) x_k` for the row `r` of the pivot, where `b` is still
+    /// `right_hand_side`'s value for a row or an unknown `reduce` kept nothing of.
     pub(super) fn expand<T: Scalar>(
         &self,
         saved: &Saved<T>,
         (solved, transposed): (&mut [T], bool),
-        rhs: &mut [T],
+        right_hand_side: &mut [T],
     ) {
         let count = self.unknowns.len();
         let ranges = self.eliminated.iter().zip(&saved.pivots).enumerate().rev();
@@ -853,7 +853,7 @@ impl Condensation {
             let given = if reduced {
                 solved[count + index]
             } else {
-                rhs[taken]
+                right_hand_side[taken]
             };
             let value = if transposed {
                 let range = eliminated.column();
@@ -878,7 +878,7 @@ impl Condensation {
             if read {
                 solved[count + index] = value;
             }
-            rhs[recovered] = value;
+            right_hand_side[recovered] = value;
         }
         let kept_indices = if transposed {
             &self.rows
@@ -886,7 +886,7 @@ impl Condensation {
             &self.unknowns
         };
         for (&index, &value) in kept_indices.iter().zip(&solved[..count]) {
-            rhs[index] = value;
+            right_hand_side[index] = value;
         }
     }
 }
@@ -915,7 +915,7 @@ mod tests {
     }
 
     #[test]
-    fn eliminates_an_unknown_into_the_fill_of_its_neighbours() {
+    fn eliminates_an_unknown_into_the_fill_of_its_neighbors() {
         // Unknown 2 joins 0 and 1, which share no entry: eliminating it fills (0, 1) and
         // (1, 0).
         let full = pattern(3, &[(0, 0), (1, 1), (2, 2), (0, 2), (2, 1)]);
@@ -1051,8 +1051,8 @@ mod tests {
 
         let mut direct_lu = SparseLu::new(direct_ordering);
         let mut condensed_lu = SparseLu::new(condensed_ordering);
-        let rhs = [1.0, -2.0, 3.0, -4.0];
-        let (mut direct_x, mut condensed_x) = (rhs, rhs);
+        let right_hand_side = [1.0, -2.0, 3.0, -4.0];
+        let (mut direct_x, mut condensed_x) = (right_hand_side, right_hand_side);
         direct_lu
             .factor(&real_values)
             .and_then(|mut f| f.solve(&mut direct_x))
@@ -1064,7 +1064,7 @@ mod tests {
         for (a, b) in direct_x.iter().zip(&condensed_x) {
             assert!((a - b).abs() < 1e-14, "{direct_x:?} vs {condensed_x:?}");
         }
-        let (mut direct_t, mut condensed_t) = (rhs, rhs);
+        let (mut direct_t, mut condensed_t) = (right_hand_side, right_hand_side);
         direct_lu
             .factor(&real_values)
             .and_then(|mut f| f.solve_transpose(&mut direct_t))

@@ -15,7 +15,7 @@
 //!
 //! let circuit = Circuit::from_json(r#"{
 //!     "format": "jolty-circuit",
-//!     "version": 4,
+//!     "version": 5,
 //!     "top": "divider",
 //!     "components": {
 //!         "divider": {
@@ -55,7 +55,7 @@ pub use validate::{Problem, Problems};
 pub const FORMAT: &str = "jolty-circuit";
 
 /// The version of the circuit format this crate reads and writes.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 /// The parameters of a device instance, by name, as JSON values in SI base units.
 pub type Parameters = serde_json::Map<String, serde_json::Value>;
@@ -103,7 +103,7 @@ pub enum Role {
     Output,
     /// A supply rail.
     Supply,
-    /// The ground. At the top of a circuit, the ground port's net is the reference node.
+    /// The ground. At the top of a circuit, the ground port's net is the circuit's ground.
     Ground,
 }
 
@@ -395,7 +395,7 @@ mod tests {
 
     fn divider() -> &'static str {
         r#"{
-            "format": "jolty-circuit", "version": 4, "top": "divider",
+            "format": "jolty-circuit", "version": 5, "top": "divider",
             "components": {"divider": {
                 "ports": [{"name": "ground", "role": "ground"}],
                 "instances": [
@@ -435,7 +435,7 @@ mod tests {
     }
 
     /// Python writes each number as the shortest text that reads back as it, and the
-    /// engine must read that number, not a neighbour: without `serde_json`'s
+    /// engine must read that number, not a neighbor: without `serde_json`'s
     /// `float_roundtrip`, 981.4902141434463 reads as 981.4902141434465, as about one number
     /// in five reads an ulp off.
     #[test]
@@ -464,7 +464,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fields() {
-        let text = divider().replace(r#""role": "ground""#, r#""role": "ground", "colour": 1"#);
+        let text = divider().replace(r#""role": "ground""#, r#""role": "ground", "color": 1"#);
         assert!(matches!(Circuit::from_json(&text), Err(ReadError::Json(_))));
     }
 

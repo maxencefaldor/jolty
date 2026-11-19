@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 
 use crate::ast::Type;
 
-use super::{Expr, GROUND, Module, Probe, Stmt, apart};
+use super::{Expression, GROUND, Module, Probe, Statement, apart};
 
-impl Expr {
+impl Expression {
     /// Short-circuiting pre-order traversal over `self` and its subexpressions.
     fn any_mut(&self, stop: &mut impl FnMut(&Self) -> bool) -> bool {
         if stop(self) {
@@ -64,7 +64,7 @@ impl Expr {
     }
 }
 
-impl Stmt {
+impl Statement {
     /// Short-circuiting pre-order traversal over `self` and all nested statements.
     fn any_mut(&self, stop: &mut impl FnMut(&Self) -> bool) -> bool {
         if stop(self) {
@@ -139,7 +139,7 @@ impl Stmt {
 
     /// Calls `visit` on each expression `self` reads, and on those of the statements
     /// within it, each to change (including `reactive_factors` and `noise.exponent`).
-    pub(super) fn exprs_mut(&mut self, visit: &mut impl FnMut(&mut Expr)) {
+    pub(super) fn expressions_mut(&mut self, visit: &mut impl FnMut(&mut Expression)) {
         self.visit_mut(&mut |statement| match statement {
             Self::Assign(_, value) | Self::If(_, value, ..) | Self::While(value, _) => visit(value),
             Self::Contribute {
@@ -172,7 +172,7 @@ impl Stmt {
 
     /// Calls `visit` on each expression `self` reads, and on those of the statements
     /// within it (including `reactive_factors` and `noise.exponent`).
-    pub(crate) fn walk(&self, visit: &mut impl FnMut(&Expr)) {
+    pub(crate) fn walk(&self, visit: &mut impl FnMut(&Expression)) {
         self.visit(&mut |statement| match statement {
             Self::Assign(_, value) | Self::If(_, value, ..) | Self::While(value, _) => visit(value),
             Self::Contribute {
@@ -203,26 +203,29 @@ impl Stmt {
 }
 
 /// Calls `visit` on each contribution of `statements`.
-pub(crate) fn visit_contributions(statements: &[Stmt], visit: &mut impl FnMut(&Stmt)) {
-    Stmt::visit_stmts(statements, &mut |statement| {
-        if matches!(statement, Stmt::Contribute { .. }) {
+pub(crate) fn visit_contributions(statements: &[Statement], visit: &mut impl FnMut(&Statement)) {
+    Statement::visit_stmts(statements, &mut |statement| {
+        if matches!(statement, Statement::Contribute { .. }) {
             visit(statement);
         }
     });
 }
 
 /// Calls `visit` on each contribution of `statements`, to change it.
-pub(super) fn visit_contributions_mut(statements: &mut [Stmt], visit: &mut impl FnMut(&mut Stmt)) {
-    Stmt::visit_stmts_mut(statements, &mut |statement| {
-        if matches!(statement, Stmt::Contribute { .. }) {
+pub(super) fn visit_contributions_mut(
+    statements: &mut [Statement],
+    visit: &mut impl FnMut(&mut Statement),
+) {
+    Statement::visit_stmts_mut(statements, &mut |statement| {
+        if matches!(statement, Statement::Contribute { .. }) {
             visit(statement);
         }
     });
 }
 
 /// Whether `statement` contributes to a branch, or holds a statement that does.
-pub(crate) fn contributes(statement: &Stmt) -> bool {
-    statement.any(&|inner| matches!(inner, Stmt::Contribute { .. }))
+pub(crate) fn contributes(statement: &Statement) -> bool {
+    statement.any(&|inner| matches!(inner, Statement::Contribute { .. }))
 }
 
 /// Gives each variable that `statements`, the analog block, assigns again where every
@@ -231,14 +234,14 @@ pub(crate) fn contributes(statement: &Stmt) -> bool {
 /// versions to `variables`, and returns the last version of each variable and the
 /// variable each version is of.
 pub(super) fn version(
-    statements: &mut [Stmt],
+    statements: &mut [Statement],
     variables: &mut Vec<(String, Type)>,
 ) -> (Vec<usize>, Vec<usize>) {
     let mut current: Vec<usize> = (0..variables.len()).collect();
     let mut origins = current.clone();
     let mut assigned = vec![false; variables.len()];
     for statement in statements {
-        if let Stmt::Assign(variable, value) = statement {
+        if let Statement::Assign(variable, value) = statement {
             rename_reads(value, &current);
             let original = *variable;
             if assigned[original] {
@@ -253,7 +256,7 @@ pub(super) fn version(
             assigned[original] = true;
             *variable = current[original];
         } else {
-            statement.exprs_mut(&mut |expr| rename_reads(expr, &current));
+            statement.expressions_mut(&mut |expr| rename_reads(expr, &current));
             statement.targets_mut(&mut |target| {
                 assigned[*target] = true;
                 *target = current[*target];
@@ -269,9 +272,9 @@ pub(super) fn version(
 }
 
 /// `expr` reading each variable's version in `current`.
-fn rename_reads(expr: &mut Expr, current: &[usize]) {
+fn rename_reads(expr: &mut Expression, current: &[usize]) {
     expr.transform_mut(&mut |inner| {
-        if let Expr::Variable(variable) = inner {
+        if let Expression::Variable(variable) = inner {
             if let Some(&version) = current.get(*variable) {
                 *variable = version;
             }
@@ -282,9 +285,9 @@ fn rename_reads(expr: &mut Expr, current: &[usize]) {
 }
 
 /// Numbers each conditional of `statements`, from `next` on, in the order they hold them.
-pub(super) fn number(statements: &mut [Stmt], next: &mut usize) {
-    Stmt::visit_stmts_mut(statements, &mut |statement| {
-        if let Stmt::If(id, ..) = statement {
+pub(super) fn number(statements: &mut [Statement], next: &mut usize) {
+    Statement::visit_stmts_mut(statements, &mut |statement| {
+        if let Statement::If(id, ..) = statement {
             *id = *next;
             *next += 1;
         }
@@ -299,28 +302,28 @@ pub(super) fn mark_dynamic_warnings(module: &mut Module) {
     module.analog = analog;
 }
 
-fn mark_warnings_in(module: &Module, statements: &mut [Stmt], dynamic: bool) {
+fn mark_warnings_in(module: &Module, statements: &mut [Statement], dynamic: bool) {
     for statement in statements {
         match statement {
-            Stmt::Warn(_, arguments, depends) => {
+            Statement::Warn(_, arguments, depends) => {
                 *depends = dynamic || arguments.iter().any(|argument| module.is_dynamic(argument));
             }
-            Stmt::If(_, condition, then, otherwise) => {
+            Statement::If(_, condition, then, otherwise) => {
                 let inner = dynamic || module.is_dynamic(condition);
                 mark_warnings_in(module, then, inner);
                 mark_warnings_in(module, otherwise, inner);
             }
-            Stmt::While(condition, body) => {
+            Statement::While(condition, body) => {
                 let inner = dynamic || module.is_dynamic(condition);
                 mark_warnings_in(module, body, inner);
             }
-            Stmt::Assign(..) | Stmt::Contribute { .. } | Stmt::Fail(..) => {}
+            Statement::Assign(..) | Statement::Contribute { .. } | Statement::Fail(..) => {}
         }
     }
 }
 
 /// Finds which variables are dynamic, and the probes each depends on.
-pub(super) fn analyse(module: &mut Module) {
+pub(super) fn analyze(module: &mut Module) {
     let count = module.variables.len();
     module.dynamic = vec![false; count];
     module.probes = vec![BTreeSet::new(); count];
@@ -355,37 +358,42 @@ impl Module {
     }
 
     /// Whether `expr` is dynamic.
-    pub(crate) fn is_dynamic(&self, expr: &Expr) -> bool {
+    pub(crate) fn is_dynamic(&self, expr: &Expression) -> bool {
         expr.any(&|inner| match inner {
-            Expr::Probe(_) | Expr::Gmin | Expr::Ddx(..) | Expr::Shape(_) => true,
-            Expr::Variable(variable) => self.dynamic[*variable],
+            Expression::Probe(_)
+            | Expression::Gmin
+            | Expression::Ddx(..)
+            | Expression::Shape(_) => true,
+            Expression::Variable(variable) => self.dynamic[*variable],
             _ => false,
         })
     }
 
     /// The probes `expr` depends on through its value.
-    pub(crate) fn probes_of(&self, expr: &Expr) -> BTreeSet<Probe> {
+    pub(crate) fn probes_of(&self, expr: &Expression) -> BTreeSet<Probe> {
         let mut probes = BTreeSet::new();
         self.collect_probes(expr, &mut probes);
         probes
     }
 
-    fn collect_probes(&self, expr: &Expr, probes: &mut BTreeSet<Probe>) {
+    fn collect_probes(&self, expr: &Expression, probes: &mut BTreeSet<Probe>) {
         match expr {
-            Expr::Probe(probe) => {
+            Expression::Probe(probe) => {
                 probes.insert(*probe);
             }
-            Expr::Variable(variable) => probes.extend(self.probes[*variable].iter().copied()),
-            Expr::Conditional(_, then, otherwise) => {
+            Expression::Variable(variable) => {
+                probes.extend(self.probes[*variable].iter().copied());
+            }
+            Expression::Conditional(_, then, otherwise) => {
                 self.collect_probes(then, probes);
                 self.collect_probes(otherwise, probes);
             }
-            Expr::Unary("-" | "+", operand) => self.collect_probes(operand, probes),
-            Expr::Binary("+" | "-" | "*" | "/", left, right) => {
+            Expression::Unary("-" | "+", operand) => self.collect_probes(operand, probes),
+            Expression::Binary("+" | "-" | "*" | "/", left, right) => {
                 self.collect_probes(left, probes);
                 self.collect_probes(right, probes);
             }
-            Expr::Call(_, arguments) => {
+            Expression::Call(_, arguments) => {
                 for argument in arguments {
                     self.collect_probes(argument, probes);
                 }
@@ -398,10 +406,10 @@ impl Module {
 
 /// Propagates dependence through `statements`, under a condition that is dynamic when
 /// `control` is.
-fn flow(module: &mut Module, statements: &[Stmt], control: bool) {
+fn flow(module: &mut Module, statements: &[Statement], control: bool) {
     for statement in statements {
         match statement {
-            Stmt::Assign(variable, value) => {
+            Statement::Assign(variable, value) => {
                 if control || module.is_dynamic(value) {
                     module.dynamic[*variable] = true;
                 }
@@ -410,16 +418,16 @@ fn flow(module: &mut Module, statements: &[Stmt], control: bool) {
                     module.probes[*variable].extend(probes);
                 }
             }
-            Stmt::If(_, condition, then, otherwise) => {
+            Statement::If(_, condition, then, otherwise) => {
                 let control = control || module.is_dynamic(condition);
                 flow(module, then, control);
                 flow(module, otherwise, control);
             }
-            Stmt::While(condition, body) => {
+            Statement::While(condition, body) => {
                 let control = control || module.is_dynamic(condition);
                 flow(module, body, control);
             }
-            Stmt::Contribute { .. } | Stmt::Fail(..) | Stmt::Warn(..) => {}
+            Statement::Contribute { .. } | Statement::Fail(..) | Statement::Warn(..) => {}
         }
     }
 }
@@ -427,10 +435,15 @@ fn flow(module: &mut Module, statements: &[Stmt], control: bool) {
 /// Marks dynamic each static variable assigned after dynamic code read it, `read` holding
 /// those read so far; within a loop, the body runs twice, as a second iteration reads
 /// what the first assigned.
-fn reassigned(module: &mut Module, statements: &[Stmt], dynamic: bool, read: &mut BTreeSet<usize>) {
-    let reads = |module: &Module, expr: &Expr, read: &mut BTreeSet<usize>| {
+fn reassigned(
+    module: &mut Module,
+    statements: &[Statement],
+    dynamic: bool,
+    read: &mut BTreeSet<usize>,
+) {
+    let reads = |module: &Module, expr: &Expression, read: &mut BTreeSet<usize>| {
         expr.walk(&mut |inner| {
-            if let Expr::Variable(variable) = inner
+            if let Expression::Variable(variable) = inner
                 && !module.dynamic[*variable]
             {
                 read.insert(*variable);
@@ -439,15 +452,15 @@ fn reassigned(module: &mut Module, statements: &[Stmt], dynamic: bool, read: &mu
     };
     for statement in statements {
         match statement {
-            Stmt::Assign(variable, value) => {
+            Statement::Assign(variable, value) => {
                 if module.dynamic[*variable] || dynamic {
                     reads(module, value, read);
                 } else if read.contains(variable) {
                     module.dynamic[*variable] = true;
                 }
             }
-            Stmt::Contribute { .. } => statement.walk(&mut |expr| reads(module, expr, read)),
-            Stmt::If(_, condition, then, otherwise) => {
+            Statement::Contribute { .. } => statement.walk(&mut |expr| reads(module, expr, read)),
+            Statement::If(_, condition, then, otherwise) => {
                 let inner = dynamic || module.is_dynamic(condition);
                 if inner || then.iter().chain(otherwise).any(contributes) {
                     reads(module, condition, read);
@@ -455,7 +468,7 @@ fn reassigned(module: &mut Module, statements: &[Stmt], dynamic: bool, read: &mu
                 reassigned(module, then, inner, read);
                 reassigned(module, otherwise, inner, read);
             }
-            Stmt::While(condition, body) => {
+            Statement::While(condition, body) => {
                 let inner = dynamic || module.is_dynamic(condition);
                 if inner {
                     reads(module, condition, read);
@@ -464,7 +477,7 @@ fn reassigned(module: &mut Module, statements: &[Stmt], dynamic: bool, read: &mu
                     reassigned(module, body, inner, read);
                 }
             }
-            Stmt::Fail(..) | Stmt::Warn(..) => {}
+            Statement::Fail(..) | Statement::Warn(..) => {}
         }
     }
 }
@@ -475,7 +488,9 @@ mod tests {
     use crate::lexer::tokens;
     use crate::parser::parse;
 
-    use super::super::{Expr, LocalParameter, Module, Stmt, constant, probed_currents, resolve};
+    use super::super::{
+        Expression, LocalParameter, Module, Statement, constant, probed_currents, resolve,
+    };
 
     const ADVICE_WORDS: [&str; 7] = [
         "use",
@@ -795,8 +810,8 @@ mod tests {
         assert_eq!(module.local_parameters, [] as [LocalParameter; 0]);
         // `truncated = 2`, `truncated_real = 2.0`, `guarded = 2 + 1 + 3 + 2 = 8.0`,
         // `short_and = 0`, `short_or = 1`, `untyped_int = 3`, `untyped_real = 10.0`.
-        let Stmt::Contribute {
-            resistive: Some(Expr::Binary("*", _, right)),
+        let Statement::Contribute {
+            resistive: Some(Expression::Binary("*", _, right)),
             ..
         } = &module.analog[0]
         else {
@@ -854,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn stmt_walk_visits_flicker_noise_exponent() {
+    fn statement_walk_visits_flicker_noise_exponent() {
         let reassigned_module = resolve_source(
             "parameter real flag = 1.0;\n\
              real e;\n\
@@ -899,7 +914,7 @@ mod tests {
             .expect("branch br");
         assert!(
             probed_currents(&probed_module).contains(&br_index),
-            "probed current inside flicker_noise exponent must be discovered by Stmt::walk"
+            "probed current inside flicker_noise exponent must be discovered by Statement::walk"
         );
     }
 }

@@ -4,7 +4,7 @@
 use std::collections::BTreeSet;
 
 use crate::ast::Type;
-use crate::ir::{Expr, Probe, apart};
+use crate::ir::{Expression, Probe, apart};
 use crate::lexer::CONSTANTS;
 
 /// The precedences of Rust's operators, from the loosest, as the printer parenthesizes
@@ -369,7 +369,7 @@ impl Activity {
 /// it has, and the static expression `prepare` computes it as.
 #[derive(Debug, Default)]
 pub(super) struct Prepared {
-    pub(super) fields: Vec<(String, Kind, Expr)>,
+    pub(super) fields: Vec<(String, Kind, Expression)>,
 }
 
 impl Prepared {
@@ -379,7 +379,7 @@ impl Prepared {
         &mut self,
         name: impl FnOnce(usize) -> String,
         kind: Kind,
-        expr: &Expr,
+        expr: &Expression,
     ) -> String {
         if let Some((name, _, _)) = self.fields.iter().find(|(_, _, found)| found == expr) {
             return name.clone();

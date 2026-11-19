@@ -20,60 +20,63 @@ pub enum Problem {
         /// The repeated port.
         port: Name,
     },
-    /// A component places two instances with the same id.
-    #[error("component `{component}` places two instances named `{id}`")]
+    /// A component places two instances with the same name.
+    #[error("component `{component}` places two instances named `{instance}`")]
     DuplicateInstance {
         /// The component.
         component: Name,
-        /// The repeated id.
-        id: Name,
+        /// The repeated instance name.
+        instance: Name,
     },
     /// An instance refers to a component that is not defined.
-    #[error("instance `{component}/{id}` is of undefined component `{target}`")]
+    #[error("instance `{component}/{instance}` is of undefined component `{target}`")]
     UndefinedComponent {
         /// The component that places the instance.
         component: Name,
         /// The instance.
-        id: Name,
+        instance: Name,
         /// The missing component.
         target: Name,
     },
     /// An instance of a component leaves one of its ports unconnected.
-    #[error("instance `{component}/{id}` leaves port `{port}` of `{target}` unconnected")]
+    #[error("instance `{component}/{instance}` leaves port `{port}` of `{target}` unconnected")]
     UnconnectedPort {
         /// The component that places the instance.
         component: Name,
         /// The instance.
-        id: Name,
+        instance: Name,
         /// The instanced component.
         target: Name,
         /// The unconnected port.
         port: Name,
     },
     /// An instance of a component connects a terminal its component has no port for.
-    #[error("instance `{component}/{id}` connects `{terminal}`, which `{target}` has no port for")]
+    #[error(
+        "instance `{component}/{instance}` connects `{terminal}`, which `{target}` has no port \
+         for"
+    )]
     UnknownPort {
         /// The component that places the instance.
         component: Name,
         /// The instance.
-        id: Name,
+        instance: Name,
         /// The instanced component.
         target: Name,
         /// The terminal without a port.
         terminal: Name,
     },
     /// An instance of a component sets parameters, which only devices take.
-    #[error("instance `{component}/{id}` sets parameters, which only device instances take")]
+    #[error("instance `{component}/{instance}` sets parameters, which only device instances take")]
     ComponentParameters {
         /// The component that places the instance.
         component: Name,
         /// The instance.
-        id: Name,
+        instance: Name,
     },
     /// An instance gives a tolerance to a parameter it gives no number to, or a tolerance
     /// its distribution does not [take](crate::Distribution::takes).
     #[error(
-        "instance `{component}/{id}` gives `{parameter}` a tolerance of {relative}, which \
+        "instance `{component}/{instance}` gives `{parameter}` a tolerance of {relative}, which \
          needs a number for it and a tolerance at least 0, and below 1 unless its logarithm \
          spreads"
     )]
@@ -81,7 +84,7 @@ pub enum Problem {
         /// The component that places the instance.
         component: Name,
         /// The instance.
-        id: Name,
+        instance: Name,
         /// The parameter given the tolerance.
         parameter: String,
         /// The tolerance, in its shortest exact form.
@@ -90,7 +93,7 @@ pub enum Problem {
     /// An instance takes a parameter from a lot whose tolerance its distribution does not
     /// [take](crate::Distribution::takes).
     #[error(
-        "instance `{component}/{id}` takes `{parameter}` from lot `{lot}` with a tolerance \
+        "instance `{component}/{instance}` takes `{parameter}` from lot `{lot}` with a tolerance \
          of {relative}, which needs to be at least 0, and below 1 unless its logarithm \
          spreads"
     )]
@@ -98,7 +101,7 @@ pub enum Problem {
         /// The component that places the instance.
         component: Name,
         /// The instance.
-        id: Name,
+        instance: Name,
         /// The parameter.
         parameter: String,
         /// The lot.
@@ -109,7 +112,7 @@ pub enum Problem {
     /// An instance states a rating that names terminals it does not connect, or not as
     /// many as its stress needs, or whose bounds are not finite and in order.
     #[error(
-        "instance `{component}/{id}` states a rating of its {stress} {at}from {minimum} to \
+        "instance `{component}/{instance}` states a rating of its {stress} {at}from {minimum} to \
          {maximum}, which needs {needed} and finite bounds, at least one and in order, a \
          power only a positive maximum and a temperature positive bounds"
     )]
@@ -117,7 +120,7 @@ pub enum Problem {
         /// The component that places the instance.
         component: Name,
         /// The instance.
-        id: Name,
+        instance: Name,
         /// The stress rated: `voltage`, `current`, `power` or `temperature`.
         stress: String,
         /// Where, as the terminals named, such as `at `collector`, `emitter` `.
@@ -131,14 +134,14 @@ pub enum Problem {
     },
     /// An instance names a part whose number is empty or spaced at either end.
     #[error(
-        "instance `{component}/{id}` is the part {part:?}, but a part number is neither \
+        "instance `{component}/{instance}` is the part {part:?}, but a part number is neither \
          empty nor spaced at either end"
     )]
     InvalidPart {
         /// The component that places the instance.
         component: Name,
         /// The instance.
-        id: Name,
+        instance: Name,
         /// The part number, as given.
         part: String,
     },
@@ -152,9 +155,9 @@ pub enum Problem {
         lot: Name,
         /// The parameter.
         parameter: String,
-        /// The first instance that spreads it, as `component/id`.
+        /// The first instance that spreads it, as `component/instance`.
         first: String,
-        /// An instance that spreads it otherwise, as `component/id`.
+        /// An instance that spreads it otherwise, as `component/instance`.
         second: String,
     },
     /// A component instances itself, directly or through others.
@@ -305,7 +308,7 @@ fn check_ratings(name: &Name, instance: &crate::Instance, problems: &mut Vec<Pro
             };
             problems.push(Problem::InvalidRating {
                 component: name.clone(),
-                id: instance.name.clone(),
+                instance: instance.name.clone(),
                 stress: rating.stress.as_str().to_owned(),
                 at,
                 minimum: rating
@@ -339,12 +342,12 @@ fn check_component(
             });
         }
     }
-    let mut ids = BTreeSet::new();
+    let mut names = BTreeSet::new();
     for instance in &component.instances {
-        if !ids.insert(&instance.name) {
+        if !names.insert(&instance.name) {
             problems.push(Problem::DuplicateInstance {
                 component: name.clone(),
-                id: instance.name.clone(),
+                instance: instance.name.clone(),
             });
         }
         for (parameter, tolerance) in &instance.tolerances {
@@ -353,7 +356,7 @@ fn check_component(
             if !numeric || !tolerance.distribution.takes(tolerance.relative) {
                 problems.push(Problem::InvalidTolerance {
                     component: name.clone(),
-                    id: instance.name.clone(),
+                    instance: instance.name.clone(),
                     parameter: parameter.clone(),
                     relative: format!("{:?}", tolerance.relative),
                 });
@@ -363,7 +366,7 @@ fn check_component(
             {
                 problems.push(Problem::InvalidLot {
                     component: name.clone(),
-                    id: instance.name.clone(),
+                    instance: instance.name.clone(),
                     parameter: parameter.clone(),
                     lot: lot.name.clone(),
                     relative: format!("{:?}", lot.relative),
@@ -376,7 +379,7 @@ fn check_component(
         {
             problems.push(Problem::InvalidPart {
                 component: name.clone(),
-                id: instance.name.clone(),
+                instance: instance.name.clone(),
                 part: part.clone(),
             });
         }
@@ -386,13 +389,13 @@ fn check_component(
         if !instance.parameters.is_empty() {
             problems.push(Problem::ComponentParameters {
                 component: name.clone(),
-                id: instance.name.clone(),
+                instance: instance.name.clone(),
             });
         }
         let Some(definition) = components.get(target) else {
             problems.push(Problem::UndefinedComponent {
                 component: name.clone(),
-                id: instance.name.clone(),
+                instance: instance.name.clone(),
                 target: target.clone(),
             });
             continue;
@@ -401,7 +404,7 @@ fn check_component(
             if !instance.terminals.contains_key(&port.name) {
                 problems.push(Problem::UnconnectedPort {
                     component: name.clone(),
-                    id: instance.name.clone(),
+                    instance: instance.name.clone(),
                     target: target.clone(),
                     port: port.name.clone(),
                 });
@@ -411,7 +414,7 @@ fn check_component(
             if !definition.ports.iter().any(|port| &port.name == terminal) {
                 problems.push(Problem::UnknownPort {
                     component: name.clone(),
-                    id: instance.name.clone(),
+                    instance: instance.name.clone(),
                     target: target.clone(),
                     terminal: terminal.clone(),
                 });
@@ -494,9 +497,9 @@ mod tests {
         Name::new(text).unwrap()
     }
 
-    fn instance_of(id: &str, target: &str, terminals: &[(&str, &str)]) -> Instance {
+    fn instance_of(instance: &str, target: &str, terminals: &[(&str, &str)]) -> Instance {
         Instance {
-            name: name(id),
+            name: name(instance),
             of: Of::Component(name(target)),
             parameters: crate::Parameters::new(),
             terminals: terminals.iter().map(|&(t, n)| (name(t), name(n))).collect(),
@@ -627,9 +630,9 @@ mod tests {
 
     #[test]
     fn checks_parts() {
-        let numbered = |id, part: &str| Instance {
+        let numbered = |instance, part: &str| Instance {
             part: Some(part.to_owned()),
-            ..instance_of(id, "unused", &[])
+            ..instance_of(instance, "unused", &[])
         };
         let top = Component {
             instances: vec![
@@ -708,7 +711,7 @@ mod tests {
 
     #[test]
     fn a_lot_spreads_each_parameter_one_way() {
-        let in_lot = |id: &str, relative| {
+        let in_lot = |instance: &str, relative| {
             let lot = Lot {
                 name: name("die"),
                 relative,
@@ -720,7 +723,7 @@ mod tests {
                 lot: Some(lot),
             };
             Instance {
-                name: name(id),
+                name: name(instance),
                 of: Of::Device(name("resistor")),
                 parameters: serde_json::json!({"resistance": 1e3})
                     .as_object()

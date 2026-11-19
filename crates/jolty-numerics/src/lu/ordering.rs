@@ -728,7 +728,7 @@ fn index_block(block: &[usize], local: &mut [usize]) {
 }
 
 /// Local indices within `block` of the matched columns in `column` of `(starts, rows)`.
-fn block_neighbours(
+fn block_neighbors(
     block: &[usize],
     local: &[usize],
     (starts, rows): (&[usize], &[usize]),
@@ -758,7 +758,7 @@ fn dissect(
     let lists: Vec<Vec<usize>> = block
         .iter()
         .map(|&column| {
-            block_neighbours(block, local, (starts, rows), column_of_row, column).collect()
+            block_neighbors(block, local, (starts, rows), column_of_row, column).collect()
         })
         .collect();
     let found = dissection::dissect(&Graph::symmetric(&lists), most);
@@ -848,10 +848,10 @@ fn multiply_adds(
 ) -> u128 {
     let size = block.len();
     index_block(block, local);
-    // Each position's neighbours before it, in the pattern plus its transpose.
+    // Each position's neighbors before it, in the pattern plus its transpose.
     let mut earlier: Vec<Vec<usize>> = vec![Vec::new(); size];
     for (position, &column) in block.iter().enumerate() {
-        for other in block_neighbours(block, local, (starts, rows), column_of_row, column) {
+        for other in block_neighbors(block, local, (starts, rows), column_of_row, column) {
             match other.cmp(&position) {
                 std::cmp::Ordering::Less => earlier[position].push(other),
                 std::cmp::Ordering::Greater => earlier[other].push(position),
@@ -875,7 +875,7 @@ fn multiply_adds(
         }
     }
     // Each row's entries of `L` are the nodes of its subtree: the paths up the tree from
-    // its neighbours before it.
+    // its neighbors before it.
     let (mut below, mut mark) = (vec![0_u128; size], vec![NONE; size]);
     for (position, before) in earlier.iter().enumerate() {
         mark[position] = position;
@@ -912,8 +912,8 @@ fn reduce_fill(
     block_starts.push(0);
     for &column in block.iter() {
         let first = block_rows.len();
-        let neighbours = block_neighbours(block, local, (starts, rows), column_of_row, column);
-        block_rows.extend(neighbours);
+        let neighbors = block_neighbors(block, local, (starts, rows), column_of_row, column);
+        block_rows.extend(neighbors);
         block_rows[first..].sort_unstable();
         block_starts.push(block_rows.len());
     }
@@ -994,7 +994,7 @@ mod tests {
     fn counts_the_multiply_adds_of_an_elimination() {
         // A path in its order fills nothing: each column but the last holds one entry
         // below its diagonal, one multiply-add. Its middle node first holds its two
-        // neighbours, four, and joins them, so that each later column but the last holds
+        // neighbors, four, and joins them, so that each later column but the last holds
         // one entry again.
         let pattern = path(5);
         let structure = pattern.structure();

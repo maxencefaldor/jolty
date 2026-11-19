@@ -370,7 +370,7 @@ fn qz(h: &mut Square, t: &mut Square) -> Result<Vec<Eigenvalue>, PencilError> {
 /// Where the active block of rows `first` to `last` splits, deflating an infinite
 /// eigenvalue found within it by rotations that chase its zero out of the block.
 fn split(h: &mut Square, t: &mut Square, (first, last): (usize, usize), scales: Scales) -> Split {
-    // Whether the subdiagonal entry of `row` is negligible beside its diagonal neighbours.
+    // Whether the subdiagonal entry of `row` is negligible beside its diagonal neighbors.
     let negligible = |h: &Square, row: usize| {
         norm1(h.at(row, row - 1))
             <= f64::MIN_POSITIVE

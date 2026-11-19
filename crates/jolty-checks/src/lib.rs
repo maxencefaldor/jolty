@@ -15,7 +15,7 @@
 //! use jolty_models::Library;
 //!
 //! let circuit = Circuit::from_json(r#"{
-//!     "format": "jolty-circuit", "version": 4, "top": "top",
+//!     "format": "jolty-circuit", "version": 5, "top": "top",
 //!     "components": {"top": {
 //!         "ports": [{"name": "ground", "role": "ground"}],
 //!         "instances": [
@@ -43,7 +43,7 @@ use std::fmt;
 
 use jolty_engine::{Location, Simulator};
 
-pub use point::{MOST_LINEARIZED, check_operating_point};
+pub use point::{MAX_LINEARIZED, check_operating_point};
 pub use rules::RULES;
 
 /// How a check reports a rule's diagnostics, by the names ty gives its levels.
@@ -130,7 +130,7 @@ pub(crate) mod testing {
     /// `instances`.
     pub(crate) fn simulator(instances: &Value) -> Simulator {
         let document = json!({
-            "format": "jolty-circuit", "version": 4, "top": "test",
+            "format": "jolty-circuit", "version": 5, "top": "test",
             "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
                                     "instances": instances}}
         });

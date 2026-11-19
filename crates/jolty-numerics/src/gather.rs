@@ -9,8 +9,8 @@
 
 use rayon::iter::ParallelIterator;
 
-/// The position that stands for no target, or no source: the reference node's row, or an
-/// entry with the reference in its row or its column.
+/// The position that stands for no target, or no source: ground's row, or an entry with
+/// ground in its row or its column.
 ///
 /// Origin: sentinel value `u32::MAX` (`2^32 - 1`), reserved outside all valid slab indices.
 pub const UNMAPPED: u32 = u32::MAX;

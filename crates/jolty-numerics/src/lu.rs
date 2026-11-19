@@ -477,7 +477,7 @@ impl<T: Scalar> fmt::Debug for Factors<'_, T> {
 }
 
 impl<'a, T: Scalar> Factors<'a, T> {
-    /// Solves `A x = rhs` and leaves `x` in `rhs`.
+    /// Solves `A x = right_hand_side` and leaves `x` in `right_hand_side`.
     ///
     /// # Errors
     ///
@@ -486,13 +486,14 @@ impl<'a, T: Scalar> Factors<'a, T> {
     ///
     /// # Panics
     ///
-    /// Panics if `rhs` does not hold one value per row.
-    pub fn solve(&mut self, rhs: &mut [T]) -> Result<(), LinearError> {
-        self.shared.solve(rhs, self.workspace)
+    /// Panics if `right_hand_side` does not hold one value per row.
+    pub fn solve(&mut self, right_hand_side: &mut [T]) -> Result<(), LinearError> {
+        self.shared.solve(right_hand_side, self.workspace)
     }
 
-    /// Solves `Aᵀ x = rhs`, the transposed system, and leaves `x` in `rhs`: the adjoint
-    /// system whose solution weighs every equation's effect on one unknown.
+    /// Solves `Aᵀ x = right_hand_side`, the transposed system, and leaves `x` in
+    /// `right_hand_side`: the adjoint system whose solution weighs every equation's effect on
+    /// one unknown.
     ///
     /// # Errors
     ///
@@ -501,9 +502,9 @@ impl<'a, T: Scalar> Factors<'a, T> {
     ///
     /// # Panics
     ///
-    /// Panics if `rhs` does not hold one value per row.
-    pub fn solve_transpose(&mut self, rhs: &mut [T]) -> Result<(), LinearError> {
-        self.shared.solve_transpose(rhs, self.workspace)
+    /// Panics if `right_hand_side` does not hold one value per row.
+    pub fn solve_transpose(&mut self, right_hand_side: &mut [T]) -> Result<(), LinearError> {
+        self.shared.solve_transpose(right_hand_side, self.workspace)
     }
 
     /// The factors, to solve with from several threads at once, each with a [`Workspace`]
@@ -543,7 +544,8 @@ impl<T: Scalar> Shared<'_, T> {
         Workspace::new(self.ordering.factored().dimension())
     }
 
-    /// Solves `A x = rhs` and leaves `x` in `rhs`, writing to `workspace` as it goes.
+    /// Solves `A x = right_hand_side` and leaves `x` in `right_hand_side`, writing to
+    /// `workspace` as it goes.
     ///
     /// # Errors
     ///
@@ -552,40 +554,45 @@ impl<T: Scalar> Shared<'_, T> {
     ///
     /// # Panics
     ///
-    /// Panics if `rhs` or `workspace` does not hold one value per row.
-    pub fn solve(&self, rhs: &mut [T], workspace: &mut Workspace<T>) -> Result<(), LinearError> {
-        self.solve_either(rhs, workspace, false)
-    }
-
-    /// Solves `Aᵀ x = rhs` and leaves `x` in `rhs`, writing to `workspace` as it goes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
-    /// too small for the matrix's range causes, naming the columns whose values are not.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `rhs` or `workspace` does not hold one value per row.
-    pub fn solve_transpose(
+    /// Panics if `right_hand_side` or `workspace` does not hold one value per row.
+    pub fn solve(
         &self,
-        rhs: &mut [T],
+        right_hand_side: &mut [T],
         workspace: &mut Workspace<T>,
     ) -> Result<(), LinearError> {
-        self.solve_either(rhs, workspace, true)
+        self.solve_either(right_hand_side, workspace, false)
     }
 
-    /// Solves `A x = rhs`, or `Aᵀ x = rhs` when `transposed`, and leaves `x` in `rhs`: for
-    /// an ordering that condenses, the kept unknowns' system of `rhs` first, then each
-    /// unknown eliminated from it.
+    /// Solves `Aᵀ x = right_hand_side` and leaves `x` in `right_hand_side`, writing to
+    /// `workspace` as it goes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LinearError::Singular`] when the solution is not finite, which a pivot
+    /// too small for the matrix's range causes, naming the columns whose values are not.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `right_hand_side` or `workspace` does not hold one value per row.
+    pub fn solve_transpose(
+        &self,
+        right_hand_side: &mut [T],
+        workspace: &mut Workspace<T>,
+    ) -> Result<(), LinearError> {
+        self.solve_either(right_hand_side, workspace, true)
+    }
+
+    /// Solves `A x = right_hand_side`, or `Aᵀ x = right_hand_side` when `transposed`, and
+    /// leaves `x` in `right_hand_side`: for an ordering that condenses, the kept unknowns'
+    /// system of `right_hand_side` first, then each unknown eliminated from it.
     fn solve_either(
         &self,
-        rhs: &mut [T],
+        right_hand_side: &mut [T],
         workspace: &mut Workspace<T>,
         transposed: bool,
     ) -> Result<(), LinearError> {
         assert_eq!(
-            rhs.len(),
+            right_hand_side.len(),
             self.ordering.pattern().dimension(),
             "one right-hand side value per row"
         );
@@ -596,26 +603,33 @@ impl<T: Scalar> Shared<'_, T> {
             "a workspace of one value per factored row"
         );
         let Some(condensation) = self.ordering.condensation() else {
-            self.solve_factored(rhs, workspace, transposed);
-            return finite_on(rhs, self.threads);
+            self.solve_factored(right_hand_side, workspace, transposed);
+            return finite_on(right_hand_side, self.threads);
         };
         let mut kept = std::mem::take(&mut workspace.kept);
         kept.resize(condensation.solved(), T::ZERO);
-        condensation.reduce(self.saved, (&*rhs, transposed), &mut kept);
+        condensation.reduce(self.saved, (&*right_hand_side, transposed), &mut kept);
         self.solve_factored(&mut kept[..dimension], workspace, transposed);
-        condensation.expand(self.saved, (&mut kept, transposed), rhs);
+        condensation.expand(self.saved, (&mut kept, transposed), right_hand_side);
         workspace.kept = kept;
-        finite_on(rhs, self.threads)
+        finite_on(right_hand_side, self.threads)
     }
 
-    /// Solves the factored pattern's system of `rhs`, transposed when `transposed`.
-    fn solve_factored(&self, rhs: &mut [T], workspace: &mut Workspace<T>, transposed: bool) {
+    /// Solves the factored pattern's system of `right_hand_side`, transposed when
+    /// `transposed`.
+    fn solve_factored(
+        &self,
+        right_hand_side: &mut [T],
+        workspace: &mut Workspace<T>,
+        transposed: bool,
+    ) {
         let factors = (self.ordering, self.values);
         if transposed {
             self.numeric
-                .solve_transpose(factors, rhs, workspace, self.threads);
+                .solve_transpose(factors, right_hand_side, workspace, self.threads);
         } else {
-            self.numeric.solve(factors, rhs, workspace, self.threads);
+            self.numeric
+                .solve(factors, right_hand_side, workspace, self.threads);
         }
     }
 }

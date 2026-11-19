@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::Error;
 use crate::ast::Type;
 use crate::ir::fold::{ConstVal, compare_order, fold_const};
-use crate::ir::{Builtin, Expr, Limiter, Module, Probe, Stmt, fold};
+use crate::ir::{Builtin, Expression, Limiter, Module, Probe, Statement, fold};
 
 use super::facts::Facts;
 use super::liveness::{live, prune};
@@ -148,7 +148,7 @@ pub(super) struct Emitter<'f, 'm> {
     pub(super) mode: Mode,
     /// The analog block as this mode runs it: each assignment that no statement after it
     /// reads left out.
-    pub(super) analog: Vec<Stmt>,
+    pub(super) analog: Vec<Statement>,
     /// Whether each variable is kept, in this mode.
     pub(super) live: Vec<bool>,
     /// The function being emitted, in [`Mode::Function`].
@@ -216,13 +216,15 @@ impl<'f, 'm> Emitter<'f, 'm> {
 
 /// Returns the positive counterpart of `expr` when `expr` is a strictly negative numeric
 /// literal (excluding `-0.0`, `NaN`, and `i32::MIN`).
-fn negative_literal(expr: &Expr) -> Option<Expr> {
+fn negative_literal(expr: &Expression) -> Option<Expression> {
     match expr {
-        Expr::Real(value) if *value < 0.0 => Some(Expr::Real(-*value)),
-        Expr::Integer(value) if *value < 0 && *value != i32::MIN => Some(Expr::Integer(-*value)),
-        Expr::Unary("-", inner) => match inner.as_ref() {
-            Expr::Real(value) if *value > 0.0 => Some(Expr::Real(*value)),
-            Expr::Integer(value) if *value > 0 => Some(Expr::Integer(*value)),
+        Expression::Real(value) if *value < 0.0 => Some(Expression::Real(-*value)),
+        Expression::Integer(value) if *value < 0 && *value != i32::MIN => {
+            Some(Expression::Integer(-*value))
+        }
+        Expression::Unary("-", inner) => match inner.as_ref() {
+            Expression::Real(value) if *value > 0.0 => Some(Expression::Real(*value)),
+            Expression::Integer(value) if *value > 0 => Some(Expression::Integer(*value)),
             _ => None,
         },
         _ => None,
@@ -231,8 +233,8 @@ fn negative_literal(expr: &Expr) -> Option<Expr> {
 
 /// Returns whether `expr` is a numeric literal factor for canonicalizing `literal * expr` to
 /// `expr * literal`.
-const fn is_literal_factor(expr: &Expr) -> bool {
-    matches!(expr, Expr::Real(_) | Expr::Integer(_))
+const fn is_literal_factor(expr: &Expression) -> bool {
+    matches!(expr, Expression::Real(_) | Expression::Integer(_))
 }
 
 /// Whether `code` names a value, so that reading it again costs nothing.
@@ -311,31 +313,36 @@ impl Emitter<'_, '_> {
     }
 
     /// The emitted kind of a non-constant static expression `expr`.
-    fn static_kind(&self, expr: &Expr) -> Kind {
+    fn static_kind(&self, expr: &Expression) -> Kind {
         let module = self.module();
         match expr {
-            Expr::Real(_) | Expr::Gmin | Expr::SmallResistance | Expr::Probe(_) => {
-                Kind::Float(None)
-            }
-            Expr::Integer(_) => Kind::Integer,
-            Expr::Parameter(parameter) => {
+            Expression::Real(_)
+            | Expression::Gmin
+            | Expression::SmallResistance
+            | Expression::Probe(_) => Kind::Float(None),
+            Expression::Integer(_) => Kind::Integer,
+            Expression::Parameter(parameter) => {
                 Kind::from_type(module.parameters[*parameter].kind, false)
             }
-            Expr::LocalParameter(local) => {
+            Expression::LocalParameter(local) => {
                 Kind::from_type(module.local_parameters[*local].kind, false)
             }
-            Expr::Variable(variable) => Kind::from_type(module.variables[*variable].1, false),
-            Expr::Temperature | Expr::Ddx(..) => Kind::Real,
-            Expr::Given(_)
-            | Expr::Shape(_)
-            | Expr::Unary("!", _)
-            | Expr::Binary("<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||", ..) => Kind::Bool,
-            Expr::Unary(_, operand) => self.static_kind(operand),
-            Expr::Binary(_, left, right) => join(&self.static_kind(left), &self.static_kind(right)),
-            Expr::Conditional(_, then, otherwise) => {
+            Expression::Variable(variable) => Kind::from_type(module.variables[*variable].1, false),
+            Expression::Temperature | Expression::Ddx(..) => Kind::Real,
+            Expression::Given(_)
+            | Expression::Shape(_)
+            | Expression::Unary("!", _)
+            | Expression::Binary("<" | "<=" | ">" | ">=" | "==" | "!=" | "&&" | "||", ..) => {
+                Kind::Bool
+            }
+            Expression::Unary(_, operand) => self.static_kind(operand),
+            Expression::Binary(_, left, right) => {
+                join(&self.static_kind(left), &self.static_kind(right))
+            }
+            Expression::Conditional(_, then, otherwise) => {
                 join(&self.static_kind(then), &self.static_kind(otherwise))
             }
-            Expr::Call(_, arguments) => {
+            Expression::Call(_, arguments) => {
                 if arguments
                     .iter()
                     .all(|argument| matches!(self.static_kind(argument), Kind::Float(_)))
@@ -350,7 +357,7 @@ impl Emitter<'_, '_> {
 
     /// A static expression read in a dynamic mode: a constant folded in place, a
     /// constant of jolty's, or a prepared number.
-    pub(super) fn static_operand(&mut self, expr: &Expr) -> Operand {
+    pub(super) fn static_operand(&mut self, expr: &Expression) -> Operand {
         if let Ok(Some(value)) = fold_const(expr) {
             return match value {
                 ConstVal::Real(number) => float(number),
@@ -364,10 +371,10 @@ impl Emitter<'_, '_> {
         }
         let kind = self.static_kind(expr);
         match expr {
-            Expr::SmallResistance => {
+            Expression::SmallResistance => {
                 return Operand::new("SMALL_RESISTANCE", ATOM, Kind::Float(None));
             }
-            Expr::Unary("-", inner)
+            Expression::Unary("-", inner)
                 if matches!(
                     self.static_kind(inner),
                     Kind::Real | Kind::Float(_) | Kind::Integer
@@ -375,26 +382,29 @@ impl Emitter<'_, '_> {
             {
                 return negate(self.static_operand(inner));
             }
-            Expr::Binary("*", left, right)
+            Expression::Binary("*", left, right)
                 if matches!(kind, Kind::Real | Kind::Float(_) | Kind::Integer) =>
             {
                 if let Some(positive) = negative_literal(left) {
-                    let product = Expr::Binary("*", Box::new(positive), right.clone());
+                    let product = Expression::Binary("*", Box::new(positive), right.clone());
                     return negate(self.static_operand(&product));
                 }
                 if let Some(positive) = negative_literal(right) {
-                    let product = Expr::Binary("*", left.clone(), Box::new(positive));
+                    let product = Expression::Binary("*", left.clone(), Box::new(positive));
                     return negate(self.static_operand(&product));
                 }
                 if is_literal_factor(left) && !is_literal_factor(right) {
-                    let swapped = Expr::Binary("*", right.clone(), left.clone());
+                    let swapped = Expression::Binary("*", right.clone(), left.clone());
                     return self.static_operand(&swapped);
                 }
                 if matches!(kind, Kind::Real | Kind::Float(_))
-                    && let Expr::Integer(value) = right.as_ref()
+                    && let Expression::Integer(value) = right.as_ref()
                 {
-                    let normalized =
-                        Expr::Binary("*", left.clone(), Box::new(Expr::Real(f64::from(*value))));
+                    let normalized = Expression::Binary(
+                        "*",
+                        left.clone(),
+                        Box::new(Expression::Real(f64::from(*value))),
+                    );
                     return self.static_operand(&normalized);
                 }
             }
@@ -402,23 +412,23 @@ impl Emitter<'_, '_> {
         }
         let module = self.facts.module;
         let name = match expr {
-            Expr::Parameter(parameter) => {
+            Expression::Parameter(parameter) => {
                 let name = module.parameters[*parameter].name.clone();
                 self.prepared.field(|_| name, kind.clone(), expr)
             }
-            Expr::LocalParameter(local) => {
+            Expression::LocalParameter(local) => {
                 let name = module.local_parameters[*local].name.clone();
                 self.prepared.field(|_| name, kind.clone(), expr)
             }
-            Expr::Given(parameter) => {
+            Expression::Given(parameter) => {
                 let name = format!("{}_given", module.parameters[*parameter].name);
                 self.prepared.field(|_| name, kind.clone(), expr)
             }
-            Expr::Variable(variable) => {
+            Expression::Variable(variable) => {
                 let name = module.variables[*variable].0.clone();
                 self.prepared.field(|_| name, kind.clone(), expr)
             }
-            Expr::Temperature => {
+            Expression::Temperature => {
                 self.prepared
                     .field(|_| "temperature".to_owned(), kind.clone(), expr)
             }
@@ -553,7 +563,7 @@ impl Emitter<'_, '_> {
     )]
     pub(super) fn expression(
         &mut self,
-        expr: &Expr,
+        expr: &Expression,
         out: &mut Vec<Rust>,
     ) -> Result<Operand, Error> {
         let module = self.facts.module;
@@ -561,14 +571,14 @@ impl Emitter<'_, '_> {
             return Ok(self.static_operand(expr));
         }
         Ok(match expr {
-            Expr::Real(value) => float(*value),
-            Expr::Integer(value) => Operand::new(
+            Expression::Real(value) => float(*value),
+            Expression::Integer(value) => Operand::new(
                 value.to_string(),
                 if *value < 0 { UNARY } else { ATOM },
                 Kind::Integer,
             ),
             // A parameter is read where it is used: given, or else at its default.
-            Expr::Parameter(parameter) => {
+            Expression::Parameter(parameter) => {
                 self.parameters_read.insert(*parameter);
                 let parameter = &module.parameters[*parameter];
                 let kind = Kind::from_type(parameter.kind, false);
@@ -581,7 +591,7 @@ impl Emitter<'_, '_> {
                 };
                 Operand::new(code, ATOM, kind)
             }
-            Expr::LocalParameter(local) => {
+            Expression::LocalParameter(local) => {
                 if self.mode == Mode::Function {
                     let external = module
                         .local_parameters
@@ -602,7 +612,7 @@ impl Emitter<'_, '_> {
                     Kind::from_type(local.kind, false),
                 )
             }
-            Expr::Given(parameter) => {
+            Expression::Given(parameter) => {
                 self.parameters_read.insert(*parameter);
                 Operand::new(
                     format!(
@@ -613,7 +623,7 @@ impl Emitter<'_, '_> {
                     Kind::Bool,
                 )
             }
-            Expr::Variable(variable) => {
+            Expression::Variable(variable) => {
                 let kind = self.variable_kind(*variable);
                 match self.function {
                     Some(function) if *variable < module.functions[function].inputs => {
@@ -633,15 +643,17 @@ impl Emitter<'_, '_> {
                     }
                 }
             }
-            Expr::Temperature => {
+            Expression::Temperature => {
                 self.uses_temperature = true;
                 Operand::new("temperature", ATOM, Kind::Real)
             }
-            Expr::Gmin => Operand::new("at.gmin", ATOM, Kind::Float(None)),
-            Expr::SmallResistance => Operand::new("SMALL_RESISTANCE", ATOM, Kind::Float(None)),
-            Expr::Probe(probe) => self.probe(*probe, out)?,
-            Expr::Ddx(operand, node) => self.ddx(operand, *node, out)?,
-            Expr::Shape(id) => {
+            Expression::Gmin => Operand::new("at.gmin", ATOM, Kind::Float(None)),
+            Expression::SmallResistance => {
+                Operand::new("SMALL_RESISTANCE", ATOM, Kind::Float(None))
+            }
+            Expression::Probe(probe) => self.probe(*probe, out)?,
+            Expression::Ddx(operand, node) => self.ddx(operand, *node, out)?,
+            Expression::Shape(id) => {
                 let index = self
                     .facts
                     .shaped
@@ -650,12 +662,12 @@ impl Emitter<'_, '_> {
                 self.shape.insert("conditions".to_owned());
                 Operand::new(format!("shape.conditions[{index}]"), ATOM, Kind::Bool)
             }
-            Expr::Unary("-", operand) => {
+            Expression::Unary("-", operand) => {
                 let operand = self.expression(operand, out)?;
                 negate(operand)
             }
-            Expr::Unary(_, operand) => self.negation(operand, out)?,
-            Expr::Binary(operator @ ("&&" | "||"), left, right) => {
+            Expression::Unary(_, operand) => self.negation(operand, out)?,
+            Expression::Binary(operator @ ("&&" | "||"), left, right) => {
                 let left = self.expression(left, out)?;
                 let (left_code, left_precedence) = self.truth(left);
                 let (absorb, identity) = if *operator == "&&" {
@@ -683,12 +695,12 @@ impl Emitter<'_, '_> {
                 let right = parenthesize(&right_code, right_precedence, least + 1);
                 Operand::new(format!("{left} {operator} {right}"), least, Kind::Bool)
             }
-            Expr::Binary(operator @ ("<" | "<=" | ">" | ">=" | "==" | "!="), left, right) => {
+            Expression::Binary(operator @ ("<" | "<=" | ">" | ">=" | "==" | "!="), left, right) => {
                 let left = self.expression(left, out)?;
                 let right = self.expression(right, out)?;
                 compare(operator, &left, &right)
             }
-            Expr::Binary(operator, left, right) => {
+            Expression::Binary(operator, left, right) => {
                 let left = self.expression(left, out)?;
                 // A dual number divided by a number the probes do not move: its value
                 // divided, as the source writes it, and its derivatives multiplied by the
@@ -705,7 +717,11 @@ impl Emitter<'_, '_> {
                     } else {
                         divisor
                     };
-                    let reciprocal = Expr::Binary("/", Box::new(Expr::Real(1.0)), right.clone());
+                    let reciprocal = Expression::Binary(
+                        "/",
+                        Box::new(Expression::Real(1.0)),
+                        right.clone(),
+                    );
                     let reciprocal = self.static_operand(&reciprocal);
                     let reciprocal = Self::convert(reciprocal, &Kind::Real)?;
                     return Ok(Operand::new(
@@ -722,7 +738,7 @@ impl Emitter<'_, '_> {
                 let right = self.expression(right, out)?;
                 Self::arithmetic(operator, left, right)?
             }
-            Expr::Conditional(condition, then, otherwise) => {
+            Expression::Conditional(condition, then, otherwise) => {
                 let condition = self.expression(condition, out)?;
                 let (condition, _) = self.truth(condition);
                 let (mut first, mut second) = (Vec::new(), Vec::new());
@@ -763,7 +779,7 @@ impl Emitter<'_, '_> {
                 }
                 Operand::new(name, ATOM, kind)
             }
-            Expr::Call(builtin, arguments) => {
+            Expression::Call(builtin, arguments) => {
                 let mut operands = Vec::new();
                 for argument in arguments {
                     let operand = self.expression(argument, out)?;
@@ -781,7 +797,12 @@ impl Emitter<'_, '_> {
 
     /// `ddx(operand, V(node))`: the derivative of `operand` by the node's potential, the
     /// sum of its derivatives by the probes that read the node, each by its side.
-    fn ddx(&mut self, operand: &Expr, node: usize, out: &mut Vec<Rust>) -> Result<Operand, Error> {
+    fn ddx(
+        &mut self,
+        operand: &Expression,
+        node: usize,
+        out: &mut Vec<Rust>,
+    ) -> Result<Operand, Error> {
         if self.mode != Mode::Evaluate {
             return Err(Error::at(
                 0,
@@ -847,8 +868,8 @@ impl Emitter<'_, '_> {
     /// The negation of `operand`, a truth value: a comparison with its operator flipped
     /// where the flip is exact, as equality's is and an integers' order's is, a number
     /// compared with zero, or the truth negated.
-    fn negation(&mut self, operand: &Expr, out: &mut Vec<Rust>) -> Result<Operand, Error> {
-        if let Expr::Given(parameter) = operand {
+    fn negation(&mut self, operand: &Expression, out: &mut Vec<Rust>) -> Result<Operand, Error> {
+        if let Expression::Given(parameter) = operand {
             self.parameters_read.insert(*parameter);
             let name = &self.facts.module.parameters[*parameter].name;
             return Ok(Operand::new(
@@ -857,7 +878,7 @@ impl Emitter<'_, '_> {
                 Kind::Bool,
             ));
         }
-        if let Expr::Binary(operator @ ("==" | "!=" | "<" | "<=" | ">" | ">="), left, right) =
+        if let Expression::Binary(operator @ ("==" | "!=" | "<" | "<=" | ">" | ">="), left, right) =
             operand
         {
             let left = self.expression(left, out)?;

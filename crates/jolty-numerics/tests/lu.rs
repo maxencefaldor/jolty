@@ -143,7 +143,7 @@ impl One for Complex64 {
 }
 
 /// A right-hand side of `dimension` rows with no zero and no two values alike.
-fn rhs<T: Scalar + One>(dimension: usize) -> Vec<T> {
+fn right_hand_side<T: Scalar + One>(dimension: usize) -> Vec<T> {
     (0..dimension)
         .map(|row| {
             let mut value = T::ONE;
@@ -185,7 +185,7 @@ fn check_within<T: Scalar + One>(
     let condition = norm(&dense) * norm(&inverted);
     prop_assume!(condition < 1e10, "too ill-conditioned for a sharp check");
     let stored = matrix.stored(lu.pattern(), &entries);
-    let b: Vec<T> = rhs(matrix.dimension);
+    let b: Vec<T> = right_hand_side(matrix.dimension);
     let mut factors = lu.factor(&stored).map_err(|error| {
         TestCaseError::fail(format!("{error} for a matrix of condition {condition:e}"))
     })?;
@@ -737,7 +737,7 @@ proptest! {
         let solved = |lu: &mut SparseLu<f64>, matrix: &Matrix<f64>| {
             let (_, entries) = matrix.pattern();
             let stored = matrix.stored(lu.pattern(), &entries);
-            let mut x: Vec<f64> = rhs(matrix.dimension);
+            let mut x: Vec<f64> = right_hand_side(matrix.dimension);
             lu.factor(&stored)?.solve(&mut x)?;
             Ok::<Vec<u64>, LinearError>(x.into_iter().map(f64::to_bits).collect())
         };
@@ -761,7 +761,7 @@ proptest! {
         let (_, entries) = first.pattern();
         let solved = |lu: &mut SparseLu<f64>, matrix: &Matrix<f64>| {
             let stored = matrix.stored(lu.pattern(), &entries);
-            let mut x: Vec<f64> = rhs(matrix.dimension);
+            let mut x: Vec<f64> = right_hand_side(matrix.dimension);
             let mut factors = lu.factor(&stored)?;
             let mut shared = x.clone();
             factors.solve(&mut x)?;
@@ -1081,7 +1081,7 @@ fn a_supply_joining_every_node_fills_nothing() {
     let (mut lu, entries) = solver(&matrix);
     assert_eq!(lu.ordering().blocks(), 3);
     let stored = matrix.stored(lu.pattern(), &entries);
-    let mut x = rhs::<f64>(matrix.dimension);
+    let mut x = right_hand_side::<f64>(matrix.dimension);
     let b = x.clone();
     lu.factor(&stored).unwrap().solve(&mut x).unwrap();
     assert!(backward_error(&matrix.dense(), &x, &b) < 1e-15);
@@ -1168,7 +1168,7 @@ proptest! {
         prop_assume!(condition < 1e10, "too ill-conditioned for a sharp check");
         let solve = |mut lu: SparseLu<f64>, entries: Vec<Entry>| {
             let stored = matrix.stored(lu.pattern(), &entries);
-            let mut x: Vec<f64> = rhs(matrix.dimension);
+            let mut x: Vec<f64> = right_hand_side(matrix.dimension);
             lu.factor(&stored).expect("regular").solve(&mut x).expect("finite");
             x
         };
@@ -1196,7 +1196,7 @@ proptest! {
             let mut found = Vec::new();
             for matrix in matrices {
                 let stored = matrix.stored(lu.pattern(), &entries);
-                let b: Vec<f64> = rhs(matrix.dimension);
+                let b: Vec<f64> = right_hand_side(matrix.dimension);
                 let (mut x, mut y) = (b.clone(), b);
                 let solved = lu.factor(&stored).and_then(|mut factors| {
                     factors.solve(&mut x)?;
@@ -1219,7 +1219,7 @@ proptest! {
     }
 }
 
-/// The equations of a `side` × `side` mesh of conductances to its neighbours, each node
+/// The equations of a `side` × `side` mesh of conductances to its neighbors, each node
 /// with a conductance to the reference, some of them shuffled out of order, so that the
 /// matching must find their pivots off the diagonal and the dissection delays some.
 fn mesh(side: usize, scale: f64) -> Matrix<f64> {
@@ -1235,14 +1235,14 @@ fn mesh(side: usize, scale: f64) -> Matrix<f64> {
             let ground = 1e-3 * f64::from(1 + u8::try_from(here % 7).expect("small"));
             matrix.positions.push((here, here));
             matrix.values.push(ground);
-            let mut neighbours = Vec::new();
+            let mut neighbors = Vec::new();
             if x + 1 < side {
-                neighbours.push(node(x + 1, y));
+                neighbors.push(node(x + 1, y));
             }
             if y + 1 < side {
-                neighbours.push(node(x, y + 1));
+                neighbors.push(node(x, y + 1));
             }
-            for there in neighbours {
+            for there in neighbors {
                 let conductance = scale
                     * f64::from(1 + u8::try_from((here * 31 + there * 17) % 13).expect("small"));
                 for (row, column, value) in [
@@ -1273,12 +1273,12 @@ fn a_dissected_mesh_is_the_same_bits_on_any_number_of_threads() {
         let mut found = Vec::new();
         for matrix in [&first, &second, &first] {
             let stored = matrix.stored(lu.pattern(), &entries);
-            let mut x: Vec<f64> = rhs(matrix.dimension);
-            let mut y = x.clone();
+            let b: Vec<f64> = right_hand_side(matrix.dimension);
+            let (mut x, mut y) = (b.clone(), b.clone());
             let mut factors = lu.factor(&stored).unwrap();
             factors.solve(&mut x).unwrap();
             factors.solve_transpose(&mut y).unwrap();
-            assert!(backward_error(&matrix.dense(), &x, &rhs::<f64>(matrix.dimension)) < 1e-14);
+            assert!(backward_error(&matrix.dense(), &x, &b) < 1e-14);
             found.push((bits(&x), bits(&y)));
         }
         (found, lu.statistics(), lu.entries())
@@ -1343,7 +1343,7 @@ fn a_supplied_mesh_is_the_same_bits_on_any_number_of_threads() {
 /// solved transposed, gives the same bits on 1, 2, 3 and 8 threads.
 fn same_bits_on_any_number_of_threads(matrix: &Matrix<f64>) {
     let dense = matrix.dense();
-    let b: Vec<f64> = rhs(matrix.dimension);
+    let b: Vec<f64> = right_hand_side(matrix.dimension);
     let run = |interiors: Option<usize>| {
         let (mut lu, entries) = match interiors {
             Some(most) => dissected(matrix, most),

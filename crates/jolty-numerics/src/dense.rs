@@ -7,10 +7,10 @@ use faer::linalg::svd::SvdError;
 use crate::LinearError;
 use crate::lu::finite;
 
-/// Solves the dense square system `A x = b`, for the matrix `a` of `rhs.len()` rows in
-/// column-major order and `b` in `rhs`, by the least squares among the `x` in the range of
-/// `A` it keeps, the least of them in norm; leaves `x` in `rhs` and returns the rank of the
-/// part of `A` it keeps.
+/// Solves the dense square system `A x = b`, for the matrix `a` of `right_hand_side.len()` rows
+/// in column-major order and `b` in `right_hand_side`, by the least squares among the `x` in
+/// the range of `A` it keeps, the least of them in norm; leaves `x` in `right_hand_side` and
+/// returns the rank of the part of `A` it keeps.
 ///
 /// Where `A` is regular, `x = A⁻¹ b`. Where it is singular, the system has many solutions
 /// or none, and `x` is orthogonal to every `u` with `uᵀ A = 0`, which no solution's
@@ -35,17 +35,17 @@ use crate::lu::finite;
 ///
 /// # Panics
 ///
-/// Panics unless `a` holds the square of `rhs.len()` values.
+/// Panics unless `a` holds the square of `right_hand_side.len()` values.
 pub fn solve_in_range(
     a: &[f64],
-    rhs: &mut [f64],
+    right_hand_side: &mut [f64],
     (cutoff, slack): (f64, f64),
 ) -> Result<usize, LinearError> {
-    let n = rhs.len();
+    let n = right_hand_side.len();
     let Some(decomposed) = Decomposed::new(a, n)? else {
         return Ok(0);
     };
-    let projected = project(decomposed.svd.U(), rhs);
+    let projected = project(decomposed.svd.U(), right_hand_side);
     let values = &decomposed.values;
     let mut rank = decomposed.rounded_rank();
     let mut left_out: f64 = projected[rank..].iter().map(|part| part * part).sum();
@@ -58,7 +58,7 @@ pub fn solve_in_range(
     }
     let solution = decomposed.kept(rank)?.solve(&projected);
     finite(&solution)?;
-    rhs.copy_from_slice(&solution);
+    right_hand_side.copy_from_slice(&solution);
     Ok(rank)
 }
 
@@ -242,12 +242,14 @@ mod tests {
     #[test]
     fn solves_a_regular_system() {
         // [[2, 1], [1, 3]] x = [3, 5]: x = [0.8, 1.4].
-        let mut rhs = [3.0, 5.0];
+        let mut right_hand_side = [3.0, 5.0];
         assert_eq!(
-            solve_in_range(&[2.0, 1.0, 1.0, 3.0], &mut rhs, EXACT),
+            solve_in_range(&[2.0, 1.0, 1.0, 3.0], &mut right_hand_side, EXACT),
             Ok(2)
         );
-        assert!((rhs[0] - 0.8).abs() < 1e-15 && (rhs[1] - 1.4).abs() < 1e-15);
+        assert!(
+            (right_hand_side[0] - 0.8).abs() < 1e-15 && (right_hand_side[1] - 1.4).abs() < 1e-15
+        );
     }
 
     #[test]
@@ -269,9 +271,9 @@ mod tests {
         let expected: Vec<f64> = (1..=n)
             .map(|k| f64::from(u32::try_from(k).unwrap()))
             .collect();
-        let mut rhs = product(&a, &expected);
-        assert_eq!(solve_in_range(&a, &mut rhs, EXACT), Ok(n));
-        for (found, expected) in rhs.iter().zip(&expected) {
+        let mut right_hand_side = product(&a, &expected);
+        assert_eq!(solve_in_range(&a, &mut right_hand_side, EXACT), Ok(n));
+        for (found, expected) in right_hand_side.iter().zip(&expected) {
             assert!(
                 (found - expected).abs() < 1e-11 * expected,
                 "{found} for {expected}"
@@ -285,25 +287,25 @@ mod tests {
         // Φ − I = [[−0.5, 0.2], [0, 0]] is singular, and every x with x₂ fixed and
         // −0.5 x₁ + 0.2 x₂ = 1 solves it. The step in its range keeps x₂ as it is, where
         // the least-norm solution would move it.
-        let mut rhs = [1.0, 0.0];
+        let mut right_hand_side = [1.0, 0.0];
         assert_eq!(
-            solve_in_range(&[-0.5, 0.0, 0.2, 0.0], &mut rhs, EXACT),
+            solve_in_range(&[-0.5, 0.0, 0.2, 0.0], &mut right_hand_side, EXACT),
             Ok(1)
         );
         assert!(
-            (rhs[0] + 2.0).abs() < 1e-15 && rhs[1].abs() < 1e-15,
-            "{rhs:?}"
+            (right_hand_side[0] + 2.0).abs() < 1e-15 && right_hand_side[1].abs() < 1e-15,
+            "{right_hand_side:?}"
         );
         // So does an inconsistent system, whose second row asks for a change of x₂ that no
         // x gives: the least-squares solution solves the first row alone.
-        let mut rhs = [1.0, 1e-3];
+        let mut right_hand_side = [1.0, 1e-3];
         assert_eq!(
-            solve_in_range(&[-0.5, 0.0, 0.2, 0.0], &mut rhs, EXACT),
+            solve_in_range(&[-0.5, 0.0, 0.2, 0.0], &mut right_hand_side, EXACT),
             Ok(1)
         );
         assert!(
-            (rhs[0] + 2.0).abs() < 1e-15 && rhs[1].abs() < 1e-15,
-            "{rhs:?}"
+            (right_hand_side[0] + 2.0).abs() < 1e-15 && right_hand_side[1].abs() < 1e-15,
+            "{right_hand_side:?}"
         );
     }
 
@@ -313,14 +315,14 @@ mod tests {
         // [[−0.7, 0.2], [−0.7, 0.2]], and M [1, 0] = [1, 1]. The conserved quantity is now
         // x₂' − x₁', and the solution M [−2, 0] = [−2, −2] keeps it, where the least-norm
         // solution, along [−0.7, 0.2], would not.
-        let mut rhs = [1.0, 1.0];
+        let mut right_hand_side = [1.0, 1.0];
         assert_eq!(
-            solve_in_range(&[-0.7, -0.7, 0.2, 0.2], &mut rhs, EXACT),
+            solve_in_range(&[-0.7, -0.7, 0.2, 0.2], &mut right_hand_side, EXACT),
             Ok(1)
         );
         assert!(
-            (rhs[0] + 2.0).abs() < 1e-14 && (rhs[1] + 2.0).abs() < 1e-14,
-            "{rhs:?}"
+            (right_hand_side[0] + 2.0).abs() < 1e-14 && (right_hand_side[1] + 2.0).abs() < 1e-14,
+            "{right_hand_side:?}"
         );
     }
 
@@ -328,25 +330,26 @@ mod tests {
     fn a_map_that_carries_its_range_into_its_null_space_takes_the_least_step() {
         // [[0, 1], [0, 0]]: the range, the first axis, is the null space too, so no x in the
         // range changes the residual, and the least of them is zero.
-        let mut rhs = [1.0, 0.0];
+        let mut right_hand_side = [1.0, 0.0];
         assert_eq!(
-            solve_in_range(&[0.0, 0.0, 1.0, 0.0], &mut rhs, EXACT),
+            solve_in_range(&[0.0, 0.0, 1.0, 0.0], &mut right_hand_side, EXACT),
             Ok(1)
         );
-        assert!(rhs.iter().all(|value| value.abs() < 1e-15), "{rhs:?}");
+        assert!(right_hand_side.iter().all(|value| value.abs() < 1e-15), "{right_hand_side:?}");
     }
 
     #[test]
     fn a_singular_value_within_the_rounding_counts_as_zero() {
         // The second row is the first, scaled, short of it by a rounding: rank 1.
         let scale = 3.0;
-        let mut rhs = [1.0, scale];
+        let mut right_hand_side = [1.0, scale];
         let a = [1.0, scale * (1.0 + f64::EPSILON), 2.0, scale * 2.0];
-        assert_eq!(solve_in_range(&a, &mut rhs, EXACT), Ok(1));
+        assert_eq!(solve_in_range(&a, &mut right_hand_side, EXACT), Ok(1));
         assert!(
-            rhs.iter()
+            right_hand_side
+                .iter()
                 .all(|value| value.is_finite() && value.abs() < 1.0),
-            "{rhs:?}"
+            "{right_hand_side:?}"
         );
     }
 
@@ -356,25 +359,25 @@ mod tests {
         // side's error. Known to within 1, a part of 0.5 along it is left out; a part of 2
         // is not, nor is any part along a singular value above the cutoff.
         let a = [1.0, 0.0, 0.0, 1e-4];
-        let mut rhs = [3.0, 0.5];
-        assert_eq!(solve_in_range(&a, &mut rhs, (1e-3, 1.0)), Ok(1));
+        let mut right_hand_side = [3.0, 0.5];
+        assert_eq!(solve_in_range(&a, &mut right_hand_side, (1e-3, 1.0)), Ok(1));
         assert!(
-            (rhs[0] - 3.0).abs() < 1e-15 && rhs[1].abs() < 1e-15,
-            "{rhs:?}"
+            (right_hand_side[0] - 3.0).abs() < 1e-15 && right_hand_side[1].abs() < 1e-15,
+            "{right_hand_side:?}"
         );
-        let mut rhs = [3.0, 2.0];
-        assert_eq!(solve_in_range(&a, &mut rhs, (1e-3, 1.0)), Ok(2));
-        assert!((rhs[1] - 2e4).abs() < 1e-9, "{rhs:?}");
-        let mut rhs = [3.0, 0.5];
-        assert_eq!(solve_in_range(&a, &mut rhs, (1e-5, 1.0)), Ok(2));
+        let mut right_hand_side = [3.0, 2.0];
+        assert_eq!(solve_in_range(&a, &mut right_hand_side, (1e-3, 1.0)), Ok(2));
+        assert!((right_hand_side[1] - 2e4).abs() < 1e-9, "{right_hand_side:?}");
+        let mut right_hand_side = [3.0, 0.5];
+        assert_eq!(solve_in_range(&a, &mut right_hand_side, (1e-5, 1.0)), Ok(2));
         // The parts left out add up: with a third direction of 2e-4 and 0.9 along it, the
         // two together pass 1, so only the second, the least, is left out.
         let a = [1.0, 0.0, 0.0, 0.0, 1e-4, 0.0, 0.0, 0.0, 2e-4];
-        let mut rhs = [3.0, 0.5, 0.9];
-        assert_eq!(solve_in_range(&a, &mut rhs, (1e-3, 1.0)), Ok(2));
+        let mut right_hand_side = [3.0, 0.5, 0.9];
+        assert_eq!(solve_in_range(&a, &mut right_hand_side, (1e-3, 1.0)), Ok(2));
         assert!(
-            rhs[1].abs() < 1e-15 && (rhs[2] - 4.5e3).abs() < 1e-9,
-            "{rhs:?}"
+            right_hand_side[1].abs() < 1e-15 && (right_hand_side[2] - 4.5e3).abs() < 1e-9,
+            "{right_hand_side:?}"
         );
     }
 
@@ -382,9 +385,9 @@ mod tests {
     fn a_number_that_is_not_finite_has_no_solution() {
         // The projections onto the decomposition's directions carry the NaN into every
         // value of the solution, each of which the error names.
-        let mut rhs = [1.0, f64::NAN];
+        let mut right_hand_side = [1.0, f64::NAN];
         assert_eq!(
-            solve_in_range(&[1.0, 0.0, 0.0, 1.0], &mut rhs, EXACT),
+            solve_in_range(&[1.0, 0.0, 0.0, 1.0], &mut right_hand_side, EXACT),
             Err(LinearError::Singular {
                 columns: vec![0, 1]
             })
