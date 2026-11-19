@@ -1028,8 +1028,7 @@ def sensitivities() -> list[Fixture]:
             name="Sensitivities over frequency",
             known=Known(
                 values={
-                    n: derivative_ac(f)
-                    for n, f in zip(names, FREQUENCIES, strict=True)
+                    n: derivative_ac(f) for n, f in zip(names, FREQUENCIES, strict=True)
                 },
                 source="closed form: a low pass's derivative in its resistance",
             ),

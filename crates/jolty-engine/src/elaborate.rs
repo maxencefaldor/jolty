@@ -511,7 +511,10 @@ fn reference(circuit: &Circuit) -> (Option<&Name>, Vec<ElaborationProblem>) {
         .collect();
     match grounds.as_slice() {
         [ground] => (Some(*ground), Vec::new()),
-        [] => (None, vec![ElaborationProblem::NoGround(circuit.top.clone())]),
+        [] => (
+            None,
+            vec![ElaborationProblem::NoGround(circuit.top.clone())],
+        ),
         _ => (
             None,
             vec![ElaborationProblem::SeveralGrounds {

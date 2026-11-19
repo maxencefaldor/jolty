@@ -588,7 +588,12 @@ def test_offline_docs_fallback_to_packaged_bundle_without_checkout(
     )
 
     monkeypatch.setattr(service, "_repository_root", lambda: tmp_path / "missing")
-    monkeypatch.setattr(importlib.resources, "files", lambda _package: tmp_path)
+    original_files = importlib.resources.files
+    monkeypatch.setattr(
+        importlib.resources,
+        "files",
+        lambda package: tmp_path if package == "jolty" else original_files(package),
+    )
 
     summaries = service.document_summaries()
     assert [(entry.section, entry.slug) for entry in summaries] == [

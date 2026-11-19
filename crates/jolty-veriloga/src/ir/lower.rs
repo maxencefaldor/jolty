@@ -968,7 +968,9 @@ impl<'a> Scope<'a> {
                 Box::new(recurse(otherwise)?),
             ),
             ast::Expression::Name(name) => return self.resolve_name(name, line, sink),
-            ast::Expression::Call(name, arguments) => return self.call(name, arguments, line, sink),
+            ast::Expression::Call(name, arguments) => {
+                return self.call(name, arguments, line, sink);
+            }
         })
     }
 

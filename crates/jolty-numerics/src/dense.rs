@@ -335,7 +335,10 @@ mod tests {
             solve_in_range(&[0.0, 0.0, 1.0, 0.0], &mut right_hand_side, EXACT),
             Ok(1)
         );
-        assert!(right_hand_side.iter().all(|value| value.abs() < 1e-15), "{right_hand_side:?}");
+        assert!(
+            right_hand_side.iter().all(|value| value.abs() < 1e-15),
+            "{right_hand_side:?}"
+        );
     }
 
     #[test]
@@ -367,7 +370,10 @@ mod tests {
         );
         let mut right_hand_side = [3.0, 2.0];
         assert_eq!(solve_in_range(&a, &mut right_hand_side, (1e-3, 1.0)), Ok(2));
-        assert!((right_hand_side[1] - 2e4).abs() < 1e-9, "{right_hand_side:?}");
+        assert!(
+            (right_hand_side[1] - 2e4).abs() < 1e-9,
+            "{right_hand_side:?}"
+        );
         let mut right_hand_side = [3.0, 0.5];
         assert_eq!(solve_in_range(&a, &mut right_hand_side, (1e-5, 1.0)), Ok(2));
         // The parts left out add up: with a third direction of 2e-4 and 0.9 along it, the

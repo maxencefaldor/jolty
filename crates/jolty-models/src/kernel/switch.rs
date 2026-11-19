@@ -227,9 +227,9 @@ impl Kernel for VoltageControlledSwitch {
         layout: &mut Layout,
     ) -> Result<VoltageControlledSwitchShape, ParameterError> {
         let [positive, negative, ..] = TERMINALS;
-        Ok(VoltageControlledSwitchShape([positive, negative].map(|row| {
-            TERMINALS.map(|column| layout.entry(row, column))
-        })))
+        Ok(VoltageControlledSwitchShape([positive, negative].map(
+            |row| TERMINALS.map(|column| layout.entry(row, column)),
+        )))
     }
 
     fn evaluate<R: Real>(

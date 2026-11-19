@@ -717,11 +717,8 @@ impl Emitter<'_, '_> {
                     } else {
                         divisor
                     };
-                    let reciprocal = Expression::Binary(
-                        "/",
-                        Box::new(Expression::Real(1.0)),
-                        right.clone(),
-                    );
+                    let reciprocal =
+                        Expression::Binary("/", Box::new(Expression::Real(1.0)), right.clone());
                     let reciprocal = self.static_operand(&reciprocal);
                     let reciprocal = Self::convert(reciprocal, &Kind::Real)?;
                     return Ok(Operand::new(

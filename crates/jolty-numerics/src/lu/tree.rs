@@ -661,7 +661,10 @@ impl<T: Scalar> Interior<T> {
         if transposed {
             for step in 0..self.factors.pivots.len() {
                 let right_hand_side = frame[self.pivot_columns[step]];
-                let value = self.factors.upper.subtract_dot(step, right_hand_side, steps);
+                let value = self
+                    .factors
+                    .upper
+                    .subtract_dot(step, right_hand_side, steps);
                 steps.push(value / self.factors.pivots[step]);
             }
             for index in 0..self.update_rows.len() {

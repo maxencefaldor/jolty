@@ -1677,7 +1677,10 @@ impl<R: Real> VbicParameters<R> {
             self.epitaxial_doping_parameter,
         )?;
         let saturation = self.epitaxial_saturation_voltage.map(|voltage| {
-            scaling.power(voltage, self.epitaxial_saturation_voltage_temperature_exponent)
+            scaling.power(
+                voltage,
+                self.epitaxial_saturation_voltage_temperature_exponent,
+            )
         });
         Ok(Collector {
             resistance,

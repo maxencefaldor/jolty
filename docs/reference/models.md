@@ -637,7 +637,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `eta0` | `0.08` | The drain-induced barrier lowering in the subthreshold region, `eta0`; default 0.08. |
 | `etab` | `-0.07` | The body-bias coefficient of `eta0`, `etab`, in per volt; default -0.07. |
 | `eu` |  | The mobility exponent, `eu`; default 1.67 for an n-channel and 1 for a p-channel. |
-| `finger_spacing` |  | The distance between neighbouring fingers, `sd`, in meters; default twice `dmcg`. |
+| `finger_spacing` |  | The distance between neighboring fingers, `sd`, in meters; default twice `dmcg`. |
 | `fingers` | `1` | The number of fingers the channel's width is split into, `nf`; default 1. |
 | `flicker_noise_model` | `1` | The flicker noise model, `fnoimod`, 0 or 1; default 1. |
 | `fprout` | `0` | The rout degradation coefficient for pocket devices, `fprout`, in volts per square-root meter; default 0. |
@@ -1364,14 +1364,14 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `waveform` | required | The source's level over time, in volts or amperes. |
-| `waveform.dc` |  | A constant level. |
+| `waveform` | required | The source's value over time, in volts or amperes. |
+| `waveform.dc` |  | A constant value. |
 | `waveform.pulse` |  | A trapezoidal pulse, repeated each period, if it has one. |
 | `waveform.pulse.delay` | `0` | The time the first pulse starts its rise, in seconds. |
 | `waveform.pulse.fall` | required | The time each pulse takes to fall, in seconds; positive. |
-| `waveform.pulse.initial` | required | The level before the delay and between pulses. |
+| `waveform.pulse.initial` | required | The value before the delay and between pulses. |
 | `waveform.pulse.period` |  | The time from one pulse's start to the next's, in seconds; without it, a single pulse. |
-| `waveform.pulse.pulsed` | required | The level at the top of each pulse. |
+| `waveform.pulse.pulsed` | required | The value at the top of each pulse. |
 | `waveform.pulse.rise` | required | The time each pulse takes to rise, in seconds; positive. |
 | `waveform.pulse.width` | required | The time each pulse holds its top, in seconds. |
 | `waveform.sine` |  | A sine, damped from its delay on. |
@@ -1379,15 +1379,15 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `waveform.sine.damping` | `0` | The rate at which the amplitude decays from the delay on, per second. |
 | `waveform.sine.delay` | `0` | The time the sine starts, in seconds, before which it holds its value then. |
 | `waveform.sine.frequency` | required | The sine's frequency, in hertz. |
-| `waveform.sine.offset` | required | The level the sine swings about. |
+| `waveform.sine.offset` | required | The value the sine swings about. |
 | `waveform.sine.phase` | `0` | The phase at the delay, in radians. |
-| `waveform.piecewise` |  | Straight lines between points, holding the first and last levels outside them. |
-| `waveform.piecewise.points` | required | Each point's time and level, in strictly increasing time; at least one. |
-| `waveform.exponential` |  | A rise toward a level and a fall back, each exponential, as SPICE's `EXP`. |
+| `waveform.piecewise` |  | Straight lines between points, holding the first and last values outside them. |
+| `waveform.piecewise.points` | required | Each point's time and value, in strictly increasing time; at least one. |
+| `waveform.exponential` |  | A rise toward a value and a fall back, each exponential, as SPICE's `EXP`. |
 | `waveform.exponential.fall_delay` | required | The time the fall starts, in seconds; at or after the rise delay. |
 | `waveform.exponential.fall_time_constant` | required | The fall's time constant, in seconds; positive. |
-| `waveform.exponential.initial` | required | The level before the rise delay. |
-| `waveform.exponential.pulsed` | required | The level the rise tends to. |
+| `waveform.exponential.initial` | required | The value before the rise delay. |
+| `waveform.exponential.pulsed` | required | The value the rise tends to. |
 | `waveform.exponential.rise_delay` | `0` | The time the rise starts, in seconds. |
 | `waveform.exponential.rise_time_constant` | required | The rise's time constant, in seconds; positive. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
@@ -1453,10 +1453,10 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `length` | required | The channel's length, in metres; positive. |
+| `length` | required | The channel's length, in meters; positive. |
 | `model` | required | The kit's model of the transistor, such as `sky130_fd_pr__nfet_01v8`. |
 | `pdk` | required | The process design kit, such as `sky130`. |
-| `width` | required | The channel's width, all its fingers together, in metres; positive. |
+| `width` | required | The channel's width, all its fingers together, in meters; positive. |
 | `fingers` | `1` | The fingers the width is split into; 1 unless given. |
 | `multiplier` | `1` | The transistors in parallel; 1 unless given. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
@@ -1663,7 +1663,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `activation_energy` | `1.12` | The activation energy of the transport saturation current and of the epi doping, `EA`, in volts; default 1.12. |
+| `activation_energy` | `1.12` | The activation energy of the transport saturation current and of the epitaxial doping, `EA`, in volts; default 1.12. |
 | `avalanche_coefficient` | `0` | The weak avalanche's coefficient, `AVC1`, per volt; default 0, no avalanche. |
 | `avalanche_exponent_coefficient` | `0` | The weak avalanche's exponent coefficient, `AVC2`, in volts to the power `1 − MC`; default 0. |
 | `avalanche_temperature_coefficient` | `0` | The linear temperature coefficient of the avalanche's exponent coefficient, `TAVC`, per kelvin; default 0. |
@@ -1693,10 +1693,10 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `emission_coefficient_temperature_coefficient` | `0` | The linear temperature coefficient of the forward and reverse emission coefficients, `TNF`, per kelvin; default 0. |
 | `emitter_resistance` | `0` | The emitter resistance, `RE`, in ohms; default 0. |
 | `emitter_resistance_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the emitter resistance, `XRE`; default 0. |
-| `epi_charge` | `0` | The epi layer's charge, `QCO`, in coulombs; default 0. |
-| `epi_doping_parameter` | `0` | The epi layer's doping parameter, `GAMM`; default 0. |
-| `epi_saturation_voltage` |  | The epi layer's drift saturation voltage, `VO`, in volts; infinite by default, for no velocity saturation. |
-| `epi_saturation_voltage_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the epi saturation voltage, `XVO`; default 0. |
+| `epitaxial_charge` | `0` | The epitaxial layer's charge, `QCO`, in coulombs; default 0. |
+| `epitaxial_doping_parameter` | `0` | The epitaxial layer's doping parameter, `GAMM`; default 0. |
+| `epitaxial_saturation_voltage` |  | The epitaxial layer's drift saturation voltage, `VO`, in volts; infinite by default, for no velocity saturation. |
+| `epitaxial_saturation_voltage_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the epitaxial saturation voltage, `XVO`; default 0. |
 | `excess_phase_delay` | `0` | The forward excess-phase delay, `TD`, in seconds; default 0, no excess phase. |
 | `extrinsic_base_collector_capacitance` | `0` | The zero-bias extrinsic base-collector depletion capacitance, `CJEP`, in farads, the parasitic transistor's base-emitter junction's; default 0. |
 | `extrinsic_base_resistance` | `0` | The extrinsic base resistance, `RBX`, in ohms; default 0. |
@@ -1806,7 +1806,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `multiplier` | `1` | The number of identical transistors in parallel, `M`; default 1. |
 | `nominal_temperature` | `300.15` | The temperature the parameters were measured at, `TNOM`, in kelvins; default 27 °C. |
 | `quasi_saturation_resistance` |  | The quasi-saturation resistance, `RQ`, in ohms, which the drain resistance grows towards with the drain voltage; default none, for no quasi-saturation. |
-| `quasi_saturation_temperature_exponent` | `0.3` | The exponent of the temperature ratio that scales the quasi-saturation resistance, `TEXP1`; default 0.3. |
+| `quasi_saturation_resistance_temperature_exponent` | `0.3` | The exponent of the temperature ratio that scales the quasi-saturation resistance, `TEXP1`; default 0.3. |
 | `quasi_saturation_voltage` |  | The quasi-saturation voltage, `VQ`, in volts, at which the drain resistance has grown by half the quasi-saturation resistance; default none, for no quasi-saturation. |
 | `saturation_current` | `1e-14` | The body diode's saturation current, `IS`, in amperes; default 1e-14. |
 | `saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the body diode's saturation current's scaling, `XTI`; default 3. |
@@ -1876,14 +1876,14 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `waveform` | required | The source's level over time, in volts or amperes. |
-| `waveform.dc` |  | A constant level. |
+| `waveform` | required | The source's value over time, in volts or amperes. |
+| `waveform.dc` |  | A constant value. |
 | `waveform.pulse` |  | A trapezoidal pulse, repeated each period, if it has one. |
 | `waveform.pulse.delay` | `0` | The time the first pulse starts its rise, in seconds. |
 | `waveform.pulse.fall` | required | The time each pulse takes to fall, in seconds; positive. |
-| `waveform.pulse.initial` | required | The level before the delay and between pulses. |
+| `waveform.pulse.initial` | required | The value before the delay and between pulses. |
 | `waveform.pulse.period` |  | The time from one pulse's start to the next's, in seconds; without it, a single pulse. |
-| `waveform.pulse.pulsed` | required | The level at the top of each pulse. |
+| `waveform.pulse.pulsed` | required | The value at the top of each pulse. |
 | `waveform.pulse.rise` | required | The time each pulse takes to rise, in seconds; positive. |
 | `waveform.pulse.width` | required | The time each pulse holds its top, in seconds. |
 | `waveform.sine` |  | A sine, damped from its delay on. |
@@ -1891,15 +1891,15 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `waveform.sine.damping` | `0` | The rate at which the amplitude decays from the delay on, per second. |
 | `waveform.sine.delay` | `0` | The time the sine starts, in seconds, before which it holds its value then. |
 | `waveform.sine.frequency` | required | The sine's frequency, in hertz. |
-| `waveform.sine.offset` | required | The level the sine swings about. |
+| `waveform.sine.offset` | required | The value the sine swings about. |
 | `waveform.sine.phase` | `0` | The phase at the delay, in radians. |
-| `waveform.piecewise` |  | Straight lines between points, holding the first and last levels outside them. |
-| `waveform.piecewise.points` | required | Each point's time and level, in strictly increasing time; at least one. |
-| `waveform.exponential` |  | A rise toward a level and a fall back, each exponential, as SPICE's `EXP`. |
+| `waveform.piecewise` |  | Straight lines between points, holding the first and last values outside them. |
+| `waveform.piecewise.points` | required | Each point's time and value, in strictly increasing time; at least one. |
+| `waveform.exponential` |  | A rise toward a value and a fall back, each exponential, as SPICE's `EXP`. |
 | `waveform.exponential.fall_delay` | required | The time the fall starts, in seconds; at or after the rise delay. |
 | `waveform.exponential.fall_time_constant` | required | The fall's time constant, in seconds; positive. |
-| `waveform.exponential.initial` | required | The level before the rise delay. |
-| `waveform.exponential.pulsed` | required | The level the rise tends to. |
+| `waveform.exponential.initial` | required | The value before the rise delay. |
+| `waveform.exponential.pulsed` | required | The value the rise tends to. |
 | `waveform.exponential.rise_delay` | `0` | The time the rise starts, in seconds. |
 | `waveform.exponential.rise_time_constant` | required | The rise's time constant, in seconds; positive. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |

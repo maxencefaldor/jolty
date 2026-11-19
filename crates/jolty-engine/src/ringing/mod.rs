@@ -400,11 +400,8 @@ impl CachedComponent {
         let mut loop_derivatives = vec![[0.0; 4]; self.sources.len()];
         let mut loop_charges = vec![[0.0; 4]; self.sources.len()];
         let mut rounding_floor = 0.0_f64;
-        for (step, (&derivative_slice, &charge_slice)) in window
-            .derivatives
-            .iter()
-            .zip(&window.charges)
-            .enumerate()
+        for (step, (&derivative_slice, &charge_slice)) in
+            window.derivatives.iter().zip(&window.charges).enumerate()
         {
             if !solve_saddle_slice(
                 &mut factors,

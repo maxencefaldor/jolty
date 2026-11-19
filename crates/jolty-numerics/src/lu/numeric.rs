@@ -624,7 +624,12 @@ impl<T: Scalar> Numeric<T> {
                 threads,
             );
         }
-        gather(right_hand_side, by_position, ordering.column_positions(), threads);
+        gather(
+            right_hand_side,
+            by_position,
+            ordering.column_positions(),
+            threads,
+        );
     }
 
     /// Solves `Aᵀ x = right_hand_side` and leaves `x` in `right_hand_side`, as

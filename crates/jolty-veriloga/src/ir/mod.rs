@@ -202,11 +202,7 @@ pub(crate) struct Limit {
 /// A range of a parameter: whether it excludes its values rather than admitting them,
 /// and its lower and upper bounds, each with whether it is included, `None` for an
 /// infinite one: a constant, or an expression of the parameters.
-pub(crate) type Bounds = (
-    bool,
-    Option<(Expression, bool)>,
-    Option<(Expression, bool)>,
-);
+pub(crate) type Bounds = (bool, Option<(Expression, bool)>, Option<(Expression, bool)>);
 
 /// A non-constant `localparam`, resolved: evaluated once during preparation in
 /// declaration order so its value and parameter derivatives propagate everywhere it is

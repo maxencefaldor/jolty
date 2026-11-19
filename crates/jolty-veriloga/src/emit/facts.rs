@@ -66,9 +66,8 @@ pub(super) fn stamps(statement: &Statement) -> bool {
 
 /// Whether `statement` adds a noise source, or holds one that does.
 pub(super) fn makes_noise(statement: &Statement) -> bool {
-    statement.any(&|inner| {
-        matches!(inner, Statement::Contribute { noise, .. } if !noise.is_empty())
-    })
+    statement
+        .any(&|inner| matches!(inner, Statement::Contribute { noise, .. } if !noise.is_empty()))
 }
 
 impl<'m> Facts<'m> {
@@ -423,9 +422,7 @@ fn static_tasks(statements: &[Statement], module: &Module, dynamic: bool) -> Res
             Statement::While(condition, body) => {
                 static_tasks(body, module, dynamic || module.is_dynamic(condition))?;
             }
-            Statement::Warn(_, _, true)
-            | Statement::Assign(..)
-            | Statement::Contribute { .. } => {}
+            Statement::Warn(_, _, true) | Statement::Assign(..) | Statement::Contribute { .. } => {}
         }
     }
     Ok(())

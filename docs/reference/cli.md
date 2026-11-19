@@ -76,25 +76,25 @@ Plot the analyses of a saved results file.
 
 ## `jolty measure`
 
-Read a measurement from a saved results file.
+Read a measure from a saved results file.
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
 | `RESULTS` | required | A .results.npz file. |
-| `--measure` | required | Measurement to read from the analysis result. |
+| `--measure` | required | Measure to read from the analysis result. |
 | `--analysis` |  | Name of the analysis in the results file; optional when the file holds a single analysis. |
 | `--signal` |  | Unknown to read, such as 'out', 'X1/mid' or 'V1:current'; omitted for a stability loop gain, period, noise, solutions or pole-zero measure. |
-| `--reference` |  | Reference net for a differential voltage measurement. |
-| `--over` |  | Divisor unknown for a small-signal transfer measurement (gain, phase, bandwidth, crossover, phase_margin, gain_margin). |
-| `--at` |  | Point along the analysis axis in SI base units: time in seconds for a transient or periodic steady state, swept level for a DC sweep, or frequency in hertz for gain, phase and noise_density. |
-| `--start` |  | Window start in SI base units: time in seconds, swept level, or frequency in hertz for integrated_noise; defaults to the start of the axis. |
-| `--stop` |  | Window stop in SI base units: time in seconds, swept level, or frequency in hertz for integrated_noise; defaults to the end of the axis. |
+| `--reference` |  | Reference net for a differential voltage measure. |
+| `--over` |  | Divisor unknown for a small-signal transfer measure (gain, phase, bandwidth, crossover, phase_margin, gain_margin). |
+| `--at` |  | Point along the analysis axis in SI base units: time in seconds for a transient or periodic steady state, swept value for a DC sweep, or frequency in hertz for gain, phase and noise_density. |
+| `--start` |  | Window start in SI base units: time in seconds, swept value, or frequency in hertz for integrated_noise; defaults to the start of the axis. |
+| `--stop` |  | Window stop in SI base units: time in seconds, swept value, or frequency in hertz for integrated_noise; defaults to the end of the axis. |
 | `--drop` |  | Gain drop in decibels for bandwidth; defaults to 3.0. |
-| `--low` |  | Lower step fraction (between 0 and 1) for rise_time; defaults to 0.1. |
-| `--high` |  | Upper step fraction (between 0 and 1) for rise_time; defaults to 0.9. |
+| `--lower` |  | Lower step fraction (between 0 and 1) for rise_time; defaults to 0.1. |
+| `--upper` |  | Upper step fraction (between 0 and 1) for rise_time; defaults to 0.9. |
 | `--band` |  | Settling band fraction (positive) for settling_time; defaults to 0.02. |
-| `--level` |  | Threshold level in SI base units of the signal (volts, amperes, kelvins or plain number) for crossing (required) or frequency (optional midpoint default). |
+| `--threshold` |  | Threshold in SI base units of the signal (volts, amperes, kelvins or plain number) for crossing (required) or frequency (optional midpoint default). |
 | `--edge` |  | Crossing direction for crossing: 'rising', 'falling' or 'either'; defaults to 'either'. |
 | `--fundamental` |  | Fundamental frequency in hertz for distortion (required). |
 | `--harmonics` |  | Highest harmonic counted for distortion; defaults to 9. |
@@ -146,7 +146,7 @@ Explain rules and their levels.
 | `--output-format` | `text` | 'text' for people and agents, 'json' for programs. |
 | `RULES` |  | Rules to explain; every rule by default. |
 
-## `jolty docs`
+## `jolty read-docs`
 
 List or read the offline guide and examples.
 
