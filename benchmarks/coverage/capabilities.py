@@ -2053,7 +2053,7 @@ def ngspice_only(  # noqa: PLR0913, PLR0917 - a row's names, its deck and its an
     deck: tuple[str, ...],
     ngspice_commands: tuple[str, ...],
     reads: Mapping[str, Read],
-    known: Values | None,
+    known: Mapping[str, complex] | None,
     source: str,
     *,
     xyce: tuple[tuple[str, ...], str] | Unsupported | Documented,
@@ -2066,7 +2066,7 @@ def ngspice_only(  # noqa: PLR0913, PLR0917 - a row's names, its deck and its an
         key=key,
         category=category,
         name=name,
-        known=Known(values=known, source=source, tolerance=tolerance)
+        known=Known(values=dict(known), source=source, tolerance=tolerance)
         if known is not None
         else Known(source=source),
         jolty=lambda: solved(deck_circuit(deck), OperatingPoint(), names),

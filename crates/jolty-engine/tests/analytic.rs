@@ -1324,10 +1324,7 @@ fn sources_in_parallel_leave_their_currents_undetermined() {
 
 #[test]
 fn analyses_name_what_they_cannot_find() {
-    let circuit = circuit([
-        voltage_dc("V1", "in", 1.0),
-        resistor("R1", 1.0, "in", "0"),
-    ]);
+    let circuit = circuit([voltage_dc("V1", "in", 1.0), resistor("R1", 1.0, "in", "0")]);
     let mut simulator = simulator(&circuit);
     let options = Options::default();
     let missing = DcSweep {
@@ -1428,10 +1425,7 @@ fn a_transient_names_the_equation_whose_error_it_could_not_bound() {
 #[test]
 fn a_transient_whose_results_would_fill_the_memory_fails_at_once() {
     // A second in picosecond steps: a trillion points, of a few numbers each.
-    let circuit = circuit([
-        voltage_dc("V1", "in", 1.0),
-        resistor("R1", 1e3, "in", "0"),
-    ]);
+    let circuit = circuit([voltage_dc("V1", "in", 1.0), resistor("R1", 1e3, "in", "0")]);
     let error = simulator(&circuit)
         .run(
             &Analysis::Transient(trapezoidal(1.0, Some(1e-12))),

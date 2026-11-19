@@ -227,13 +227,12 @@ def _set_array(
     def mutate(
         arrays: ArchiveEntries, _header: JsonObject, _data: st.DataObject
     ) -> bool:
-        arrays[key] = (
-            value.copy()
-            if isinstance(value, np.ndarray)
-            else value()
-            if callable(value)
-            else value
-        )
+        if isinstance(value, np.ndarray):
+            arrays[key] = value.copy()
+        elif isinstance(value, bytes):
+            arrays[key] = value
+        else:
+            arrays[key] = value()
         return rewrites_header
 
     return mutate

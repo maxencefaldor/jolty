@@ -27,9 +27,9 @@ class Arm(StrEnum):
     NGSPICE = "ngspice"
 
 
-TOOLS: Final = Path(__file__).with_name("ngspice.toml")
+TOOLS: Final[Path] = Path(__file__).with_name("ngspice.toml")
 """The ngspice arm's tools, in place of the jolty arm's in every prompt."""
-DISCRETE_PARTS: Final = Path(__file__).with_name("discrete_parts.py")
+DISCRETE_PARTS: Final[Path] = Path(__file__).with_name("discrete_parts.py")
 """Standalone 2N3904 and 2N3906 definitions shared by discrete transistor tasks."""
 SUFFIXES: Final = {Arm.JOLTY: ".py", Arm.NGSPICE: ".cir"}
 """The suffix of each arm's designs: a script's, or a netlist's."""

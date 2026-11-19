@@ -12,10 +12,12 @@ pub(crate) fn current_source(
     negative: &str,
     waveform: Value,
 ) -> Instance {
+    let mut parameters = serde_json::Map::new();
+    parameters.insert("waveform".to_owned(), waveform);
     device(
         name,
         "current_source",
-        json!({"waveform": waveform}),
+        Value::Object(parameters),
         &[("positive", positive), ("negative", negative)],
     )
 }

@@ -60,7 +60,12 @@ pub(crate) fn two_terminal(
     a: &str,
     b: &str,
 ) -> Instance {
-    device(name, model, json!({parameter: value}), &[("a", a), ("b", b)])
+    device(
+        name,
+        model,
+        json!({parameter: value}),
+        &[("a", a), ("b", b)],
+    )
 }
 
 /// A resistor named `name` of `resistance` ohms between `a` and `b`.
@@ -75,10 +80,12 @@ pub(crate) fn voltage_source(
     negative: &str,
     waveform: Value,
 ) -> Instance {
+    let mut parameters = serde_json::Map::new();
+    parameters.insert("waveform".to_owned(), waveform);
     device(
         name,
         "voltage_source",
-        json!({"waveform": waveform}),
+        Value::Object(parameters),
         &[("positive", positive), ("negative", negative)],
     )
 }

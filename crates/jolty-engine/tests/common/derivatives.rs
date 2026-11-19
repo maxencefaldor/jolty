@@ -60,6 +60,8 @@ pub(crate) fn moved(circuit: &Circuit, device_name: &str, name: &str, value: f64
     let slot = jolty_ir::parameter_mut(&mut parameters, name).expect("the parameter is set");
     *slot = Value::from(value);
     let mut conditions = Conditions::default();
-    conditions.overrides.insert(device_name.to_owned(), parameters);
+    conditions
+        .overrides
+        .insert(device_name.to_owned(), parameters);
     Simulator::new(circuit, &Library::standard(), &conditions).expect("an elaborated circuit")
 }

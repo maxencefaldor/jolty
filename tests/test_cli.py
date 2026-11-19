@@ -60,13 +60,24 @@ def run(*arguments: str) -> int:
     return 0
 
 
+class _Captured:
+    """Captured standard output and error streams from a CLI invocation."""
+
+    __slots__ = ("err", "out")
+
+    def __init__(self, out: str, err: str) -> None:
+        self.out = out
+        self.err = err
+
+
 def _invoke(
     capsys: pytest.CaptureFixture[str],
     *arguments: str,
     code: int = 0,
-) -> pytest.CaptureResult[str]:
+) -> _Captured:
     assert run(*arguments) == code
-    return capsys.readouterr()
+    captured = capsys.readouterr()
+    return _Captured(captured.out, captured.err)
 
 
 def test_version_prints_the_installed_version(

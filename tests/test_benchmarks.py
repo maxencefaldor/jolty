@@ -1048,7 +1048,7 @@ def test_throughput_efficiency_math_and_edge_cases() -> None:
             serial_seconds=serial,
             parallel_seconds=parallel,
             copies_wall_seconds=wall,
-            copy_seconds=copies,
+            copy_seconds=copies if copies is not None else (),
         )
         assert found is not None
         actual = (
