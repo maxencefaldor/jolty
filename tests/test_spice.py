@@ -1597,7 +1597,7 @@ def test_the_scale_option_scales_a_bsim4s_sizes_and_distances() -> None:
     """The option `scale` multiplies a BSIM4's lengths, and its areas by its square.
 
     A BSIM4's length, width and perimeters, and its distances to its diffusion's edges
-    and between its fingers, as `b4v5par.c` scales them, all in micrometres here.
+    and between its fingers, as `b4v5par.c` scales them, all in micrometers here.
     `rel=1e-15, abs=0` (~4.5 eps) covers single `scale` and `scale**2` rounding without
     default `abs=1e-12` masking `drain_area=1e-12`.
     """
@@ -3186,7 +3186,7 @@ def test_passive_geometric_binned_and_vbic_model_cards_use_func() -> None:
     assert devs["Q1.cth"][1]["capacitance"] == pytest.approx(2e-6, rel=1e-15, abs=0)
     bin_card = lib.card("mbin", {})
     assert bin_card is not None
-    assert models.centre(bin_card, lib.values(), functions=lib.functions) == (
+    assert models.center(bin_card, lib.values(), functions=lib.functions) == (
         pytest.approx((1.25e-6, 5.5e-6), rel=1e-15, abs=0)
     )
 
@@ -3585,7 +3585,13 @@ def test_library_reads_driven_pss_statements() -> None:
     assert cards[0].statement is not None
     assert cards[0].statement.line == 3
     expected: tuple[dict[str, object], ...] = (
-        {"autonomous": False, "frequency": 1e6, "period": 1e-6, "stabilization": None},
+        {
+            "autonomous": False,
+            "frequency": 1e6,
+            "period": 1e-6,
+            "stabilization": None,
+            "operating_point": True,
+        },
         {"autonomous": False, "frequency": 1e6, "period": 1e-6, "stabilization": 10e-6},
         {
             "autonomous": False,
@@ -3600,7 +3606,12 @@ def test_library_reads_driven_pss_statements() -> None:
             "points": 100,
             "method": "backward_euler",
         },
-        {"autonomous": False, "period": 1e-4, "max_step": 1e-6, "uic": True},
+        {
+            "autonomous": False,
+            "period": 1e-4,
+            "max_step": 1e-6,
+            "operating_point": False,
+        },
     )
     for card, fields in zip(cards, expected, strict=True):
         _assert_pss_fields(card, fields)
@@ -3638,9 +3649,9 @@ def test_library_reads_autonomous_pss_statements() -> None:
             "oscillator_node": "out",
             "points": 1024,
             "harmonics": 10,
-            "shooting_iterations": 50,
+            "max_shooting_iterations": 50,
             "steady_coefficient": 5e-3,
-            "uic": True,
+            "operating_point": False,
         },
         {
             "autonomous": True,
@@ -3655,7 +3666,7 @@ def test_library_reads_autonomous_pss_statements() -> None:
             "stabilization": 5e-6,
             "oscillator_node": "tank",
             "harmonics": 8,
-            "shooting_iterations": 40,
+            "max_shooting_iterations": 40,
             "steady_coefficient": 1e-3,
         },
         {"autonomous": True, "period": None, "max_step": 2e-9},

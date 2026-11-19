@@ -119,10 +119,10 @@ def alike(
     **kwargs: Any,  # noqa: ANN401 - the measure's own arguments
 ) -> Outcome:
     """What the measure `name` reads of `result`, the engine's and numpy's alike."""
-    native = getattr(specs, name)(*args, **kwargs)
+    resolved = getattr(specs, name)(*args, **kwargs)
     numpy = getattr(reference, name)(*args, **kwargs)
-    assert native.resolved is not None
-    read, expected = outcome(native, result), outcome(numpy, result)
+    assert resolved.resolved is not None
+    read, expected = outcome(resolved, result), outcome(numpy, result)
     if expected in MATH_RANGE or (
         expected[0] == "ValueError" and expected[1].startswith(MATH_DOMAIN)
     ):
@@ -130,9 +130,9 @@ def alike(
         # range, as the square root of a negative mean over a sweep that turns back, or
         # the power law of an infinite density; the engine reads not a number or an
         # infinity there, which leaves the requirement unmeasured.
-        assert read[0] in {"nan", "inf", "-inf"}, (str(native), args, kwargs)
+        assert read[0] in {"nan", "inf", "-inf"}, (str(resolved), args, kwargs)
         return read
-    assert read == expected, (str(native), args, kwargs)
+    assert read == expected, (str(resolved), args, kwargs)
     return read
 
 
@@ -217,14 +217,14 @@ def windowed(
                 reference=signal_reference,
             )
     if isinstance(result, results.TransientResult):
-        for low, high in ((0.1, 0.9), (0.2, 0.8)):
+        for lower, upper in ((0.1, 0.9), (0.2, 0.8)):
             alike(
                 "rise_time",
                 result,
                 "t",
                 "out",
-                low=low,
-                high=high,
+                lower=lower,
+                upper=upper,
                 start=start,
                 stop=stop,
             )
@@ -242,23 +242,25 @@ def windowed(
                 stop=stop,
             )
         alike("frequency", result, "t", "out", start=start, stop=stop)
-        alike("frequency", result, "t", "out", level=0.0 * V, start=start, stop=stop)
+        alike(
+            "frequency", result, "t", "out", threshold=0.0 * V, start=start, stop=stop
+        )
 
 
 def small_signal(
     result: results.AcResult | results.StabilityResult,
-    output: str | None,
+    signal: str | None,
     over: str | None,
 ) -> None:
     """Checks every small-signal measure of `result` alike."""
     lowest = float(np.min(result.frequencies)) if result.frequencies.size else 1.0
     for at in (lowest * Hz, 1 * kHz, 1.5 * lowest * Hz):
-        alike("gain", result, "ac", output, at=at, over=over)
-        alike("phase", result, "ac", output, at=at, over=over)
+        alike("gain", result, "ac", signal, at=at, over=over)
+        alike("phase", result, "ac", signal, at=at, over=over)
     for name in ("crossover", "phase_margin", "gain_margin"):
-        alike(name, result, "ac", output, over=over)
-    alike("bandwidth", result, "ac", output, over=over)
-    alike("bandwidth", result, "ac", output, drop=20.0, over=over)
+        alike(name, result, "ac", signal, over=over)
+    alike("bandwidth", result, "ac", signal, over=over)
+    alike("bandwidth", result, "ac", signal, drop=20.0, over=over)
 
 
 def noise(result: results.NoiseResult, start: float, stop: float) -> None:
@@ -378,10 +380,10 @@ def test_a_resolution_error_precedes_a_reading_error() -> None:
     resolves its measures before it runs.
     """
     step = waveforms(np.linspace(0, 1, 11), np.linspace(0, 1, 11))
-    native = specs.maximum("t", "out", start=2 * s, stop=1 * V)
+    resolved = specs.maximum("t", "out", start=2 * s, stop=1 * V)
     numpy = reference.maximum("t", "out", start=2 * s, stop=1 * V)
     with pytest.raises(DimensionError, match="the stop"):
-        native.read(step)
+        resolved.read(step)
     with pytest.raises(MeasureError, match="lies outside the times"):
         numpy.read(step)
 
@@ -460,7 +462,7 @@ Densities 308 decades apart make a power law between them overflow, and Python's
 reads infinity or not a number, which leaves the requirement unmeasured."""
 
 NATURES: Final[tuple[results.Nature, ...]] = ("voltage", "current")
-"""What a sweep's source levels can be."""
+"""What a sweep's source values can be."""
 
 PHASORS: Final = st.builds(complex, st.floats(-1e3, 1e3), st.floats(-1e3, 1e3))
 """A phasor, zero now and then."""
@@ -583,13 +585,13 @@ def test_distortions_read_within_rounding(data: st.DataObject) -> None:
     harmonics = data.draw(st.integers(2, 12))
     start = data.draw(st.sampled_from([None, 0 * s, 0.5e-3 * s]))
     fundamental = data.draw(st.sampled_from([1e3, 1.5e3, 0.4e3]))
-    native = specs.distortion(
+    resolved = specs.distortion(
         "t", "out", fundamental=fundamental * Hz, harmonics=harmonics, start=start
     )
     numpy = reference.distortion(
         "t", "out", fundamental=fundamental * Hz, harmonics=harmonics, start=start
     )
-    found, expected = outcome(native, result), outcome(numpy, result)
+    found, expected = outcome(resolved, result), outcome(numpy, result)
     if expected[1].endswith(f"spans less than a period of {fundamental * Hz}"):
         assert found == expected
         return

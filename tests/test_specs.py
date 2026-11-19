@@ -489,7 +489,7 @@ def test_impossible_requirements_and_specs_are_errors() -> None:
     with pytest.raises(ValidationError, match="hold requirements"):
         Specs([value("op", "out")])  # ty: ignore[invalid-argument-type] - the wrong type is tested
     with pytest.raises(ValueError, match="between 0 and 1"):
-        rise_time("t", "out", low=0.9, high=0.1)
+        rise_time("t", "out", lower=0.9, upper=0.1)
 
 
 SCRIPT = """
@@ -731,11 +731,11 @@ def test_a_yield_of_nothing_or_everything_has_an_exact_end() -> None:
     assert every.upper == 1.0
     _, some = spread(specs, [(passed,)] * 37 + [(failed,)] * 163)
     z, n, p = 1.959963984540054, 200, 37 / 200
-    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    center = (p + z * z / (2 * n)) / (1 + z * z / n)
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
     assert (some.lower, some.upper) == (
-        pytest.approx(centre - half, rel=1e-14),
-        pytest.approx(centre + half, rel=1e-14),
+        pytest.approx(center - half, rel=1e-14),
+        pytest.approx(center + half, rel=1e-14),
     )
 
 
@@ -752,11 +752,11 @@ def test_the_wilson_interval_is_the_yield_s_and_refuses_what_is_no_proportion() 
     _, some = spread(Specs([requirement]), [(passed,)] * 37 + [(failed,)] * 163)
     assert wilson(37, 200) == (some.lower, some.upper)
     z, n, p = 1.959963984540054, 7, 3 / 7
-    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    center = (p + z * z / (2 * n)) / (1 + z * z / n)
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
     assert wilson(3, 7) == (
-        pytest.approx(centre - half, rel=1e-14),
-        pytest.approx(centre + half, rel=1e-14),
+        pytest.approx(center - half, rel=1e-14),
+        pytest.approx(center + half, rel=1e-14),
     )
     assert wilson(0, 1)[0] == 0.0
     assert wilson(1, 1)[1] == 1.0

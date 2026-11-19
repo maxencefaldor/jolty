@@ -196,7 +196,7 @@ def _assert_matches_central_difference(
 def test_operating_point_matches_jolty_vjp_bit_for_bit_and_finite_differences() -> None:
     analysis = OperatingPoint()
     wrapped = jax_function(crossbar(), analysis)
-    native = jolty_function(crossbar(), analysis)
+    target = jolty_function(crossbar(), analysis)
 
     with jax.enable_x64():
         targets = {"out0": 0.05, "out1": -0.02}
@@ -222,14 +222,14 @@ def test_operating_point_matches_jolty_vjp_bit_for_bit_and_finite_differences() 
             float(value), float(jitted_value), rtol=1e-15, atol=0.0
         )
 
-        native_outputs, pullback = jolty_vjp(native, WEIGHTS)
+        target_outputs, pullback = jolty_vjp(target, WEIGHTS)
         for name in ("out0", "out1"):
             np.testing.assert_array_equal(
-                np.asarray(eager_outputs[name]), np.asarray(native_outputs[name])
+                np.asarray(eager_outputs[name]), np.asarray(target_outputs[name])
             )
         cotangent = {
-            name: 2.0 * (np.asarray(native_outputs[name]) - target)
-            for name, target in targets.items()
+            name: 2.0 * (np.asarray(target_outputs[name]) - target_value)
+            for name, target_value in targets.items()
         }
         expected = pullback(cotangent)
         for instance, inner in WEIGHTS.items():
@@ -251,7 +251,7 @@ def test_operating_point_matches_jolty_vjp_bit_for_bit_and_finite_differences() 
 def test_dc_sweep_matches_jolty_vjp_bit_for_bit() -> None:
     analysis = DcSweep("V0", [0.1 * V, 0.2 * V, 0.4 * V])
     wrapped = jax_function(crossbar(), analysis)
-    native = jolty_function(crossbar(), analysis)
+    target = jolty_function(crossbar(), analysis)
 
     with jax.enable_x64():
         weights_output0 = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float64)
@@ -266,7 +266,7 @@ def test_dc_sweep_matches_jolty_vjp_bit_for_bit() -> None:
         gradient = jax.jit(jax.grad(loss))(
             _as_jax_parameters(WEIGHTS, dtype=jnp.float64)
         )
-        _, pullback = jolty_vjp(native, WEIGHTS)
+        _, pullback = jolty_vjp(target, WEIGHTS)
         expected = pullback(
             {
                 "out0": np.asarray(weights_output0),
@@ -284,7 +284,7 @@ def test_ac_complex_wirtinger_sign_matches_jolty_vjp_and_finite_differences() ->
     """Checks symmetric |V|^2, asymmetric Re(V) + 2*Im(V), and pure-imaginary VJP."""
     analysis = Ac("V1", [1 * kHz, 100 * kHz, 1 * MHz])
     wrapped = jax_function(crossbar(), analysis)
-    native = jolty_function(crossbar(), analysis)
+    target = jolty_function(crossbar(), analysis)
 
     with jax.enable_x64():
         jax_weights = _as_jax_parameters(WEIGHTS, dtype=jnp.float64)
@@ -302,10 +302,10 @@ def test_ac_complex_wirtinger_sign_matches_jolty_vjp_and_finite_differences() ->
         gradient_asymmetric = jax.jit(jax.grad(loss_asymmetric))(jax_weights)
         gradient_magnitude = jax.jit(jax.grad(loss_magnitude_squared))(jax_weights)
 
-        native_outputs, pullback = jolty_vjp(native, WEIGHTS)
+        target_outputs, pullback = jolty_vjp(target, WEIGHTS)
         cotangent_asymmetric = np.full(3, 1.0 - 2.0j, dtype=np.complex128)
         expected_asymmetric = pullback({"out0": cotangent_asymmetric})
-        cotangent_magnitude = 2.0 * np.conj(np.asarray(native_outputs["out0"]))
+        cotangent_magnitude = 2.0 * np.conj(np.asarray(target_outputs["out0"]))
         expected_magnitude = pullback({"out0": cotangent_magnitude})
 
         for instance in WEIGHTS:
@@ -342,7 +342,7 @@ def test_transient_breakpoints_match_public_jolty_vjp_and_finite_differences() -
     breakpoints = (0.5 * us, 1.0 * us, 1.5 * us, 2.0 * us)
     analysis = Transient(2 * us, max_step=50 * ns, breakpoints=breakpoints)
     wrapped = jax_function(crossbar(), analysis)
-    native = jolty_function(crossbar(), analysis)
+    target = jolty_function(crossbar(), analysis)
 
     with jax.enable_x64():
         breakpoint_weights = jnp.array([1.0, -0.5, 2.0, 0.75], dtype=jnp.float64)
@@ -367,7 +367,7 @@ def test_transient_breakpoints_match_public_jolty_vjp_and_finite_differences() -
             assert times[match_index] == target_seconds
             cotangent_series[match_index] = float(weight)
 
-        _, pullback = jolty_vjp(native, WEIGHTS)
+        _, pullback = jolty_vjp(target, WEIGHTS)
         expected = pullback({"out0": cotangent_series})
         for instance in WEIGHTS:
             expected_value = _expect_real_scalar(expected[instance]["resistance"])
@@ -533,12 +533,12 @@ def test_vmap_dispatches_single_engine_batch_and_matches_loop_bit_for_bit() -> N
         original_batch = Function.batch
 
         def spy_batch(
-            native: Function,
+            target: Function,
             names: Sequence[tuple[str, str]],
             values: npt.ArrayLike,
         ) -> Outputs:
             call_shapes.append(np.asarray(values).shape)
-            return original_batch(native, names, values)
+            return original_batch(target, names, values)
 
         with patch.object(Function, "batch", spy_batch):
             vmapped_outputs = jax.jit(jax.vmap(wrapped, in_axes=in_axes))(batched)
@@ -591,12 +591,12 @@ def test_gradient_keeps_its_forward_pullbacks_and_recomputes_once_dropped() -> N
     original_batch_vjp = Function.batch_vjp
 
     def spy_batch_vjp(
-        native: Function,
+        target: Function,
         names: Sequence[tuple[str, str]],
         values: npt.ArrayLike,
     ) -> tuple[Outputs, BatchPullback]:
         calls.append(len(np.asarray(values)))
-        return original_batch_vjp(native, names, values)
+        return original_batch_vjp(target, names, values)
 
     with jax.enable_x64():
         parameters = _as_jax_parameters(WEIGHTS, dtype=jnp.float64)
@@ -946,10 +946,10 @@ def test_structural_changes_added_and_dropped_unknowns() -> None:
             )
 
         # The batch's own pullback raises the unwrapped SimulationError directly.
-        native = jolty_function(crossbar(0.5 * ohm), OperatingPoint())
+        target = jolty_function(crossbar(0.5 * ohm), OperatingPoint())
         names = [(instance, "resistance") for instance in sorted(WEIGHTS)]
         row = [[WEIGHTS[instance]["resistance"] for instance in sorted(WEIGHTS)]]
-        _, batch_pullback = native.batch_vjp(names, row)
+        _, batch_pullback = target.batch_vjp(names, row)
         with pytest.raises(SimulationError, match="W00:current"):
             batch_pullback({"W00:current": [[1.0]]})
 

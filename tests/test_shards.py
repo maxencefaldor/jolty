@@ -116,9 +116,9 @@ def _script(directory: Path, seed: int = 3, name: str = "divider.py") -> Path:
     return path
 
 
-def _built(outcome: runner.Outcome) -> runner.Built:
-    assert isinstance(outcome, runner.Built), str(outcome)
-    return outcome
+def _built(result: runner.JobResult) -> runner.Built:
+    assert isinstance(result, runner.Built), str(result)
+    return result
 
 
 def _shard(
@@ -204,7 +204,7 @@ def test_merging_1_3_and_7_shards_finds_one_run_s_bits(tmp_path: Path) -> None:
             _same(mine, theirs)
 
 
-def test_shards_of_other_fingerprints_do_not_merge(tmp_path: Path) -> None:
+def test_shards_of_other_digests_do_not_merge(tmp_path: Path) -> None:
     directory = tmp_path / "divider.shards"
     first = _shard(_script(tmp_path), directory, 0, 35)
     other = _script(tmp_path, seed=4, name="other.py")

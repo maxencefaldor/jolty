@@ -34,10 +34,10 @@ type CircuitMutator = Callable[[JsonObject, st.DrawFn], None]
 
 
 def _base_circuit_document() -> JsonObject:
-    """Returns a fresh valid v4 circuit JSON document with hierarchy and ratings."""
+    """Returns a fresh valid v5 circuit JSON document with hierarchy and ratings."""
     return {
         "format": "jolty-circuit",
-        "version": 4,
+        "version": 5,
         "top": "top",
         "components": {
             "stage": {
@@ -153,7 +153,9 @@ def _mutate_bad_role(document: JsonObject, draw: st.DrawFn) -> None:
 
 _CIRCUIT_MUTATORS: Final[dict[str, CircuitMutator]] = {
     "wrong_format": _set_root("format", ("", "other", "jolty", 123, None)),
-    "wrong_version": _set_root("version", (-1, 0, 1, 3, 5, 99, 2**40, "4", 4.5, None)),
+    "wrong_version": _set_root(
+        "version", (-1, 0, 1, 3, 4, 6, 99, 2**40, "5", 5.5, None)
+    ),
     "drop_key": _mutate_drop_key,
     "extra_key": _set_root("unexpected_field", (1, "x", {}, [])),
     "bad_top": _set_root("top", ("missing", "", "a/b", " stage ", 42, None)),
@@ -284,7 +286,7 @@ def test_circuit_json_arbitrary_text_and_core_auxiliary_parsers(text: str) -> No
     with contextlib.suppress(ValueError, _core.ElaborationError):
         _core.Simulator(text, 300.15, "{}", "{}")
     with contextlib.suppress(ValueError):
-        _core.level(text, 0.0)
+        _core.waveform_value(text, 0.0)
     with contextlib.suppress(ValueError):
         _core.terminals("resistor", text)
     with contextlib.suppress(ValueError):

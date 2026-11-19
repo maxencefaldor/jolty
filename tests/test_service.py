@@ -250,8 +250,8 @@ _MEASURE_CASES: list[_MeasureEntry] = [
     (
         "rc",
         "rise_time",
-        specs.rise_time("step", "out", low=0.1, high=0.9),
-        _out(low=0.1, high=0.9),
+        specs.rise_time("step", "out", lower=0.1, upper=0.9),
+        _out(lower=0.1, upper=0.9),
     ),
     ("rlc", "overshoot", specs.overshoot("rlc", "out"), _out()),
     (
@@ -264,14 +264,14 @@ _MEASURE_CASES: list[_MeasureEntry] = [
         "rc",
         "crossing",
         specs.crossing("step", "out", 0.5 * V, edge="rising"),
-        _out(level=0.5, edge="rising"),
+        _out(threshold=0.5, edge="rising"),
     ),
     ("sine", "frequency", specs.frequency("sine", "out"), _out()),
     (
         "sine",
         "frequency",
-        specs.frequency("sine", "out", level=0.0 * V),
-        _out(level=0.0),
+        specs.frequency("sine", "out", threshold=0.0 * V),
+        _out(threshold=0.0),
     ),
     (
         "sine",
@@ -451,10 +451,10 @@ _ERROR_CASES: dict[str, _ErrorEntry] = {
         {"analysis": "noise", "measure": "noise_density"},
         ("takes a frequency as at",),
     ),
-    "missing-level-crossing": (
+    "missing-threshold-crossing": (
         "rc",
         {"analysis": "step", "measure": "crossing", "signal": "out"},
-        ("takes a level",),
+        ("takes a threshold",),
     ),
     "missing-fundamental-distortion": (
         "sine",

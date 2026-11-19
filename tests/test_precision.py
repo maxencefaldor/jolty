@@ -172,7 +172,7 @@ def test_every_fixture_names_what_it_scores_and_how_its_answer_is_found() -> Non
 
 @SKIP
 def test_both_simulators_run_a_fixture_and_score_it() -> None:
-    prepared = suite.Prepared.of(precision_fixtures.fixtures()["rc_step"])
+    prepared = suite.Prepared.from_fixture(precision_fixtures.fixtures()["rc_step"])
     setting = suite.Setting("scaled", suite.DEFAULTS["relative_tolerance"] / 100)
     output = prepared.fixture.outputs[0]
     for ran in (
@@ -274,7 +274,7 @@ def test_xyce_s_tolerances_follow_each_sweep() -> None:
 
 @SKIP_XYCE
 def test_xyce_runs_a_fixture_and_scores_it() -> None:
-    prepared = suite.Prepared.of(precision_fixtures.fixtures()["rc_step"])
+    prepared = suite.Prepared.from_fixture(precision_fixtures.fixtures()["rc_step"])
     setting = suite.Setting("scaled", suite.DEFAULTS["relative_tolerance"] / 100)
     output = prepared.fixture.outputs[0]
     ran = suite.run_xyce(prepared, setting, 2, suite.Xyce())
@@ -289,7 +289,7 @@ def test_xyce_runs_a_fixture_and_scores_it() -> None:
 
 
 def test_jolty_s_sweep_is_scored_at_its_levels() -> None:
-    prepared = suite.Prepared.of(precision_fixtures.fixtures()["diode"])
+    prepared = suite.Prepared.from_fixture(precision_fixtures.fixtures()["diode"])
     sweep = prepared.fixture.analysis
     assert isinstance(sweep, DcSweep)
     ran = suite.run_jolty(
@@ -336,7 +336,7 @@ def test_ladder_100_exact_root_pivot_does_not_divide_by_zero() -> None:
 
     fixture = precision_fixtures.fixtures()["ladder_100"]
     ran = suite.run_jolty(
-        suite.Prepared.of(fixture),
+        suite.Prepared.from_fixture(fixture),
         suite.Setting("defaults", suite.DEFAULTS["relative_tolerance"]),
         1,
     )

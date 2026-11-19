@@ -39,7 +39,7 @@ def test_an_operating_point_lists_each_value() -> None:
     )
 
 
-def test_a_dc_sweep_states_its_iterations_and_the_levels_each_aid_found() -> None:
+def test_a_dc_sweep_states_its_iterations_and_the_values_each_aid_found() -> None:
     values = np.array([[0.0, 0.0, 0.0], [1.0, 0.5, -5e-4], [2.0, 1.0, -1e-3]])
     sweep = results.DcSweepResult(
         UNKNOWNS,
@@ -55,7 +55,7 @@ def test_a_dc_sweep_states_its_iterations_and_the_levels_each_aid_found() -> Non
     assert summary.iterations == 309
     assert summary.strategies == {"direct": 2, "gmin_stepping": 1}
     assert summary.describe().splitlines()[0] == (
-        "sweep: DC sweep of V1 from 0 V to 2 V in 3 levels, 309 iterations, "
+        "sweep: DC sweep of V1 from 0 V to 2 V in 3 values, 309 iterations, "
         "1 by gmin stepping"
     )
     # A sweep ngspice ran counts none.
@@ -102,7 +102,7 @@ def test_a_transient_reports_the_largest_nonzero_charge_leak() -> None:
     )
     summary = report.report("step", waveforms, max_unknowns=3)
     assert isinstance(summary, report.TransientReport)
-    assert summary.charge_leak == report.ChargeLeak(
+    assert summary.charge_leak == report.NetChargeLeak(
         net="out", signed=-1.25e-15, absolute=3.5e-15
     )
     assert summary.describe().splitlines()[-1] == (
@@ -135,7 +135,7 @@ def test_a_periodic_steady_state_reports_its_largest_charge_leak() -> None:
     )
     summary = report.report("steady", waveforms, max_unknowns=3)
     assert isinstance(summary, report.PeriodicSteadyStateReport)
-    assert summary.charge_leak == report.ChargeLeak(
+    assert summary.charge_leak == report.NetChargeLeak(
         net="out", signed=2.5e-12, absolute=4.0e-12
     )
     assert summary.describe().splitlines()[-1] == (

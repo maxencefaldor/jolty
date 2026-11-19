@@ -102,38 +102,38 @@ def test_rounds_alternate_their_order_and_name_only_a_separated_change(
 ) -> None:
 
     # No minimum time, so the rounds stop on their count and their intervals alone.
-    monkeypatch.setattr(bench, "FEWEST_SECONDS", 0.0)
+    monkeypatch.setattr(bench, "MIN_SECONDS", 0.0)
     calls: list[str] = []
     same = bench.alternated(
-        [noisy(1.0, 1, calls, "a"), noisy(1.0, 2, calls, "b")], bench.MOST_ROUNDS
+        [noisy(1.0, 1, calls, "a"), noisy(1.0, 2, calls, "b")], bench.MAX_ROUNDS
     )
     # A warm-up round, then rounds in the reverse order of the one before.
     assert calls[:6] == ["a", "b", "a", "b", "b", "a"]
     first, second = (each.wall_median() for each in same.timings)
     assert bench.decided(first, second) == ""
-    assert len(same.loads) >= bench.FEWEST_ROUNDS
+    assert len(same.loads) >= bench.MIN_ROUNDS
     # A 10% slowdown, ten times the runs' spread, is named.
     slower = bench.alternated(
-        [noisy(1.0, 3, [], "a"), noisy(1.1, 4, [], "b")], bench.MOST_ROUNDS
+        [noisy(1.0, 3, [], "a"), noisy(1.1, 4, [], "b")], bench.MAX_ROUNDS
     )
     before, now = (each.wall_median() for each in slower.timings)
     assert bench.decided(before, now) == "slower"
     assert bench.decided(now, before) == "faster"
 
 
-def test_a_comparison_stops_undecided_at_its_most_rounds(
+def test_a_comparison_stops_undecided_at_its_max_rounds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
 
-    monkeypatch.setattr(bench, "FEWEST_SECONDS", 0.0)
+    monkeypatch.setattr(bench, "MIN_SECONDS", 0.0)
     generator = np.random.default_rng(5)
 
     def wild() -> Run:
         seconds = float(generator.uniform(0.5, 1.5))
         return Run(seconds, seconds)
 
-    found = bench.alternated([wild, wild], bench.FEWEST_ROUNDS + 1)
-    assert len(found.loads) == bench.FEWEST_ROUNDS + 1
+    found = bench.alternated([wild, wild], bench.MIN_ROUNDS + 1)
+    assert len(found.loads) == bench.MIN_ROUNDS + 1
     first, second = (each.wall_median() for each in found.timings)
     assert bench.decided(first, second) == "undecided"
 
@@ -141,7 +141,7 @@ def test_a_comparison_stops_undecided_at_its_most_rounds(
 def test_a_time_written_reads_back_and_one_of_an_older_file_has_no_interval() -> None:
 
     runs = [Run(1.0 + index / 100, 2.0) for index in range(6)]
-    timing = bench.Timing.of(runs, 1.5, 2.5)
+    timing = bench.Timing.from_samples(runs, 1.5, 2.5)
     assert bench.Timing.from_json(timing.to_json()) == timing
     assert timing.wall_median().lower == 1.0
     older = bench.Timing.from_json({"seconds": 1.0, "runs": 10, "load": 3.0})

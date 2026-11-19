@@ -389,7 +389,7 @@ def test_a_run_of_another_structure_measures_its_own_unknowns() -> None:
         assert point.current("V1") == alone.current("V1")
 
 
-def test_a_measurement_only_python_reads_reads_each_run() -> None:
+def test_a_measure_only_python_reads_reads_each_run() -> None:
     def doubled(result: results.AnalysisResult) -> Reading:
         if not isinstance(result, results.OperatingPointResult):
             raise TypeError(result)

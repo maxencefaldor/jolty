@@ -4,7 +4,7 @@
 This is `jolty.specs._measures` as it stood before the engine read measures,
 at commit cae321d, verbatim but for its noise and its poles: it reads them with the
 numpy arithmetic `jolty.results` held then, copied at its end, rather than the engine's
-`results` reads with now. `tests/test_native_measures.py` checks that every measure
+`results` reads with now. `tests/test_resolved_measures.py` checks that every measure
 of `jolty.specs` reads what the same one of this module reads.
 """
 
@@ -150,19 +150,19 @@ def value(
 
 def gain(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     at: Quantity,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """The gain of `output` at a frequency of a small-signal response, in decibels.
+    """The gain of `signal` at a frequency of a small-signal response, in decibels.
 
-    The gain is of `output` over `over`, or per unit excitation, interpolated over log
-    frequency `at` the frequency. Without an output, it is the loop gain of a
+    The gain is of `signal` over `over`, or per unit excitation, interpolated over log
+    frequency `at` the frequency. Without a signal, it is the loop gain of a
     stability analysis.
     """
-    traces, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(signal, over, reference)
     _check(at, "at")
 
     def read(result: results.AnalysisResult) -> Reading:
@@ -176,19 +176,19 @@ def gain(
 
 def phase(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     at: Quantity,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """The phase of `output` at a frequency of a small-signal response, in degrees.
+    """The phase of `signal` at a frequency of a small-signal response, in degrees.
 
     The phase is relative to `over`, or to the excitation, unwrapped from the lowest
-    frequency and interpolated over log frequency `at` the frequency. Without an output,
+    frequency and interpolated over log frequency `at` the frequency. Without a signal,
     it is the loop gain's, of a stability analysis.
     """
-    traces, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(signal, over, reference)
     _check(at, "at")
 
     def read(result: results.AnalysisResult) -> Reading:
@@ -202,16 +202,16 @@ def phase(
 
 def bandwidth(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     drop: float = 3.0,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """The frequency where the gain of `output` first falls `drop` decibels.
+    """The frequency where the gain of `signal` first falls `drop` decibels.
 
-    The gain, of `output` over `over` or per unit excitation, or the loop gain of a
-    stability analysis without an output, falls below its gain at the lowest frequency;
+    The gain, of `signal` over `over` or per unit excitation, or the loop gain of a
+    stability analysis without a signal, falls below its gain at the lowest frequency;
     the frequency is interpolated over log frequency.
 
     Raises:
@@ -220,7 +220,7 @@ def bandwidth(
     if not drop > 0:
         message = f"a bandwidth's drop is positive, not {drop}"
         raise ValueError(message)
-    traces, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(signal, over, reference)
 
     def read(result: results.AnalysisResult) -> Reading:
         frequencies, transfer = _transfer(result, traces, divisor)
@@ -241,18 +241,18 @@ def bandwidth(
 
 def crossover(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """The frequency where the gain of `output` first falls through 0 dB.
+    """The frequency where the gain of `signal` first falls through 0 dB.
 
-    The gain is of `output` over `over`, or per unit excitation, in a small-signal
-    response; without an output, it is the loop gain of a stability analysis, and this
+    The gain is of `signal` over `over`, or per unit excitation, in a small-signal
+    response; without a signal, it is the loop gain of a stability analysis, and this
     its crossover frequency. It is interpolated over log frequency.
     """
-    traces, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(signal, over, reference)
 
     def read(result: results.AnalysisResult) -> Reading:
         frequencies, transfer = _transfer(result, traces, divisor)
@@ -265,18 +265,18 @@ def crossover(
 
 def phase_margin(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """180° plus the phase of `output` where its gain first falls through 0 dB.
+    """180° plus the phase of `signal` where its gain first falls through 0 dB.
 
-    The gain and the phase are of `output` relative to `over`, or to the excitation, in
-    a small-signal response. Without an output, they are the loop gain's, of a
+    The gain and the phase are of `signal` relative to `over`, or to the excitation, in
+    a small-signal response. Without a signal, they are the loop gain's, of a
     stability analysis, and this is the loop's phase margin.
     """
-    traces, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(signal, over, reference)
 
     def read(result: results.AnalysisResult) -> Reading:
         frequencies, transfer = _transfer(result, traces, divisor)
@@ -290,19 +290,19 @@ def phase_margin(
 
 def gain_margin(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """Minus the gain of `output` where its phase first falls through -180°, in dB.
+    """Minus the gain of `signal` where its phase first falls through -180°, in dB.
 
-    The gain and the phase, unwrapped from the lowest frequency, are of `output`
-    relative to `over`, or to the excitation, in a small-signal response. Without an
-    output, they are the loop gain's, of a stability analysis, and this is the loop's
+    The gain and the phase, unwrapped from the lowest frequency, are of `signal`
+    relative to `over`, or to the excitation, in a small-signal response. Without a
+    signal, they are the loop gain's, of a stability analysis, and this is the loop's
     gain margin.
     """
-    traces, divisor = _signals(output, over, reference)
+    traces, divisor = _signals(signal, over, reference)
 
     def read(result: results.AnalysisResult) -> Reading:
         frequencies, transfer = _transfer(result, traces, divisor)
@@ -401,12 +401,12 @@ def rms(
     return _statistic("rms", analysis, window, _root_mean_square)
 
 
-def rise_time(  # noqa: PLR0913 - a window, its signal and the two levels
+def rise_time(  # noqa: PLR0913 - a window, its signal and the two bounds
     analysis: str,
     signal: str,
     *,
-    low: float = 0.1,
-    high: float = 0.9,
+    lower: float = 0.1,
+    upper: float = 0.9,
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
@@ -414,25 +414,36 @@ def rise_time(  # noqa: PLR0913 - a window, its signal and the two levels
     """The time a transient's `signal` takes to rise, or fall, through its step.
 
     The step runs from the signal's value at the window's start to its value at the
-    window's end, and the time from `low` to `high` of the way.
+    window's end, and the time from `lower` to `upper` of the way.
 
     Raises:
-        ValueError: Unless 0 < `low` < `high` < 1.
+        ValueError: Unless 0 < `lower` < `upper` < 1.
     """
-    if not 0 < low < high < 1:
-        message = f"a rise time's levels lie between 0 and 1, low first: {low}, {high}"
+    if not 0 < lower < upper < 1:
+        message = (
+            f"a rise time's levels lie between 0 and 1, low first: {lower}, {upper}"
+        )
         raise ValueError(message)
     window = _Window(_Signal(signal, reference), start, stop)
 
     def read(result: results.AnalysisResult) -> Reading:
         times, values, step = _step(result, window, "a rise time")
         edge: Edge = "rising" if step > 0 else "falling"
-        lower = _crossings(times, values, values[0] + low * step, edge)
-        upper = _crossings(times, values, values[0] + high * step, edge)
-        if not lower.size or not upper[upper >= lower[0]].size:
+        lower_crossings = _crossings(times, values, values[0] + lower * step, edge)
+        upper_crossings = _crossings(times, values, values[0] + upper * step, edge)
+        if (
+            not lower_crossings.size
+            or not upper_crossings[upper_crossings >= lower_crossings[0]].size
+        ):
             message = f"{window} steps too little to resolve its levels"
             raise MeasureError(message)
-        return Reading(float(upper[upper >= lower[0]][0] - lower[0]), TIME)
+        return Reading(
+            float(
+                upper_crossings[upper_crossings >= lower_crossings[0]][0]
+                - lower_crossings[0]
+            ),
+            TIME,
+        )
 
     return Measure(analysis, f"rise time of {window}", None, read)
 
@@ -497,55 +508,60 @@ def settling_time(  # noqa: PLR0913 - a window, its signal and the band
     return Measure(analysis, f"{100 * band:g}% settling time of {window}", None, read)
 
 
-def crossing(  # noqa: PLR0913 - a window, its signal, the level and the edge
+def crossing(  # noqa: PLR0913 - a window, its signal, the threshold and the edge
     analysis: str,
     signal: str,
-    level: Quantity,
+    threshold: Quantity,
     *,
     edge: Edge = "either",
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """The first time a transient's `signal` crosses `level` the way `edge` says."""
-    _check(level, "the level")
+    """The first time a transient's `signal` crosses `threshold` the way `edge` says."""
+    _check(threshold, "the threshold")
     window = _Window(_Signal(signal, reference), start, stop)
 
     def read(result: results.AnalysisResult) -> Reading:
         times, values, dimension = window.transient(result, "a crossing")
-        found = _crossings(times, values, level.to(dimension, "the level"), edge)
+        found = _crossings(
+            times, values, threshold.to(dimension, "the threshold"), edge
+        )
         if not found.size:
-            message = f"{window} does not cross {level}"
+            message = f"{window} does not cross {threshold}"
             raise MeasureError(message)
         return Reading(float(found[0]), TIME)
 
     way = "" if edge == "either" else f" {edge}"
-    return Measure(analysis, f"first{way} crossing of {level} by {window}", None, read)
+    return Measure(
+        analysis, f"first{way} crossing of {threshold} by {window}", None, read
+    )
 
 
-def frequency(  # noqa: PLR0913 - a window, its signal and the level
+def frequency(  # noqa: PLR0913 - a window, its signal and the threshold
     analysis: str,
     signal: str,
     *,
-    level: Quantity | None = None,
+    threshold: Quantity | None = None,
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """How often a transient's `signal` rises through `level`.
+    """How often a transient's `signal` rises through `threshold`.
 
-    The level is by default the midpoint of the signal's lowest and highest values, and
-    the frequency is the rises less one over the time from the first rise to the last.
+    The threshold is by default the midpoint of the signal's lowest and highest values,
+    and the frequency is the rises less one over the time from the first rise to the
+    last.
     """
-    _check(level, "the level")
+    _check(threshold, "the threshold")
     window = _Window(_Signal(signal, reference), start, stop)
 
     def read(result: results.AnalysisResult) -> Reading:
         times, values, dimension = window.transient(result, "a frequency")
         middle = (
             (values.max() + values.min()) / 2
-            if level is None
-            else level.to(dimension, "the level")
+            if threshold is None
+            else threshold.to(dimension, "the threshold")
         )
         rises = _crossings(times, values, middle, "rising")
         if rises.size < 2:

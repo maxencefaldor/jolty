@@ -389,20 +389,20 @@ def test_simulate_raw_option_validation_errors(
     assert "writes no raw file" in err_shard
 
 
-def test_docs_lists_and_reads_guide_and_examples(
+def test_read_docs_lists_and_reads_guide_and_examples(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    listed = _invoke(capsys, "docs").out
+    listed = _invoke(capsys, "read-docs").out
     assert "guide (17 pages, jolty://docs/guide/<slug>):" in listed
     assert "examples (33 scripts, jolty://docs/examples/<slug>):" in listed
     assert "units" in listed
     assert "cluster/amplifier" in listed
 
-    guide_list = _invoke(capsys, "docs", "--section", "guide").out
+    guide_list = _invoke(capsys, "read-docs", "--section", "guide").out
     assert "units" in guide_list
     assert "rc_filter" not in guide_list
 
-    examples_list = _invoke(capsys, "docs", "--section", "examples").out
+    examples_list = _invoke(capsys, "read-docs", "--section", "examples").out
     assert "rc_filter" in examples_list
     assert "cluster/amplifier" in examples_list
     assert "guide (" not in examples_list
@@ -410,23 +410,25 @@ def test_docs_lists_and_reads_guide_and_examples(
     expected_units = (REPOSITORY_ROOT / "docs" / "guide" / "units.md").read_text(
         encoding="utf-8"
     )
-    assert _invoke(capsys, "docs", "units").out == expected_units
-    assert _invoke(capsys, "docs", "guide/units").out == expected_units
+    assert _invoke(capsys, "read-docs", "units").out == expected_units
+    assert _invoke(capsys, "read-docs", "guide/units").out == expected_units
 
     expected_example = (
         REPOSITORY_ROOT / "examples" / "cluster" / "amplifier.py"
     ).read_text(encoding="utf-8")
-    assert _invoke(capsys, "docs", "cluster/amplifier").out == expected_example
+    assert _invoke(capsys, "read-docs", "cluster/amplifier").out == expected_example
 
     payload = json.loads(
-        _invoke(capsys, "docs", "units", "--output-format", "json").out
+        _invoke(capsys, "read-docs", "units", "--output-format", "json").out
     )
     assert payload["entries"] == []
     assert payload["document"]["uri"] == "jolty://docs/guide/units"
     assert payload["document"]["mime_type"] == "text/markdown"
     assert payload["document"]["content"] == expected_units
 
-    listing_payload = json.loads(_invoke(capsys, "docs", "--output-format", "json").out)
+    listing_payload = json.loads(
+        _invoke(capsys, "read-docs", "--output-format", "json").out
+    )
     assert listing_payload["document"] is None
     assert len(listing_payload["entries"]) == 50
 
@@ -434,15 +436,15 @@ def test_docs_lists_and_reads_guide_and_examples(
 @pytest.mark.parametrize(
     "arguments",
     [
-        ("docs", "nonexistent"),
-        ("docs", "../README.md"),
-        ("docs", "/etc/passwd"),
-        ("docs", "cluster/../rc_filter"),
-        ("docs", ""),
-        ("docs", "guide/units", "--section", "examples"),
+        ("read-docs", "nonexistent"),
+        ("read-docs", "../README.md"),
+        ("read-docs", "/etc/passwd"),
+        ("read-docs", "cluster/../rc_filter"),
+        ("read-docs", ""),
+        ("read-docs", "guide/units", "--section", "examples"),
     ],
 )
-def test_docs_rejects_invalid_and_unknown_topics_with_facts(
+def test_read_docs_rejects_invalid_and_unknown_topics_with_facts(
     arguments: tuple[str, ...], capsys: pytest.CaptureFixture[str]
 ) -> None:
     error_text = _invoke(capsys, *arguments, code=2).err

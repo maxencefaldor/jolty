@@ -24,7 +24,7 @@ from jolty.service import ViewRequest, view
 from jolty.settings import Settings
 from jolty.units import V, kohm, nF, us
 from jolty.unknowns import Unknown
-from jolty.viewer import FRAMES, page, scene, write_viewer
+from jolty.viewer import FRAMES, page, save_viewer, scene
 from jolty.waveforms import Piecewise
 from workspace import ROOT
 
@@ -274,7 +274,7 @@ def test_page_links_and_escapes_external_viewer_assets(tmp_path: Path) -> None:
     assert escaped.count("</script>") == 3
 
     target = tmp_path / "linked.view.html"
-    write_viewer(target, drawn, {}, title="RC", assets="../assets")
+    save_viewer(target, drawn, {}, title="RC", assets="../assets")
     written = target.read_text(encoding="utf-8")
     assert '<link rel="stylesheet" href="../assets/viewer.css">' in written
     assert '<script type="module" src="../assets/viewer.js"></script>' in written

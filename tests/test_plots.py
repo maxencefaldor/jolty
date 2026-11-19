@@ -200,7 +200,7 @@ def test_untyped_dc_sweep_axis_label_omits_none() -> None:
     assert anonymous_figure.axes[-1].get_xlabel() == "swept"
 
 
-def test_probes_name_unknowns_and_fit_the_palette() -> None:
+def test_traces_name_unknowns_and_fit_the_palette() -> None:
     with pytest.raises(JoltyError, match="no unknown named 'outt'; close names: out"):
         plot("step", waveforms(), ["outt"])
     with pytest.raises(JoltyError, match=f"at most {MAX_SERIES} unknowns"):
@@ -239,9 +239,7 @@ def test_the_plot_command_draws_saved_results(
     assert run("plot", str(tmp_path / "missing.results.npz")) == 2
 
 
-def test_a_batch_draws_a_histogram_per_measurement_and_an_envelope_per_analysis() -> (
-    None
-):
+def test_a_batch_draws_a_histogram_per_measure_and_an_envelope_per_analysis() -> None:
     @component
     def filtered(c: Builder) -> None:
         ground = c.port("ground", Role.GROUND)

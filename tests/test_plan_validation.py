@@ -522,12 +522,12 @@ _ANALYSIS_ERROR_CASES: dict[str, tuple[Analysis, int | None, tuple[str, ...]]] =
     "stability-grounded-source": (
         Stability("V1", [1 * kHz]),
         None,
-        ("`V1` is not a voltage source off the reference", "probes: VP"),
+        ("`V1` is not a voltage source off ground", "probes: VP"),
     ),
     "stability-resistor-probe": (
         Stability("R1", [1 * kHz]),
         None,
-        ("`R1` is not a voltage source off the reference", "probes: VP"),
+        ("`R1` is not a voltage source off ground", "probes: VP"),
     ),
     "noise-current-ref": (
         Noise("V1:current", [1 * kHz], reference="ground"),
@@ -546,7 +546,7 @@ _ANALYSIS_ERROR_CASES: dict[str, tuple[Analysis, int | None, tuple[str, ...]]] =
     "tf-ground-non-source": (
         TransferFunction("R1", "ground"),
         2,
-        ("is the reference node",),
+        ("is ground",),
     ),
     "tf-inductor-current-ref": (
         TransferFunction("V1", "L1:current", reference="out"),
@@ -600,7 +600,7 @@ def test_transient_initial_conditions_and_logic_checks() -> None:
         ),
         "`outt`, which is no net of the circuit; close names: out",
         "`V1:current`, which is no net of the circuit (current unknown)",
-        "`ground`, which is the reference node, not an electrical net",
+        "`ground`, which is ground, not an electrical net",
         count=3,
     )
 
@@ -779,9 +779,9 @@ def test_specs_upfront_checks_all_measure_signals_kinds_and_bounds() -> None:
             noise_density("noise", at=1 * V, referred=True) <= 1 * V,
             # Integrated noise: wrong start AND wrong stop + unreferred
             integrated_noise("noise", start=1 * V, stop=2 * mA, referred=True) <= 1 * V,
-            # Crossing / frequency: wrong level dimension + wrong signal
+            # Crossing / frequency: wrong threshold dimension + wrong signal
             crossing("step", "out", 1 * mA) <= 1 * us,
-            frequency("step", "out", level=1 * mA) >= 1 * Hz,
+            frequency("step", "out", threshold=1 * mA) >= 1 * Hz,
         ]
     )
 

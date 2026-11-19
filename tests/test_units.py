@@ -39,7 +39,7 @@ def test_dimensions_combine_like_their_units() -> None:
 def test_dimensions_print_as_symbols_or_base_units() -> None:
     assert str(RESISTANCE) == "Ω"
     assert str(DIMENSIONLESS) == "1"
-    assert str(Dimension(metre=1, second=-1)) == "m·s^-1"
+    assert str(Dimension(meter=1, second=-1)) == "m·s^-1"
 
 
 def test_quantities_carry_their_dimension_through_arithmetic() -> None:

@@ -4,7 +4,7 @@
 The engine evaluates every device as a kernel's instance, together with the others of
 its kernel and shape in a group, and checks at every evaluation of a run that the groups
 assemble the circuit's equations as the instances do evaluated one by one, each alone,
-in the order of the devices, and that what the observer reads of each is what the
+in the order of the devices, and that what the recorder reads of each is what the
 instance alone gives. It checks them on the circuits this script writes, to
 ``crates/jolty-engine/tests/data/kernels.json``: every circuit of the differential
 corpus, ``tests/test_ngspice.py``, and of the examples, each with the analyses its tests

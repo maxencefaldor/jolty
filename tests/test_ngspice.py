@@ -1564,7 +1564,7 @@ _P_POWER = devices.vdmos(
     breakdown_current=250 * uA,
     breakdown_emission_coefficient=4,
     drain_resistance_temperature_exponent=1.5,
-    quasi_saturation_temperature_exponent=0.4,
+    quasi_saturation_resistance_temperature_exponent=0.4,
 )
 """A p-channel VDMOS after David Zan's IXTH48P20P, of ngspice's examples, whose
 quasi-saturation exaggerates its datasheet's."""
@@ -3052,8 +3052,8 @@ def _vbic(
         polarity=polarity,
         extrinsic_collector_resistance=10 * ohm,
         intrinsic_collector_resistance=20 * ohm,
-        epi_saturation_voltage=2 * V,
-        epi_doping_parameter=2e-11,
+        epitaxial_saturation_voltage=2 * V,
+        epitaxial_doping_parameter=2e-11,
         high_current_collector_factor=2.0,
         extrinsic_base_resistance=10 * ohm,
         intrinsic_base_resistance=40 * ohm,
@@ -3069,7 +3069,7 @@ def _vbic(
         base_emitter_smoothing=0.2 * V,
         base_collector_overlap_capacitance=20 * fF,
         base_collector_capacitance=0.3 * pF,
-        epi_charge=1e-8 * uC,
+        epitaxial_charge=1e-8 * uC,
         extrinsic_base_collector_capacitance=0.1 * pF,
         base_collector_potential=0.7 * V,
         base_collector_grading=0.33,

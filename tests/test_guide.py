@@ -8,7 +8,7 @@ starts with what its script would import, the names of `jolty` and of its module
 `c` and its ground port `ground`. A block that defines a script's `plan` or `specs`
 calls it, as the runner does; a script's `build` builds the script's own circuit, which
 an excerpt leaves out. An expression whose comment is a Python literal, such as
-`neighbours("E96", 1234.0)  # (1210.0, 1240.0)`, quotes its value.
+`neighbors("E96", 1234.0)  # (1210.0, 1240.0)`, quotes its value.
 
 A block that cannot run says why on the line before it, `<!-- not run: why -->`. A
 quoted output, a text block, names on the line before it the commands that print it,
@@ -194,7 +194,7 @@ def output(commands: str, directory: Path, capsys: pytest.CaptureFixture[str]) -
             out, err = capsys.readouterr()
         else:
             assert program == "python", command
-            # A script prints as it would to a file: CI forces colour, which would set
+            # A script prints as it would to a file: CI forces color, which would set
             # its tracebacks in escape codes; Python's own setting outranks it.
             ran = subprocess.run(  # noqa: S603 - a script of the repository's own
                 [sys.executable, *arguments],

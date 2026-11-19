@@ -8,7 +8,7 @@ import pytest
 from jolty import report, results
 from jolty.files import load_results
 from jolty.plan import Analysis, Options, Parallelism
-from jolty.runner import RESULTS, Built, Failure, Job, Outcome, Thresholds, run
+from jolty.runner import RESULTS, Built, Failure, Job, JobResult, Thresholds, run
 from jolty.simulate import Simulation
 from workspace import ROOT
 
@@ -58,14 +58,14 @@ def write(directory: Path, text: str, name: str = "script.py") -> Path:
     return path
 
 
-def built(outcome: Outcome) -> Built:
-    assert isinstance(outcome, Built), str(outcome)
-    return outcome
+def built(result: JobResult) -> Built:
+    assert isinstance(result, Built), str(result)
+    return result
 
 
-def failed(outcome: Outcome) -> Failure:
-    assert isinstance(outcome, Failure)
-    return outcome
+def failed(result: JobResult) -> Failure:
+    assert isinstance(result, Failure)
+    return result
 
 
 def test_a_build_elaborates_the_circuit(tmp_path: Path) -> None:

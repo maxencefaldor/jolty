@@ -426,7 +426,7 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
             run.arm is Arm.JOLTY,
         ]
     task = report.tasks["cost_down"]
-    low, high = wilson(2, 2)
+    lower, upper = wilson(2, 2)
     for arm in Arm:
         summary = task.arms[arm]
         assert (summary.endings, summary.shortfalls, summary.specs) == (
@@ -438,8 +438,8 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
             "met": 2,
             "runs": 2,
             "rate": 1.0,
-            "low": low,
-            "high": high,
+            "lower": lower,
+            "upper": upper,
         }
         assert summary.turns is not None
         assert summary.turns.median == sum(STUB_CALLS[arm].values())
@@ -449,10 +449,10 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
     difference = task.difference
     assert difference is not None
     # Newcombe's interval about a difference of 0 spans each rate's Wilson interval.
-    assert (difference.success, difference.low, difference.high) == (
+    assert (difference.success, difference.lower, difference.upper) == (
         0,
-        low - 1,
-        1 - low,
+        lower - 1,
+        1 - lower,
     )
     assert (difference.turns, difference.tool_calls, difference.simulations) == (
         2,

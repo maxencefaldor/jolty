@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from jolty import Builder, Role, circuit, component, devices, ir, parts
-from jolty.catalog import Catalog, Part, bill, mantissas, neighbours, values
+from jolty.catalog import Catalog, Part, bill, mantissas, neighbors, values
 from jolty.cli import main
 from jolty.files import save_circuit
 from jolty.units import V, kohm, nF
@@ -63,7 +63,7 @@ def test_the_e_series_are_iec_60063_s() -> None:
     assert e192[185] == 9.2
 
 
-def test_values_span_decades_and_neighbours_bracket_a_value() -> None:
+def test_values_span_decades_and_neighbors_bracket_a_value() -> None:
     assert values("E6", 0.5, 22.0) == (
         0.68,
         1.0,
@@ -76,11 +76,11 @@ def test_values_span_decades_and_neighbours_bracket_a_value() -> None:
         15.0,
         22.0,
     )
-    assert neighbours("E12", 1e-9) == (1e-9, 1e-9)
-    assert neighbours("E96", 1234.0) == (1210.0, 1240.0)
-    assert neighbours("E24", 9.5e3) == (9.1e3, 10e3)
+    assert neighbors("E12", 1e-9) == (1e-9, 1e-9)
+    assert neighbors("E96", 1234.0) == (1210.0, 1240.0)
+    assert neighbors("E24", 9.5e3) == (9.1e3, 10e3)
     with pytest.raises(ValueError, match="positive"):
-        neighbours("E24", 0.0)
+        neighbors("E24", 0.0)
     with pytest.raises(ValueError, match="two positive bounds"):
         values("E24", 2.0, 1.0)
 

@@ -364,14 +364,14 @@ def test_instructions_name_every_public_analysis_and_plan_control() -> None:
     assert not missing, f"missing plan or waveform symbols: {missing}"
 
 
-def test_instructions_name_every_public_spec_measurement() -> None:
+def test_instructions_name_every_public_spec_measure() -> None:
     expected = _public_functions_returning(
         REPOSITORY_ROOT / "src" / "jolty" / "specs" / "_measures.py", {"Measure"}
     )
     assert len(expected) == 23
     assert set(expected).issubset(set(specs.__all__))
     missing = [name for name in expected if f"- {name}(" not in INSTRUCTIONS]
-    assert not missing, f"missing spec measurements in MCP instructions: {missing}"
+    assert not missing, f"missing spec measures in MCP instructions: {missing}"
     assert "specs()" in INSTRUCTIONS
     assert "Specs(requirements, yield_target=...)" in INSTRUCTIONS
 

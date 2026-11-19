@@ -489,7 +489,7 @@ def test_sky130s_mim_capacitor_spreads_a_response_as_monte_carlo_finds(
     """A low-pass's magnitude and phase over its pole, from the capacitor's mismatch.
 
     The kit spreads the capacitance by 2.8 % over the square root of its area in
-    square micrometres, its one random variable, whose derivative is that of the
+    square micrometers, its one random variable, whose derivative is that of the
     capacitance `czero` the subcircuit's parameters compute.
     """
     (variable,) = mim.random_variables(MIM, "C1", w=10, l=10)

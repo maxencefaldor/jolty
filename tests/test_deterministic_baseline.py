@@ -5,9 +5,9 @@ import json
 import re
 from pathlib import Path
 
-import deterministic
 import numpy as np
 import pytest
+from deterministic import bench as deterministic
 
 from jolty import results, unknowns
 
@@ -31,7 +31,7 @@ def _sample_record() -> deterministic.PlatformRecord:
                 "op": deterministic.AnalysisCounts(
                     strategy="direct",
                     iterations=5,
-                    fingerprint="1111111111111111",
+                    digest="1111111111111111",
                 ),
                 "tran": deterministic.AnalysisCounts(
                     strategy="direct",
@@ -44,7 +44,7 @@ def _sample_record() -> deterministic.PlatformRecord:
                     refactorizations=0,
                     fallbacks=0,
                     reuses=129,
-                    fingerprint="2222222222222222",
+                    digest="2222222222222222",
                 ),
             },
             "buck": {
@@ -59,7 +59,7 @@ def _sample_record() -> deterministic.PlatformRecord:
                     refactorizations=20,
                     fallbacks=0,
                     reuses=1480,
-                    fingerprint="3333333333333333",
+                    digest="3333333333333333",
                 ),
             },
         },
@@ -74,17 +74,17 @@ def test_exact_match_passes() -> None:
 
 
 def test_exact_mismatch_reports_all_facts_without_advice() -> None:
-    """Every count, digit, fingerprint and missing-entry difference is reported."""
+    """Every count, digit, digest and missing-entry difference is reported."""
     expected = _sample_record()
     actual = expected.model_copy(deep=True)
     actual.precision["rc_step"].counts["iterations"] += 1
     actual.precision["rc_step"].digits["out"] -= 0.01
     actual.speed["bjt_amp"]["tran"].factorizations = 31
-    actual.speed["bjt_amp"]["tran"].fingerprint = "ffffffffffffffff"
+    actual.speed["bjt_amp"]["tran"].digest = "ffffffffffffffff"
     actual.speed["bjt_amp"]["extra_ac"] = deterministic.AnalysisCounts(
         strategy="direct",
         iterations=3,
-        fingerprint="4444444444444444",
+        digest="4444444444444444",
     )
     del actual.speed["buck"]
 
@@ -94,7 +94,7 @@ def test_exact_mismatch_reports_all_facts_without_advice() -> None:
     assert "precision/rc_step.digits['out']: recorded 3.4567, measured 3.4467" in joined
     assert "speed/bjt_amp/tran.factorizations: recorded 30, measured 31" in joined
     assert (
-        "speed/bjt_amp/tran.fingerprint: recorded '2222222222222222', "
+        "speed/bjt_amp/tran.digest: recorded '2222222222222222', "
         "measured 'ffffffffffffffff'"
     ) in joined
     assert "speed/bjt_amp/extra_ac:" in joined
@@ -107,9 +107,9 @@ def test_cross_platform_rules_distinguish_linear_and_nonlinear_fixtures() -> Non
     """Unrecorded platforms enforce exact linear counts and bounded nonlinear shifts."""
     expected = _sample_record()
     within = expected.model_copy(deep=True)
-    # Different libm fingerprint is ignored on unrecorded platforms, while linear
+    # Different libm digest is ignored on unrecorded platforms, while linear
     # fixture counts stay exact (0 tolerance).
-    within.speed["bjt_amp"]["tran"].fingerprint = "9999999999999999"
+    within.speed["bjt_amp"]["tran"].digest = "9999999999999999"
     # Nonlinear fixture (`buck`) allows +/- 6% shifts (1000 -> 1050 = +5%).
     within.speed["buck"]["tran"].accepted = 1050
     within.speed["buck"]["tran"].transient_iterations = 2100
@@ -176,20 +176,21 @@ def test_select_reference_prefers_exact_then_same_os() -> None:
 
 def test_save_and_load_baseline_round_trip(tmp_path: Path) -> None:
     """Baseline JSON saves deterministically with sorted keys and reloads cleanly."""
-    path = tmp_path / "deterministic.json"
+    path = tmp_path / "baseline.json"
     record = _sample_record()
     baseline = deterministic.DeterministicBaseline(
         platforms={"linux-x86_64-glibc2.39": record, "darwin-arm64": record}
     )
     deterministic.save_baseline(baseline, path)
     raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["version"] == 2
     assert list(raw["platforms"].keys()) == ["darwin-arm64", "linux-x86_64-glibc2.39"]
     reloaded = deterministic.load_baseline(path)
     assert reloaded == baseline
 
 
-def test_periodic_steady_state_fingerprint_includes_period() -> None:
-    """`PeriodicSteadyStateResult` hashes its period, unlike `TransientResult`."""
+def test_periodic_steady_state_digest_includes_period() -> None:
+    """`PeriodicSteadyStateResult` digests its period, unlike `TransientResult`."""
     node = (unknowns.Unknown("out", "voltage"),)
     times = np.array([0.0, 1e-6], dtype=np.float64)
     values = np.array([[0.0], [1.0]], dtype=np.float64)
@@ -222,15 +223,15 @@ def test_periodic_steady_state_fingerprint_includes_period() -> None:
     second_counts = deterministic.extract_counts(second)
     transient_counts = deterministic.extract_counts(transient)
     assert first_counts.periods == 3
-    assert first_counts.fingerprint != second_counts.fingerprint
-    assert first_counts.fingerprint != transient_counts.fingerprint
+    assert first_counts.digest != second_counts.digest
+    assert first_counts.digest != transient_counts.digest
 
 
 def test_cli_strict_platform_refuses_unrecorded_platform(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`--strict-platform` exits with a factual message when the key is absent."""
-    path = tmp_path / "deterministic.json"
+    path = tmp_path / "baseline.json"
     record = _sample_record()
     deterministic.save_baseline(
         deterministic.DeterministicBaseline(platforms={"darwin-arm64": record}),
@@ -250,8 +251,9 @@ def test_cli_strict_platform_refuses_unrecorded_platform(
 
 
 def test_committed_baseline_covers_every_declared_fixture() -> None:
-    """`benchmarks/deterministic.json` holds every declared precision/speed fixture."""
+    """`benchmarks/deterministic/baseline.json` holds every declared fixture."""
     baseline = deterministic.load_baseline()
+    assert baseline.version == 2
     assert baseline.platforms, "baseline must hold at least one platform entry"
     for key, record in baseline.platforms.items():
         assert set(record.precision) == set(deterministic.PRECISION_NAMES), key
@@ -261,4 +263,4 @@ def test_committed_baseline_covers_every_declared_fixture() -> None:
         for name, analyses in record.speed.items():
             assert analyses, f"{key}/speed/{name} missing analyses"
             for analysis, counts in analyses.items():
-                assert len(counts.fingerprint) == 16, f"{key}/speed/{name}/{analysis}"
+                assert len(counts.digest) == 16, f"{key}/speed/{name}/{analysis}"

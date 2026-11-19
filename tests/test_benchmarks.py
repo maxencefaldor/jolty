@@ -63,7 +63,7 @@ def test_a_cheaper_design_meets_the_cost_down_task(tmp_path: Path, arm: Arm) -> 
     verdict = score(COST_DOWN, tmp_path, arm)
     assert verdict.met, verdict.reasons
     # Exact catalog BOM cost sums; default pytest.approx covers binary float addition.
-    assert verdict.measurements == {
+    assert verdict.measures == {
         "baseline": pytest.approx(0.2),
         "cost": pytest.approx(0.016),
     }
@@ -176,8 +176,8 @@ def test_the_patented_cubic_generator_scores_one(tmp_path: Path) -> None:
     verdict = score(CUBIC, tmp_path)
     assert verdict.met, verdict.reasons
     # All cubic sweep points hit within tolerance (score = 1.0); default float rounding.
-    assert verdict.measurements["score"] == pytest.approx(1.0)
-    assert verdict.measurements["devices"] == 9
+    assert verdict.measures["score"] == pytest.approx(1.0)
+    assert verdict.measures["devices"] == 9
 
 
 def test_the_cubic_scorer_names_a_forbidden_part(tmp_path: Path) -> None:
@@ -231,7 +231,7 @@ def test_reference_solutions_pass_every_analogcoder_check(
         reference_netlists(tmp_path)
     verdict = score(ANALOGCODER, tmp_path, arm)
     assert verdict.met, verdict.reasons
-    assert verdict.measurements["solved"] == 24
+    assert verdict.measures["solved"] == 24
 
 
 def test_the_analogcoder_scorer_says_why_designs_fail(tmp_path: Path) -> None:
@@ -271,7 +271,7 @@ def test_the_analogcoder_scorer_says_why_designs_fail(tmp_path: Path) -> None:
     )
     verdict = score(ANALOGCODER, tmp_path)
     assert not verdict.met
-    assert verdict.measurements["solved"] == 21
+    assert verdict.measures["solved"] == 21
     assert "p3: there is no p3.py" in verdict.reasons
     # Each shortfall names its problem, and the spec of its check.
     assert sorted(
@@ -321,7 +321,7 @@ def test_an_ideal_converter_has_no_error_but_is_forbidden(tmp_path: Path) -> Non
     )
     verdict = score(VOLTAGE_CURRENT, tmp_path)
     # Ideal linear VCCS has zero structural error; abs=1e-9 bounds DC sweep LU rounding.
-    assert verdict.measurements["fitness"] == pytest.approx(0.0, abs=1e-9)
+    assert verdict.measures["fitness"] == pytest.approx(0.0, abs=1e-9)
     assert verdict.reasons == (
         "G1 is a voltage_controlled_current_source, which the task forbids",
     )
@@ -346,7 +346,7 @@ def test_a_converter_blind_to_one_input_falls_short(tmp_path: Path) -> None:
         "at 70 °C with the supplies 5 % low",
         "at 70 °C with the supplies 5 % high",
     ]
-    assert verdict.measurements["devices"] == 1
+    assert verdict.measures["devices"] == 1
 
 
 BALUN = BENCHMARKS / "balun"
@@ -386,8 +386,8 @@ def test_an_ideal_balun_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
     verdict = score(BALUN, tmp_path)
     for error in ("difference gain", "worst in-phase gain", "worst difference phase"):
         # Ideal linear VCVS balun has exact 0 error; abs=1e-6 covers AC solve rounding.
-        assert verdict.measurements[f"{error} error"] == pytest.approx(0.0, abs=1e-6)
-    assert verdict.measurements["distortion"] < -150
+        assert verdict.measures[f"{error} error"] == pytest.approx(0.0, abs=1e-6)
+    assert verdict.measures["distortion"] < -150
     assert verdict.reasons == (
         "E0 is a voltage_controlled_voltage_source, which the task forbids",
         "E1 is a voltage_controlled_voltage_source, which the task forbids",
@@ -478,8 +478,8 @@ def test_an_ideal_discrete_cubic_has_no_error_but_is_forbidden(tmp_path: Path) -
     verdict = score(CUBIC_DISCRETE, tmp_path)
     # Newton iteration leaves the ideal cubic's output within nanovolts of the cube,
     # where a hit is within 7 mV.
-    assert verdict.measurements["mean absolute error"] < 1e-8
-    assert verdict.measurements["hits"] == 1
+    assert verdict.measures["mean absolute error"] < 1e-8
+    assert verdict.measures["hits"] == 1
     assert verdict.reasons == (
         "B1 is a behavioral_current_source, which the task forbids",
     )
@@ -697,9 +697,9 @@ def test_a_design_must_meet_its_task_in_every_corner() -> None:
         hot = [scoring.unmet("temperature", "it runs too hot")]
         return [] if found["temperature"] < 50 else hot
 
-    measurements, reasons = scoring.cornered(measure, cool)
-    assert measurements["temperature"] == 27
-    assert measurements["at 70 °C with the supplies 5 % high: temperature"] == 70
+    measures, reasons = scoring.cornered(measure, cool)
+    assert measures["temperature"] == 27
+    assert measures["at 70 °C with the supplies 5 % high: temperature"] == 70
     # In a corner, a shortfall keeps its spec and names the corner.
     assert reasons == [
         scoring.unmet(
@@ -857,7 +857,7 @@ def test_the_analogcoder_scorer_says_why_netlists_fail(tmp_path: Path) -> None:
         json.dumps({**levels, "p1": {}}), encoding="utf-8"
     )
     verdict = score(ANALOGCODER, tmp_path, Arm.NGSPICE)
-    assert verdict.measurements["solved"] == 20
+    assert verdict.measures["solved"] == 20
     assert "p1: levels.json gives no level for vin" in verdict.reasons
     assert "p3: there is no p3.cir" in verdict.reasons
     assert "p7: E1 is a voltage_controlled_voltage_source, which the task forbids" in (
@@ -1174,7 +1174,7 @@ def test_speed_results_schema_round_trip_and_baseline_backwards_compatibility(
         timing.Run(1.0 + index / 100, 1.5, peak_memory_bytes=100_000 + index * 4096)
         for index in range(6)
     ]
-    recorded = bench.Timing.of(runs_with_memory, 1.2, 1.4)
+    recorded = bench.Timing.from_samples(runs_with_memory, 1.2, 1.4)
     assert recorded.peak_memory_bytes == 100_000 + 5 * 4096
     assert bench.Timing.from_json(recorded.to_json()) == recorded
 
