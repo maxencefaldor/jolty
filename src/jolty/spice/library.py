@@ -453,8 +453,8 @@ class Library:
             built,
             built.initial.initial_conditions,
             self.initial_conditions,
-            path,
-            connections,
+            path=path,
+            connections=connections,
         )
         if operating_point:
             return resolve_node_voltages(entries, "an initial condition")
@@ -500,8 +500,8 @@ class Library:
             built,
             built.initial.nodesets,
             self.nodesets,
-            path,
-            connections,
+            path=path,
+            connections=connections,
         )
         return resolve_node_voltages(entries, "a nodeset")
 

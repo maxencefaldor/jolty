@@ -17,6 +17,8 @@ measure's values over the runs, against its requirement's bounds, and an envelop
 of each unknown it traced along an analysis, its least, median and greatest value over
 the runs at each point.
 
+Install the optional extra with ``pip install 'jolty[plots]'`` to use this module.
+
 Examples:
     >>> import numpy as np
     >>> from jolty import results
@@ -35,9 +37,20 @@ from pathlib import Path
 from typing import Final, Literal
 
 import numpy as np
-from matplotlib.axes import Axes
-from matplotlib.figure import Figure
-from matplotlib.ticker import EngFormatter
+
+try:
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
+    from matplotlib.ticker import EngFormatter
+except ModuleNotFoundError as error:
+    root_module = (error.name or "").split(".", 1)[0]
+    if root_module != "matplotlib":
+        raise
+    message = (
+        "jolty.plots needs the optional `matplotlib` dependency; "
+        "install it with `pip install 'jolty[plots]'`"
+    )
+    raise ImportError(message) from error
 
 from jolty import files, results, unknowns
 from jolty.errors import JoltyError

@@ -14,6 +14,7 @@ configured time limit, and what they print is captured and returned.
 __lazy_modules__ = ["jolty", "jolty.simulate"]
 
 import asyncio
+import importlib.util
 import secrets
 import shutil
 import sys
@@ -604,7 +605,7 @@ async def build(request: BuildRequest, settings: Settings) -> BuildResult:
         await asyncio.to_thread(
             _draw, built.circuit, files.schematic_path(path), marked=_marked(report)
         )
-        if request.schematic
+        if request.schematic and _plots_available()
         else None
     )
     return BuildResult(
@@ -680,7 +681,10 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     circuit = await asyncio.to_thread(_save, built, path)
     report = _report(built, request, chosen, settings)
     saved = await asyncio.to_thread(target.is_file)
-    needs_results = request.raw is not None or request.schematic or request.plot
+    can_plot = _plots_available()
+    draw_schematic = request.schematic and can_plot
+    draw_plots = request.plot and can_plot
+    needs_results = request.raw is not None or draw_schematic or draw_plots
     loaded = await asyncio.to_thread(_load, target) if saved and needs_results else {}
     saved_raw: Path | None = None
     if request.raw is not None:
@@ -702,15 +706,15 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
             point=_first_point(loaded),
             marked=_marked(report),
         )
-        if request.schematic
+        if draw_schematic
         else None
     )
     plotted = (
         await asyncio.to_thread(_plot, target, loaded, [], request.traces)
-        if request.plot
+        if draw_plots
         else ()
     )
-    if request.plot and saved_batches:
+    if draw_plots and saved_batches:
         plotted += await asyncio.to_thread(_plot_batches, target, batched)
     return SimulateResult(
         circuit=circuit,
@@ -819,7 +823,9 @@ async def merge(request: MergeRequest, settings: Settings) -> MergeResult:
     target = request.output or files.merged_path(request.shards)
     found, merged = await asyncio.to_thread(_merged, request.shards, target)
     plotted = (
-        await asyncio.to_thread(_plot_batches, target, target) if request.plot else ()
+        await asyncio.to_thread(_plot_batches, target, target)
+        if request.plot and _plots_available()
+        else ()
     )
     return MergeResult(
         shards=found,
@@ -878,10 +884,12 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
     """Plots the analyses of a saved results file beside it; settings play no part.
 
     Raises:
-        JoltyError: When the file is missing or holds no results, an analysis named is
-            not in it or is taken at DC solutions, or a trace names no unknown.
+        JoltyError: When the optional `matplotlib` extra is missing, the file is missing
+            or holds no results, an analysis named is not in it or is taken at DC
+            solutions, or a trace names no unknown.
     """
     del settings
+    _require_plots("plotting results")
     loaded = await asyncio.to_thread(_load, request.results)
     drawn = await asyncio.to_thread(
         _plot, request.results, loaded, request.analyses, request.traces
@@ -1078,10 +1086,12 @@ async def draw(request: DrawRequest, settings: Settings) -> DrawResult:
     """Draws a component of a saved circuit beside it; settings play no part.
 
     Raises:
-        JoltyError: When a file is missing or holds no circuit, no component instance
-            is at the path, or the results hold no operating point.
+        JoltyError: When the optional `matplotlib` extra is missing, a file is missing
+            or holds no circuit, no component instance is at the path, or the results
+            hold no operating point.
     """
     del settings
+    _require_plots("drawing schematics")
     circuit = await asyncio.to_thread(_load_circuit, request.circuit)
     point = None
     if request.results is not None:
@@ -1271,6 +1281,21 @@ async def export_kicad(
     target = request.output or files.netlist_path(request.circuit, request.instance)
     await asyncio.to_thread(written.save, target)
     return ExportKicadResult(netlist=written, path=target)
+
+
+def _plots_available() -> bool:
+    """Whether the optional `matplotlib` dependency is installed."""
+    return importlib.util.find_spec("matplotlib") is not None
+
+
+def _require_plots(what: str) -> None:
+    """Raises `JoltyError` when the optional `matplotlib` dependency is missing."""
+    if not _plots_available():
+        message = (
+            f"{what} needs the optional `matplotlib` dependency; "
+            "install it with `pip install 'jolty[plots]'`"
+        )
+        raise JoltyError(message)
 
 
 def _draw(
@@ -1662,7 +1687,7 @@ def _move(source: Path, destination: Path) -> None:
         destination.unlink(missing_ok=True)
 
 
-def _write_atomic(target: Path, writer: Callable[[Path], None]) -> None:
+def _write_atomic(target: Path, writer: Callable[[Path], object]) -> None:
     """Writes `target` atomically via a hidden sibling file in the same directory."""
     target.parent.mkdir(parents=True, exist_ok=True)
     staged = target.with_name(f".{target.name}.{secrets.token_hex(8)}")

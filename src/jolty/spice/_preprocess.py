@@ -112,9 +112,7 @@ def expanded_text(
         words = [word.strip("'\"") for word in tokens(line)]
         directive = words[0].casefold() if words else ""
         if (
-            subcircuit_depth == 0
-            and directive == ".lib"
-            and len(words) == 2  # noqa: PLR2004 - `.lib` and a name
+            subcircuit_depth == 0 and directive == ".lib" and len(words) == 2  # noqa: PLR2004 - `.lib` and a name
         ):
             if opened is not None:
                 message = f"a section opens within section `{opened}`"
@@ -206,8 +204,7 @@ def chosen(
                     outer
                     and not block.taken
                     and (
-                        directive == ".else"
-                        or _condition(statement, scope, functions)
+                        directive == ".else" or _condition(statement, scope, functions)
                     )
                 )
                 block.chosen, block.taken = held, block.taken or held

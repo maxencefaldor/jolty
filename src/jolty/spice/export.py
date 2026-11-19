@@ -1720,9 +1720,7 @@ def vector(
         first = unknown.name.partition("/")[0]
         kept = top.instance(first)
         names = (
-            (first,)
-            if kept is not None and isinstance(kept.of, ir.ComponentOf)
-            else ()
+            (first,) if kept is not None and isinstance(kept.of, ir.ComponentOf) else ()
         )
         return _voltage_vector(unknown.name, names, dialect)
     path, _, label = unknown.name.rpartition(":")

@@ -119,7 +119,7 @@ def port_map(
     connections: Mapping[str, str] | None,
 ) -> dict[str, str]:
     """Maps `subcircuit`'s canonical pin names to the external nets in `connections`."""
-    if not connections:
+    if connections is None or not connections:
         return {}
     canonical = {pin.casefold(): built.nets[pin.casefold()] for pin in subcircuit.pins}
     mapped: dict[str, str] = {}
@@ -165,6 +165,7 @@ def collect_node_voltages(  # noqa: PLR0913 - subcircuit, build, local/top maps 
     built: Built,
     local_entries: Sequence[tuple[str, float]],
     top_level: Mapping[str, float],
+    *,
     path: str,
     connections: Mapping[str, str] | None,
 ) -> tuple[dict[str, str], str, list[tuple[str, float]]]:

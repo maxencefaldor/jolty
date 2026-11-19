@@ -442,7 +442,6 @@ name = "jolty"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "matplotlib" },
     { name = "numpy" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -453,7 +452,11 @@ jax = [
     { name = "jax" },
 ]
 mcp = [
+    { name = "matplotlib" },
     { name = "mcp" },
+]
+plots = [
+    { name = "matplotlib" },
 ]
 
 [package.dev-dependencies]
@@ -461,6 +464,7 @@ dev = [
     { name = "coverage" },
     { name = "hypothesis" },
     { name = "jax" },
+    { name = "matplotlib" },
     { name = "maturin" },
     { name = "mcp" },
     { name = "mpmath" },
@@ -471,6 +475,7 @@ dev = [
     { name = "ty" },
 ]
 docs = [
+    { name = "matplotlib" },
     { name = "mkdocstrings-python" },
     { name = "zensical" },
 ]
@@ -478,19 +483,21 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "jax", marker = "extra == 'jax'", specifier = ">=0.12" },
-    { name = "matplotlib", specifier = ">=3.10" },
+    { name = "matplotlib", marker = "extra == 'mcp'", specifier = ">=3.10" },
+    { name = "matplotlib", marker = "extra == 'plots'", specifier = ">=3.10" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.1" },
     { name = "numpy", specifier = ">=2.3" },
     { name = "pydantic", specifier = ">=2.12" },
     { name = "pydantic-settings", specifier = ">=2.11" },
 ]
-provides-extras = ["jax", "mcp"]
+provides-extras = ["jax", "mcp", "plots"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", specifier = ">=7.17.3" },
     { name = "hypothesis" },
     { name = "jax", specifier = ">=0.12" },
+    { name = "matplotlib", specifier = ">=3.10" },
     { name = "maturin" },
     { name = "mcp", specifier = ">=2.1" },
     { name = "mpmath", specifier = ">=1.4.1" },
@@ -501,6 +508,7 @@ dev = [
     { name = "ty" },
 ]
 docs = [
+    { name = "matplotlib", specifier = ">=3.10" },
     { name = "mkdocstrings-python", specifier = ">=2.0.10" },
     { name = "zensical", specifier = ">=0.1.1" },
 ]

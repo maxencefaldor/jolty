@@ -202,14 +202,19 @@ def _validate_reference(value: object, info: ValidationInfo) -> str | None:
 def _check_method(value: object) -> Method:
     """Validates `value` is one of the supported integration methods."""
     match value:
-        case "trapezoidal" | "gear2" | "backward_euler":
-            return value
+        case "trapezoidal":
+            return "trapezoidal"
+        case "gear2":
+            return "gear2"
+        case "backward_euler":
+            return "backward_euler"
         case _:
             message = (
                 "an integration method is 'trapezoidal', 'gear2' or "
                 f"'backward_euler', not {value!r}"
             )
-            fail("method", message)
+            error = PydanticCustomError("method", "{message}", {"message": message})
+            raise error
 
 
 def _check_quantity(
@@ -261,10 +266,10 @@ def _model(
     def validate(value: object, info: ValidationInfo) -> object:
         if optional and value is None:
             return None
-        if isinstance(value, expected | Mapping):
-            return value
-        name = info.field_name or label
-        fail("model_type", f"{name} is {label}, not {value!r}")
+        if not isinstance(value, (expected, Mapping)):
+            name = info.field_name or label
+            fail("model_type", f"{name} is {label}, not {value!r}")
+        return value
 
     return BeforeValidator(validate)
 
@@ -281,9 +286,9 @@ def _instance(
     def validate(value: object) -> object:
         if optional and value is None:
             return None
-        if isinstance(value, expected):
-            return value
-        fail(kind, message.format(value=repr(value)))
+        if not isinstance(value, expected):
+            fail(kind, message.format(value=repr(value)))
+        return value
 
     return BeforeValidator(validate)
 
@@ -655,9 +660,9 @@ def _check_record(record: object) -> tuple[str, ...] | None:
 
 def _check_product_part(value: object) -> Variants:
     """Validates one operand of a `Product` is a `Variants` instance."""
-    if isinstance(value, MonteCarlo | Grid | Explicit | Product):
-        return value
-    fail("variants_type", f"a product is of variants, not {value!r}")
+    if not isinstance(value, MonteCarlo | Grid | Explicit | Product):
+        fail("variants_type", f"a product is of variants, not {value!r}")
+    return value
 
 
 _STRICT_BOOL: Final = _boolean()
@@ -689,8 +694,9 @@ def recorded(record: Sequence[str] | None) -> tuple[str, ...] | None:
     try:
         return _check_record(record)
     except PydanticCustomError as error:
+        title = "record"
         raise ValidationError.from_exception_data(
-            "record", [InitErrorDetails(type=error, loc=(), input=record)]
+            title, [InitErrorDetails(type=error, loc=(), input=record)]
         ) from None
 
 
@@ -1600,9 +1606,12 @@ class Characterized:
     supply: Annotated[
         Quantity, _quantity(VOLTAGE, "a characterization's supply", positive=True)
     ]
-    slews: Annotated[
-        Sequence[float], _rising_grid("slews", strictly_positive=True)
-    ] = (0.5, 1.0, 2.0, 4.0)
+    slews: Annotated[Sequence[float], _rising_grid("slews", strictly_positive=True)] = (
+        0.5,
+        1.0,
+        2.0,
+        4.0,
+    )
     fanouts: Annotated[
         Sequence[float], _rising_grid("fanouts", strictly_positive=False)
     ] = (0.0, 1.0, 2.0, 4.0)

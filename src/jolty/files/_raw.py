@@ -225,11 +225,7 @@ def _raw_scaled(
         message = f"{path}: {kind} plot `{label}` has no {scale_kind} variable"
         raise JoltyError(message)
     scale = plot.variables[0]
-    if (
-        scale_kind != "sweep"
-        and scale.kind != scale_kind
-        and scale.name.casefold() != scale_kind
-    ):
+    if scale_kind not in {"sweep", scale.kind} and scale.name.casefold() != scale_kind:
         message = (
             f"{path}: {kind} plot `{label}` begins with `{scale.name}` ({scale.kind}), "
             f"not {scale_kind}"

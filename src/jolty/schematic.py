@@ -11,6 +11,8 @@ join.
 A schematic can carry facts: the voltage of each net at an operating point, and the
 instances that diagnostics name, drawn in red with an exclamation point.
 
+Install the optional extra with ``pip install 'jolty[plots]'`` to use this module.
+
 Examples:
     >>> from jolty import Builder, Role, Simulation, circuit, component, devices
     >>> from jolty.plan import OperatingPoint
@@ -36,9 +38,19 @@ from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Final
 
-from matplotlib.axes import Axes
-from matplotlib.figure import Figure
-from matplotlib.patches import Circle, Polygon, Rectangle
+try:
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
+    from matplotlib.patches import Circle, Polygon, Rectangle
+except ModuleNotFoundError as error:
+    root_module = (error.name or "").split(".", 1)[0]
+    if root_module != "matplotlib":
+        raise
+    message = (
+        "jolty.schematic needs the optional `matplotlib` dependency; "
+        "install it with `pip install 'jolty[plots]'`"
+    )
+    raise ImportError(message) from error
 
 from jolty import ir
 from jolty.errors import JoltyError

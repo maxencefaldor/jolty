@@ -851,7 +851,7 @@ class _Saver:
         | results.NoiseResult
         | results.PoleZeroResult
         | results.TransferFunctionResult,
-    ) -> _LinearizedEntry:
+    ) -> _Entry:
         point = result.operating_point
         found = self.put_point(f"{name}.operating_point", point)
         chosen = (

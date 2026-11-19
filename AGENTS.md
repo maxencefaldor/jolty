@@ -141,7 +141,8 @@ Where the code does not meet a convention yet, a change that touches that code b
 - **Rules, as in ty:** a rule's name is lowercase words joined by hyphens, and its level is `error`, `warn` or `ignore`.
   A rule whose fact surely breaks the circuit defaults to `error`; any other defaults to `warn`.
   Each rule states its exact condition (`jolty explain`), and has a test that raises it and one that passes.
-- **Images are feedback:** every build draws its schematic and every simulation plots its analyses, and the MCP server sends the images with its text.
+- **Images are feedback:** when the optional `plots` extra (`jolty[plots]`, included in `jolty[mcp]`) is installed, every build draws its schematic and every simulation plots its analyses, and the MCP server sends the images with its text.
+  When `matplotlib` is absent, builds, simulations and shard merges skip image generation cleanly while explicit `draw` and `plot` commands report the missing `jolty[plots]` extra.
   A batch of runs plots their distribution, not each run.
   A schematic comes from the connections alone: a script holds no coordinates.
   Plots never put two quantities on one axis, and take their colors in a fixed order checked for color-vision deficiencies.

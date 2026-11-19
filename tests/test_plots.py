@@ -1,6 +1,10 @@
 # Copyright 2026 Maxence Faldor
 
+import asyncio
+import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -16,11 +20,13 @@ from jolty import (
     component,
     devices,
     results,
+    service,
 )
 from jolty.cli import main
 from jolty.files import Batch, save_results
 from jolty.plan import MonteCarlo, decade
 from jolty.plots import MAX_SERIES, default_traces, envelope, histograms, plot
+from jolty.settings import Settings
 from jolty.specs import bandwidth, value
 from jolty.units import MHz, V, kHz, kohm, nF
 from jolty.unknowns import MAX_SERIES as UNKNOWNS_MAX_SERIES
@@ -277,3 +283,67 @@ def test_a_batch_draws_a_histogram_per_measurement_and_an_envelope_per_analysis(
         "current phase",
     ]
     assert figure.axes[0].get_xscale() == "log"
+
+
+@pytest.mark.parametrize("module", ["plots", "schematic"])
+def test_missing_matplotlib_raises_import_error_with_install_hint(module: str) -> None:
+    snippet = f"import sys; sys.modules['matplotlib'] = None; import jolty.{module}"
+    completed = subprocess.run(  # noqa: S603 - fixed python executable and snippet
+        [sys.executable, "-c", snippet],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert "ImportError" in completed.stderr
+    assert f"jolty.{module}" in completed.stderr
+    assert "pip install 'jolty[plots]'" in completed.stderr
+
+
+def test_service_without_matplotlib_skips_auto_images_and_rejects_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script = tmp_path / "divider.py"
+    script.write_text(
+        "from jolty import Builder, OperatingPoint, Plan, Role, component, devices\n"
+        "from jolty.units import V, kohm\n"
+        "@component\n"
+        "def build(c: Builder) -> None:\n"
+        "    g = c.port('ground', Role.GROUND)\n"
+        "    v = c.place(devices.voltage_source(5 * V), name='V1')\n"
+        "    r = c.place(devices.resistor(1 * kohm), name='R1')\n"
+        "    c.connect(v.positive, r.a, name='in')\n"
+        "    c.connect(r.b, v.negative, g)\n"
+        "def plan() -> Plan:\n"
+        "    return Plan({'op': OperatingPoint()})\n",
+        encoding="utf-8",
+    )
+    real_find_spec = importlib.util.find_spec
+
+    def without_matplotlib(name: str, package: str | None = None) -> object:
+        if name == "matplotlib":
+            return None
+        return real_find_spec(name, package)
+
+    monkeypatch.setattr(importlib.util, "find_spec", without_matplotlib)
+    settings = Settings()
+
+    built = asyncio.run(service.build(service.BuildRequest(script=script), settings))
+    assert built.schematic is None
+    assert built.circuit.path.is_file()
+
+    simulated = asyncio.run(
+        service.simulate(service.SimulateRequest(script=script), settings)
+    )
+    assert simulated.schematic is None
+    assert simulated.plots == ()
+    assert simulated.results is not None
+
+    with pytest.raises(JoltyError, match=r"pip install 'jolty\[plots\]'"):
+        asyncio.run(
+            service.draw(service.DrawRequest(circuit=built.circuit.path), settings)
+        )
+    with pytest.raises(JoltyError, match=r"pip install 'jolty\[plots\]'"):
+        asyncio.run(
+            service.plot(service.PlotRequest(results=simulated.results), settings)
+        )

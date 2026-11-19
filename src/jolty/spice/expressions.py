@@ -19,7 +19,7 @@ import functools
 import itertools
 import math
 import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Final, override
 
@@ -350,7 +350,7 @@ class _Parser:
         return SpiceError(message)
 
     @contextlib.contextmanager
-    def _nested(self) -> Iterator[None]:
+    def _nested(self) -> Generator[None]:
         self.depth += 1
         if self.depth > _MAX_DEPTH:
             raise self._too_deep()
