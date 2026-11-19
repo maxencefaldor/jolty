@@ -34,7 +34,7 @@ jolty merge amp.shards
 
 It reads every `shard-*-*.npz` file of the directory, checks that they share their digest and that their samples tile every sample of the analysis, no gap and no overlap, and joins their batches, at each of the plan's conditions, in the order of their samples.
 It then judges every sample against the specs the shards measured, as a run of every sample does, saves the batch at the plan's own conditions to `amp.batches.npz` beside the directory, the file the run of every sample saves, and plots it beside that file.
-Its report is that run's Monte Carlo report, bit for bit, and its batch file holds that run's batch of the samples, the same bytes where the run traced the probes the shards traced.
+Its report is that run's Monte Carlo report, bit for bit, and its batch file holds that run's batch of the samples, the same bytes where the run kept the same traces as the shards.
 The merge runs no script, so it needs neither the scripts nor what they import, only the shards.
 
 A merge refuses shards it cannot join, and names them, every gap and overlap at once:

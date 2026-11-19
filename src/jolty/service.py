@@ -15,6 +15,7 @@ __lazy_modules__ = ["jolty"]
 
 import ast
 import asyncio
+import functools
 import importlib.resources
 import json
 import math
@@ -27,6 +28,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Collection, Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import MappingProxyType
 from typing import Final, Literal, Self, override
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -620,7 +622,8 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
     circuit = await asyncio.to_thread(_save, built, path)
     report = _report(built, request, chosen, settings)
     saved = await asyncio.to_thread(target.is_file)
-    loaded = await asyncio.to_thread(_load, target) if saved else {}
+    needs_results = request.raw is not None or request.schematic or request.plot
+    loaded = await asyncio.to_thread(_load, target) if saved and needs_results else {}
     saved_raw: Path | None = None
     if request.raw is not None:
         if saved:
@@ -2179,17 +2182,71 @@ def _parse_docs_bundle(raw: str) -> dict[DocumentSection, dict[str, str]] | None
     return catalog_map
 
 
-def _load_docs_from_bundle() -> dict[DocumentSection, dict[str, str]] | None:
+type _Catalog = MappingProxyType[DocumentSection, MappingProxyType[str, str]]
+"""Immutable offline documentation catalog mapped by section and slug."""
+
+
+def _freeze_catalog(
+    catalog_map: Mapping[DocumentSection, Mapping[str, str]],
+) -> _Catalog:
+    """Wraps a parsed docs catalog in immutable `MappingProxyType` views."""
+    return MappingProxyType(
+        {
+            section: MappingProxyType(dict(entries))
+            for section, entries in catalog_map.items()
+        }
+    )
+
+
+@functools.lru_cache(maxsize=8)
+def _cached_checkout(root: Path) -> _Catalog | None:
+    """Loads and caches guide pages and examples from a checkout at `root`."""
+    loaded = _load_docs_from_checkout(root)
+    return None if loaded is None else _freeze_catalog(loaded)
+
+
+@functools.lru_cache(maxsize=8)
+def _cached_bundle_file(
+    path: Path, _mtime_ns: int, _size: int, _inode: int
+) -> _Catalog | None:
+    """Reads, parses, and caches a filesystem ``docs.json`` bundle by stat stamp."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    parsed = _parse_docs_bundle(raw)
+    return None if parsed is None else _freeze_catalog(parsed)
+
+
+@functools.lru_cache(maxsize=4)
+def _cached_bundle_text(raw: str) -> _Catalog | None:
+    """Parses and caches a raw ``docs.json`` payload."""
+    parsed = _parse_docs_bundle(raw)
+    return None if parsed is None else _freeze_catalog(parsed)
+
+
+def _load_docs_from_bundle() -> _Catalog | None:
     """Loads guide pages and examples from the packaged ``assets/docs.json`` bundle."""
     try:
         resource = importlib.resources.files("jolty").joinpath("assets", _DOCS_BUNDLE)
-        raw = resource.read_text(encoding="utf-8")
     except ModuleNotFoundError, OSError:
         return None
-    return _parse_docs_bundle(raw)
+    if isinstance(resource, Path):
+        try:
+            info = resource.stat()
+        except OSError:
+            return None
+        return _cached_bundle_file(
+            resource, info.st_mtime_ns, info.st_size, info.st_ino
+        )
+    try:
+        raw = resource.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return _cached_bundle_text(raw)
 
 
-def _docs_catalog() -> dict[DocumentSection, dict[str, str]]:
+def _docs_catalog() -> _Catalog:
     """Loads offline guide pages and examples from the checkout or packaged bundle.
 
     Raises:
@@ -2197,7 +2254,7 @@ def _docs_catalog() -> dict[DocumentSection, dict[str, str]]:
     """
     root = _repository_root()
     if root is not None:
-        checkout = _load_docs_from_checkout(root)
+        checkout = _cached_checkout(root)
         if checkout is not None:
             return checkout
     bundled = _load_docs_from_bundle()
@@ -2601,6 +2658,18 @@ def _place(source: Path, destination: Path) -> None:
         raise
 
 
+def _write_atomic(target: Path, writer: Callable[[Path], None]) -> None:
+    """Writes `target` atomically via a hidden sibling file in the same directory."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staged = target.with_name(f".{target.name}.{secrets.token_hex(8)}")
+    try:
+        writer(staged)
+        staged.replace(target)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+
+
 def _save_raw(
     loaded: Mapping[str, results.AnalysisResult],
     target: Path,
@@ -2634,23 +2703,18 @@ def _save_raw(
             f"responses and transients; none of the completed analyses match ({kinds})"
         )
         raise JoltyError(message)
-    with TemporaryDirectory(prefix="jolty-") as scratch:
-        written = Path(scratch) / target.name
-        files.save_raw(written, writable, binary=binary)
-        _place(written, target)
+    _write_atomic(
+        target, lambda staged: files.save_raw(staged, writable, binary=binary)
+    )
     return target
 
 
 def _save(built: runner.Built, path: Path) -> CircuitSummary:
-    """Saves the circuit `built` holds at `path`, at once, as `_place` moves a file.
+    """Saves the circuit `built` holds at `path` atomically via a sibling file.
 
     Shards of one analysis, run at once, each save the same circuit there.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="jolty-") as scratch:
-        written = Path(scratch) / path.name
-        files.save_circuit(written, built.circuit)
-        _place(written, path)
+    _write_atomic(path, lambda staged: files.save_circuit(staged, built.circuit))
     return CircuitSummary(
         path=path,
         components=len(built.circuit.components),

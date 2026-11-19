@@ -16,6 +16,7 @@ can reach the protocol stream. Serve with ``jolty-mcp`` or ``python -m jolty.mcp
 import asyncio
 import base64
 import copy
+import functools
 import inspect
 import re
 import sys
@@ -57,11 +58,11 @@ that placed them, and the schematic marks them in red. explain_rules gives the e
 condition behind each rule. Add plan() returning a jolty.Plan of named analyses, and
 optionally specs() returning jolty.Specs of requirements against those analyses, then
 call simulate_circuit: it reports each analysis, transistor operating-point regions and
-margins nearest a boundary first (OperatingPointResult.region(path)), writes the first
-operating point's voltages on the schematic, checks specs() verdicts (passed, marginal,
-failed, unmeasured, with slack, worst corner and Wilson yield interval), plots each
-analysis except operating points and sensitivities, and saves results to a .npz file
-readable by jolty.files.load_results. plot_results draws other unknowns from saved
+margins nearest a boundary first (OperatingPointResult.region(instance)), writes the
+first operating point's voltages on the schematic, checks specs() verdicts (passed,
+marginal, failed, unmeasured, with slack, worst corner and Wilson yield interval), plots
+each analysis except operating points and sensitivities, and saves results to a .npz
+file readable by jolty.files.load_results. plot_results draws other unknowns from saved
 results; measure_results reads any measurement from saved results without running a
 simulation; draw_schematic draws the component inside an instance; view_circuit writes a
 standalone 3D HTML viewer; check_circuit checks a saved circuit; cost_circuit prices
@@ -87,7 +88,7 @@ current(instance, terminal) and charge(instance, terminal), plus device conducta
 variables; operating point and transient also record instances rated for current or
 power. Logic devices join logic nets simulated by an event scheduler; electrical=True
 adds supply and ground pins to join electrical nets; results read logic levels with
-level(net): 0, 1, or NaN for unknown. Plan fidelity (such as
+logic_level(net): 0, 1, or NaN for unknown. Plan fidelity (such as
 fidelity={"adder/*": Characterized(3.3 * V)}) swaps matching components for logic cells
 characterized from their circuits and verified by spot checks."""
 
@@ -318,11 +319,25 @@ def _format_specs() -> str:
     return "\n".join(lines)
 
 
-def _format_resources() -> str:
-    """Formats the offline documentation resources and templates."""
-    entries = service.document_summaries()
-    guide_uris = [entry.uri for entry in entries if entry.section == "guide"]
-    example_uris = [entry.uri for entry in entries if entry.section == "examples"]
+@functools.cache
+def _static_instruction_sections() -> tuple[str, ...]:
+    """Builds and caches code-derived instruction sections that ignore docs I/O."""
+    return (
+        _WORKFLOW_OVERVIEW,
+        _format_waveforms(),
+        _format_devices(),
+        _format_parts(),
+        _format_analyses(),
+        _format_plan_controls(),
+        _format_specs(),
+    )
+
+
+@functools.lru_cache(maxsize=8)
+def _render_instructions(
+    guide_uris: tuple[str, ...], example_uris: tuple[str, ...]
+) -> str:
+    """Assembles and caches full instructions for one set of offline doc URIs."""
     header = (
         "Offline documentation and examples (read via MCP resources, read_docs tool, "
         "or `jolty docs [TOPIC]`):"
@@ -331,13 +346,15 @@ def _format_resources() -> str:
         f"- Templates: {service.DOCS_URI_PREFIX}/guide/{{slug}}, "
         f"{service.DOCS_URI_PREFIX}/examples/{{+slug}}"
     )
-    lines = [
-        header,
-        templates,
-        f"- Guide ({len(guide_uris)}): {', '.join(guide_uris)}",
-        f"- Examples ({len(example_uris)}): {', '.join(example_uris)}",
-    ]
-    return "\n".join(lines)
+    resources = "\n".join(
+        (
+            header,
+            templates,
+            f"- Guide ({len(guide_uris)}): {', '.join(guide_uris)}",
+            f"- Examples ({len(example_uris)}): {', '.join(example_uris)}",
+        )
+    )
+    return "\n\n".join((*_static_instruction_sections(), resources)) + "\n"
 
 
 def build_instructions() -> str:
@@ -346,21 +363,23 @@ def build_instructions() -> str:
     Raises:
         JoltyError: When the offline documentation catalog cannot be loaded.
     """
-    sections = (
-        _WORKFLOW_OVERVIEW,
-        _format_waveforms(),
-        _format_devices(),
-        _format_parts(),
-        _format_analyses(),
-        _format_plan_controls(),
-        _format_specs(),
-        _format_resources(),
-    )
-    return "\n\n".join(sections) + "\n"
+    entries = service.document_summaries()
+    guide_uris = tuple(entry.uri for entry in entries if entry.section == "guide")
+    example_uris = tuple(entry.uri for entry in entries if entry.section == "examples")
+    return _render_instructions(guide_uris, example_uris)
 
 
-INSTRUCTIONS: Final[str] = build_instructions()
-"""Server instructions derived from `jolty`'s public code and offline docs catalog."""
+if typing.TYPE_CHECKING:
+    INSTRUCTIONS: str = ""
+
+
+def __getattr__(name: str) -> str:
+    """Resolves `INSTRUCTIONS` lazily on first access to avoid import-time I/O."""
+    if name == "INSTRUCTIONS":
+        return build_instructions()
+    message = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(message)
+
 
 READS_FILES: Final = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 """A check reads a circuit file and changes nothing."""
@@ -413,13 +432,14 @@ def tool_from[Request: BaseModel, Result: service.CommandResult](
         except JoltyError as error:
             raise ToolError(str(error)) from error
         content: list[ContentBlock] = [TextContent(type="text", text=result.describe())]
+        images = [await asyncio.to_thread(path.read_bytes) for path in result.images()]
         content.extend(
             ImageContent(
                 type="image",
-                data=base64.b64encode(path.read_bytes()).decode("ascii"),
+                data=base64.b64encode(raw).decode("ascii"),
                 mime_type="image/png",
             )
-            for path in result.images()
+            for raw in images
         )
         return CallToolResult(
             content=content, structured_content=result.model_dump(mode="json")

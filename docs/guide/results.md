@@ -37,7 +37,7 @@ A legend names the series, and up to four are also labeled at their end:
 Logic nets share a panel of their own, one lane each, with unknown levels hatched (see [Logic](logic.md#levels-in-results)).
 
 By default a plot draws the nets the top component names, voltages then logic nets, up to eight.
-The option `--traces` chooses other unknowns, such as `X1/mid` or `V1:current`, and `jolty plot` draws a saved results file again, with other probes, without simulating:
+The option `--traces` chooses other unknowns, such as `X1/mid` or `V1:current`, and `jolty plot` draws a saved results file again, with other traces, without simulating:
 
 ```sh
 uv run jolty plot rectifier.results.npz --analyses ripple --traces out --traces V1:current
@@ -226,7 +226,7 @@ Its `work` counts every Newton iteration it ran, its operating point's included 
 With the `profile` option, its `profile` says where its time went, in seconds: preparing, evaluating the devices, assembling each Newton iteration's matrix, factoring, solving, step control, recording, and the rest.
 Its `charge_leak` holds each equation's converged residual integrated over the accepted steps by those steps' own integration formulas, in the order of `unknowns`: `signed` for the net integral (coulombs for electrical nodes, webers for current branches, joules for thermal nets) and `absolute` for the cumulative sum of step leak magnitudes without cancellation; `result.charge_leak(unknown)` and `result.charge_leak(unknown, absolute=True)` read them by name.
 
-`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `rise(net)` a thermal net's temperature above the ambient, `state(name)` a device's dimensionless state, such as a memristor's `M1:state`, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a recorded terminal's, the current into a thermal terminal being the heat that flows in, in watts, `conductance`, `capacitance` and `variable` read a recorded device's own model, `region(instance)` a recorded transistor's region of operation at an operating point, and `level(net)` reads a logic net's level.
+`voltage(net, reference=None)` reads a net's voltage, relative to another net when given, `rise(net)` a thermal net's temperature above the ambient, `state(name)` a device's dimensionless state, such as a memristor's `M1:state`, `current(instance)` reads the current through an instance, `current(instance, terminal)` and `charge(instance, terminal)` read a recorded terminal's, the current into a thermal terminal being the heat that flows in, in watts, `conductance`, `capacitance` and `variable` read a recorded device's own model, `region(instance)` a recorded transistor's region of operation at an operating point, and `logic_level(net)` reads a logic net's level.
 Each finds its column by name in a dictionary, so a read costs the same however large the circuit.
 A name that is not an unknown, a recorded terminal, derivative or variable, or a logic net raises a `KeyError` that suggests the closest names.
 

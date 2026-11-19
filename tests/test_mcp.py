@@ -11,6 +11,7 @@ import typing
 from collections.abc import Mapping
 from importlib.metadata import version
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 from mcp import Client
@@ -690,3 +691,53 @@ def test_measure_results_reads_saved_results_without_simulating(
     assert "no unknown named 'missing_node'" in error_text
     assert "out" in error_text
     assert not log_path.exists()
+
+
+def test_instructions_use_current_result_method_names() -> None:
+    assert "logic_level(net)" in INSTRUCTIONS
+    assert "OperatingPointResult.region(instance)" in INSTRUCTIONS
+    assert "OperatingPointResult.region(path)" not in INSTRUCTIONS
+    assert re.search(r"(?<![A-Za-z0-9_])level\(net\)", INSTRUCTIONS) is None
+
+
+def test_docs_catalog_is_cached_and_immutable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = service._load_docs_from_checkout  # noqa: SLF001 - count disk scans
+    calls = 0
+
+    def counting(root: Path) -> dict[service.DocumentSection, dict[str, str]] | None:
+        nonlocal calls
+        calls += 1
+        return original(root)
+
+    service._cached_checkout.cache_clear()  # noqa: SLF001 - reset checkout cache
+    monkeypatch.setattr(service, "_load_docs_from_checkout", counting)
+    try:
+        first = service._docs_catalog()  # noqa: SLF001 - inspect catalog caching
+        second = service._docs_catalog()  # noqa: SLF001 - verify cache hit
+        assert first is second
+        assert calls == 1
+        assert isinstance(first, MappingProxyType)
+        assert isinstance(first["guide"], MappingProxyType)
+        assert isinstance(first["examples"], MappingProxyType)
+    finally:
+        service._cached_checkout.cache_clear()  # noqa: SLF001 - restore clean cache
+
+
+def test_simulate_skips_results_reload_when_unneeded(
+    script: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden(_path: Path) -> object:
+        message = "results reload should not run without raw, schematic, or plot"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(service, "_load", forbidden)
+    result = asyncio.run(
+        service.simulate(
+            service.SimulateRequest(script=script, plot=False, schematic=False),
+            Settings(),
+        )
+    )
+    assert result.results is not None
+    assert result.results.is_file()
