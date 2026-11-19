@@ -7,27 +7,15 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pytest
 
-from jolty import Builder, Role, Simulation, Transient, component, devices
-from jolty.units import V, kohm, nF, us
-from jolty.waveforms import Piecewise
+from jolty import Simulation, Transient
+from jolty.units import us
+from sample_circuits import low_pass
 
 FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
 """Whether this interpreter is a free-threaded build, which may run without its GIL."""
 
 THREADS = 8
 """Python threads that simulate at once, as many as the performance cores."""
-
-
-@component
-def low_pass(c: Builder) -> None:
-    ground = c.port("ground", Role.GROUND)
-    step = Piecewise([(0 * us, 0 * V), (1e-3 * us, 1 * V)])
-    source = c.place(devices.voltage_source(step), name="V1")
-    resistor = c.place(devices.resistor(1 * kohm), name="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
-    c.connect(source.positive, resistor.a, name="in")
-    c.connect(resistor.b, capacitor.a, name="out")
-    c.connect(capacitor.b, source.negative, ground)
 
 
 @pytest.mark.skipif(not FREE_THREADED, reason="the interpreter has a GIL to keep")

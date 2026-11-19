@@ -11,11 +11,18 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 
+import arms
 import bench
 import measuring
 import numpy as np
 import pytest
+import scoring
 import timing
+from arms import Arm
+from run import Program, run
+from score import score
+from stub import DESIGNS
+from verdict import Kind, Shortfall, Verdict
 
 from jolty import (
     Builder,
@@ -32,16 +39,11 @@ from jolty import (
 )
 from jolty.plan import TIGHT, linear
 from jolty.units import V, kohm, mA, nF, um, us
+from sample_circuits import divider
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks" / "agents"
 COST_DOWN = BENCHMARKS / "cost_down"
 CUBIC = BENCHMARKS / "cubic"
-
-
-@pytest.fixture(autouse=True)
-def importable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Imports the benchmarks' scripts, which import each other, as their runs do."""
-    monkeypatch.syspath_prepend(str(BENCHMARKS))
 
 
 def design(work: Path, tolerance: str) -> None:
@@ -51,11 +53,14 @@ def design(work: Path, tolerance: str) -> None:
     (work / "design.py").write_text(changed, encoding="utf-8")
 
 
-def test_a_cheaper_design_that_meets_the_specs_meets_the_task(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
-    design(tmp_path, "0.01")
-    verdict = score(COST_DOWN, tmp_path)
+@pytest.mark.parametrize("arm", [Arm.JOLTY, Arm.NGSPICE], ids=["jolty", "ngspice"])
+def test_a_cheaper_design_meets_the_cost_down_task(tmp_path: Path, arm: Arm) -> None:
+    if arm is Arm.JOLTY:
+        design(tmp_path, "0.01")
+    else:
+        # Names are matched without case, as SPICE matches them.
+        stage(tmp_path, {name.casefold(): 0.01 for name in RESISTORS})
+    verdict = score(COST_DOWN, tmp_path, arm)
     assert verdict.met, verdict.reasons
     # Exact catalog BOM cost sums; default pytest.approx covers binary float addition.
     assert verdict.measurements == {
@@ -65,9 +70,6 @@ def test_a_cheaper_design_that_meets_the_specs_meets_the_task(tmp_path: Path) ->
 
 
 def test_the_score_says_why_work_falls_short(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-    from verdict import Verdict  # noqa: PLC0415 - importable only once the path holds it
-
     def kinds(verdict: Verdict) -> list[tuple[str, str | None]]:
         return [(shortfall.kind, shortfall.spec) for shortfall in verdict.shortfalls]
 
@@ -111,9 +113,6 @@ def test_the_score_says_why_work_falls_short(tmp_path: Path) -> None:
 def test_the_given_transistor_is_excused_by_what_it_is_not_its_name(
     tmp_path: Path,
 ) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     unpriced = (
         "is unpriced: a bipolar_transistor is priced by its part number alone, and it "
         "states none"
@@ -147,8 +146,6 @@ def test_the_given_transistor_is_excused_by_what_it_is_not_its_name(
 
 
 def test_the_runner_runs_the_agent_in_a_copy_of_the_task(tmp_path: Path) -> None:
-    from run import Program, run  # noqa: PLC0415 - importable only once the path holds it
-
     agent = Program(
         (
             sys.executable,
@@ -171,8 +168,6 @@ def test_the_runner_runs_the_agent_in_a_copy_of_the_task(tmp_path: Path) -> None
 
 
 def test_the_patented_cubic_generator_scores_one(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     patent = CUBIC / "patent.py"
     (tmp_path / "design.py").write_text(
         f"import runpy\nbuild = runpy.run_path({str(patent)!r})['cubic']\n",
@@ -186,8 +181,6 @@ def test_the_patented_cubic_generator_scores_one(tmp_path: Path) -> None:
 
 
 def test_the_cubic_scorer_names_a_forbidden_part(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     (tmp_path / "design.py").write_text(
         "from jolty import Builder, component, devices\n"
         "from jolty.units import A, kohm\n"
@@ -228,18 +221,20 @@ def reference_designs(work: Path) -> None:
         )
 
 
-def test_the_reference_designs_pass_every_analogcoder_check(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
-    reference_designs(tmp_path)
-    verdict = score(ANALOGCODER, tmp_path)
+@pytest.mark.parametrize("arm", [Arm.JOLTY, Arm.NGSPICE], ids=["jolty", "ngspice"])
+def test_reference_solutions_pass_every_analogcoder_check(
+    tmp_path: Path, arm: Arm
+) -> None:
+    if arm is Arm.JOLTY:
+        reference_designs(tmp_path)
+    else:
+        reference_netlists(tmp_path)
+    verdict = score(ANALOGCODER, tmp_path, arm)
     assert verdict.met, verdict.reasons
     assert verdict.measurements["solved"] == 24
 
 
 def test_the_analogcoder_scorer_says_why_designs_fail(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     reference_designs(tmp_path)
     (tmp_path / "p3.py").unlink()
     (tmp_path / "p7.py").write_text(
@@ -315,8 +310,6 @@ def converter(work: Path, body: str) -> None:
 
 
 def test_an_ideal_converter_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     converter(
         tmp_path,
         "    source = c.place(devices.voltage_controlled_current_source(1e-3 * A / V), "
@@ -335,8 +328,6 @@ def test_an_ideal_converter_has_no_error_but_is_forbidden(tmp_path: Path) -> Non
 
 
 def test_a_converter_blind_to_one_input_falls_short(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     converter(
         tmp_path,
         "    resistor = c.place(devices.resistor(1 * kohm), name='R1')\n"
@@ -379,8 +370,6 @@ def balun(work: Path, body: str) -> None:
 
 
 def test_an_ideal_balun_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     balun(
         tmp_path,
         "    bias = c.place(devices.resistor(1000 * Mohm), name='R1')\n"
@@ -406,8 +395,6 @@ def test_an_ideal_balun_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
 
 
 def test_a_balun_without_an_inverted_output_falls_short(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     balun(
         tmp_path,
         "    series = c.place(devices.resistor(75 * ohm), name='R1')\n"
@@ -421,8 +408,6 @@ def test_a_balun_without_an_inverted_output_falls_short(tmp_path: Path) -> None:
 
 
 def test_a_balun_whose_input_floats_fails_to_simulate(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     balun(
         tmp_path,
         "    series = c.place(devices.resistor(75 * ohm), name='R1')\n"
@@ -436,8 +421,6 @@ def test_a_balun_whose_input_floats_fails_to_simulate(tmp_path: Path) -> None:
 
 
 def test_a_shortfall_s_kind_is_where_the_scorer_found_it(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     # A design whose ports are not the bench's does not build on it, where the
     # scorer used to crash on the port the bench could not join.
     converter(tmp_path, "")
@@ -473,8 +456,6 @@ CUBIC_DISCRETE = BENCHMARKS / "cubic_discrete"
 
 
 def test_an_ideal_discrete_cubic_has_no_error_but_is_forbidden(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     (tmp_path / "design.py").write_text(
         "from jolty import Builder, Role, component, devices\n"
         "from jolty.units import kohm\n"
@@ -505,8 +486,6 @@ def test_an_ideal_discrete_cubic_has_no_error_but_is_forbidden(tmp_path: Path) -
 
 
 def test_a_converter_that_oscillates_does_not_settle(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     parts = VOLTAGE_CURRENT / "given" / "parts.py"
     converter(
         tmp_path,
@@ -551,12 +530,10 @@ def loaded(c: Builder) -> None:
 
 
 def test_boards_draw_the_designs_resistors_and_capacitors_alone() -> None:
-    from scoring import BOARDS, NOMINAL, boards, parts  # noqa: PLC0415 - importable only once the path holds it
-
-    drawn = boards(circuit(loaded()), parts)
-    assert len(drawn) == BOARDS
+    drawn = scoring.boards(circuit(loaded()), scoring.parts)
+    assert len(drawn) == scoring.BOARDS
     assert all(set(board.parts) == {"X1/R1", "X1/C1"} for board in drawn)
-    assert all(board.corner == NOMINAL for board in drawn)
+    assert all(board.corner == scoring.NOMINAL for board in drawn)
     for path, parameter, nominal, tolerance in (
         ("X1/R1", "resistance", 1e3, 0.01),
         ("X1/C1", "capacitance", 1e-9, 0.05),
@@ -564,12 +541,10 @@ def test_boards_draw_the_designs_resistors_and_capacitors_alone() -> None:
         strays = [abs(board.parts[path][parameter] / nominal - 1) for board in drawn]
         # Uniform draws on [-tol, tol] with BOARDS=100: P(max <= 0.9*tol) = 0.9^100.
         assert 0.9 * tolerance < max(strays) <= tolerance
-    assert boards(circuit(loaded()), parts) == drawn
+    assert scoring.boards(circuit(loaded()), scoring.parts) == drawn
 
 
 def test_an_integrated_designs_resistors_stray_together() -> None:
-    from scoring import boards, integrated  # noqa: PLC0415 - importable only once the path holds it
-
     @component
     def pair(c: Builder) -> None:
         a, b = c.port("a"), c.port("b")
@@ -584,7 +559,7 @@ def test_an_integrated_designs_resistors_stray_together() -> None:
         placed = c.place(pair(), name="X1")
         c.connect(placed.a, placed.b, ground)
 
-    drawn = boards(circuit(die()), integrated)
+    drawn = scoring.boards(circuit(die()), scoring.integrated)
     first = np.array([board.parts["X1/R1"]["resistance"] / 1e3 for board in drawn])
     second = np.array([board.parts["X1/R2"]["resistance"] / 3e3 for board in drawn])
     assert np.abs(first - 1).max() > 0.15
@@ -593,8 +568,6 @@ def test_an_integrated_designs_resistors_stray_together() -> None:
 
 
 def test_the_given_transistors_stray_within_their_datasheets() -> None:
-    from scoring import REELS  # noqa: PLC0415 - importable only once the path holds it
-
     given = runpy.run_path(str(VOLTAGE_CURRENT / "given" / "parts.py"))
     measures = {
         "forward_beta": (_gain_at_10_milliamperes, 100.0, 300.0),
@@ -605,7 +578,7 @@ def test_the_given_transistors_stray_within_their_datasheets() -> None:
         (given["pnp"], "pnp", -1.0),
     ):
         made = make()
-        for parameter, tolerance in REELS[polarity].items():
+        for parameter, tolerance in scoring.REELS[polarity].items():
             measure, least, most = measures[parameter]
             for wider in (0.0, 0.05):
                 readings = [
@@ -678,21 +651,10 @@ def _gain_at_10_milliamperes(transistor: devices.Device, sign: float) -> float:
 
 
 def test_a_board_sets_its_corner_on_the_bench() -> None:
-    from scoring import Board, Corner  # noqa: PLC0415 - importable only once the path holds it
-
-    @component
-    def divider(c: Builder) -> None:
-        ground = c.port("ground", Role.GROUND)
-        supply = c.place(devices.voltage_source(2 * V), name="VCC")
-        upper = c.place(devices.resistor(1 * kohm), name="R1")
-        lower = c.place(devices.resistor(1 * kohm), name="R2")
-        c.connect(supply.positive, upper.a)
-        c.connect(upper.b, lower.a, name="out")
-        c.connect(lower.b, supply.negative, ground)
-
-    corner = Corner(temperature=70.0, supply=0.95)
-    board = Board({"R2": {"resistance": 3e3}}, corner)
-    simulation = board.simulation(circuit(divider()), ["VCC"])
+    bench_divider = circuit(divider(level=2 * V, source_name="VCC"))
+    corner = scoring.Corner(temperature=70.0, supply=0.95)
+    board = scoring.Board({"R2": {"resistance": 3e3}}, corner)
+    simulation = board.simulation(bench_divider, ["VCC"])
     # 70 C converted to kelvin (70 + 273.15 = 343.15 K); default pytest.approx rounding.
     assert simulation.conditions.temperature == pytest.approx(343.15)
     point = simulation.run(OperatingPoint())
@@ -700,52 +662,56 @@ def test_a_board_sets_its_corner_on_the_bench() -> None:
     assert point.voltage("out") == pytest.approx(2 * 0.95 * 3 / 4)
     assert corner.describe() == "at 70 °C with the supplies 5 % low"
     with pytest.raises(KeyError, match="R1 is no DC source"):
-        board.simulation(circuit(divider()), ["R1"])
+        board.simulation(bench_divider, ["R1"])
 
 
 def test_too_few_boards_that_meet_the_task_fall_short() -> None:
-    from scoring import Board, parts, tolerate, unmet  # noqa: PLC0415 - importable only once the path holds it
-    from verdict import Kind, Shortfall  # noqa: PLC0415 - importable only once the path holds it
-
-    def measure(board: Board) -> dict[str, float]:
+    def measure(board: scoring.Board) -> dict[str, float]:
         return {"resistance": board.parts["X1/R1"]["resistance"]}
 
     def below(most: float) -> Callable[[dict[str, float]], list[Shortfall]]:
-        high = [unmet("resistance", "it is too high")]
+        high = [scoring.unmet("resistance", "it is too high")]
         return lambda found: [] if found["resistance"] <= most else high
 
-    spread, reasons = tolerate(circuit(loaded()), measure, below(1005), parts)
+    spread, reasons = scoring.tolerate(
+        circuit(loaded()), measure, below(1005), scoring.parts
+    )
     assert 0.6 < spread["yield"] < 0.9
     # Uniform +-1% (+-10 ohm) over BOARDS=100 draws: median standard error is ~1 ohm.
     assert spread["median resistance"] == pytest.approx(1000, abs=2)
     (reason,) = reasons
     assert (reason.kind, reason.spec) == (Kind.SPEC, "yield")
     assert reason.reason.endswith("on the first that falls short, it is too high")
-    spread, reasons = tolerate(circuit(loaded()), measure, below(1010), parts)
+    spread, reasons = scoring.tolerate(
+        circuit(loaded()), measure, below(1010), scoring.parts
+    )
     assert spread["yield"] == 1
     assert not reasons
 
 
 def test_a_design_must_meet_its_task_in_every_corner() -> None:
-    from scoring import Board, cornered, parts, tolerate, unmet  # noqa: PLC0415 - importable only once the path holds it
-    from verdict import Shortfall  # noqa: PLC0415 - importable only once the path holds it
-
-    def measure(board: Board) -> dict[str, float]:
+    def measure(board: scoring.Board) -> dict[str, float]:
         return {"temperature": board.corner.temperature}
 
     def cool(found: dict[str, float]) -> list[Shortfall]:
-        hot = [unmet("temperature", "it runs too hot")]
+        hot = [scoring.unmet("temperature", "it runs too hot")]
         return [] if found["temperature"] < 50 else hot
 
-    measurements, reasons = cornered(measure, cool)
+    measurements, reasons = scoring.cornered(measure, cool)
     assert measurements["temperature"] == 27
     assert measurements["at 70 °C with the supplies 5 % high: temperature"] == 70
     # In a corner, a shortfall keeps its spec and names the corner.
     assert reasons == [
-        unmet("temperature", "at 70 °C with the supplies 5 % low, it runs too hot"),
-        unmet("temperature", "at 70 °C with the supplies 5 % high, it runs too hot"),
+        scoring.unmet(
+            "temperature", "at 70 °C with the supplies 5 % low, it runs too hot"
+        ),
+        scoring.unmet(
+            "temperature", "at 70 °C with the supplies 5 % high, it runs too hot"
+        ),
     ]
-    spread, (reason,) = tolerate(circuit(loaded()), measure, cool, parts)
+    spread, (reason,) = scoring.tolerate(
+        circuit(loaded()), measure, cool, scoring.parts
+    )
     assert spread["yield"] == 0
     assert reason.reason.endswith("at 70 °C with the supplies 5 % low, it runs too hot")
 
@@ -754,22 +720,22 @@ TASKS = sorted(path.parent for path in BENCHMARKS.glob("*/task.md"))
 
 
 def test_the_ngspice_arm_gets_spice_in_place_of_scripts() -> None:
-    from arms import Arm, given, prompt  # noqa: PLC0415 - importable only once the path holds it
-
     for task in TASKS:
-        assert prompt(task, Arm.JOLTY) == (task / "task.md").read_text(encoding="utf-8")
-        written = prompt(task, Arm.NGSPICE)
+        assert arms.prompt(task, Arm.JOLTY) == (task / "task.md").read_text(
+            encoding="utf-8"
+        )
+        written = arms.prompt(task, Arm.NGSPICE)
         assert "jolty" not in written.casefold(), task.name
         assert "`ngspice`" in written
-        names = [path.name for path in given(task, Arm.NGSPICE)]
+        names = [path.name for path in arms.given(task, Arm.NGSPICE)]
         assert not [name for name in names if name.endswith(".py")], task.name
         assert names == sorted(names)
-    assert [path.name for path in given(COST_DOWN, Arm.NGSPICE)] == [
+    assert [path.name for path in arms.given(COST_DOWN, Arm.NGSPICE)] == [
         "bias.cir",
         "catalog.json",
         "stage.cir",
     ]
-    assert "Write `design.cir`" in prompt(CUBIC, Arm.NGSPICE)
+    assert "Write `design.cir`" in arms.prompt(CUBIC, Arm.NGSPICE)
 
 
 def _spice_defaults(parameters: Mapping[str, object]) -> dict[str, object]:
@@ -788,9 +754,6 @@ def _spice_defaults(parameters: Mapping[str, object]) -> dict[str, object]:
 
 
 def test_the_given_spice_models_are_the_given_scripts_parts() -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from scoring import given, modeled  # noqa: PLC0415 - importable only once the path holds it
-
     for task, names in (
         (BENCHMARKS / "balun", ("npn", "pnp")),
         (BENCHMARKS / "cubic_discrete", ("npn", "pnp")),
@@ -798,15 +761,15 @@ def test_the_given_spice_models_are_the_given_scripts_parts() -> None:
         (CUBIC, ("npn",)),
     ):
         for script, read in zip(
-            given(task, Arm.JOLTY, *names),
-            given(task, Arm.NGSPICE, *names),
+            scoring.given(task, Arm.JOLTY, *names),
+            scoring.given(task, Arm.NGSPICE, *names),
             strict=True,
         ):
             assert read.parameters == _spice_defaults(script.parameters), task.name
     parts = runpy.run_path(str(ANALOGCODER / "given" / "parts.py"))
     for name in ("nmos", "pmos"):
         script = parts[name](1 * um, 1 * um)
-        assert modeled(ANALOGCODER, name).parameters == _spice_defaults(
+        assert scoring.modeled(ANALOGCODER, name).parameters == _spice_defaults(
             script.parameters
         )
 
@@ -848,26 +811,7 @@ RESISTORS = ("R1", "R2", "RE", "RC")
 """The given stage's resistors."""
 
 
-def test_a_cheaper_netlist_that_meets_the_specs_meets_the_task(tmp_path: Path) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
-    # Names are matched without case, as SPICE matches them.
-    stage(tmp_path, {name.casefold(): 0.01 for name in RESISTORS})
-    verdict = score(COST_DOWN, tmp_path, Arm.NGSPICE)
-    assert verdict.met, verdict.reasons
-    # The same parts as the cheaper script's, so the same prices.
-    # Exact catalog BOM cost sums; default pytest.approx covers binary float addition.
-    assert verdict.measurements == {
-        "baseline": pytest.approx(0.2),
-        "cost": pytest.approx(0.016),
-    }
-
-
 def test_the_score_says_why_a_netlist_falls_short(tmp_path: Path) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     assert score(COST_DOWN, tmp_path, Arm.NGSPICE).reasons == (
         f"there is no {tmp_path / 'design.cir'}",
     )
@@ -895,27 +839,11 @@ def test_the_score_says_why_a_netlist_falls_short(tmp_path: Path) -> None:
 
 def reference_netlists(work: Path) -> None:
     """Writes each of AnalogCoder's reference designs into `work` as a netlist."""
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from stub import DESIGNS  # noqa: PLC0415 - importable only once the path holds it
-
     for name, text in DESIGNS["analogcoder"](ANALOGCODER, Arm.NGSPICE).items():
         (work / name).write_text(text, encoding="utf-8")
 
 
-def test_the_reference_netlists_pass_every_analogcoder_check(tmp_path: Path) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
-    reference_netlists(tmp_path)
-    verdict = score(ANALOGCODER, tmp_path, Arm.NGSPICE)
-    assert verdict.met, verdict.reasons
-    assert verdict.measurements["solved"] == 24
-
-
 def test_the_analogcoder_scorer_says_why_netlists_fail(tmp_path: Path) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     reference_netlists(tmp_path)
     (tmp_path / "p3.cir").unlink()
     (tmp_path / "p7.cir").write_text(
@@ -940,9 +868,6 @@ def test_the_analogcoder_scorer_says_why_netlists_fail(tmp_path: Path) -> None:
 
 
 def test_a_netlist_s_transistors_must_be_the_given_models(tmp_path: Path) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     follower = ".subckt design input output vcc\nQ1 vcc input output {}\n.ends\n"
     (tmp_path / "design.cir").write_text(follower.format("npn"), encoding="utf-8")
     reasons = score(CUBIC_DISCRETE, tmp_path, Arm.NGSPICE).reasons
@@ -957,8 +882,6 @@ def test_a_netlist_s_transistors_must_be_the_given_models(tmp_path: Path) -> Non
 
 
 def test_a_script_that_fails_to_build_fails_its_task(tmp_path: Path) -> None:
-    from score import score  # noqa: PLC0415 - importable only once the path holds it
-
     (tmp_path / "design.py").write_text(
         "def build():\n    raise RuntimeError('unfinished')\n", encoding="utf-8"
     )
@@ -1103,96 +1026,64 @@ def test_timing_server_drops_peak_memory_when_reused_for_second_fixture() -> Non
 
 def test_throughput_efficiency_math_and_edge_cases() -> None:
     """Exact rational speedup ratios; default pytest.approx covers float rounding."""
-    # N == 1 baseline case.
-    single = bench.throughput_efficiency(
-        threads=1,
-        serial_seconds=2.0,
-        parallel_seconds=2.0,
-        copies_wall_seconds=2.0,
-        copy_seconds=[2.0],
-    )
-    assert single is not None
-    assert single.speedup == pytest.approx(1.0)
-    assert single.attainable_speedup == pytest.approx(1.0)
-    assert single.efficiency == pytest.approx(1.0)
-    assert single.rate_sum_attainable_speedup == pytest.approx(1.0)
-    assert single.rate_sum_efficiency == pytest.approx(1.0)
-    assert single.copy_spread_ratio == pytest.approx(1.0)
-
-    # Homogeneous machine with all-core throttling: 8 copies take 12.5s vs 10s serial.
-    throttled = bench.throughput_efficiency(
-        threads=8,
-        serial_seconds=10.0,
-        parallel_seconds=2.5,
-        copies_wall_seconds=12.5,
-    )
-    assert throttled is not None
-    assert throttled.speedup == pytest.approx(4.0)
-    assert throttled.attainable_speedup == pytest.approx(6.4)
-    assert throttled.efficiency == pytest.approx(0.625)
-    assert throttled.efficiency == pytest.approx(
-        throttled.speedup / throttled.attainable_speedup
-    )
-    assert throttled.rate_sum_attainable_speedup is None
-    assert throttled.copy_spread_ratio is None
-
-    # Memory-bound copies contend more than one shared run: efficiency > 100%, never
-    # clamped.
-    superlinear = bench.throughput_efficiency(
-        threads=8,
-        serial_seconds=10.0,
-        parallel_seconds=2.5,
-        copies_wall_seconds=25.0,
-    )
-    assert superlinear is not None
-    assert superlinear.attainable_speedup == pytest.approx(3.2)
-    assert superlinear.efficiency == pytest.approx(1.25)
-
-    # Hybrid cores (e.g. 8 performance cores @ 1.0s, 4 efficiency cores @ 2.5s).
-    hybrid = bench.throughput_efficiency(
-        threads=12,
-        serial_seconds=1.0,
-        parallel_seconds=0.2,
-        copies_wall_seconds=2.5,
-        copy_seconds=[1.0] * 8 + [2.5] * 4,
-    )
-    assert hybrid is not None
-    assert hybrid.speedup == pytest.approx(5.0)
-    assert hybrid.attainable_speedup == pytest.approx(12 * 1.0 / 2.5)
-    assert hybrid.efficiency == pytest.approx(2.5 / (12 * 0.2))
-    assert hybrid.rate_sum_attainable_speedup == pytest.approx(9.6)
-    assert hybrid.rate_sum_efficiency == pytest.approx(5.0 / 9.6)
-    assert hybrid.copy_spread_ratio == pytest.approx(2.5)
+    # Baseline (N=1), throttled (8 copies), superlinear (>100%, unclamped), and hybrid.
+    cases: list[
+        tuple[int, float, float, float, list[float] | None, tuple[float | None, ...]]
+    ] = [
+        (1, 2.0, 2.0, 2.0, [2.0], (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)),
+        (8, 10.0, 2.5, 12.5, None, (4.0, 6.4, 0.625, None, None, None)),
+        (8, 10.0, 2.5, 25.0, None, (4.0, 3.2, 1.25, None, None, None)),
+        (
+            12,
+            1.0,
+            0.2,
+            2.5,
+            [1.0] * 8 + [2.5] * 4,
+            (5.0, 12 * 1.0 / 2.5, 2.5 / (12 * 0.2), 9.6, 5.0 / 9.6, 2.5),
+        ),
+    ]
+    for threads, serial, parallel, wall, copies, expected in cases:
+        found = bench.throughput_efficiency(
+            threads=threads,
+            serial_seconds=serial,
+            parallel_seconds=parallel,
+            copies_wall_seconds=wall,
+            copy_seconds=copies,
+        )
+        assert found is not None
+        actual = (
+            found.speedup,
+            found.attainable_speedup,
+            found.efficiency,
+            found.rate_sum_attainable_speedup,
+            found.rate_sum_efficiency,
+            found.copy_spread_ratio,
+        )
+        for value, target in zip(actual, expected, strict=True):
+            if target is None:
+                assert value is None
+            else:
+                assert value == pytest.approx(target)
+        assert found.efficiency == pytest.approx(
+            found.speedup / found.attainable_speedup
+        )
 
     # Zero, negative, and non-finite inputs yield None without ZeroDivisionError.
     for bad in (0.0, -1.0, math.nan, math.inf):
-        assert (
-            bench.throughput_efficiency(
-                threads=4,
-                serial_seconds=bad,
-                parallel_seconds=1.0,
-                copies_wall_seconds=1.0,
+        for serial, parallel, copies_wall in (
+            (bad, 1.0, 1.0),
+            (1.0, bad, 1.0),
+            (1.0, 1.0, bad),
+        ):
+            assert (
+                bench.throughput_efficiency(
+                    threads=4,
+                    serial_seconds=serial,
+                    parallel_seconds=parallel,
+                    copies_wall_seconds=copies_wall,
+                )
+                is None
             )
-            is None
-        )
-        assert (
-            bench.throughput_efficiency(
-                threads=4,
-                serial_seconds=1.0,
-                parallel_seconds=bad,
-                copies_wall_seconds=1.0,
-            )
-            is None
-        )
-        assert (
-            bench.throughput_efficiency(
-                threads=4,
-                serial_seconds=1.0,
-                parallel_seconds=1.0,
-                copies_wall_seconds=bad,
-            )
-            is None
-        )
 
     with pytest.raises(ValueError, match="at least 1"):
         bench.throughput_efficiency(
@@ -1344,168 +1235,171 @@ def test_speed_results_schema_round_trip_and_baseline_backwards_compatibility(
     )
 
 
-def test_formatted_speed_scaling_and_comparison_tables(tmp_path: Path) -> None:
-    timings_with_memory = {
-        "python/bjt_amp": bench.Timing(
-            seconds=0.002,
-            runs=6,
-            wall=(0.0019, 0.0020, 0.0020, 0.0020, 0.0020, 0.0021),
-            peak_memory_bytes=100 * (1 << 20),
-        ),
-        "rust/bjt_amp/run": bench.Timing(seconds=0.001, runs=10),
-    }
-    summary = bench.format_speed_table(timings_with_memory)
-    assert "peak memory" in summary
-    assert "100 MiB" in summary
-    assert "peak memory" not in bench.format_speed_table(
-        {"rust/bjt_amp/run": bench.Timing(seconds=0.001, runs=10)}
+def _timing(
+    seconds: float,
+    *,
+    runs: int = 6,
+    spread: float = 0.0,
+    peak_mib: int | None = None,
+) -> bench.Timing:
+    wall = (
+        (seconds - spread, *(seconds,) * (runs - 2), seconds + spread)
+        if spread > 0.0
+        else ()
     )
+    peak = None if peak_mib is None else peak_mib * (1 << 20)
+    return bench.Timing(seconds=seconds, runs=runs, wall=wall, peak_memory_bytes=peak)
 
-    # Against older baseline (no memory) and newer baseline (with memory delta).
-    old_no_memory = {"python/bjt_amp": bench.Timing(seconds=0.002, runs=10)}
-    text_vs_old = bench.format_against_table(
-        {"python/bjt_amp": timings_with_memory["python/bjt_amp"]},
-        old_no_memory,
-        "legacy.json",
-    )
-    assert "peak memory" in text_vs_old
-    assert "100 MiB" in text_vs_old
-    old_with_memory = {
-        "python/bjt_amp": bench.Timing(
-            seconds=0.002, runs=10, peak_memory_bytes=100 * (1 << 20)
-        )
-    }
-    now_higher_memory = {
-        "python/bjt_amp": bench.Timing(
-            seconds=0.002, runs=10, peak_memory_bytes=105 * (1 << 20)
-        )
-    }
-    text_vs_new = bench.format_against_table(
-        now_higher_memory, old_with_memory, "recent.json"
-    )
-    assert "105 MiB (+5.0%)" in text_vs_new
 
-    # Scaling table with concurrent copies, hybrid-core spread note, and skipped entry.
-    serial_timing = bench.Timing(
-        seconds=10.0,
-        runs=6,
-        wall=(9.9, 10.0, 10.0, 10.0, 10.0, 10.1),
-        peak_memory_bytes=200 * (1 << 20),
-    )
-    rows = [
-        bench.ScalingRow("serially", None, serial_timing, "aaaaaaaaaaaaaaaa"),
-        bench.ScalingRow(
-            "8 threads",
-            8,
-            bench.Timing(
-                seconds=2.5,
-                runs=6,
-                wall=(2.4, 2.5, 2.5, 2.5, 2.5, 2.6),
-                peak_memory_bytes=250 * (1 << 20),
-            ),
-            "bbbbbbbbbbbbbbbb",
-            bench.ConcurrentCopies(
-                copies=8,
-                rounds=3,
-                wall_seconds=12.5,
-                round_seconds=[12.4, 12.5, 12.6],
-                copy_seconds=[12.5] * 8,
-            ),
-        ),
-        bench.ScalingRow(
-            "12 threads",
-            12,
-            bench.Timing(
-                seconds=2.0,
-                runs=6,
-                wall=(1.9, 2.0, 2.0, 2.0, 2.0, 2.1),
-                peak_memory_bytes=260 * (1 << 20),
-            ),
-            "cccccccccccccccc",
-            bench.ConcurrentCopies(
-                copies=12,
-                rounds=3,
-                wall_seconds=25.0,
-                round_seconds=[24.8, 25.0, 25.2],
-                copy_seconds=[10.0] * 8 + [25.0] * 4,
-            ),
-        ),
-        bench.ScalingRow(
-            "64 threads",
-            64,
-            bench.Timing(seconds=0.0, runs=1),
-            "dddddddddddddddd",
-            bench.ConcurrentCopies(
-                copies=64,
-                skipped_reason="estimated 128 GiB for 64 copies exceeds 64 GiB budget",
-            ),
-        ),
-    ]
-    scaling_text = bench.format_scaling_table("rc_mesh_300", "6 rounds", rows)
-    for expected in (
-        "N copies",
-        "attainable",
-        "efficiency",
-        "peak memory",
-        "6.40x",
-        "62.5%",
-        "250 MiB",
-        "skipped",
-        "64 copies skipped:",
-        "2.50x spread across cores",
-        "steady-state rate sum attainable",
-    ):
-        assert expected in scaling_text
-
-    minimal_text = bench.format_scaling_table(
-        "bjt_amp",
-        "6 rounds",
-        [bench.ScalingRow("serially", None, bench.Timing(seconds=1.0, runs=1), "1111")],
-    )
-    assert "N copies" not in minimal_text
-    assert "peak memory" not in minimal_text
-
-    # comparison() includes Peak memory section when present and omits it when absent.
+def _comparison_markdown(tmp_path: Path, peaks: tuple[int | None, int | None]) -> str:
     pair = (
         bench.Build("main", "a" * 40, tmp_path / "a"),
         bench.Build("HEAD", "b" * 40, tmp_path / "b"),
     )
-    rounds_without = {
+    rounds = {
         "python/bjt_amp": bench.Rounds(
             [
-                bench.Timing(seconds=1.0, runs=6, wall=(1.0,) * 6),
-                bench.Timing(seconds=1.0, runs=6, wall=(1.0,) * 6),
+                bench.Timing(
+                    seconds=1.0,
+                    runs=6,
+                    wall=(1.0,) * 6,
+                    peak_memory_bytes=None if mib is None else mib * (1 << 20),
+                )
+                for mib in peaks
             ],
             [(1.0, 1.0)] * 6,
         )
     }
-    plain_md, _ = bench.comparison(pair, rounds_without)
-    assert "| Peak memory |" not in plain_md
+    markdown, _ = bench.comparison(pair, rounds)
+    return markdown
 
-    rounds_with = {
-        "python/bjt_amp": bench.Rounds(
-            [
-                bench.Timing(
-                    seconds=1.0,
-                    runs=6,
-                    wall=(1.0,) * 6,
-                    peak_memory_bytes=100 * (1 << 20),
-                ),
-                bench.Timing(
-                    seconds=1.0,
-                    runs=6,
-                    wall=(1.0,) * 6,
-                    peak_memory_bytes=110 * (1 << 20),
-                ),
-            ],
-            [(1.0, 1.0)] * 6,
-        )
-    }
-    memory_md, _ = bench.comparison(pair, rounds_with)
-    assert "| Peak memory |" in memory_md
-    assert "100 MiB" in memory_md
-    assert "110 MiB" in memory_md
-    assert "+10.0%" in memory_md
+
+_BJT_MEM = _timing(0.002, spread=0.0001, peak_mib=100)
+_RUST_RUN = _timing(0.001, runs=10)
+_SCALING_ROWS = [
+    bench.ScalingRow(
+        "serially", None, _timing(10.0, spread=0.1, peak_mib=200), "a" * 16
+    ),
+    bench.ScalingRow(
+        "8 threads",
+        8,
+        _timing(2.5, spread=0.1, peak_mib=250),
+        "b" * 16,
+        bench.ConcurrentCopies(
+            copies=8,
+            rounds=3,
+            wall_seconds=12.5,
+            round_seconds=[12.4, 12.5, 12.6],
+            copy_seconds=[12.5] * 8,
+        ),
+    ),
+    bench.ScalingRow(
+        "12 threads",
+        12,
+        _timing(2.0, spread=0.1, peak_mib=260),
+        "c" * 16,
+        bench.ConcurrentCopies(
+            copies=12,
+            rounds=3,
+            wall_seconds=25.0,
+            round_seconds=[24.8, 25.0, 25.2],
+            copy_seconds=[10.0] * 8 + [25.0] * 4,
+        ),
+    ),
+    bench.ScalingRow(
+        "64 threads",
+        64,
+        _timing(0.0, runs=1),
+        "d" * 16,
+        bench.ConcurrentCopies(
+            copies=64,
+            skipped_reason="estimated 128 GiB for 64 copies exceeds 64 GiB budget",
+        ),
+    ),
+]
+
+_FORMATTED_TABLES: dict[
+    str, tuple[Callable[[Path], str], tuple[str, ...], tuple[str, ...]]
+] = {
+    "speed-with-memory": (
+        lambda _t: bench.format_speed_table(
+            {"python/bjt_amp": _BJT_MEM, "rust/bjt_amp/run": _RUST_RUN}
+        ),
+        ("peak memory", "100 MiB"),
+        (),
+    ),
+    "speed-without-memory": (
+        lambda _t: bench.format_speed_table({"rust/bjt_amp/run": _RUST_RUN}),
+        (),
+        ("peak memory",),
+    ),
+    "against-legacy-baseline": (
+        lambda _t: bench.format_against_table(
+            {"python/bjt_amp": _BJT_MEM},
+            {"python/bjt_amp": _timing(0.002, runs=10)},
+            "legacy.json",
+        ),
+        ("peak memory", "100 MiB"),
+        (),
+    ),
+    "against-memory-delta": (
+        lambda _t: bench.format_against_table(
+            {"python/bjt_amp": _timing(0.002, runs=10, peak_mib=105)},
+            {"python/bjt_amp": _timing(0.002, runs=10, peak_mib=100)},
+            "recent.json",
+        ),
+        ("105 MiB (+5.0%)",),
+        (),
+    ),
+    "scaling-full": (
+        lambda _t: bench.format_scaling_table("rc_mesh_300", "6 rounds", _SCALING_ROWS),
+        (
+            "N copies",
+            "attainable",
+            "efficiency",
+            "peak memory",
+            "6.40x",
+            "62.5%",
+            "250 MiB",
+            "skipped",
+            "64 copies skipped:",
+            "2.50x spread across cores",
+            "steady-state rate sum attainable",
+        ),
+        (),
+    ),
+    "scaling-minimal": (
+        lambda _t: bench.format_scaling_table(
+            "bjt_amp",
+            "6 rounds",
+            [bench.ScalingRow("serially", None, _timing(1.0, runs=1), "1111")],
+        ),
+        (),
+        ("N copies", "peak memory"),
+    ),
+    "comparison-without-memory": (
+        lambda tmp: _comparison_markdown(tmp, (None, None)),
+        (),
+        ("| Peak memory |",),
+    ),
+    "comparison-with-memory": (
+        lambda tmp: _comparison_markdown(tmp, (100, 110)),
+        ("| Peak memory |", "100 MiB", "110 MiB", "+10.0%"),
+        (),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_FORMATTED_TABLES))
+def test_formatted_speed_scaling_and_comparison_tables(
+    name: str, tmp_path: Path
+) -> None:
+    render, present, absent = _FORMATTED_TABLES[name]
+    rendered = render(tmp_path)
+    for fragment in present:
+        assert fragment in rendered
+    for fragment in absent:
+        assert fragment not in rendered
 
 
 def test_bench_cli_flags_and_python_single_shot_memory_probe() -> None:

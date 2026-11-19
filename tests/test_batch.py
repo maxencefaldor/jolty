@@ -52,6 +52,7 @@ from jolty.specs import Measure, MeasureError, Reading, gain, maximum, value
 from jolty.units import CURRENT, VOLTAGE, Hz, MHz, V, celsius, kHz, kohm, nF, ohm, us
 from jolty.variation import sample, toleranced
 from jolty.waveforms import Pulse
+from sample_circuits import divider
 
 
 @component
@@ -408,16 +409,6 @@ def test_a_measurement_only_python_reads_reads_each_run() -> None:
 
 
 def test_a_sweep_of_a_parameter_names_it() -> None:
-    @component
-    def divider(c: Builder) -> None:
-        ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(5 * V), name="V1")
-        upper = c.place(devices.resistor(1 * kohm), name="R1")
-        lower = c.place(devices.resistor(1 * kohm), name="R2")
-        c.connect(source.positive, upper.a)
-        c.connect(upper.b, lower.a, name="out")
-        c.connect(lower.b, source.negative, ground)
-
     levels = [1 * kohm, 2 * kohm, 4 * kohm]
     sweep = Simulation(divider()).run(DcSweep("R2", levels, parameter="resistance"))
     assert (sweep.source, sweep.parameter, sweep.nature) == ("R2", "resistance", None)

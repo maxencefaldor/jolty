@@ -3,6 +3,7 @@
 import asyncio
 import json
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -92,15 +93,9 @@ def rlc_underdamped(c: Builder) -> None:
 
 
 @dataclass(frozen=True, slots=True)
-class _Fixture:
-    rc_path: Path
-    rc_results: dict[str, results.AnalysisResult]
-    rlc_path: Path
-    rlc_results: dict[str, results.AnalysisResult]
-    sine_path: Path
-    sine_results: dict[str, results.AnalysisResult]
-    loop_path: Path
-    loop_results: dict[str, results.AnalysisResult]
+class _Bundle:
+    path: Path
+    results: dict[str, results.AnalysisResult]
 
 
 def _run_measure(
@@ -109,8 +104,22 @@ def _run_measure(
     return asyncio.run(service.measure(request, settings or Settings()))
 
 
-@pytest.fixture
-def saved_results(tmp_path: Path) -> _Fixture:
+def _assert_factual_error(
+    request: service.MeasureRequest,
+    expected: Sequence[str],
+    settings: Settings | None = None,
+) -> None:
+    with pytest.raises(JoltyError) as raised:
+        _run_measure(request, settings)
+    message = str(raised.value)
+    for fragment in expected:
+        assert fragment in message
+    _assert_factual(message)
+
+
+@pytest.fixture(scope="module")
+def saved_results(tmp_path_factory: pytest.TempPathFactory) -> dict[str, _Bundle]:
+    tmp_path = tmp_path_factory.mktemp("service_results")
     rc_sim = Simulation(rc_low_pass())
     rc_path = tmp_path / "rc.results.npz"
     files.save_results(
@@ -193,20 +202,118 @@ def saved_results(tmp_path: Path) -> _Fixture:
     loop_path = tmp_path / "loop.results.npz"
     files.save_results(loop_path, {"loop": stability_result, "notch": notch_ac})
 
-    return _Fixture(
-        rc_path=rc_path,
-        rc_results=files.load_results(rc_path),
-        rlc_path=rlc_path,
-        rlc_results=files.load_results(rlc_path),
-        sine_path=sine_path,
-        sine_results=files.load_results(sine_path),
-        loop_path=loop_path,
-        loop_results=files.load_results(loop_path),
-    )
+    return {
+        "rc": _Bundle(rc_path, files.load_results(rc_path)),
+        "rlc": _Bundle(rlc_path, files.load_results(rlc_path)),
+        "sine": _Bundle(sine_path, files.load_results(sine_path)),
+        "loop": _Bundle(loop_path, files.load_results(loop_path)),
+    }
 
 
+type _MeasureEntry = tuple[str, str, specs.Measure, Mapping[str, object]]
+type _ErrorEntry = tuple[str | None, Mapping[str, object], tuple[str, ...]]
+
+
+def _out(**extra: object) -> dict[str, object]:
+    return {"signal": "out", **extra}
+
+
+_MEASURE_CASES: list[_MeasureEntry] = [
+    ("rc", "value", specs.value("op", "out"), _out()),
+    ("rc", "value", specs.value("op", "out", reference="in"), _out(reference="in")),
+    ("rc", "value", specs.value("sweep", "out", at=1.5 * V), _out(at=1.5)),
+    ("rc", "value", specs.value("step", "out", at=2 * us), _out(at=2e-6)),
+    ("rc", "gain", specs.gain("bode", "out", at=100 * kHz), _out(at=100e3)),
+    (
+        "rc",
+        "gain",
+        specs.gain("bode", "out", at=100 * kHz, over="in"),
+        _out(over="in", at=100e3),
+    ),
+    ("rc", "phase", specs.phase("bode", "out", at=100 * kHz), _out(at=100e3)),
+    ("rc", "bandwidth", specs.bandwidth("bode", "out"), _out()),
+    ("rc", "bandwidth", specs.bandwidth("bode", "out", drop=6.0), _out(drop=6.0)),
+    ("loop", "crossover", specs.crossover("loop"), {}),
+    ("loop", "phase_margin", specs.phase_margin("loop"), {}),
+    ("loop", "gain_margin", specs.gain_margin("loop"), {}),
+    ("loop", "gain", specs.gain("loop", at=1 * kHz), {"at": 1e3}),
+    (
+        "rc",
+        "maximum",
+        specs.maximum("step", "out", start=1 * us, stop=8 * us),
+        _out(start=1e-6, stop=8e-6),
+    ),
+    ("rc", "minimum", specs.minimum("step", "out"), _out()),
+    ("sine", "peak_to_peak", specs.peak_to_peak("pss", "out"), _out()),
+    ("rc", "mean", specs.mean("sweep", "out"), _out()),
+    ("sine", "rms", specs.rms("pss", "out"), _out()),
+    (
+        "rc",
+        "rise_time",
+        specs.rise_time("step", "out", low=0.1, high=0.9),
+        _out(low=0.1, high=0.9),
+    ),
+    ("rlc", "overshoot", specs.overshoot("rlc", "out"), _out()),
+    (
+        "rlc",
+        "settling_time",
+        specs.settling_time("rlc", "out", band=0.05),
+        _out(band=0.05),
+    ),
+    (
+        "rc",
+        "crossing",
+        specs.crossing("step", "out", 0.5 * V, edge="rising"),
+        _out(level=0.5, edge="rising"),
+    ),
+    ("sine", "frequency", specs.frequency("sine", "out"), _out()),
+    (
+        "sine",
+        "frequency",
+        specs.frequency("sine", "out", level=0.0 * V),
+        _out(level=0.0),
+    ),
+    (
+        "sine",
+        "distortion",
+        specs.distortion("sine", "out", fundamental=1 * kHz, harmonics=5),
+        _out(fundamental=1e3, harmonics=5),
+    ),
+    ("rc", "noise_density", specs.noise_density("noise", at=1 * kHz), {"at": 1e3}),
+    (
+        "rc",
+        "noise_density",
+        specs.noise_density("noise", at=1 * kHz, referred=True),
+        {"at": 1e3, "referred": True},
+    ),
+    (
+        "rc",
+        "integrated_noise",
+        specs.integrated_noise("noise", start=100 * Hz, stop=100 * kHz),
+        {"start": 100.0, "stop": 100e3},
+    ),
+    (
+        "rc",
+        "integrated_noise",
+        specs.integrated_noise("noise", referred=True),
+        {"referred": True},
+    ),
+    ("rc", "solutions", specs.solutions("states"), {}),
+    ("rlc", "damping", specs.damping("pz"), {}),
+    ("rlc", "dominant_pole", specs.dominant_pole("pz"), {}),
+]
+
+
+def _measure_id(case: _MeasureEntry) -> str:
+    _, measure, spec, options = case
+    suffix = f"-{'-'.join(options)}" if options else ""
+    return f"{spec.analysis}-{measure}{suffix}"
+
+
+@pytest.mark.parametrize("case", _MEASURE_CASES, ids=_measure_id)
 def test_every_measure_matches_in_memory_specs_to_the_bit(
-    saved_results: _Fixture,
+    case: _MeasureEntry,
+    saved_results: dict[str, _Bundle],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -215,334 +322,44 @@ def test_every_measure_matches_in_memory_specs_to_the_bit(
     settings = Settings.load()
     assert settings.analysis_log == log_path
 
-    rc_path, rc_loaded = saved_results.rc_path, saved_results.rc_results
-    rlc_path, rlc_loaded = saved_results.rlc_path, saved_results.rlc_results
-    sine_path, sine_loaded = saved_results.sine_path, saved_results.sine_results
-    loop_path, loop_loaded = saved_results.loop_path, saved_results.loop_results
+    bundle_key, measure, spec, options = case
+    bundle = saved_results[bundle_key]
+    analysis = spec.analysis
+    request = service.MeasureRequest.model_validate(
+        {"results": bundle.path, "analysis": analysis, "measure": measure, **options}
+    )
+    expected = spec.read(bundle.results[analysis])
+    measured = _run_measure(request, settings)
+    assert measured.ok
+    assert measured.analysis == analysis
+    assert measured.measure == measure
+    # Bit-for-bit equality with in-memory Measure reading.
+    assert measured.value == expected.value
+    assert math.copysign(1.0, measured.value) == math.copysign(1.0, expected.value)
+    assert measured.description == str(spec)
+    assert measured.describe() == f"{measured.description}: {measured.formatted}"
+    # Zero simulations ran: analysis_log was never created or written.
+    assert not log_path.exists()
 
-    cases: list[
-        tuple[service.MeasureRequest, specs.Measure, dict[str, results.AnalysisResult]]
-    ] = [
-        (
-            service.MeasureRequest(
-                results=rc_path, analysis="op", measure="value", signal="out"
-            ),
-            specs.value("op", "out"),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="op",
-                measure="value",
-                signal="out",
-                reference="in",
-            ),
-            specs.value("op", "out", reference="in"),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path, analysis="sweep", measure="value", signal="out", at=1.5
-            ),
-            specs.value("sweep", "out", at=1.5 * V),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="step",
-                measure="value",
-                signal="out",
-                at=2e-6,
-            ),
-            specs.value("step", "out", at=2 * us),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="bode",
-                measure="gain",
-                signal="out",
-                at=100e3,
-            ),
-            specs.gain("bode", "out", at=100 * kHz),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="bode",
-                measure="gain",
-                signal="out",
-                over="in",
-                at=100e3,
-            ),
-            specs.gain("bode", "out", at=100 * kHz, over="in"),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="bode",
-                measure="phase",
-                signal="out",
-                at=100e3,
-            ),
-            specs.phase("bode", "out", at=100 * kHz),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="bode",
-                measure="bandwidth",
-                signal="out",
-            ),
-            specs.bandwidth("bode", "out"),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="bode",
-                measure="bandwidth",
-                signal="out",
-                drop=6.0,
-            ),
-            specs.bandwidth("bode", "out", drop=6.0),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=loop_path, analysis="loop", measure="crossover"
-            ),
-            specs.crossover("loop"),
-            loop_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=loop_path, analysis="loop", measure="phase_margin"
-            ),
-            specs.phase_margin("loop"),
-            loop_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=loop_path, analysis="loop", measure="gain_margin"
-            ),
-            specs.gain_margin("loop"),
-            loop_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=loop_path, analysis="loop", measure="gain", at=1e3
-            ),
-            specs.gain("loop", at=1 * kHz),
-            loop_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="step",
-                measure="maximum",
-                signal="out",
-                start=1e-6,
-                stop=8e-6,
-            ),
-            specs.maximum("step", "out", start=1 * us, stop=8 * us),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="step",
-                measure="minimum",
-                signal="out",
-            ),
-            specs.minimum("step", "out"),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=sine_path,
-                analysis="pss",
-                measure="peak_to_peak",
-                signal="out",
-            ),
-            specs.peak_to_peak("pss", "out"),
-            sine_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path, analysis="sweep", measure="mean", signal="out"
-            ),
-            specs.mean("sweep", "out"),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=sine_path, analysis="pss", measure="rms", signal="out"
-            ),
-            specs.rms("pss", "out"),
-            sine_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="step",
-                measure="rise_time",
-                signal="out",
-                low=0.1,
-                high=0.9,
-            ),
-            specs.rise_time("step", "out", low=0.1, high=0.9),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rlc_path, analysis="rlc", measure="overshoot", signal="out"
-            ),
-            specs.overshoot("rlc", "out"),
-            rlc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rlc_path,
-                analysis="rlc",
-                measure="settling_time",
-                signal="out",
-                band=0.05,
-            ),
-            specs.settling_time("rlc", "out", band=0.05),
-            rlc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="step",
-                measure="crossing",
-                signal="out",
-                level=0.5,
-                edge="rising",
-            ),
-            specs.crossing("step", "out", 0.5 * V, edge="rising"),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=sine_path,
-                analysis="sine",
-                measure="frequency",
-                signal="out",
-            ),
-            specs.frequency("sine", "out"),
-            sine_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=sine_path,
-                analysis="sine",
-                measure="frequency",
-                signal="out",
-                level=0.0,
-            ),
-            specs.frequency("sine", "out", level=0.0 * V),
-            sine_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=sine_path,
-                analysis="sine",
-                measure="distortion",
-                signal="out",
-                fundamental=1e3,
-                harmonics=5,
-            ),
-            specs.distortion("sine", "out", fundamental=1 * kHz, harmonics=5),
-            sine_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path, analysis="noise", measure="noise_density", at=1e3
-            ),
-            specs.noise_density("noise", at=1 * kHz),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="noise",
-                measure="noise_density",
-                at=1e3,
-                referred=True,
-            ),
-            specs.noise_density("noise", at=1 * kHz, referred=True),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="noise",
-                measure="integrated_noise",
-                start=100.0,
-                stop=100e3,
-            ),
-            specs.integrated_noise("noise", start=100 * Hz, stop=100 * kHz),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="noise",
-                measure="integrated_noise",
-                referred=True,
-            ),
-            specs.integrated_noise("noise", referred=True),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path, analysis="states", measure="solutions"
-            ),
-            specs.solutions("states"),
-            rc_loaded,
-        ),
-        (
-            service.MeasureRequest(results=rlc_path, analysis="pz", measure="damping"),
-            specs.damping("pz"),
-            rlc_loaded,
-        ),
-        (
-            service.MeasureRequest(
-                results=rlc_path, analysis="pz", measure="dominant_pole"
-            ),
-            specs.dominant_pole("pz"),
-            rlc_loaded,
-        ),
-    ]
 
-    for request, spec_measure, loaded in cases:
-        analysis_name = request.analysis
-        assert analysis_name is not None
-        expected = spec_measure.read(loaded[analysis_name])
-        measured = _run_measure(request, settings)
-        assert measured.ok
-        assert measured.analysis == analysis_name
-        assert measured.measure == request.measure
-        # Bit-for-bit equality with in-memory Measure reading.
-        assert measured.value == expected.value
-        assert math.copysign(1.0, measured.value) == math.copysign(1.0, expected.value)
-        assert measured.description == str(spec_measure)
-        assert measured.describe() == f"{measured.description}: {measured.formatted}"
+def test_measure_pss_period_and_infinite_db_notch(
+    saved_results: dict[str, _Bundle],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "analyses.jsonl"
+    monkeypatch.setenv("JOLTY_ANALYSIS_LOG", str(log_path))
+    settings = Settings.load()
+    assert settings.analysis_log == log_path
 
-    # Periodic steady state `period` measurement.
+    sine_bundle = saved_results["sine"]
     pss_period = _run_measure(
-        service.MeasureRequest(results=sine_path, analysis="pss", measure="period"),
+        service.MeasureRequest(
+            results=sine_bundle.path, analysis="pss", measure="period"
+        ),
         settings,
     )
-    pss_loaded = sine_loaded["pss"]
+    pss_loaded = sine_bundle.results["pss"]
     assert isinstance(pss_loaded, results.PeriodicSteadyStateResult)
     assert pss_period.value == pss_loaded.period
     assert pss_period.unit == "s"
@@ -552,7 +369,11 @@ def test_every_measure_matches_in_memory_specs_to_the_bit(
     # Infinite dB reading serializes as "-Infinity" in JSON.
     notch = _run_measure(
         service.MeasureRequest(
-            results=loop_path, analysis="notch", measure="gain", signal="out", at=1000.0
+            results=saved_results["loop"].path,
+            analysis="notch",
+            measure="gain",
+            signal="out",
+            at=1000.0,
         ),
         settings,
     )
@@ -560,8 +381,6 @@ def test_every_measure_matches_in_memory_specs_to_the_bit(
     assert notch.unit == "dB"
     dumped = json.loads(notch.model_dump_json())
     assert dumped["value"] == "-Infinity"
-
-    # Zero simulations ran: analysis_log was never created or written.
     assert not log_path.exists()
 
 
@@ -581,183 +400,113 @@ def test_measure_defaults_to_sole_analysis_in_file(tmp_path: Path) -> None:
     assert measured.formatted == "2.5 V"
 
 
-def test_measure_factual_errors_for_missing_files_analyses_and_unknowns(
-    saved_results: _Fixture,
+_ERROR_CASES: dict[str, _ErrorEntry] = {
+    "missing-file": (
+        None,
+        {"analysis": "op", "measure": "value", "signal": "out"},
+        ("no such results file",),
+    ),
+    "ambiguous-analysis": (
+        "rc",
+        {"measure": "value", "signal": "out"},
+        ("op", "bode", "analysis is unset"),
+    ),
+    "missing-analysis": (
+        "rc",
+        {"analysis": "nope", "measure": "value", "signal": "out"},
+        ("holds no analysis named 'nope'", "op", "bode"),
+    ),
+    "missing-unknown-truncated": (
+        "rc",
+        {"analysis": "op", "measure": "value", "signal": "bogus"},
+        ("no unknown named 'bogus'", "unknowns in op:", "1 more"),
+    ),
+    "missing-op-signal": (
+        "rc",
+        {"analysis": "op", "measure": "value"},
+        ("unknowns in op:", "out"),
+    ),
+    "missing-ac-signal": (
+        "rc",
+        {"analysis": "bode", "measure": "gain", "at": 1e3},
+        ("unknowns in bode:", "out"),
+    ),
+    "irrelevant-drop": (
+        "rc",
+        {"analysis": "op", "measure": "value", "signal": "out", "drop": 3.0},
+        ("measure value takes no drop",),
+    ),
+    "irrelevant-referred": (
+        "rc",
+        {"analysis": "op", "measure": "value", "signal": "out", "referred": True},
+        ("measure value takes no referred",),
+    ),
+    "missing-at-gain": (
+        "rc",
+        {"analysis": "bode", "measure": "gain", "signal": "out"},
+        ("takes a frequency as at",),
+    ),
+    "missing-at-noise-density": (
+        "rc",
+        {"analysis": "noise", "measure": "noise_density"},
+        ("takes a frequency as at",),
+    ),
+    "missing-level-crossing": (
+        "rc",
+        {"analysis": "step", "measure": "crossing", "signal": "out"},
+        ("takes a level",),
+    ),
+    "missing-fundamental-distortion": (
+        "sine",
+        {"analysis": "sine", "measure": "distortion", "signal": "out"},
+        ("takes a fundamental frequency",),
+    ),
+    "period-on-transient": (
+        "rc",
+        {"analysis": "step", "measure": "period"},
+        ("period reads a periodic steady state, not a transient",),
+    ),
+    "value-on-transfer-function": (
+        "rc",
+        {"analysis": "tf", "measure": "value", "signal": "out"},
+        ("a transfer function",),
+    ),
+    "negative-drop": (
+        "rc",
+        {"analysis": "bode", "measure": "bandwidth", "signal": "out", "drop": -1.0},
+        ("positive",),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_ERROR_CASES))
+def test_measure_factual_errors(
+    name: str,
+    saved_results: dict[str, _Bundle],
     tmp_path: Path,
+) -> None:
+    bundle, fields, expected = _ERROR_CASES[name]
+    path = (
+        tmp_path / "missing.results.npz"
+        if bundle is None
+        else saved_results[bundle].path
+    )
+    settings = Settings(max_unknowns=2) if name == "missing-unknown-truncated" else None
+    request = service.MeasureRequest.model_validate({"results": path, **fields})
+    _assert_factual_error(request, expected, settings)
+
+
+@pytest.mark.parametrize("analysis", [None, "op"], ids=["unset", "named"])
+def test_measure_factual_errors_for_empty_results_file(
+    analysis: str | None,
+    saved_results: dict[str, _Bundle],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = saved_results.rc_path
-
-    # Missing file.
-    with pytest.raises(JoltyError, match="no such results file") as missing_file:
-        _run_measure(
-            service.MeasureRequest(
-                results=tmp_path / "missing.results.npz",
-                analysis="op",
-                measure="value",
-                signal="out",
-            )
-        )
-    _assert_factual(str(missing_file.value))
-
-    # Ambiguous multi-analysis file without --analysis.
-    with pytest.raises(JoltyError) as ambiguous:
-        _run_measure(
-            service.MeasureRequest(results=path, measure="value", signal="out")
-        )
-    assert "op" in str(ambiguous.value)
-    assert "bode" in str(ambiguous.value)
-    assert "analysis is unset" in str(ambiguous.value)
-    _assert_factual(str(ambiguous.value))
-
-    # Missing named analysis reports available analyses.
-    with pytest.raises(JoltyError) as missing_analysis:
-        _run_measure(
-            service.MeasureRequest(
-                results=path, analysis="nope", measure="value", signal="out"
-            )
-        )
-    assert "holds no analysis named 'nope'" in str(missing_analysis.value)
-    assert "op" in str(missing_analysis.value)
-    assert "bode" in str(missing_analysis.value)
-    _assert_factual(str(missing_analysis.value))
-
-    # Missing unknown reports available unknowns (and respects max_unknowns).
-    with pytest.raises(JoltyError) as missing_unknown:
-        _run_measure(
-            service.MeasureRequest(
-                results=path, analysis="op", measure="value", signal="bogus"
-            ),
-            Settings(max_unknowns=2),
-        )
-    assert "no unknown named 'bogus'" in str(missing_unknown.value)
-    assert "unknowns in op:" in str(missing_unknown.value)
-    assert "1 more" in str(missing_unknown.value)
-    _assert_factual(str(missing_unknown.value))
-
-    # Missing required signal names available unknowns.
-    with pytest.raises(JoltyError) as missing_signal:
-        _run_measure(
-            service.MeasureRequest(results=path, analysis="op", measure="value")
-        )
-    assert "unknowns in op:" in str(missing_signal.value)
-    assert "out" in str(missing_signal.value)
-    _assert_factual(str(missing_signal.value))
-
-    # AC response without signal names available unknowns.
-    with pytest.raises(JoltyError) as missing_ac_signal:
-        _run_measure(
-            service.MeasureRequest(
-                results=path, analysis="bode", measure="gain", at=1e3
-            )
-        )
-    assert "unknowns in bode:" in str(missing_ac_signal.value)
-    assert "out" in str(missing_ac_signal.value)
-    _assert_factual(str(missing_ac_signal.value))
-
-    # Empty loaded mapping (defensive path when a results map holds no analyses).
     monkeypatch.setattr(service, "_load", lambda _path: {})
-    with pytest.raises(JoltyError, match="holds no analyses") as empty_unset:
-        _run_measure(
-            service.MeasureRequest(results=path, measure="value", signal="out")
-        )
-    _assert_factual(str(empty_unset.value))
-    with pytest.raises(JoltyError, match="holds no analyses") as empty_named:
-        _run_measure(
-            service.MeasureRequest(
-                results=path, analysis="op", measure="value", signal="out"
-            )
-        )
-    _assert_factual(str(empty_named.value))
-
-
-def test_measure_factual_errors_for_options_and_result_kinds(
-    saved_results: _Fixture,
-) -> None:
-    rc_path = saved_results.rc_path
-    sine_path = saved_results.sine_path
-
-    # Irrelevant options rejected cleanly.
-    with pytest.raises(JoltyError, match="measure value takes no drop") as irrelevant:
-        _run_measure(
-            service.MeasureRequest(
-                results=rc_path, analysis="op", measure="value", signal="out", drop=3.0
-            )
-        )
-    _assert_factual(str(irrelevant.value))
-
-    with pytest.raises(
-        JoltyError, match="measure value takes no referred"
-    ) as bad_referred:
-        _run_measure(
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="op",
-                measure="value",
-                signal="out",
-                referred=True,
-            )
-        )
-    _assert_factual(str(bad_referred.value))
-
-    # Missing required scalar options.
-    for request, expected in [
-        (
-            service.MeasureRequest(
-                results=rc_path, analysis="bode", measure="gain", signal="out"
-            ),
-            "takes a frequency as at",
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path, analysis="noise", measure="noise_density"
-            ),
-            "takes a frequency as at",
-        ),
-        (
-            service.MeasureRequest(
-                results=rc_path, analysis="step", measure="crossing", signal="out"
-            ),
-            "takes a level",
-        ),
-        (
-            service.MeasureRequest(
-                results=sine_path, analysis="sine", measure="distortion", signal="out"
-            ),
-            "takes a fundamental frequency",
-        ),
-    ]:
-        with pytest.raises(JoltyError, match=expected) as err:
-            _run_measure(request)
-        _assert_factual(str(err.value))
-
-    # `period` on non-PSS result.
-    with pytest.raises(
-        JoltyError, match="period reads a periodic steady state, not a transient"
-    ) as wrong_period:
-        _run_measure(
-            service.MeasureRequest(results=rc_path, analysis="step", measure="period")
-        )
-    _assert_factual(str(wrong_period.value))
-
-    # `value` on TransferFunctionResult (verifies _KINDS completeness).
-    with pytest.raises(JoltyError, match="a transfer function") as wrong_tf:
-        _run_measure(
-            service.MeasureRequest(
-                results=rc_path, analysis="tf", measure="value", signal="out"
-            )
-        )
-    _assert_factual(str(wrong_tf.value))
-
-    # Invalid numeric parameters convert ValueError into JoltyError.
-    with pytest.raises(JoltyError, match="positive") as bad_drop:
-        _run_measure(
-            service.MeasureRequest(
-                results=rc_path,
-                analysis="bode",
-                measure="bandwidth",
-                signal="out",
-                drop=-1.0,
-            )
-        )
-    _assert_factual(str(bad_drop.value))
+    request = service.MeasureRequest(
+        results=saved_results["rc"].path,
+        analysis=analysis,
+        measure="value",
+        signal="out",
+    )
+    _assert_factual_error(request, ("holds no analyses",))

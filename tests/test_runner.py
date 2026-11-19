@@ -12,6 +12,8 @@ from jolty.runner import RESULTS, Built, Failure, Job, Outcome, Thresholds, run
 from jolty.simulate import Simulation
 from workspace import ROOT
 
+pytestmark = pytest.mark.usefixtures("in_tmp_path")
+
 DIVIDER = """
 from jolty import Builder, OperatingPoint, Plan, Role, Transient, component, devices
 from jolty.units import V, kohm, us
@@ -48,12 +50,6 @@ from jolty.units import us
 def plan():
     return Plan({"step": Transient(stop=1 * us)}, options=Options(max_memory=1e-9))
 """
-
-
-@pytest.fixture(autouse=True)
-def in_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Runs each test in its own directory, where script paths are relative."""
-    monkeypatch.chdir(tmp_path)
 
 
 def write(directory: Path, text: str, name: str = "script.py") -> Path:

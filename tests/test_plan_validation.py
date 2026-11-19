@@ -3,6 +3,7 @@
 
 import math
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -45,6 +46,7 @@ from jolty import (
 )
 from jolty.errors import close_names
 from jolty.plan import (
+    Analysis,
     Axis,
     Conditions,
     Explicit,
@@ -103,6 +105,44 @@ def _validation_messages(error: ValidationError) -> list[str]:
     for message in messages:
         _assert_fact_only(message)
     return messages
+
+
+def _expect_plan_error(
+    action: Callable[[], object],
+    *fragments: str,
+    count: int | None = None,
+    min_count: int | None = None,
+) -> str:
+    """Assert `action` raises a fact-only `PlanError` matching counts and fragments."""
+    with pytest.raises(PlanError) as raised:
+        action()
+    if count is not None:
+        assert len(raised.value.problems) == count
+    if min_count is not None:
+        assert len(raised.value.problems) >= min_count
+    text = str(raised.value)
+    _assert_fact_only(text)
+    for fragment in fragments:
+        assert fragment in text
+    return text
+
+
+def _expect_validation_errors(
+    action: Callable[[], object],
+    *fragments: str,
+    count: int | None = None,
+    min_count: int | None = None,
+) -> None:
+    """Assert `action` raises a fact-only `ValidationError` with expected counts."""
+    with pytest.raises(ValidationError) as raised:
+        action()
+    if count is not None:
+        assert raised.value.error_count() == count
+    if min_count is not None:
+        assert raised.value.error_count() >= min_count
+    messages = _validation_messages(raised.value)
+    for fragment in fragments:
+        assert any(fragment in message for message in messages)
 
 
 @component
@@ -217,17 +257,15 @@ def test_misspelled_analysis_in_spec_fails_before_simulating(
         ]
     )
 
-    with pytest.raises(PlanError) as raised:
-        simulation.run_plan(plan, specs=requirements)
-
+    _expect_plan_error(
+        lambda: simulation.run_plan(plan, specs=requirements),
+        "'trna'; close names: tran",
+        "'bdoe'; close names: bode",
+        "'po'; close names: op",
+        "defined analyses: op, bode, tran",
+        count=3,
+    )
     assert calls == []
-    assert len(raised.value.problems) == 3
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "'trna'; close names: tran" in text
-    assert "'bdoe'; close names: bode" in text
-    assert "'po'; close names: op" in text
-    assert "defined analyses: op, bode, tran" in text
 
 
 def test_core_run_is_never_called_when_analysis_or_plan_fails_validation(
@@ -442,136 +480,115 @@ def specs():
 
 def test_record_reports_all_missing_paths_and_patterns_at_once() -> None:
     simulation = _build_simulation()
-    with pytest.raises(PlanError) as raised:
-        simulation.run(OperatingPoint(record=["R9", "X3/**", "X1/R9"]))
-    assert len(raised.value.problems) == 3
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "'R9' to record; close names: R2, R1" in text
-    assert "pattern 'X3/**' matches no instance" in text
-    assert "'X1/R9' to record; close names: X1/R2, X1/R1" in text
+    _expect_plan_error(
+        lambda: simulation.run(OperatingPoint(record=["R9", "X3/**", "X1/R9"])),
+        "'R9' to record; close names: R2, R1",
+        "pattern 'X3/**' matches no instance",
+        "'X1/R9' to record; close names: X1/R2, X1/R1",
+        count=3,
+    )
 
 
-def test_dc_sweep_level_and_parameter_checks() -> None:
+_ANALYSIS_ERROR_CASES: dict[str, tuple[Analysis, int | None, tuple[str, ...]]] = {
+    "dc-missing-source": (
+        DcSweep("V9", [1 * V]),
+        None,
+        (
+            "there is no instance at `V9`; close names: VP, V1",
+            "independent sources: V1, VP",
+        ),
+    ),
+    "dc-non-source": (
+        DcSweep("R1", [1 * V]),
+        None,
+        ("`R1` is not an independent source",),
+    ),
+    "dc-param-missing": (
+        DcSweep("R9", [1 * kohm], parameter="resistance"),
+        None,
+        ("there is no instance at `R9`; close names: R2, R1",),
+    ),
+    "dc-param-misspelled": (
+        DcSweep("R1", [1 * kohm], parameter="resistence"),
+        None,
+        ("`R1` writes no number `resistence` to sweep; close names: resistance",),
+    ),
+    "ac-bad-source": (Ac("V9", [1 * kHz]), None, ("close names: VP, V1",)),
+    "stability-missing-probe": (
+        Stability("VQ", [1 * kHz]),
+        None,
+        ("close names: VP", "probes: VP"),
+    ),
+    "stability-grounded-source": (
+        Stability("V1", [1 * kHz]),
+        None,
+        ("`V1` is not a voltage source off the reference", "probes: VP"),
+    ),
+    "stability-resistor-probe": (
+        Stability("R1", [1 * kHz]),
+        None,
+        ("`R1` is not a voltage source off the reference", "probes: VP"),
+    ),
+    "noise-current-ref": (
+        Noise("V1:current", [1 * kHz], reference="ground"),
+        None,
+        ("an output over a node is a voltage",),
+    ),
+    "noise-all-bad": (
+        Noise("outt", [1 * kHz], reference="reff", source="V9"),
+        3,
+        (
+            "`outt`; close names: out",
+            "`reff`; close names: ref",
+            "`V9`; close names: VP, V1",
+        ),
+    ),
+    "tf-ground-non-source": (
+        TransferFunction("R1", "ground"),
+        2,
+        ("is the reference node",),
+    ),
+    "tf-inductor-current-ref": (
+        TransferFunction("V1", "L1:current", reference="out"),
+        2,
+        ("has no reference", "voltage source's, not `L1:current`"),
+    ),
+    "tf-all-bad": (TransferFunction("V9", "outt", reference="reff"), 3, ()),
+    "pz-all-bad": (PoleZero("V9", "outt", reference="reff"), 3, ()),
+}
+
+
+@pytest.mark.parametrize("name", list(_ANALYSIS_ERROR_CASES))
+def test_analysis_upfront_plan_error_checks(name: str) -> None:
+    analysis, count, fragments = _ANALYSIS_ERROR_CASES[name]
     simulation = _build_simulation()
-    # Missing source
-    with pytest.raises(PlanError) as raised:
-        simulation.run(DcSweep("V9", [1 * V]))
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "there is no instance at `V9`; close names: VP, V1" in text
-    assert "independent sources: V1, VP" in text
+    _expect_plan_error(lambda: simulation.run(analysis), *fragments, count=count)
 
-    # Non-source
-    with pytest.raises(PlanError) as raised:
-        simulation.run(DcSweep("R1", [1 * V]))
-    assert "`R1` is not an independent source" in str(raised.value)
-    _assert_fact_only(str(raised.value))
 
-    # Wrong level dimension alone still raises DimensionError
+def test_dc_sweep_dimension_error_and_valid_ground_references() -> None:
+    simulation = _build_simulation()
+    # Wrong level dimension alone still raises DimensionError.
     with pytest.raises(DimensionError, match="a sweep level takes a quantity in V"):
         simulation.run(DcSweep("V1", [1 * mA]))
-
-    # Wrong level dimension alongside bad nodeset reports BOTH in PlanError
-    with pytest.raises(PlanError) as raised:
-        simulation.run(DcSweep("V1", [1 * mA]), Options(nodesets={"outt": 1 * V}))
-    assert len(raised.value.problems) == 2
-    assert "close names: out" in str(raised.value)
-    assert "quantity in V" in str(raised.value)
-    _assert_fact_only(str(raised.value))
-
-    # Parameter sweep: missing device
-    with pytest.raises(PlanError) as raised:
-        simulation.run(DcSweep("R9", [1 * kohm], parameter="resistance"))
-    assert "there is no instance at `R9`; close names: R2, R1" in str(raised.value)
-
-    # Parameter sweep: misspelled parameter
-    with pytest.raises(PlanError) as raised:
-        simulation.run(DcSweep("R1", [1 * kohm], parameter="resistence"))
-    assert (
-        "`R1` writes no number `resistence` to sweep; close names: resistance"
-        in str(raised.value)
+    # Wrong level dimension alongside bad nodeset reports BOTH in PlanError.
+    _expect_plan_error(
+        lambda: simulation.run(
+            DcSweep("V1", [1 * mA]), Options(nodesets={"outt": 1 * V})
+        ),
+        "close names: out",
+        "quantity in V",
+        count=2,
     )
-    _assert_fact_only(str(raised.value))
-
-
-def test_ac_stability_noise_transfer_pole_zero_checks() -> None:
-    simulation = _build_simulation()
-
-    # Ac bad source
-    with pytest.raises(PlanError) as raised:
-        simulation.run(Ac("V9", [1 * kHz]))
-    assert "close names: VP, V1" in str(raised.value)
-    _assert_fact_only(str(raised.value))
-
-    # Stability: missing probe, grounded source, resistor
-    with pytest.raises(PlanError) as raised:
-        simulation.run(Stability("VQ", [1 * kHz]))
-    assert "close names: VP" in str(raised.value)
-    assert "probes: VP" in str(raised.value)
-    _assert_fact_only(str(raised.value))
-
-    for bad_probe in ("V1", "R1"):
-        with pytest.raises(PlanError) as raised:
-            simulation.run(Stability(bad_probe, [1 * kHz]))
-        assert f"`{bad_probe}` is not a voltage source off the reference" in str(
-            raised.value
-        )
-        assert "probes: VP" in str(raised.value)
-        _assert_fact_only(str(raised.value))
-
-    # Noise: ground reference is valid!
+    # Ground reference is valid for Noise and PoleZero.
     simulation.validate_analysis(Noise("out", [1 * kHz], reference="ground"))
     simulation.validate_analysis(Noise("ground", [1 * kHz], reference="out"))
-
-    # Noise: non-voltage over reference rejected
-    with pytest.raises(PlanError) as raised:
-        simulation.run(Noise("V1:current", [1 * kHz], reference="ground"))
-    assert "an output over a node is a voltage" in str(raised.value)
-    _assert_fact_only(str(raised.value))
-
-    # Noise: bad output + bad reference + bad source all reported together
-    with pytest.raises(PlanError) as raised:
-        simulation.run(Noise("outt", [1 * kHz], reference="reff", source="V9"))
-    assert len(raised.value.problems) == 3
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "`outt`; close names: out" in text
-    assert "`reff`; close names: ref" in text
-    assert "`V9`; close names: VP, V1" in text
-
-    # TransferFunction: ground, current with reference, and inductor current rejected
-    with pytest.raises(PlanError) as raised:
-        simulation.run(TransferFunction("R1", "ground"))
-    assert len(raised.value.problems) == 2
-    assert "is the reference node" in str(raised.value)
-    _assert_fact_only(str(raised.value))
-
-    with pytest.raises(PlanError) as raised:
-        simulation.run(TransferFunction("V1", "L1:current", reference="out"))
-    assert len(raised.value.problems) == 2
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "has no reference" in text
-    assert "voltage source's, not `L1:current`" in text
-
-    with pytest.raises(PlanError) as raised:
-        simulation.run(TransferFunction("V9", "outt", reference="reff"))
-    assert len(raised.value.problems) == 3
-    _assert_fact_only(str(raised.value))
-
-    # PoleZero: ground reference valid; bad source + output + ref all reported
     simulation.validate_analysis(PoleZero("V1", "out", reference="ground"))
-    with pytest.raises(PlanError) as raised:
-        simulation.run(PoleZero("V9", "outt", reference="reff"))
-    assert len(raised.value.problems) == 3
-    _assert_fact_only(str(raised.value))
 
 
 def test_transient_initial_conditions_and_logic_checks() -> None:
     simulation = _build_simulation()
-    with pytest.raises(PlanError) as raised:
-        simulation.run(
+    _expect_plan_error(
+        lambda: simulation.run(
             Transient(
                 stop=1 * us,
                 initial_conditions={
@@ -580,56 +597,50 @@ def test_transient_initial_conditions_and_logic_checks() -> None:
                     "ground": 0 * V,
                 },
             )
-        )
-    assert len(raised.value.problems) == 3
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "`outt`, which is no net of the circuit; close names: out" in text
-    assert "`V1:current`, which is no net of the circuit (current unknown)" in text
-    assert "`ground`, which is the reference node, not an electrical net" in text
+        ),
+        "`outt`, which is no net of the circuit; close names: out",
+        "`V1:current`, which is no net of the circuit (current unknown)",
+        "`ground`, which is the reference node, not an electrical net",
+        count=3,
+    )
 
     logic_simulation = Simulation(logic_circuit())
-    with pytest.raises(PlanError) as raised:
-        logic_simulation.validate_plan(
+    _expect_plan_error(
+        lambda: logic_simulation.validate_plan(
             Plan(
                 {
                     "tran": Transient(stop=5 * ns, operating_point=False),
                     "pss": PeriodicSteadyState(period=5 * ns),
                 }
             )
-        )
-    assert len(raised.value.problems) == 2
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "only an operating point settles" in text
-    assert "without logic" in text
+        ),
+        "only an operating point settles",
+        "without logic",
+        count=2,
+    )
 
 
 def test_nodesets_checked_across_all_entry_points() -> None:
     simulation = _build_simulation()
     bad_options = Options(nodesets={"outt": 1 * V, "V1:current": 0 * V})
-
-    with pytest.raises(PlanError) as raised:
-        simulation.check_operating_point(bad_options)
-    assert len(raised.value.problems) == 2
-    _assert_fact_only(str(raised.value))
-
-    with pytest.raises(PlanError) as raised:
-        simulation.batch({"op": OperatingPoint()}, Explicit([Variant()]), bad_options)
-    assert len(raised.value.problems) == 2
-    _assert_fact_only(str(raised.value))
+    _expect_plan_error(lambda: simulation.check_operating_point(bad_options), count=2)
+    _expect_plan_error(
+        lambda: simulation.batch(
+            {"op": OperatingPoint()}, Explicit([Variant()]), bad_options
+        ),
+        count=2,
+    )
 
 
 def test_sensitivity_and_mismatch_checks_including_random_variables() -> None:
     simulation = _build_simulation()
-    with pytest.raises(PlanError) as raised:
-        simulation.run(Sensitivity(["outt", "reff"], of=Ac("V9", [1 * kHz])))
-    assert len(raised.value.problems) == 3
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "`outt`; close names: out" in text
-    assert "`reff`; close names: ref" in text
-    assert "`V9`; close names: VP, V1" in text
+    _expect_plan_error(
+        lambda: simulation.run(Sensitivity(["outt", "reff"], of=Ac("V9", [1 * kHz]))),
+        "`outt`; close names: out",
+        "`reff`; close names: ref",
+        "`V9`; close names: VP, V1",
+        count=3,
+    )
 
     first_random_variable = ir.RandomVariable(
         name="v1",
@@ -646,21 +657,20 @@ def test_sensitivity_and_mismatch_checks_including_random_variables() -> None:
         standard_deviation=1.0,
         derivatives={"R9": {"resistance": 2.0}},  # duplicated -> deduplicated!
     )
-    with pytest.raises(PlanError) as raised:
-        simulation.run(
+    _expect_plan_error(
+        lambda: simulation.run(
             Mismatch(
                 ["outt"],
                 of=DcSweep("V9", [1 * V]),
                 random_variables=(first_random_variable, second_random_variable),
             )
-        )
-    assert len(raised.value.problems) == 4
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "`outt`; close names: out" in text
-    assert "no device at `R9`; close names: R2, R1" in text
-    assert "`R1` writes no number `resistence`; close names: resistance" in text
-    assert "there is no instance at `V9`; close names: VP, V1" in text
+        ),
+        "`outt`; close names: out",
+        "no device at `R9`; close names: R2, R1",
+        "`R1` writes no number `resistence`; close names: resistance",
+        "there is no instance at `V9`; close names: VP, V1",
+        count=4,
+    )
 
 
 def test_variants_and_traces_checked_upfront_with_close_names() -> None:
@@ -680,22 +690,21 @@ def test_variants_and_traces_checked_upfront_with_close_names() -> None:
         ),
     )
 
-    with pytest.raises(PlanError) as raised:
-        simulation.validate_plan(
+    _expect_plan_error(
+        lambda: simulation.validate_plan(
             Plan({"op": OperatingPoint()}, variants=variants),
             traces=["outt", "tapp"],
-        )
-    assert len(raised.value.problems) == 6
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "no device at `R9`; close names: R2, R1" in text
-    assert "`R1` writes no number `resistence`; close names: resistance" in text
-    assert "no device at `X9/R1`; close names: X2/R1, X1/R1" in text
-    assert "no device at `C9`; close names: C1" in text
-    assert "trace `outt` names no unknown or logic net" in text
-    assert "close names: out" in text
-    assert "trace `tapp` names no unknown or logic net" in text
-    assert "close names: tap" in text
+        ),
+        "no device at `R9`; close names: R2, R1",
+        "`R1` writes no number `resistence`; close names: resistance",
+        "no device at `X9/R1`; close names: X2/R1, X1/R1",
+        "no device at `C9`; close names: C1",
+        "trace `outt` names no unknown or logic net",
+        "close names: out",
+        "trace `tapp` names no unknown or logic net",
+        "close names: tap",
+        count=6,
+    )
 
     # batch / varied still raise ElaborationError for variants, with close names!
     with pytest.raises(ElaborationError) as elaboration_error:
@@ -728,19 +737,15 @@ def test_variants_and_traces_checked_upfront_with_close_names() -> None:
 
 def test_fidelity_scopes_report_all_unmatched_scopes_with_close_names() -> None:
     built = circuit(bench_circuit())
-    with pytest.raises(PlanError) as raised:
-        fidelity.scopes(
+    _expect_plan_error(
+        lambda: fidelity.scopes(
             built,
-            {
-                "X9": Characterized(5 * V),
-                "Z*": Characterized(5 * V),
-            },
-        )
-    assert len(raised.value.problems) == 2
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "'X9' matches no component instance; close names: X2, X1" in text
-    assert "'Z*' matches no component instance" in text
+            {"X9": Characterized(5 * V), "Z*": Characterized(5 * V)},
+        ),
+        "'X9' matches no component instance; close names: X2, X1",
+        "'Z*' matches no component instance",
+        count=2,
+    )
 
 
 def test_specs_upfront_checks_all_measure_signals_kinds_and_bounds() -> None:
@@ -780,22 +785,20 @@ def test_specs_upfront_checks_all_measure_signals_kinds_and_bounds() -> None:
         ]
     )
 
-    with pytest.raises(PlanError) as raised:
-        simulation.validate_plan(plan, specs=requirements)
-
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "'outt'; close names: out" in text
-    assert "'inn'; close names: in" in text
-    assert "'reff'; close names: ref" in text
-    assert "a transfer function" in text
-    assert "an operating point holds one value, not one at 1 µs" in text
-    assert "at is unset" in text
-    assert "the noise analysis names no source to refer its noise to" in text
-    assert "the minimum, 1 mA" in text
-    assert "the maximum, 2 kHz" in text
-    assert "the margin, 1 µs" in text
-    assert len(raised.value.problems) >= 16
+    _expect_plan_error(
+        lambda: simulation.validate_plan(plan, specs=requirements),
+        "'outt'; close names: out",
+        "'inn'; close names: in",
+        "'reff'; close names: ref",
+        "a transfer function",
+        "an operating point holds one value, not one at 1 µs",
+        "at is unset",
+        "the noise analysis names no source to refer its noise to",
+        "the minimum, 1 mA",
+        "the maximum, 2 kHz",
+        "the margin, 1 µs",
+        min_count=16,
+    )
 
 
 def test_kitchen_sink_plan_reports_every_error_at_once() -> None:
@@ -827,39 +830,42 @@ def test_kitchen_sink_plan_reports_every_error_at_once() -> None:
     )
     requirements = Specs([value("bdoe", "out") >= 0 * V])
 
-    with pytest.raises(PlanError) as raised:
-        simulation.validate_plan(
+    text = _expect_plan_error(
+        lambda: simulation.validate_plan(
             plan,
             specs=requirements,
             traces=["outt"],
             check_temperature=True,
-        )
-
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert len(raised.value.problems) >= 20
+        ),
+        "corner `bad_corner`",
+        "is not the simulation's",
+        "process corner ss",
+        "bad_node",
+        "'X9' matches no component instance; close names: X2, X1",
+        "'C9' to record; close names: C1",
+        *(
+            f"analysis `{name}`:"
+            for name in (
+                "op",
+                "sweep",
+                "psweep",
+                "bode",
+                "step",
+                "stab",
+                "noise",
+                "tf",
+                "pz",
+                "sens",
+                "mis",
+            )
+        ),
+        "no device at `R9`; close names: R2, R1",
+        "'bdoe'; close names: bode",
+        "trace `outt`",
+        min_count=20,
+    )
     # Corner with arguments (`rebuilt`) is NOT rejected upfront!
     assert "corner `rebuilt`" not in text
-    assert "corner `bad_corner`" in text
-    assert "is not the simulation's" in text
-    assert "process corner ss" in text
-    assert "bad_node" in text
-    assert "'X9' matches no component instance; close names: X2, X1" in text
-    assert "'C9' to record; close names: C1" in text
-    assert "analysis `op`:" in text
-    assert "analysis `sweep`:" in text
-    assert "analysis `psweep`:" in text
-    assert "analysis `bode`:" in text
-    assert "analysis `step`:" in text
-    assert "analysis `stab`:" in text
-    assert "analysis `noise`:" in text
-    assert "analysis `tf`:" in text
-    assert "analysis `pz`:" in text
-    assert "analysis `sens`:" in text
-    assert "analysis `mis`:" in text
-    assert "no device at `R9`; close names: R2, R1" in text
-    assert "'bdoe'; close names: bode" in text
-    assert "trace `outt`" in text
 
 
 def test_plot_missing_analyses_includes_close_names(tmp_path: Path) -> None:
@@ -868,21 +874,28 @@ def test_plot_missing_analyses_includes_close_names(tmp_path: Path) -> None:
         "op": simulation.run(OperatingPoint()),
         "bode": simulation.run(Ac("V1", [1 * kHz, 10 * kHz])),
     }
-    with pytest.raises(PlanError) as raised:
-        service._plot(tmp_path / "out.npz", loaded, ["bdoe", "po"], [])  # noqa: SLF001 - direct unit test
-    assert len(raised.value.problems) == 2
-    text = str(raised.value)
-    _assert_fact_only(text)
-    assert "'bdoe'; close names: bode" in text
-    assert "'po'; close names: op" in text
+    _expect_plan_error(
+        lambda: service._plot(tmp_path / "out.npz", loaded, ["bdoe", "po"], []),  # noqa: SLF001 - direct unit test
+        "'bdoe'; close names: bode",
+        "'po'; close names: op",
+        count=2,
+    )
 
 
 # --- Item 9: Multi-error Pydantic validation for Plan / Options / Specs ---
 
+_BAD_RANDOM_VARIABLE = ir.RandomVariable(
+    name="bad",
+    mean=0.0,
+    standard_deviation=1.0,
+    derivatives={"R1": {"resistance": math.nan}},
+)
+_OUT_MEASURE = value("op", "out")
 
-def test_options_and_parallelism_report_all_errors_at_once() -> None:
-    with pytest.raises(ValidationError) as raised:
-        Options(
+
+_VALIDATION_CASES: dict[str, tuple[Callable[[], object], int]] = {
+    "options": (
+        lambda: Options(
             relative_tolerance=-1e-3,
             voltage_tolerance=0.0,
             current_tolerance=math.nan,
@@ -894,34 +907,29 @@ def test_options_and_parallelism_report_all_errors_at_once() -> None:
             max_memory=-1.0,
             profile="yes",  # ty: ignore[invalid-argument-type] - wrong type
             nodesets={"a": "bad", 1: 2 * V, "b": math.nan * V},  # ty: ignore[invalid-argument-type] - wrong types
-        )
-    assert raised.value.error_count() == 13
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        Parallelism(
+        ),
+        13,
+    ),
+    "parallelism": (
+        lambda: Parallelism(
             min_solves_per_task=0,
             min_instances_per_task=-1,
             min_unknowns_per_task=True,
             max_unknowns_per_interior=0,
-        )
-    assert raised.value.error_count() == 4
-    _validation_messages(raised.value)
-
+        ),
+        4,
+    ),
     # JSON / dict validation via TypeAdapter reports nested Parallelism + extra fields!
-    with pytest.raises(ValidationError) as raised:
-        TypeAdapter(Options).validate_json(
+    "options-json": (
+        lambda: TypeAdapter(Options).validate_json(
             '{"relative_tolerance": -1, "gmin": -2, '
             '"parallelism": {"min_solves_per_task": 0, "unknown_inner": 5}, '
             '"unknown_outer": 9}'
-        )
-    assert raised.value.error_count() == 5
-    _validation_messages(raised.value)
-
-
-def test_analyses_report_all_construction_errors_at_once() -> None:
-    with pytest.raises(ValidationError) as raised:
-        Transient(
+        ),
+        5,
+    ),
+    "transient": (
+        lambda: Transient(
             stop=-1 * us,
             max_step=-2 * us,
             method="rk4",  # ty: ignore[invalid-argument-type] - wrong literal
@@ -929,147 +937,89 @@ def test_analyses_report_all_construction_errors_at_once() -> None:
             breakpoints=[0 * us, math.nan * us],
             record="R1",
             regions=1,  # ty: ignore[invalid-argument-type] - wrong type
-        )
-    assert raised.value.error_count() == 8
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        PeriodicSteadyState(
+        ),
+        8,
+    ),
+    "pss": (
+        lambda: PeriodicSteadyState(
             period=-1 * us,
             max_step=-1 * us,
             method="rk4",  # ty: ignore[invalid-argument-type] - wrong literal
-        )
-    assert raised.value.error_count() == 3
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        PeriodicSteadyState(breakpoints=[1 * us])
-    assert raised.value.error_count() == 1
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        DcSweep(source="", values=[math.nan * V, math.inf * V], parameter="")
-    assert raised.value.error_count() == 4
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        Ac(source="", frequencies=[-1 * Hz, math.nan * Hz])
-    assert raised.value.error_count() == 3
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        Noise(output="", frequencies=[0 * Hz, -1 * Hz], source="")
-    assert raised.value.error_count() == 4
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        Stability(probe="", frequencies=[-1 * Hz])
-    assert raised.value.error_count() == 2
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        OperatingPoints(
+        ),
+        3,
+    ),
+    "pss-breakpoints": (lambda: PeriodicSteadyState(breakpoints=[1 * us]), 1),
+    "dc-sweep": (
+        lambda: DcSweep(source="", values=[math.nan * V, math.inf * V], parameter=""),
+        4,
+    ),
+    "ac": (lambda: Ac(source="", frequencies=[-1 * Hz, math.nan * Hz]), 3),
+    "noise": (lambda: Noise(output="", frequencies=[0 * Hz, -1 * Hz], source=""), 4),
+    "stability": (lambda: Stability(probe="", frequencies=[-1 * Hz]), 2),
+    "operating-points": (
+        lambda: OperatingPoints(
             max_solutions=0,
             record="X1",
             regions=1,  # ty: ignore[invalid-argument-type] - wrong type
-        )
-    assert raised.value.error_count() == 3
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        TransferFunction(source="", output="out", reference="out")
-    assert raised.value.error_count() == 2
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        PoleZero(source="", output="out", reference="out")
-    assert raised.value.error_count() == 2
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        Sensitivity(outputs="out", of=OperatingPoint())  # ty: ignore[invalid-argument-type] - wrong types
-    assert raised.value.error_count() == 2
-    _validation_messages(raised.value)
-
-    bad_random_variable = ir.RandomVariable(
-        name="bad",
-        mean=0.0,
-        standard_deviation=1.0,
-        derivatives={"R1": {"resistance": math.nan}},
-    )
-    with pytest.raises(ValidationError) as raised:
-        Mismatch(
+        ),
+        3,
+    ),
+    "transfer-function": (
+        lambda: TransferFunction(source="", output="out", reference="out"),
+        2,
+    ),
+    "pole-zero": (lambda: PoleZero(source="", output="out", reference="out"), 2),
+    "sensitivity": (lambda: Sensitivity(outputs="out", of=OperatingPoint()), 2),  # ty: ignore[invalid-argument-type] - wrong types
+    "mismatch": (
+        lambda: Mismatch(
             outputs=[1],  # ty: ignore[invalid-argument-type] - wrong types
             of=OperatingPoint(),  # ty: ignore[invalid-argument-type] - wrong types
-            random_variables=[bad_random_variable, "nope"],  # ty: ignore[invalid-argument-type] - wrong types
-        )
-    assert raised.value.error_count() == 4
-    _validation_messages(raised.value)
-
-
-def test_variants_conditions_corners_and_plan_report_all_errors_at_once() -> None:
-    with pytest.raises(ValidationError) as raised:
-        MonteCarlo(samples=0, seed=-1)
-    assert raised.value.error_count() == 2
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        Variant(
+            random_variables=[_BAD_RANDOM_VARIABLE, "nope"],  # ty: ignore[invalid-argument-type] - wrong types
+        ),
+        4,
+    ),
+    "monte-carlo": (lambda: MonteCarlo(samples=0, seed=-1), 2),
+    "variant": (
+        lambda: Variant(
             overrides={"R1": {"resistance": math.nan, "b": "x"}},  # ty: ignore[invalid-argument-type] - wrong types
             temperature=math.nan * celsius(0),
-        )
-    assert raised.value.error_count() == 3
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        Axis("R1", None, [math.nan * V, "bad"])  # ty: ignore[invalid-argument-type] - wrong types
-    assert raised.value.error_count() == 3
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        Grid(axes=["bad", 1], warm="no")  # ty: ignore[invalid-argument-type] - wrong types
-    assert raised.value.error_count() == 3
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        Product(first="a", second="b")  # ty: ignore[invalid-argument-type] - wrong types
-    assert raised.value.error_count() == 2
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        WorstCase(step=2.0)
-    assert raised.value.error_count() == 1
-    _validation_messages(raised.value)
-
-    with pytest.raises(ValidationError) as raised:
-        Characterized(
+        ),
+        3,
+    ),
+    "axis": (lambda: Axis("R1", None, [math.nan * V, "bad"]), 3),  # ty: ignore[invalid-argument-type] - wrong types
+    "grid": (lambda: Grid(axes=["bad", 1], warm="no"), 3),  # ty: ignore[invalid-argument-type] - wrong types
+    "product": (lambda: Product(first="a", second="b"), 2),  # ty: ignore[invalid-argument-type] - wrong types
+    "worst-case": (lambda: WorstCase(step=2.0), 1),
+    "characterized": (
+        lambda: Characterized(
             supply=-1 * V,
             slews=(2.0, 1.0),
             fanouts=(-1.0, 1.0),
             spot_checks=-1,
             tolerance=-0.1,
             seed=-1,
-        )
-    assert raised.value.error_count() == 6
-    _validation_messages(raised.value)
+        ),
+        6,
+    ),
+    "conditions": (
+        lambda: Conditions(temperature=math.nan, process="", mismatch=-1),
+        3,
+    ),
+    "corner": (lambda: Corner(temperature=math.nan * celsius(27), process=""), 2),
+    "recorded": (lambda: recorded("X1"), 1),
+    "specs-bad-items": (lambda: Specs([_OUT_MEASURE, "bad"], yield_target=0.0), 3),  # ty: ignore[invalid-argument-type] - wrong types
+}
 
-    with pytest.raises(ValidationError) as raised:
-        Conditions(temperature=math.nan, process="", mismatch=-1)
-    assert raised.value.error_count() == 3
-    _validation_messages(raised.value)
 
-    with pytest.raises(ValidationError) as raised:
-        Corner(temperature=math.nan * celsius(27), process="")
-    assert raised.value.error_count() == 2
-    _validation_messages(raised.value)
+@pytest.mark.parametrize("name", list(_VALIDATION_CASES))
+def test_models_report_all_validation_errors_at_once(name: str) -> None:
+    build, count = _VALIDATION_CASES[name]
+    _expect_validation_errors(build, count=count)
 
-    with pytest.raises(ValidationError) as raised:
-        recorded("X1")
-    assert raised.value.error_count() == 1
-    _validation_messages(raised.value)
 
-    with pytest.raises(ValidationError) as raised:
-        Plan(
+def test_plan_reports_all_validation_errors_at_once() -> None:
+    _expect_validation_errors(
+        lambda: Plan(
             analyses={"bad name": "not_analysis", "also bad": 123},  # ty: ignore[invalid-argument-type] - wrong types
             options="bad",  # ty: ignore[invalid-argument-type] - wrong type
             corners={"bad corner": "not_corner"},  # ty: ignore[invalid-argument-type] - wrong type
@@ -1079,53 +1029,45 @@ def test_variants_conditions_corners_and_plan_report_all_errors_at_once() -> Non
             process="",
             record="R1",
             variants="bad",  # ty: ignore[invalid-argument-type] - wrong type
-        )
-    assert raised.value.error_count() >= 11
-    _validation_messages(raised.value)
+        ),
+        min_count=11,
+    )
 
 
-def test_requirement_and_specs_report_all_errors_at_once() -> None:
-    measure = value("op", "out")
-
-    # Missing bound + negative margin BOTH reported
-    with pytest.raises(ValidationError) as raised:
-        Requirement(measure, margin=-1 * V)
-    assert raised.value.error_count() == 2
-    messages = _validation_messages(raised.value)
-    assert any("states a bound" in message for message in messages)
-    assert any("is negative" in message for message in messages)
-
-    # Minimum exceeds maximum + negative margin BOTH reported
-    with pytest.raises(ValidationError) as raised:
-        Requirement(measure, minimum=3 * V, maximum=1 * V, margin=-0.5 * V)
-    assert raised.value.error_count() == 2
-    messages = _validation_messages(raised.value)
-    assert any("exceeds its maximum" in message for message in messages)
-    assert any("is negative" in message for message in messages)
-
-    # Empty specs + bad yield_target BOTH reported
-    with pytest.raises(ValidationError) as raised:
-        Specs([], yield_target=2.0)
-    assert raised.value.error_count() == 2
-    messages = _validation_messages(raised.value)
-    assert any("at least one requirement" in message for message in messages)
-    assert any("above 0 and at most 1" in message for message in messages)
-
-    # Multiple bad requirements + bad yield_target ALL reported
-    with pytest.raises(ValidationError) as raised:
-        Specs([measure, "bad"], yield_target=0.0)  # ty: ignore[invalid-argument-type] - wrong types
-    assert raised.value.error_count() == 3
-    _validation_messages(raised.value)
+_SPECS_MESSAGE_CASES: dict[str, tuple[Callable[[], object], tuple[str, ...]]] = {
+    "requirement-no-bound": (
+        lambda: Requirement(_OUT_MEASURE, margin=-1 * V),
+        ("states a bound", "is negative"),
+    ),
+    "requirement-inverted": (
+        lambda: Requirement(
+            _OUT_MEASURE, minimum=3 * V, maximum=1 * V, margin=-0.5 * V
+        ),
+        ("exceeds its maximum", "is negative"),
+    ),
+    "specs-empty": (
+        lambda: Specs([], yield_target=2.0),
+        ("at least one requirement", "above 0 and at most 1"),
+    ),
+}
 
 
-def test_dimension_errors_still_propagate_directly() -> None:
+@pytest.mark.parametrize("name", list(_SPECS_MESSAGE_CASES))
+def test_requirement_and_specs_report_all_errors_with_messages(name: str) -> None:
+    build, fragments = _SPECS_MESSAGE_CASES[name]
+    _expect_validation_errors(build, *fragments, count=2)
+
+
+_DIMENSION_ERROR_CASES: dict[str, Callable[[], object]] = {
+    "transient-stop": lambda: Transient(stop=1 * V),
+    "noise-frequency": lambda: Noise("out", [1 * V]),
+    "corner-temperature": lambda: Corner(temperature=5 * V),
+    "plan-temperature": lambda: Plan({"op": OperatingPoint()}, temperature=5 * V),
+    "options-nodeset": lambda: Options(nodesets={"out": 1 * mA}),
+}
+
+
+@pytest.mark.parametrize("name", list(_DIMENSION_ERROR_CASES))
+def test_dimension_errors_still_propagate_directly(name: str) -> None:
     with pytest.raises(DimensionError):
-        Transient(stop=1 * V)
-    with pytest.raises(DimensionError):
-        Noise("out", [1 * V])
-    with pytest.raises(DimensionError):
-        Corner(temperature=5 * V)
-    with pytest.raises(DimensionError):
-        Plan({"op": OperatingPoint()}, temperature=5 * V)
-    with pytest.raises(DimensionError):
-        Options(nodesets={"out": 1 * mA})
+        _DIMENSION_ERROR_CASES[name]()

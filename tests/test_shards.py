@@ -30,6 +30,8 @@ from jolty.errors import JoltyError
 from jolty.report import ShardReport
 from jolty.service import SimulateRequest
 
+pytestmark = pytest.mark.usefixtures("in_tmp_path")
+
 SAMPLES = 70
 """The samples of the plan's Monte Carlo analysis."""
 
@@ -103,12 +105,6 @@ def specs():
         yield_target=0.5,
     )
 """
-
-
-@pytest.fixture(autouse=True)
-def in_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Runs each test in its own directory, where script paths are relative."""
-    monkeypatch.chdir(tmp_path)
 
 
 def _script(directory: Path, seed: int = 3, name: str = "divider.py") -> Path:

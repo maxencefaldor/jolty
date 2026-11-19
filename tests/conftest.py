@@ -12,9 +12,9 @@ every run, whichever tests it runs, so the random circuits are too.
 
 import importlib
 import pkgutil
-import sys
 from pathlib import Path
 
+import pytest
 from hypothesis import HealthCheck, settings
 
 import jolty
@@ -34,9 +34,6 @@ settings.register_profile(
     suppress_health_check=[HealthCheck.too_slow],
 )
 
-BENCHMARKS = Path(__file__).parent.parent / "benchmarks" / "agents"
-"""The agents' benchmark, whose shared scripts their tests import."""
-
 collect_ignore = ["guide"]
 """The scripts behind the guide's quoted outputs, which import the examples as they run
 beside them in `test_guide.py`, and which pytest's doctests would import without them.
@@ -47,7 +44,6 @@ for found in pkgutil.walk_packages(jolty.__path__, f"{jolty.__name__}."):
     if not found.name.endswith(".__main__"):
         importlib.import_module(found.name)
 
-sys.path.insert(0, str(BENCHMARKS))
 for script in (
     "arms",
     "verdict",
@@ -59,4 +55,9 @@ for script in (
     "compare",
 ):
     importlib.import_module(script)
-sys.path.remove(str(BENCHMARKS))
+
+
+@pytest.fixture
+def in_tmp_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run a test in its own temporary directory."""
+    monkeypatch.chdir(tmp_path)

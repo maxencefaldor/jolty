@@ -59,7 +59,6 @@ from jolty.units import (
     mA,
     mH,
     ms,
-    nF,
     ns,
     ohm,
     uA,
@@ -67,30 +66,8 @@ from jolty.units import (
     um,
     us,
 )
-from jolty.waveforms import Piecewise, Sine
-
-
-@component
-def divider(c: Builder, level: Quantity, upper: Quantity, lower: Quantity) -> None:
-    ground = c.port("ground", Role.GROUND)
-    source = c.place(devices.voltage_source(level), name="V1")
-    top = c.place(devices.resistor(upper), name="R1")
-    bottom = c.place(devices.resistor(lower), name="R2")
-    c.connect(source.positive, top.a, name="in")
-    c.connect(top.b, bottom.a, name="out")
-    c.connect(bottom.b, source.negative, ground)
-
-
-@component
-def low_pass(c: Builder) -> None:
-    ground = c.port("ground", Role.GROUND)
-    step = Piecewise([(0 * us, 0 * V), (1e-3 * us, 1 * V)])
-    source = c.place(devices.voltage_source(step), name="V1")
-    resistor = c.place(devices.resistor(1 * kohm), name="R1")
-    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
-    c.connect(source.positive, resistor.a, name="in")
-    c.connect(resistor.b, capacitor.a, name="out")
-    c.connect(capacitor.b, source.negative, ground)
+from jolty.waveforms import Sine
+from sample_circuits import divider, low_pass
 
 
 @component

@@ -54,6 +54,7 @@ from jolty.plan import (
 )
 from jolty.specs import gain, value
 from jolty.units import VOLTAGE, MHz, V, celsius, kHz, kohm, nF, ohm
+from sample_circuits import divider
 
 UNKNOWNS = (results.Unknown("out", "voltage"), results.Unknown("V1:current", "current"))
 STATISTICS = results.Statistics(
@@ -581,16 +582,6 @@ def test_batch_files_hold_every_column_of_a_batch(tmp_path: Path) -> None:
 
 
 def test_results_files_hold_a_sweep_of_a_parameter(tmp_path: Path) -> None:
-    @component
-    def divider(c: Builder) -> None:
-        ground = c.port("ground", Role.GROUND)
-        source = c.place(devices.voltage_source(5 * V), name="V1")
-        upper = c.place(devices.resistor(1 * kohm), name="R1")
-        lower = c.place(devices.resistor(1 * kohm), name="R2")
-        c.connect(source.positive, upper.a)
-        c.connect(upper.b, lower.a, name="out")
-        c.connect(lower.b, source.negative, ground)
-
     sweep = Simulation(divider()).run(
         DcSweep("R2", [1 * kohm, 3 * kohm], parameter="resistance")
     )

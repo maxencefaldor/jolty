@@ -2,11 +2,20 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
+import compare
 import pytest
+import run as agent_run
+import score as agent_score
+import transcript
+from arms import Arm
+from sandbox import Sandbox, bubblewrap, mechanism
+from verdict import Verdict
 
 from differential import SKIP
 from jolty.settings import Settings
@@ -16,15 +25,7 @@ BENCHMARKS = Path(__file__).parent.parent / "benchmarks" / "agents"
 COST_DOWN = BENCHMARKS / "cost_down"
 
 
-@pytest.fixture(autouse=True)
-def importable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Imports the benchmarks' scripts, which import each other, as their runs do."""
-    monkeypatch.syspath_prepend(str(BENCHMARKS))
-
-
 def test_a_wrapper_logs_each_run_then_runs_the_program(tmp_path: Path) -> None:
-    from run import wrap  # noqa: PLC0415 - importable only once the path holds it
-
     program = tmp_path / "simulator"
     program.write_text(
         '#!/bin/sh\nprintf "%s|" "$@"\necho "$PWD" >&2\nexit 3\n', encoding="utf-8"
@@ -33,7 +34,7 @@ def test_a_wrapper_logs_each_run_then_runs_the_program(tmp_path: Path) -> None:
     wrappers = tmp_path / "bin"
     wrappers.mkdir()
     log = tmp_path / "simulations.jsonl"
-    wrap(wrappers, program, log, Path(sys.executable))
+    agent_run.wrap(wrappers, program, log, Path(sys.executable))
     arguments = ["-b", "a deck.cir", "it's", ""]
     for _ in range(2):
         ran = subprocess.run(  # noqa: S603 - the wrapper just written
@@ -55,11 +56,8 @@ def test_a_wrapper_logs_each_run_then_runs_the_program(tmp_path: Path) -> None:
 
 @SKIP
 def test_the_ngspice_arm_has_ngspice_and_python_but_no_jolty(tmp_path: Path) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from run import PACKAGES, SIMULATIONS, environment  # noqa: PLC0415 - importable only once the path holds it
-
-    prepared = environment(Arm.NGSPICE, tmp_path)
-    assert set(PACKAGES) <= set(prepared.packages)
+    prepared = agent_run.environment(Arm.NGSPICE, tmp_path)
+    assert set(agent_run.PACKAGES) <= set(prepared.packages)
     assert "jolty" not in prepared.packages
     path = prepared.variables["PATH"].split(os.pathsep)
     assert path[:2] == [str(tmp_path / "bin"), str(tmp_path / "python" / "bin")]
@@ -78,7 +76,7 @@ def test_the_ngspice_arm_has_ngspice_and_python_but_no_jolty(tmp_path: Path) -> 
     assert ran("python", "-c", probe).stdout.strip() == str(tmp_path / "python")
     assert "No module named 'jolty'" in ran("python", "-c", "import jolty").stderr
     assert "ngspice" in ran("ngspice", "--version").stdout
-    assert prepared.log == tmp_path / "log" / SIMULATIONS
+    assert prepared.log == tmp_path / "log" / agent_run.SIMULATIONS
     (logged,) = prepared.log.read_text(encoding="utf-8").splitlines()
     assert json.loads(logged)["arguments"] == ["--version"]
     # Neither jolty's Python nor its package is among what the arm reads.
@@ -89,10 +87,7 @@ def test_the_ngspice_arm_has_ngspice_and_python_but_no_jolty(tmp_path: Path) -> 
 def test_the_jolty_arm_counts_its_command_lines_runs_and_its_analyses(
     tmp_path: Path,
 ) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from run import ANALYSES, ANALYSIS_LOG, SIMULATIONS, environment  # noqa: PLC0415 - importable only once the path holds it
-
-    prepared = environment(Arm.JOLTY, tmp_path)
+    prepared = agent_run.environment(Arm.JOLTY, tmp_path)
     assert not prepared.packages
     path = prepared.variables["PATH"].split(os.pathsep)
     assert path[:2] == [str(tmp_path / "bin"), str(Path(sys.executable).parent)]
@@ -105,28 +100,29 @@ def test_the_jolty_arm_counts_its_command_lines_runs_and_its_analyses(
     )
     assert ran.stdout.startswith("jolty ")
     (logged,) = (
-        (tmp_path / "log" / SIMULATIONS).read_text(encoding="utf-8").splitlines()
+        (tmp_path / "log" / agent_run.SIMULATIONS)
+        .read_text(encoding="utf-8")
+        .splitlines()
     )
     assert json.loads(logged)["program"] == "jolty"
     # Every process of a session names the log of analyses to jolty's settings.
-    assert prepared.analyses == tmp_path / "log" / ANALYSES
-    assert prepared.variables[ANALYSIS_LOG] == str(prepared.analyses)
+    assert prepared.analyses == tmp_path / "log" / agent_run.ANALYSES
+    assert prepared.variables[agent_run.ANALYSIS_LOG] == str(prepared.analyses)
     with pytest.MonkeyPatch.context() as patched:
-        patched.setenv(ANALYSIS_LOG, prepared.variables[ANALYSIS_LOG])
+        patched.setenv(
+            agent_run.ANALYSIS_LOG, prepared.variables[agent_run.ANALYSIS_LOG]
+        )
         assert Settings.load().analysis_log == prepared.analyses
 
 
 def test_a_session_holds_nothing_of_the_runner_s_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from run import SET, environment  # noqa: PLC0415 - importable only once the path holds it
-
     monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setenv("ANTHROPIC_MODEL", "a model of the user's")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "a key")
     monkeypatch.setenv("LANG", "en_GB.UTF-8")
-    prepared = environment(Arm.JOLTY, tmp_path)
+    prepared = agent_run.environment(Arm.JOLTY, tmp_path)
     variables = prepared.variables
     # Its home, Claude Code's configuration in it, and its temporary directory are its
     # own, and empty; its path is the arm's then the system's.
@@ -150,7 +146,7 @@ def test_a_session_holds_nothing_of_the_runner_s_environment(
         *(name for name in ("LC_ALL", "LC_CTYPE") if name in os.environ),
     }
     assert variables["ANTHROPIC_API_KEY"] == "a key"
-    assert SET == "(set)"
+    assert agent_run.SET == "(set)"
 
 
 def _assistant(id: str, *blocks: dict[str, object], parent: str | None = None) -> str:
@@ -165,8 +161,6 @@ def _call(id: str, name: str) -> dict[str, object]:
 
 
 def test_the_transcript_reader_counts_turns_and_tool_calls(tmp_path: Path) -> None:
-    from transcript import read  # noqa: PLC0415 - importable only once the path holds it
-
     lines = [
         "a warning the agent printed",
         json.dumps(
@@ -232,7 +226,7 @@ def test_the_transcript_reader_counts_turns_and_tool_calls(tmp_path: Path) -> No
     ]
     path = tmp_path / "transcript.txt"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    session = read(path)
+    session = transcript.read(path)
     assert session is not None
     assert (session.model, session.agent) == ("claude-opus-5-5", "2.1.325")
     assert session.turns == 4
@@ -260,8 +254,6 @@ def test_the_transcript_reader_counts_turns_and_tool_calls(tmp_path: Path) -> No
 def test_the_transcript_reader_reads_the_setup_and_how_the_session_ended(
     tmp_path: Path,
 ) -> None:
-    from transcript import Setup, read  # noqa: PLC0415 - importable only once the path holds it
-
     path = tmp_path / "transcript.txt"
     path.write_text(
         "\n".join(
@@ -292,9 +284,9 @@ def test_the_transcript_reader_reads_the_setup_and_how_the_session_ended(
         ),
         encoding="utf-8",
     )
-    session = read(path)
+    session = transcript.read(path)
     assert session is not None
-    assert session.setup == Setup(
+    assert session.setup == transcript.Setup(
         tools=("Bash",),
         mcp_servers={"jolty": "failed"},
         permission_mode="bypassPermissions",
@@ -311,21 +303,28 @@ def test_the_transcript_reader_reads_the_setup_and_how_the_session_ended(
 
 
 def test_a_session_ends_as_the_runner_saw_and_the_agent_reports() -> None:
-    from compare import Ending, ending  # noqa: PLC0415 - importable only once the path holds it
-    from transcript import Session  # noqa: PLC0415 - importable only once the path holds it
+    def reported(
+        outcome: str | None, *, is_error: bool | None = False
+    ) -> transcript.Session:
+        return transcript.Session(
+            turns=1, tool_calls={}, outcome=outcome, is_error=is_error
+        )
 
-    def reported(outcome: str | None, *, is_error: bool | None = False) -> Session:
-        return Session(turns=1, tool_calls={}, outcome=outcome, is_error=is_error)
-
-    assert ending(0, reported("success"), timed_out=False) is Ending.FINISHED
-    assert ending(-9, reported(None, is_error=None), timed_out=True) is (
-        Ending.OUT_OF_TIME
+    assert (
+        compare.ending(0, reported("success"), timed_out=False)
+        is compare.Ending.FINISHED
     )
-    assert ending(1, reported("error_max_turns", is_error=True), timed_out=False) is (
-        Ending.OUT_OF_TURNS
+    assert (
+        compare.ending(-9, reported(None, is_error=None), timed_out=True)
+        is compare.Ending.OUT_OF_TIME
     )
-    assert ending(1, reported("error_max_budget_usd"), timed_out=False) is (
-        Ending.OUT_OF_BUDGET
+    assert (
+        compare.ending(1, reported("error_max_turns", is_error=True), timed_out=False)
+        is compare.Ending.OUT_OF_TURNS
+    )
+    assert (
+        compare.ending(1, reported("error_max_budget_usd"), timed_out=False)
+        is compare.Ending.OUT_OF_BUDGET
     )
     # A success that is an error, an error, a failed exit and no report all errored.
     for code, session in (
@@ -334,20 +333,18 @@ def test_a_session_ends_as_the_runner_saw_and_the_agent_reports() -> None:
         (1, reported("success")),
         (0, reported(None, is_error=None)),
     ):
-        assert ending(code, session, timed_out=False) is Ending.ERRORED
+        assert compare.ending(code, session, timed_out=False) is compare.Ending.ERRORED
     # An agent that prints no events ended as its exit code says.
-    assert ending(0, None, timed_out=False) is Ending.FINISHED
-    assert ending(2, None, timed_out=False) is Ending.ERRORED
+    assert compare.ending(0, None, timed_out=False) is compare.Ending.FINISHED
+    assert compare.ending(2, None, timed_out=False) is compare.Ending.ERRORED
 
 
 def test_a_transcript_of_no_events_says_nothing_of_its_session(tmp_path: Path) -> None:
-    from transcript import read  # noqa: PLC0415 - importable only once the path holds it
-
     path = tmp_path / "transcript.txt"
     path.write_text("I wrote design.py.\n", encoding="utf-8")
-    assert read(path) is None
+    assert transcript.read(path) is None
     path.write_text(_assistant("msg_1", _call("toolu_1", "Bash")), encoding="utf-8")
-    session = read(path)
+    session = transcript.read(path)
     assert session is not None
     assert (session.turns, session.calls, session.seconds) == (1, 1, None)
 
@@ -377,21 +374,17 @@ jolty logs every analysis, whatever runs it; ngspice none."""
 def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
     tmp_path: Path,
 ) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from compare import Agent, Report, compare  # noqa: PLC0415 - importable only once the path holds it
-    from sandbox import mechanism  # noqa: PLC0415 - importable only once the path holds it
-
     work = tmp_path / "work"
     work.mkdir()
-    path = compare(
-        Agent.STUB,
+    path = compare.compare(
+        compare.Agent.STUB,
         tasks=["cost_down"],
         arms=list(Arm),
         repetitions=2,
         results=tmp_path,
         work=work,
     )
-    report = Report.model_validate_json(path.read_text(encoding="utf-8"))
+    report = compare.Report.model_validate_json(path.read_text(encoding="utf-8"))
     assert path == tmp_path / f"{report.date}-stub.json"
     assert [(run.arm, run.repetition) for run in report.runs] == [
         (Arm.JOLTY, 1),
@@ -467,8 +460,8 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
         2,
     )
     with pytest.raises(FileExistsError):
-        compare(
-            Agent.STUB,
+        compare.compare(
+            compare.Agent.STUB,
             tasks=["cost_down"],
             arms=[Arm.JOLTY],
             repetitions=1,
@@ -479,13 +472,10 @@ def test_the_comparison_runs_and_reports_both_arms_with_the_stub(
 def test_the_comparison_runs_no_session_without_its_programs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from compare import Agent, compare  # noqa: PLC0415 - importable only once the path holds it
-
     monkeypatch.setenv("PATH", str(tmp_path))
     with pytest.raises(FileNotFoundError, match="claude, ngspice, uv not on the path"):
-        compare(
-            Agent.CLAUDE,
+        compare.compare(
+            compare.Agent.CLAUDE,
             tasks=["cost_down"],
             arms=list(Arm),
             repetitions=1,
@@ -494,8 +484,8 @@ def test_the_comparison_runs_no_session_without_its_programs(
     assert not list(tmp_path.iterdir())
     monkeypatch.undo()
     with pytest.raises(ValueError, match="lies in the repository"):
-        compare(
-            Agent.STUB,
+        compare.compare(
+            compare.Agent.STUB,
             tasks=["cost_down"],
             arms=[Arm.JOLTY],
             repetitions=1,
@@ -505,9 +495,6 @@ def test_the_comparison_runs_no_session_without_its_programs(
 
 
 def test_each_session_is_scored_in_a_process_of_its_own(tmp_path: Path) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from run import VERDICT, scored  # noqa: PLC0415 - importable only once the path holds it
-
     bias = (COST_DOWN / "given" / "bias.py").read_text(encoding="utf-8")
     verdicts = []
     # Each design imports its resistors' tolerance from a module of the same name
@@ -518,8 +505,8 @@ def test_each_session_is_scored_in_a_process_of_its_own(tmp_path: Path) -> None:
         (work / "helper.py").write_text(f"TOLERANCE = {tolerance}\n", encoding="utf-8")
         design = bias.replace("TOLERANCE = 0.001", "from helper import TOLERANCE")
         (work / "design.py").write_text(design, encoding="utf-8")
-        verdicts.append(scored(COST_DOWN, work, Arm.JOLTY))
-        assert (work / VERDICT).is_file()
+        verdicts.append(agent_run.scored(COST_DOWN, work, Arm.JOLTY))
+        assert (work / agent_run.VERDICT).is_file()
     assert [verdict.met for verdict in verdicts] == [True, False]
     assert [shortfall.spec for shortfall in verdicts[1].shortfalls] == ["yield"]
 
@@ -527,9 +514,6 @@ def test_each_session_is_scored_in_a_process_of_its_own(tmp_path: Path) -> None:
 def test_a_scorer_that_crashes_fails_the_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from run import scored  # noqa: PLC0415 - importable only once the path holds it
-
     # As on CI, which forces colors: the scorer's traceback is read, not shown.
     monkeypatch.setenv("FORCE_COLOR", "1")
     task = tmp_path / "broken"
@@ -538,7 +522,7 @@ def test_a_scorer_that_crashes_fails_the_work(
         "def score(task, work, arm):\n    raise RuntimeError('a broken scorer')\n",
         encoding="utf-8",
     )
-    verdict = scored(task, tmp_path, Arm.JOLTY)
+    verdict = agent_run.scored(task, tmp_path, Arm.JOLTY)
     assert not verdict.met
     assert verdict.reasons == (
         "the scorer exited with 1, having written RuntimeError: a broken scorer",
@@ -548,13 +532,9 @@ def test_a_scorer_that_crashes_fails_the_work(
 def test_the_runner_hands_the_agent_its_words_after_the_dashes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import tempfile  # noqa: PLC0415 - patched below, where the runner makes its directory
-
-    from run import main  # noqa: PLC0415 - importable only once the path holds it
-
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     with pytest.raises(SystemExit) as prepared:
-        main(["--arm", "ngspice", str(COST_DOWN), "-"])
+        agent_run.main(["--arm", "ngspice", str(COST_DOWN), "-"])
     assert prepared.value.code == 0
     work = Path(capsys.readouterr().out.strip())
     assert work.parent == tmp_path
@@ -576,7 +556,7 @@ def test_the_runner_hands_the_agent_its_words_after_the_dashes(
         *words,
     ]
     with pytest.raises(SystemExit) as ran:
-        main([str(COST_DOWN), "--", *agent])
+        agent_run.main([str(COST_DOWN), "--", *agent])
     assert ran.value.code == 1
     (work,) = (path for path in tmp_path.iterdir() if (path / "words.json").is_file())
     assert json.loads((work / "words.json").read_text(encoding="utf-8")) == words
@@ -586,12 +566,9 @@ def test_the_runner_hands_the_agent_its_words_after_the_dashes(
 def test_the_scorer_s_command_line_prints_and_writes_its_verdict(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from score import main  # noqa: PLC0415 - importable only once the path holds it
-    from verdict import Verdict  # noqa: PLC0415 - importable only once the path holds it
-
     path = tmp_path / "verdict.json"
     with pytest.raises(SystemExit) as scored:
-        main(
+        agent_score.main(
             [str(COST_DOWN), str(tmp_path), "--arm", "ngspice", "--verdict", str(path)]
         )
     assert scored.value.code == 1
@@ -603,9 +580,6 @@ def test_the_scorer_s_command_line_prints_and_writes_its_verdict(
 def test_the_comparison_s_command_line_reads_lists_and_refuses_bad_values(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    import compare  # noqa: PLC0415 - importable only once the path holds it
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-
     asked: list[dict[str, object]] = []
 
     def recorded(agent: compare.Agent, **options: object) -> Path:
@@ -674,8 +648,6 @@ it went, in ``probe.json``."""
 
 def sandboxed() -> pytest.MarkDecorator:
     """Skips a test where this platform has no sandbox, sandbox-exec or bwrap."""
-    import shutil  # noqa: PLC0415 - only to decide whether to skip
-
     found = shutil.which("sandbox-exec" if sys.platform == "darwin" else "bwrap")
     return pytest.mark.skipif(found is None, reason="no sandbox on this platform")
 
@@ -684,19 +656,16 @@ def sandboxed() -> pytest.MarkDecorator:
 def test_a_sandboxed_agent_reads_and_writes_its_own_directory_alone(
     tmp_path: Path,
 ) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from run import Program, session  # noqa: PLC0415 - importable only once the path holds it
-
     secret = tmp_path / "outside" / "secret.txt"
     secret.parent.mkdir()
     secret.write_text("the user's", encoding="utf-8")
     work = tmp_path / "work"
     work.mkdir()
     scorer = COST_DOWN / "scorer.py"
-    program = Program(
+    program = agent_run.Program(
         (sys.executable, "-c", PROBE, str(secret), str(scorer), str(Path.home()))
     )
-    ran = session(COST_DOWN, program, work, Arm.JOLTY)
+    ran = agent_run.session(COST_DOWN, program, work, Arm.JOLTY)
     assert ran.configuration.sandbox is not None
     assert json.loads((work / "probe.json").read_text(encoding="utf-8")) == {
         "its own file": "done",
@@ -714,9 +683,6 @@ def test_a_sandboxed_agent_reads_and_writes_its_own_directory_alone(
 def test_the_scorer_runs_the_agent_s_code_confined_as_its_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from run import scored  # noqa: PLC0415 - importable only once the path holds it
-
     monkeypatch.setenv("ANTHROPIC_API_KEY", "a key")
     secret = tmp_path / "secret.txt"
     secret.write_text("the user's", encoding="utf-8")
@@ -730,7 +696,7 @@ def test_the_scorer_runs_the_agent_s_code_confined_as_its_session(
         f"pathlib.Path({str(secret)!r}).read_text()\n",
         encoding="utf-8",
     )
-    verdict = scored(COST_DOWN, work, Arm.JOLTY)
+    verdict = agent_run.scored(COST_DOWN, work, Arm.JOLTY)
     (shortfall,) = verdict.shortfalls
     assert shortfall.kind == "unbuilt"
     assert "PermissionError" in shortfall.reason
@@ -739,9 +705,6 @@ def test_the_scorer_runs_the_agent_s_code_confined_as_its_session(
 
 
 def test_the_runner_stops_a_session_and_what_it_left_running(tmp_path: Path) -> None:
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from run import Program, session  # noqa: PLC0415 - importable only once the path holds it
-
     def left(work: Path) -> bool:
         pid = int((work / "child.pid").read_text(encoding="utf-8"))
         try:
@@ -756,8 +719,8 @@ def test_the_runner_stops_a_session_and_what_it_left_running(tmp_path: Path) -> 
     ):
         work = tmp_path / name
         work.mkdir()
-        program = Program(("/bin/sh", "-c", script), confined=False)
-        ran = session(COST_DOWN, program, work, Arm.JOLTY, timeout)
+        program = agent_run.Program(("/bin/sh", "-c", script), confined=False)
+        ran = agent_run.session(COST_DOWN, program, work, Arm.JOLTY, timeout)
         assert ran.timed_out == (timeout is not None)
         assert ran.configuration.timeout == timeout
         assert not left(work)
@@ -787,10 +750,6 @@ def _claude(directory: Path, *, logged_in: bool) -> None:
 def test_claude_runs_only_in_a_sandbox_and_holding_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import compare  # noqa: PLC0415 - importable only once the path holds it
-    from arms import Arm  # noqa: PLC0415 - importable only once the path holds it
-    from run import default_agent  # noqa: PLC0415 - importable only once the path holds it
-
     programs = tmp_path / "bin"
     _claude(programs, logged_in=True)
     monkeypatch.setenv("PATH", f"{programs}{os.pathsep}{os.environ['PATH']}")
@@ -807,7 +766,7 @@ def test_claude_runs_only_in_a_sandbox_and_holding_credentials(
         )
 
     # Claude Code started in the sandbox, which costs nothing, says who it is.
-    agent = default_agent(Arm.JOLTY, model="opus", turns=40, budget=2.5)
+    agent = agent_run.default_agent(Arm.JOLTY, model="opus", turns=40, budget=2.5)
     assert agent.command[0] == str((programs / "claude").resolve())
     assert agent.command[-6:] == (
         "--model",
@@ -835,8 +794,6 @@ def test_claude_runs_only_in_a_sandbox_and_holding_credentials(
 def test_bubblewrap_hides_the_private_places_but_what_a_session_is_given(
     tmp_path: Path,
 ) -> None:
-    from sandbox import Sandbox, bubblewrap  # noqa: PLC0415 - importable only once the path holds it
-
     work, program = tmp_path / "work", tmp_path / "program"
     within = Sandbox(
         mechanism="bwrap",

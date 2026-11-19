@@ -13,11 +13,12 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from jolty import Builder, Net, Role, component, devices, function, jvp, vjp
+from jolty import function, jvp, vjp
 from jolty.errors import ElaborationError
 from jolty.plan import Ac, DcSweep, OperatingPoint, Transient
 from jolty.simulate import Differentiable, Outputs, Parameters
-from jolty.units import MHz, V, kHz, kohm, nF, ns, us
+from jolty.units import MHz, V, kHz, ns, us
+from sample_circuits import CROSSBAR_WEIGHTS, crossbar
 
 TRANSPOSED = 1e-11
 """The largest disagreement of the JVP and the VJP relative to the magnitudes of the
@@ -26,19 +27,12 @@ derivative, `crates/jolty-engine/tests/sensitivity.rs`; here the terms are each
 output's and each parameter's, a coarser scale, so that a cotangent's or a tangent's
 value lost in its way through Python shows by its own size."""
 
-WEIGHTS = {
-    f"W{row}{column}": {"resistance": 1e3 * (1 + row + 2 * column)}
-    for row in range(2)
-    for column in range(2)
-}
-"""A crossbar's weights, each a resistance from an input row to an output column."""
-
-NAMES = [(path, "resistance") for path in WEIGHTS]
+NAMES = [(path, "resistance") for path in CROSSBAR_WEIGHTS]
 """The weights' parameters, in the order a batch's rows give them."""
 
 ROWS = np.array(
     [
-        [named["resistance"] * (1 + run / 4) for named in WEIGHTS.values()]
+        [named["resistance"] * (1 + run / 4) for named in CROSSBAR_WEIGHTS.values()]
         for run in range(3)
     ]
 )
@@ -50,25 +44,6 @@ BATCHED = [
     Ac("V1", [1 * kHz, 1 * MHz]),
 ]
 """The analyses whose batches read their outputs at the points their calls do."""
-
-
-@component
-def crossbar(c: Builder) -> None:
-    """Two inputs driving two outputs through a weight each, each output loaded."""
-    ground = c.port("ground", Role.GROUND)
-    for row, level in enumerate((0.3 * V, -0.2 * V)):
-        source = c.place(devices.voltage_source(level), name=f"V{row}")
-        c.connect(source.positive, name=f"in{row}")
-        c.connect(source.negative, ground)
-    for column in range(2):
-        load = c.place(devices.resistor(1 * kohm), name=f"RL{column}")
-        held = c.place(devices.capacitor(1 * nF), name=f"CL{column}")
-        c.connect(load.a, held.a, name=f"out{column}")
-        c.connect(load.b, held.b, ground)
-        for row in range(2):
-            weight = c.place(devices.resistor(1 * kohm), name=f"W{row}{column}")
-            c.connect(weight.a, Net(f"in{row}"))
-            c.connect(weight.b, Net(f"out{column}"))
 
 
 def inner(
@@ -100,10 +75,10 @@ def test_the_pullback_is_the_jvps_transpose(analysis: Differentiable) -> None:
     f = function(crossbar(), analysis)
     tangents = {
         path: {name: value * (index + 1) / 10 for name, value in named.items()}
-        for index, (path, named) in enumerate(WEIGHTS.items())
+        for index, (path, named) in enumerate(CROSSBAR_WEIGHTS.items())
     }
-    outputs, pushed = jvp(f, WEIGHTS, tangents)
-    same, pull = vjp(f, WEIGHTS)
+    outputs, pushed = jvp(f, CROSSBAR_WEIGHTS, tangents)
+    same, pull = vjp(f, CROSSBAR_WEIGHTS)
     for name, values in outputs.items():
         np.testing.assert_array_equal(values, same[name])
     cotangent = {
@@ -114,12 +89,12 @@ def test_the_pullback_is_the_jvps_transpose(analysis: Differentiable) -> None:
     pulled = pull(cotangent)
     backward = sum(
         complex(pulled[path][name]) * tangents[path][name]
-        for path, named in WEIGHTS.items()
+        for path, named in CROSSBAR_WEIGHTS.items()
         for name in named
     )
     terms = sum(
         abs(complex(pulled[path][name]) * tangents[path][name])
-        for path, named in WEIGHTS.items()
+        for path, named in CROSSBAR_WEIGHTS.items()
         for name in named
     )
     assert abs(forward - backward) <= TRANSPOSED * max(magnitude, terms)
@@ -138,7 +113,7 @@ def test_a_losss_gradient_over_the_weights_is_its_finite_differences() -> None:
             for name, target in targets.items()
         )
 
-    outputs, pull = vjp(f, WEIGHTS)
+    outputs, pull = vjp(f, CROSSBAR_WEIGHTS)
     gradient = pull(
         {
             name: 2 * (np.asarray(outputs[name]) - target)
@@ -146,11 +121,18 @@ def test_a_losss_gradient_over_the_weights_is_its_finite_differences() -> None:
         }
     )
     step = 1e-4
-    largest = max(abs(gradient[path]["resistance"]) for path in WEIGHTS)
-    for path, named in WEIGHTS.items():
+    largest = max(abs(gradient[path]["resistance"]) for path in CROSSBAR_WEIGHTS)
+    for path, named in CROSSBAR_WEIGHTS.items():
         value = named["resistance"]
         moved = [
-            loss(f({**WEIGHTS, path: {"resistance": value * (1 + sign * step)}}))
+            loss(
+                f(
+                    {
+                        **CROSSBAR_WEIGHTS,
+                        path: {"resistance": value * (1 + sign * step)},
+                    }
+                )
+            )
             for sign in (1, -1)
         ]
         finite = (moved[0] - moved[1]) / (2 * step * value)

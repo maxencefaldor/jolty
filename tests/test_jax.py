@@ -31,7 +31,6 @@ import pytest
 import jolty.jax as jolty_jax_module
 from jolty import (
     Builder,
-    Net,
     Options,
     Role,
     Simulation,
@@ -57,55 +56,12 @@ from jolty.plan import (
     Transient,
 )
 from jolty.simulate import BatchPullback, Elaborated, Function, Outputs
-from jolty.units import F, H, MHz, V, kHz, kohm, nF, ns, ohm, pF, us
+from jolty.units import F, H, MHz, V, kHz, kohm, ns, ohm, pF, us
 from jolty.waveforms import Pulse, Sine
+from sample_circuits import CROSSBAR_WEIGHTS as WEIGHTS
+from sample_circuits import crossbar
 
 FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
-
-WEIGHTS: dict[str, dict[str, float]] = {
-    f"W{row}{column}": {"resistance": 1e3 * (1 + row + 2 * column)}
-    for row in range(2)
-    for column in range(2)
-}
-
-
-@component
-def crossbar(c: Builder) -> None:
-    """Two-input, two-output loaded resistive crossbar."""
-    ground = c.port("ground", Role.GROUND)
-    for row, level in enumerate((0.3 * V, -0.2 * V)):
-        source = c.place(devices.voltage_source(level), name=f"V{row}")
-        c.connect(source.positive, name=f"in{row}")
-        c.connect(source.negative, ground)
-    for column in range(2):
-        load = c.place(devices.resistor(1 * kohm), name=f"RL{column}")
-        hold = c.place(devices.capacitor(1 * nF), name=f"CL{column}")
-        c.connect(load.a, hold.a, name=f"out{column}")
-        c.connect(load.b, hold.b, ground)
-        for row in range(2):
-            weight = c.place(devices.resistor(1 * kohm), name=f"W{row}{column}")
-            c.connect(weight.a, Net(f"in{row}"))
-            c.connect(weight.b, Net(f"out{column}"))
-
-
-@component
-def low_resistance_crossbar(c: Builder) -> None:
-    """Crossbar whose nominal `W00` is below 1 ohm so `W00:current` is an unknown."""
-    ground = c.port("ground", Role.GROUND)
-    for row, level in enumerate((0.3 * V, -0.2 * V)):
-        source = c.place(devices.voltage_source(level), name=f"V{row}")
-        c.connect(source.positive, name=f"in{row}")
-        c.connect(source.negative, ground)
-    for column in range(2):
-        load = c.place(devices.resistor(1 * kohm), name=f"RL{column}")
-        hold = c.place(devices.capacitor(1 * nF), name=f"CL{column}")
-        c.connect(load.a, hold.a, name=f"out{column}")
-        c.connect(load.b, hold.b, ground)
-        for row in range(2):
-            nominal = 0.5 * ohm if (row == 0 and column == 0) else 1 * kohm
-            weight = c.place(devices.resistor(nominal), name=f"W{row}{column}")
-            c.connect(weight.a, Net(f"in{row}"))
-            c.connect(weight.b, Net(f"out{column}"))
 
 
 @component
@@ -210,6 +166,33 @@ def _central_difference(
     return gradients
 
 
+def _assert_matches_central_difference(
+    loss_function: Callable[[dict[str, dict[str, jax.Array]]], jax.Array],
+    gradient: Mapping[str, Mapping[str, jax.Array]],
+    parameters: dict[str, dict[str, float]],
+    *,
+    relative_tolerance: float,
+) -> None:
+    """Compare gradient to central difference (O(step^2) truncation and rounding)."""
+    finite_difference = _central_difference(
+        lambda current: float(
+            loss_function(_as_jax_parameters(current, dtype=jnp.float64))
+        ),
+        parameters,
+    )
+    largest = max(
+        abs(float(gradient[instance][name]))
+        for instance, inner in parameters.items()
+        for name in inner
+    )
+    for instance, inner in parameters.items():
+        for name in inner:
+            assert (
+                abs(float(gradient[instance][name]) - finite_difference[instance][name])
+                <= relative_tolerance * largest
+            )
+
+
 def test_operating_point_matches_jolty_vjp_bit_for_bit_and_finite_differences() -> None:
     analysis = OperatingPoint()
     wrapped = jax_function(crossbar(), analysis)
@@ -259,22 +242,10 @@ def test_operating_point_matches_jolty_vjp_bit_for_bit_and_finite_differences() 
                     float(jitted_gradient[instance][name]), expected_value
                 )
 
-        finite_difference = _central_difference(
-            lambda current: float(loss(_as_jax_parameters(current, dtype=jnp.float64))),
-            WEIGHTS,
+        # Central difference at step=1e-4: O(step^2)=1e-8 truncation plus rounding.
+        _assert_matches_central_difference(
+            loss, eager_gradient, WEIGHTS, relative_tolerance=1e-6
         )
-        largest = max(
-            abs(float(eager_gradient[instance]["resistance"])) for instance in WEIGHTS
-        )
-        for instance in WEIGHTS:
-            # Central difference at step=1e-4: O(step^2)=1e-8 truncation plus rounding.
-            assert (
-                abs(
-                    float(eager_gradient[instance]["resistance"])
-                    - finite_difference[instance]["resistance"]
-                )
-                <= 1e-6 * largest
-            )
 
 
 def test_dc_sweep_matches_jolty_vjp_bit_for_bit() -> None:
@@ -337,27 +308,6 @@ def test_ac_complex_wirtinger_sign_matches_jolty_vjp_and_finite_differences() ->
         cotangent_magnitude = 2.0 * np.conj(np.asarray(native_outputs["out0"]))
         expected_magnitude = pullback({"out0": cotangent_magnitude})
 
-        finite_difference_asymmetric = _central_difference(
-            lambda current: float(
-                loss_asymmetric(_as_jax_parameters(current, dtype=jnp.float64))
-            ),
-            WEIGHTS,
-        )
-        finite_difference_magnitude = _central_difference(
-            lambda current: float(
-                loss_magnitude_squared(_as_jax_parameters(current, dtype=jnp.float64))
-            ),
-            WEIGHTS,
-        )
-        largest_asymmetric = max(
-            abs(float(gradient_asymmetric[instance]["resistance"]))
-            for instance in WEIGHTS
-        )
-        largest_magnitude = max(
-            abs(float(gradient_magnitude[instance]["resistance"]))
-            for instance in WEIGHTS
-        )
-
         for instance in WEIGHTS:
             np.testing.assert_array_equal(
                 float(gradient_asymmetric[instance]["resistance"]),
@@ -367,22 +317,13 @@ def test_ac_complex_wirtinger_sign_matches_jolty_vjp_and_finite_differences() ->
                 float(gradient_magnitude[instance]["resistance"]),
                 float(np.real(expected_magnitude[instance]["resistance"])),
             )
-            # Central difference at step=1e-4: O(step^2)=1e-8 truncation plus rounding.
-            assert (
-                abs(
-                    float(gradient_asymmetric[instance]["resistance"])
-                    - finite_difference_asymmetric[instance]["resistance"]
-                )
-                <= 1e-6 * largest_asymmetric
-            )
-            # Central difference at step=1e-4: O(step^2)=1e-8 truncation plus rounding.
-            assert (
-                abs(
-                    float(gradient_magnitude[instance]["resistance"])
-                    - finite_difference_magnitude[instance]["resistance"]
-                )
-                <= 1e-6 * largest_magnitude
-            )
+        # Central difference at step=1e-4: O(step^2)=1e-8 truncation plus rounding.
+        _assert_matches_central_difference(
+            loss_asymmetric, gradient_asymmetric, WEIGHTS, relative_tolerance=1e-6
+        )
+        _assert_matches_central_difference(
+            loss_magnitude_squared, gradient_magnitude, WEIGHTS, relative_tolerance=1e-6
+        )
 
         # Direct jax.vjp with a purely imaginary cotangent.
         primal, vjp_function = jax.vjp(wrapped, jax_weights)
@@ -434,23 +375,11 @@ def test_transient_breakpoints_match_public_jolty_vjp_and_finite_differences() -
                 float(gradient[instance]["resistance"]), expected_value
             )
 
-        finite_difference = _central_difference(
-            lambda current: float(loss(_as_jax_parameters(current, dtype=jnp.float64))),
-            WEIGHTS,
+        # Central difference at step=1e-4 over adaptive transient steps (O(step^2) +
+        # time-step shift noise, bounded by 1e-5 of largest gradient).
+        _assert_matches_central_difference(
+            loss, gradient, WEIGHTS, relative_tolerance=1e-5
         )
-        largest = max(
-            abs(float(gradient[instance]["resistance"])) for instance in WEIGHTS
-        )
-        for instance in WEIGHTS:
-            # Central difference at step=1e-4 over adaptive transient steps (O(step^2) +
-            # time-step shift noise, bounded by 1e-5 of largest gradient).
-            assert (
-                abs(
-                    float(gradient[instance]["resistance"])
-                    - finite_difference[instance]["resistance"]
-                )
-                <= 1e-5 * largest
-            )
 
 
 def test_unsorted_and_duplicate_breakpoints_work_single_and_vmapped() -> None:
@@ -478,25 +407,11 @@ def test_unsorted_and_duplicate_breakpoints_work_single_and_vmapped() -> None:
             return jnp.sum(weights_vector * wrapped_transient(parameters)["out0"])
 
         gradient = jax.grad(transient_loss)(jax_weights)
-        finite_difference = _central_difference(
-            lambda current: float(
-                transient_loss(_as_jax_parameters(current, dtype=jnp.float64))
-            ),
-            WEIGHTS,
+        # Central difference at step=1e-4 over adaptive transient steps (O(step^2) +
+        # time-step shift noise, bounded by 1e-5 of largest gradient).
+        _assert_matches_central_difference(
+            transient_loss, gradient, WEIGHTS, relative_tolerance=1e-5
         )
-        largest = max(
-            abs(float(gradient[instance]["resistance"])) for instance in WEIGHTS
-        )
-        for instance in WEIGHTS:
-            # Central difference at step=1e-4 over adaptive transient steps (O(step^2) +
-            # time-step shift noise, bounded by 1e-5 of largest gradient).
-            assert (
-                abs(
-                    float(gradient[instance]["resistance"])
-                    - finite_difference[instance]["resistance"]
-                )
-                <= 1e-5 * largest
-            )
 
         batched_resistances = jnp.array([1000.0, 1800.0, 2500.0], dtype=jnp.float64)
         batched_inputs = {
@@ -707,86 +622,61 @@ def test_gradient_keeps_its_forward_pullbacks_and_recomputes_once_dropped() -> N
 
 
 def test_vmap_forward_and_gradient_across_all_analyses() -> None:
+    def check_vmap_grad(
+        wrapped: Callable[[dict[str, dict[str, jax.Array]]], dict[str, jax.Array]],
+        instance: str,
+        values: jax.Array,
+        reduce_output: Callable[[dict[str, jax.Array]], jax.Array],
+    ) -> None:
+        batched = {instance: {"resistance": values}}
+        vmapped_gradient = jax.jit(
+            jax.grad(lambda current: reduce_output(jax.vmap(wrapped)(current)))
+        )(batched)
+        for index in range(len(values)):
+            single_gradient = jax.grad(lambda current: reduce_output(wrapped(current)))(
+                {instance: {"resistance": values[index]}}
+            )
+            np.testing.assert_array_equal(
+                float(vmapped_gradient[instance]["resistance"][index]),
+                float(single_gradient[instance]["resistance"]),
+            )
+
     with jax.enable_x64():
-        dc_wrapped = jax_function(
-            crossbar(), DcSweep("V0", [0.1 * V, 0.3 * V, 0.5 * V])
-        )
         resistances = jnp.array([900.0, 1500.0, 2200.0], dtype=jnp.float64)
-        batched = {"W00": {"resistance": resistances}}
-        dc_gradient = jax.jit(
-            jax.grad(
-                lambda current: jnp.sum(jax.vmap(dc_wrapped)(current)["out0"] ** 2)
-            )
-        )(batched)
-        for index in range(3):
-            single_gradient = jax.grad(
-                lambda current: jnp.sum(dc_wrapped(current)["out0"] ** 2)
-            )({"W00": {"resistance": resistances[index]}})
-            np.testing.assert_array_equal(
-                float(dc_gradient["W00"]["resistance"][index]),
-                float(single_gradient["W00"]["resistance"]),
-            )
-
-        ac_wrapped = jax_function(crossbar(), Ac("V1", [1 * kHz, 100 * kHz, 1 * MHz]))
-
-        def ac_loss(current: dict[str, dict[str, jax.Array]]) -> jax.Array:
-            phasor = jax.vmap(ac_wrapped)(current)["out0"]
-            return jnp.sum(phasor.real + 2.0 * phasor.imag)
-
-        def single_ac_loss(current: dict[str, dict[str, jax.Array]]) -> jax.Array:
-            phasor = ac_wrapped(current)["out0"]
-            return jnp.sum(phasor.real + 2.0 * phasor.imag)
-
-        ac_gradient = jax.jit(jax.grad(ac_loss))(batched)
-        for index in range(3):
-            single_gradient = jax.grad(single_ac_loss)(
-                {"W00": {"resistance": resistances[index]}}
-            )
-            np.testing.assert_array_equal(
-                float(ac_gradient["W00"]["resistance"][index]),
-                float(single_gradient["W00"]["resistance"]),
-            )
-
-        transient_wrapped = jax_function(
-            crossbar(),
-            Transient(1 * us, max_step=50 * ns, breakpoints=(0.5 * us, 1.0 * us)),
+        check_vmap_grad(
+            jax_function(crossbar(), DcSweep("V0", [0.1 * V, 0.3 * V, 0.5 * V])),
+            "W00",
+            resistances,
+            lambda outputs: jnp.sum(outputs["out0"] ** 2),
         )
-        transient_gradient = jax.jit(
-            jax.grad(
-                lambda current: jnp.sum(
-                    jax.vmap(transient_wrapped)(current)["out0"] ** 2
-                )
-            )
-        )(batched)
-        for index in range(3):
-            single_gradient = jax.grad(
-                lambda current: jnp.sum(transient_wrapped(current)["out0"] ** 2)
-            )({"W00": {"resistance": resistances[index]}})
-            np.testing.assert_array_equal(
-                float(transient_gradient["W00"]["resistance"][index]),
-                float(single_gradient["W00"]["resistance"]),
-            )
-
-        driven_wrapped = jax_function(
-            driven_rc_filter(),
-            PeriodicSteadyState(
-                period=1 * us, max_step=50 * ns, breakpoints=(0.25 * us, 0.75 * us)
+        check_vmap_grad(
+            jax_function(crossbar(), Ac("V1", [1 * kHz, 100 * kHz, 1 * MHz])),
+            "W00",
+            resistances,
+            lambda outputs: jnp.sum(outputs["out0"].real + 2.0 * outputs["out0"].imag),
+        )
+        check_vmap_grad(
+            jax_function(
+                crossbar(),
+                Transient(1 * us, max_step=50 * ns, breakpoints=(0.5 * us, 1.0 * us)),
             ),
+            "W00",
+            resistances,
+            lambda outputs: jnp.sum(outputs["out0"] ** 2),
         )
-        driven_resistances = jnp.array([800.0, 1400.0], dtype=jnp.float64)
-        driven_gradient = jax.jit(
-            jax.grad(
-                lambda current: jnp.sum(jax.vmap(driven_wrapped)(current)["out"] ** 2)
-            )
-        )({"R1": {"resistance": driven_resistances}})
-        for index in range(2):
-            single_gradient = jax.grad(
-                lambda current: jnp.sum(driven_wrapped(current)["out"] ** 2)
-            )({"R1": {"resistance": driven_resistances[index]}})
-            np.testing.assert_array_equal(
-                float(driven_gradient["R1"]["resistance"][index]),
-                float(single_gradient["R1"]["resistance"]),
-            )
+        check_vmap_grad(
+            jax_function(
+                driven_rc_filter(),
+                PeriodicSteadyState(
+                    period=1 * us,
+                    max_step=50 * ns,
+                    breakpoints=(0.25 * us, 0.75 * us),
+                ),
+            ),
+            "R1",
+            jnp.array([800.0, 1400.0], dtype=jnp.float64),
+            lambda outputs: jnp.sum(outputs["out"] ** 2),
+        )
 
         autonomous_wrapped = jax_function(
             van_der_pol_tank(),
@@ -818,48 +708,51 @@ def test_vmap_forward_and_gradient_across_all_analyses() -> None:
 
 def test_empty_batch_vmap_forward_and_gradient() -> None:
     with jax.enable_x64():
-        operating_point_wrapped = jax_function(crossbar(), OperatingPoint())
-        ac_wrapped = jax_function(crossbar(), Ac("V1", [1 * kHz, 1 * MHz]))
-        autonomous_wrapped = jax_function(van_der_pol_tank(), PeriodicSteadyState())
-
+        cases = [
+            (
+                jax_function(crossbar(), OperatingPoint()),
+                "W00",
+                "resistance",
+                "out0",
+                (1,),
+                jnp.float64,
+                jnp.sum,
+            ),
+            (
+                jax_function(crossbar(), Ac("V1", [1 * kHz, 1 * MHz])),
+                "W00",
+                "resistance",
+                "out0",
+                (2,),
+                jnp.complex128,
+                lambda array: jnp.sum(array.real),
+            ),
+            (
+                jax_function(van_der_pol_tank(), PeriodicSteadyState()),
+                "L1",
+                "inductance",
+                PERIOD,
+                (),
+                jnp.float64,
+                jnp.sum,
+            ),
+        ]
         for shape in ((0,), (0, 3)):
             empty = jnp.empty(shape, dtype=jnp.float64)
-            if len(shape) == 1:
-                map_operating_point = jax.vmap(operating_point_wrapped)
-                map_ac = jax.vmap(ac_wrapped)
-                map_autonomous = jax.vmap(autonomous_wrapped)
-            else:
-                map_operating_point = jax.vmap(jax.vmap(operating_point_wrapped))
-                map_ac = jax.vmap(jax.vmap(ac_wrapped))
-                map_autonomous = jax.vmap(jax.vmap(autonomous_wrapped))
-
-            operating_point_output = map_operating_point(
-                {"W00": {"resistance": empty}}
-            )["out0"]
-            assert operating_point_output.shape == (*shape, 1)
-            assert operating_point_output.dtype == jnp.float64
-            operating_point_gradient = jax.grad(
-                lambda current, mapper=map_operating_point: jnp.sum(
-                    mapper(current)["out0"]
+            for wrapped, instance, parameter, key, trailing, dtype, reduce_fn in cases:
+                mapper = (
+                    jax.vmap(wrapped)
+                    if len(shape) == 1
+                    else jax.vmap(jax.vmap(wrapped))
                 )
-            )({"W00": {"resistance": empty}})
-            assert operating_point_gradient["W00"]["resistance"].shape == shape
-
-            ac_output = map_ac({"W00": {"resistance": empty}})["out0"]
-            assert ac_output.shape == (*shape, 2)
-            assert ac_output.dtype == jnp.complex128
-            ac_gradient = jax.grad(
-                lambda current, mapper=map_ac: jnp.sum(mapper(current)["out0"].real)
-            )({"W00": {"resistance": empty}})
-            assert ac_gradient["W00"]["resistance"].shape == shape
-
-            autonomous_output = map_autonomous({"L1": {"inductance": empty}})[PERIOD]
-            assert autonomous_output.shape == shape
-            assert autonomous_output.dtype == jnp.float64
-            autonomous_gradient = jax.grad(
-                lambda current, mapper=map_autonomous: jnp.sum(mapper(current)[PERIOD])
-            )({"L1": {"inductance": empty}})
-            assert autonomous_gradient["L1"]["inductance"].shape == shape
+                inputs = {instance: {parameter: empty}}
+                output = mapper(inputs)[key]
+                assert output.shape == (*shape, *trailing)
+                assert output.dtype == dtype
+                gradient = jax.grad(
+                    lambda current, m=mapper, k=key, r=reduce_fn: r(m(current)[k])
+                )(inputs)
+                assert gradient[instance][parameter].shape == shape
 
 
 def test_nested_vmap_repeated_vjps_and_a_zero_cotangent() -> None:
@@ -946,42 +839,55 @@ def test_remat_checkpoint_and_jacrev_across_analyses() -> None:
             )
 
         # jacrev across OperatingPoint, DcSweep, Ac, Transient, and driven periodic.
-        operating_point_jacobian = jax.jacrev(
-            lambda current: operating_point_wrapped(current)["out0"]
-        )(jax_weights)
-        assert operating_point_jacobian["W00"]["resistance"].shape == (1,)
-
-        dc_wrapped = jax_function(crossbar(), DcSweep("V0", [0.1 * V, 0.3 * V]))
-        dc_jacobian = jax.jacrev(lambda current: dc_wrapped(current)["out0"])(
-            jax_weights
-        )
-        assert dc_jacobian["W00"]["resistance"].shape == (2,)
-
-        ac_wrapped = jax_function(crossbar(), Ac("V1", [1 * kHz, 1 * MHz]))
-        ac_jacobian = jax.jacrev(lambda current: ac_wrapped(current)["out0"].real)(
-            jax_weights
-        )
-        assert ac_jacobian["W00"]["resistance"].shape == (2,)
-
-        transient_wrapped = jax_function(
-            crossbar(),
-            Transient(1 * us, max_step=50 * ns, breakpoints=(0.5 * us, 1.0 * us)),
-        )
-        transient_jacobian = jax.jacrev(
-            lambda current: transient_wrapped(current)["out0"]
-        )(jax_weights)
-        assert transient_jacobian["W00"]["resistance"].shape == (2,)
-
-        driven_wrapped = jax_function(
-            driven_rc_filter(),
-            PeriodicSteadyState(
-                period=1 * us, max_step=50 * ns, breakpoints=(0.25 * us, 0.75 * us)
+        driven_inputs = {"R1": {"resistance": jnp.asarray(1.2e3, dtype=jnp.float64)}}
+        jacrev_cases = [
+            (operating_point_wrapped, "out0", jax_weights, "W00", (1,)),
+            (
+                jax_function(crossbar(), DcSweep("V0", [0.1 * V, 0.3 * V])),
+                "out0",
+                jax_weights,
+                "W00",
+                (2,),
             ),
-        )
-        driven_jacobian = jax.jacrev(lambda current: driven_wrapped(current)["out"])(
-            {"R1": {"resistance": jnp.asarray(1.2e3, dtype=jnp.float64)}}
-        )
-        assert driven_jacobian["R1"]["resistance"].shape == (2,)
+            (
+                jax_function(crossbar(), Ac("V1", [1 * kHz, 1 * MHz])),
+                "out0",
+                jax_weights,
+                "W00",
+                (2,),
+            ),
+            (
+                jax_function(
+                    crossbar(),
+                    Transient(
+                        1 * us, max_step=50 * ns, breakpoints=(0.5 * us, 1.0 * us)
+                    ),
+                ),
+                "out0",
+                jax_weights,
+                "W00",
+                (2,),
+            ),
+            (
+                jax_function(
+                    driven_rc_filter(),
+                    PeriodicSteadyState(
+                        period=1 * us,
+                        max_step=50 * ns,
+                        breakpoints=(0.25 * us, 0.75 * us),
+                    ),
+                ),
+                "out",
+                driven_inputs,
+                "R1",
+                (2,),
+            ),
+        ]
+        for wrapped, key, target_inputs, instance, expected_shape in jacrev_cases:
+            jacobian = jax.jacrev(
+                lambda current, f=wrapped, k=key: jnp.real(f(current)[k])
+            )(target_inputs)
+            assert jacobian[instance]["resistance"].shape == expected_shape
 
 
 def test_structural_changes_added_and_dropped_unknowns() -> None:
@@ -996,28 +902,13 @@ def test_structural_changes_added_and_dropped_unknowns() -> None:
         added_gradient = jax.jit(jax.grad(added_loss))(
             _as_jax_parameters(low_resistance, dtype=jnp.float64)
         )
-        finite_difference = _central_difference(
-            lambda current: float(
-                added_loss(_as_jax_parameters(current, dtype=jnp.float64))
-            ),
-            low_resistance,
+        # Central difference at step=1e-4 across sub-ohm MNA branch current switch.
+        _assert_matches_central_difference(
+            added_loss, added_gradient, low_resistance, relative_tolerance=1e-5
         )
-        largest = max(
-            abs(float(added_gradient[instance]["resistance"]))
-            for instance in low_resistance
-        )
-        for instance in low_resistance:
-            # Central difference at step=1e-4 across sub-ohm MNA branch current switch.
-            assert (
-                abs(
-                    float(added_gradient[instance]["resistance"])
-                    - finite_difference[instance]["resistance"]
-                )
-                <= 1e-5 * largest
-            )
 
         # Direction 2: dropping an unknown (0.5 ohm -> 1000 ohm drops `W00:current`).
-        wrapped_dropped = jax_function(low_resistance_crossbar(), OperatingPoint())
+        wrapped_dropped = jax_function(crossbar(0.5 * ohm), OperatingPoint())
         high_parameters = _as_jax_parameters(WEIGHTS, dtype=jnp.float64)
         single_output = wrapped_dropped(high_parameters)
         assert "W00:current" in single_output
@@ -1055,7 +946,7 @@ def test_structural_changes_added_and_dropped_unknowns() -> None:
             )
 
         # The batch's own pullback raises the unwrapped SimulationError directly.
-        native = jolty_function(low_resistance_crossbar(), OperatingPoint())
+        native = jolty_function(crossbar(0.5 * ohm), OperatingPoint())
         names = [(instance, "resistance") for instance in sorted(WEIGHTS)]
         row = [[WEIGHTS[instance]["resistance"] for instance in sorted(WEIGHTS)]]
         _, batch_pullback = native.batch_vjp(names, row)
@@ -1064,7 +955,7 @@ def test_structural_changes_added_and_dropped_unknowns() -> None:
 
         # Complex AC dropped unknown places NaN + NaNj and rejects non-zero / NaN.
         wrapped_dropped_ac = jax_function(
-            low_resistance_crossbar(), Ac("V1", [1 * kHz, 1 * MHz])
+            crossbar(0.5 * ohm), Ac("V1", [1 * kHz, 1 * MHz])
         )
         ac_output = wrapped_dropped_ac(high_parameters)
         dropped_phasor = np.asarray(ac_output["W00:current"])
@@ -1212,24 +1103,28 @@ def test_construction_time_analysis_refusals() -> None:
 def test_invalid_parameter_and_autodiff_refusals() -> None:
     wrapped = jax_function(crossbar(), OperatingPoint())
 
-    with pytest.raises(TypeError, match="a mapping, not list"):
-        wrapped([1000.0])  # ty: ignore[invalid-argument-type] - the wrong type is tested
-    with pytest.raises(TypeError, match="a mapping, not NoneType"):
-        wrapped(None)  # ty: ignore[invalid-argument-type] - the wrong type is tested
-    with pytest.raises(TypeError, match="each instance's path"):
-        wrapped({1: {"resistance": 1000.0}})  # ty: ignore[invalid-argument-type] - the wrong type is tested
-    with pytest.raises(TypeError, match="each instance's path"):
-        wrapped({"W00": 1000.0})  # ty: ignore[invalid-argument-type] - the wrong type is tested
-    with pytest.raises(TypeError, match="is a real number"):
-        wrapped({"W00": {1: 1000.0}})  # ty: ignore[invalid-argument-type] - the wrong type is tested
-    with pytest.raises(TypeError, match="is a real number"):
-        wrapped({"W00": {"resistance": True}})
-    with pytest.raises(TypeError, match="is a real number"):
-        wrapped({"W00": {"resistance": jnp.asarray(1, dtype=jnp.bool_)}})
-    with pytest.raises(TypeError, match="is a real number"):
-        wrapped({"W00": {"resistance": 1000.0 + 1.0j}})
-    with pytest.raises(ValueError, match="is a scalar"):
-        wrapped({"W00": {"resistance": jnp.array([1000.0, 2000.0])}})
+    bad_inputs: list[tuple[object, type[Exception], str]] = [
+        ([1000.0], TypeError, "a mapping, not list"),
+        (None, TypeError, "a mapping, not NoneType"),
+        ({1: {"resistance": 1000.0}}, TypeError, "each instance's path"),
+        ({"W00": 1000.0}, TypeError, "each instance's path"),
+        ({"W00": {1: 1000.0}}, TypeError, "is a real number"),
+        ({"W00": {"resistance": True}}, TypeError, "is a real number"),
+        (
+            {"W00": {"resistance": jnp.asarray(1, dtype=jnp.bool_)}},
+            TypeError,
+            "is a real number",
+        ),
+        ({"W00": {"resistance": 1000.0 + 1.0j}}, TypeError, "is a real number"),
+        (
+            {"W00": {"resistance": jnp.array([1000.0, 2000.0])}},
+            ValueError,
+            "is a scalar",
+        ),
+    ]
+    for bad_input, error_type, pattern in bad_inputs:
+        with pytest.raises(error_type, match=pattern):
+            wrapped(bad_input)  # ty: ignore[invalid-argument-type] - invalid parameter structure is tested
     with pytest.raises(ElaborationError):
         wrapped({"NONEXISTENT": {}})
     with pytest.raises(ElaborationError):
