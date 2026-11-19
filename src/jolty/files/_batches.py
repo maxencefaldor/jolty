@@ -45,17 +45,17 @@ class Batch:
 
 def exponents_of(dimension: Dimension) -> Exponents:
     """The exponents of `dimension`, as a file's header holds them."""
-    kilogram, metre, second, ampere, kelvin = (
+    kilogram, meter, second, ampere, kelvin = (
         str(Fraction(exponent))
         for exponent in (
             dimension.kilogram,
-            dimension.metre,
+            dimension.meter,
             dimension.second,
             dimension.ampere,
             dimension.kelvin,
         )
     )
-    return kilogram, metre, second, ampere, kelvin
+    return kilogram, meter, second, ampere, kelvin
 
 
 def of_exponents(exponents: Exponents) -> Dimension:

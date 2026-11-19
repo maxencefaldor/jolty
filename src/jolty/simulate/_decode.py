@@ -151,11 +151,11 @@ def log_analyses(analyses: Iterable[Analysis], runs: int) -> None:
 
 def substitutes_json(substitutes: Mapping[str, Device] | None) -> str:
     """The models of `substitutes` as the engine reads them, by path, in JSON."""
-    stand_ins = {
+    encoded = {
         path: {"model": device.model, "parameters": device.parameters}
         for path, device in (substitutes or {}).items()
     }
-    return json.dumps(stand_ins, allow_nan=False)
+    return json.dumps(encoded, allow_nan=False)
 
 
 @contextlib.contextmanager
@@ -174,7 +174,7 @@ def elaborating() -> Generator[None]:
 
 
 def source_dimension(built: ir.Circuit, path: str) -> Dimension | None:
-    """The dimension of the level of the independent source at `path`, if any."""
+    """The dimension of the value of the independent source at `path`, if any."""
     match built.find(path):
         case ir.Instance(of=ir.DeviceOf(model="current_source")):
             return CURRENT
@@ -183,20 +183,20 @@ def source_dimension(built: ir.Circuit, path: str) -> Dimension | None:
     return None
 
 
-def swept_level(built: ir.Circuit, sweep: DcSweep) -> Dimension:
-    """The dimension of the level of the source `sweep` sweeps in `built`."""
+def swept_dimension(built: ir.Circuit, sweep: DcSweep) -> Dimension:
+    """The dimension of the value of the source `sweep` sweeps in `built`."""
     if sweep.parameter is not None:
         return sweep.values[0].dimension if sweep.values else DIMENSIONLESS
     if (dimension := source_dimension(built, sweep.source)) is not None:
         return dimension
     if not sweep.values:
         return VOLTAGE
-    # Not an independent source: the engine reports it, whatever the levels.
+    # Not an independent source: the engine reports it, whatever the values.
     return sweep.values[0].dimension
 
 
 def sweep_nature(built: ir.Circuit, sweep: DcSweep) -> results.Nature | None:
-    """Whether `sweep`'s levels are voltages or currents; None for a parameter's."""
+    """Whether `sweep`'s values are voltages or currents; None for a parameter's."""
     if sweep.parameter is not None:
         return None
     source = source_dimension(built, sweep.source)
@@ -211,9 +211,9 @@ def toleranced_payload(
     """The circuit's toleranced numbers, omitting substituted component subtrees."""
     prefixes = tuple(f"{inside}/" for inside in substituted)
     return variation.payload(
-        varied
-        for varied in variation.toleranced(built)
-        if not (prefixes and varied.instance.startswith(prefixes))
+        parameter
+        for parameter in variation.toleranced(built)
+        if not (prefixes and parameter.instance.startswith(prefixes))
     )
 
 
@@ -223,20 +223,22 @@ def encode_analysis(
     """Encodes `analysis` as the JSON payload expected by the engine."""
     match analysis:
         case DcSweep():
-            return analysis.to_json(swept_level(built, analysis))
+            return analysis.to_json(swept_dimension(built, analysis))
         case Sensitivity(of=DcSweep() as sweep):
-            return analysis.to_json(swept_level(built, sweep))
+            return analysis.to_json(swept_dimension(built, sweep))
         case Mismatch(of=of):
-            level = swept_level(built, of) if isinstance(of, DcSweep) else VOLTAGE
-            return analysis.to_json(level, toleranced_payload(built, substituted))
+            dimension = (
+                swept_dimension(built, of) if isinstance(of, DcSweep) else VOLTAGE
+            )
+            return analysis.to_json(dimension, toleranced_payload(built, substituted))
     return analysis.to_json()
 
 
 def points_of(analysis: Analysis) -> int:
     """How many points a batch traces `analysis` along."""
     match analysis:
-        case DcSweep(values=levels):
-            return len(levels)
+        case DcSweep(values=values):
+            return len(values)
         case Ac(frequencies=frequencies):
             return len(frequencies)
         case Transient(breakpoints=times) | PeriodicSteadyState(breakpoints=times):
@@ -288,7 +290,7 @@ def build_recording(
     )
 
 
-def observed(
+def recorded(
     outcome: _core.RecordedValues, recording: results.Recording
 ) -> results.RecordedValues:
     """What the devices `recording` names did in `outcome`, as a result's fields."""
@@ -332,7 +334,7 @@ def decode_point(
         solved["iterations"],
         nets,
         solved["logic"],
-        **observed(solved, recording),
+        **recorded(solved, recording),
     )
 
 
@@ -361,7 +363,7 @@ def decode_result(
                 outcome["values"],
                 nets,
                 outcome["logic"],
-                **observed(outcome, recording),
+                **recorded(outcome, recording),
                 parameter=outcome["parameter"],
                 strategies=tuple(outcome["strategies"]),
                 iterations=tuple(outcome["iterations"]),
@@ -400,12 +402,12 @@ def _decode_waveforms(
         nets,
         traces,
     )
-    recorded = observed(outcome, recording)
+    recorded_values = recorded(outcome, recording)
     if outcome["kind"] == "transient":
-        return results.TransientResult(*fields, **recorded)
+        return results.TransientResult(*fields, **recorded_values)
     return results.PeriodicSteadyStateResult(
         *fields,
-        **recorded,
+        **recorded_values,
         period=outcome["period"],
         periods=outcome["periods"],
     )

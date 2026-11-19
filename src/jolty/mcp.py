@@ -7,7 +7,7 @@ answers with the text the command line prints, with the result as structured con
 and with the images it drew. Offline guide pages and example scripts are served as MCP
 resources and through ``read_docs`` from the same single loader in ``jolty.service``.
 The server's instructions derive programmatically in ``jolty.service`` so every public
-device, real part, analysis, measurement and offline resource URI stays in sync.
+device, real part, analysis, measure and offline resource URI stays in sync.
 
 Scripts run in a process of their own, outside the server, so nothing a script prints
 can reach the protocol stream. Serve with ``jolty-mcp`` or ``python -m jolty.mcp``.
@@ -276,7 +276,11 @@ def create_server(settings: Settings) -> MCPServer:
         READS_FILES,
     )
     register(
-        "read_docs", service.DocsRequest, service.docs, service.DocsResult, READS_FILES
+        "read_docs",
+        service.ReadDocsRequest,
+        service.read_docs,
+        service.ReadDocsResult,
+        READS_FILES,
     )
     register(
         "cost_circuit",

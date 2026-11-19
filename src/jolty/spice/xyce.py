@@ -153,7 +153,7 @@ class Result:
     """What Xyce printed while it ran."""
     analysis_seconds: float
     """Xyce's time for its analyses alone, in seconds, as it reports it."""
-    elapsed: float
+    elapsed_seconds: float
     """Xyce's time from its start to its end, parsing included, in seconds, as it
     reports it."""
     seconds: float
@@ -214,15 +214,15 @@ def run(  # noqa: PLR0913 - the deck, its analysis, and how Xyce runs it
         raise JoltyError(message)
     vectors = _read(executed.values)
     analysis_seconds = _ANALYSIS_SECONDS.search(executed.printed)
-    elapsed = _ELAPSED.search(executed.printed)
-    if not vectors or analysis_seconds is None or elapsed is None:
+    elapsed_seconds = _ELAPSED.search(executed.printed)
+    if not vectors or analysis_seconds is None or elapsed_seconds is None:
         message = f"Xyce printed no values:\n{executed.printed}"
         raise JoltyError(message)
     return Result(
         vectors,
         executed.printed,
         float(analysis_seconds.group(1)),
-        float(elapsed.group(1)),
+        float(elapsed_seconds.group(1)),
         executed.seconds,
     )
 

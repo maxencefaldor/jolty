@@ -62,7 +62,7 @@ DECADE_DIGITS: Final = 40
 rounded to floats: so many more than a float's 17 that a million steps' rounding stays
 far below a float's, and each frequency rounds to the float nearest its exact value."""
 
-_SEED_LIMIT: Final = 2**64
+_MAX_SEED_EXCLUSIVE: Final = 2**64
 """The exclusive upper bound of a 64-bit unsigned seed."""
 
 _CONFIG: Final = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
@@ -106,7 +106,7 @@ def _seed(label: str, *, optional: bool = False) -> BeforeValidator:
     """Builds a 64-bit unsigned integer seed validator."""
     return _integer(
         minimum=0,
-        maximum=_SEED_LIMIT,
+        maximum=_MAX_SEED_EXCLUSIVE,
         range_message=f"{label} lies from 0 to 2**64 - 1, not {{value}}",
         optional=optional,
     )
@@ -190,7 +190,7 @@ def _text(*, optional: bool = False) -> BeforeValidator:
 
 
 def _validate_reference(value: object, info: ValidationInfo) -> str | None:
-    """Validates an optional reference node distinct from `output`."""
+    """Validates an optional reference net distinct from `output`."""
     if value is None:
         return None
     checked = _check_non_empty(value, "reference")

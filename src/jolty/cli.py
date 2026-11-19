@@ -83,7 +83,7 @@ class PlotCommand(service.PlotRequest, _Output):
 
 
 class MeasureCommand(service.MeasureRequest, _Output):
-    """Read a measurement from a saved results file without simulating again."""
+    """Read a measure from a saved results file without simulating again."""
 
     async def cli_cmd(self) -> None:
         """Runs the command."""
@@ -122,12 +122,12 @@ class ExplainCommand(service.ExplainRequest, _Output):
         self.emit(await service.explain(self, Settings.load()))
 
 
-class DocsCommand(service.DocsRequest, _Output):
+class ReadDocsCommand(service.ReadDocsRequest, _Output):
     """List or read jolty's offline guide pages and example scripts."""
 
     async def cli_cmd(self) -> None:
         """Runs the command."""
-        self.emit(await service.docs(self, Settings.load()))
+        self.emit(await service.read_docs(self, Settings.load()))
 
 
 class CostCommand(service.CostRequest, _Output):
@@ -212,7 +212,7 @@ class Jolty(CommandLine):
         description="Plot the analyses of a saved results file."
     )
     measure: CliSubCommand[MeasureCommand] = Field(
-        description="Read a measurement from a saved results file."
+        description="Read a measure from a saved results file."
     )
     draw: CliSubCommand[DrawCommand] = Field(
         description="Draw a component of a saved circuit file."
@@ -226,7 +226,7 @@ class Jolty(CommandLine):
     explain: CliSubCommand[ExplainCommand] = Field(
         description="Explain rules and their levels."
     )
-    docs: CliSubCommand[DocsCommand] = Field(
+    read_docs: CliSubCommand[ReadDocsCommand] = Field(
         description="List or read the offline guide and examples."
     )
     cost: CliSubCommand[CostCommand] = Field(

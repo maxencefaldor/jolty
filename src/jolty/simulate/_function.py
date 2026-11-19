@@ -29,7 +29,7 @@ from jolty.simulate._decode import (
     kelvins,
     points_of,
     substitutes_json,
-    swept_level,
+    swept_dimension,
 )
 from jolty.units import VOLTAGE, Quantity
 
@@ -184,10 +184,10 @@ class Elaborated:
 class Function:
     """An analysis of a circuit as a function of its devices' parameters.
 
-    Called with parameters, ``f(params)``, it gives the analysis's outputs at them, each
-    unknown's values over the analysis's points, the circuit's other parameters as they
-    are; [`jvp`][jolty.simulate.jvp] and [`vjp`][jolty.simulate.vjp] differentiate it,
-    as ``jax.jvp`` and ``jax.vjp`` differentiate a function.
+    Called with parameters, ``function(parameters)``, it gives the analysis's outputs
+    at them, each unknown's values over the analysis's points, the circuit's other
+    parameters as they are; [`jvp`][jolty.simulate.jvp] and [`vjp`][jolty.simulate.vjp]
+    differentiate it, as ``jax.jvp`` and ``jax.vjp`` differentiate a function.
     The circuit is elaborated once, and each call makes its devices again from the
     parameters given, as a [`Simulation`][jolty.simulate.Simulation] with them as
     overrides does.
@@ -227,16 +227,16 @@ class Function:
         self.analysis = analysis
         self.options = Options() if options is None else options
 
-    def __call__(self, params: Parameters) -> Outputs:
-        """The analysis's outputs with the parameters `params`.
+    def __call__(self, parameters: Parameters) -> Outputs:
+        """The analysis's outputs with `parameters`.
 
         Raises:
-            ElaborationError: With every number `params` names that the circuit's
+            ElaborationError: With every number `parameters` names that the circuit's
                 devices do not write, and every device it puts out of range.
             SimulationError: When the analysis fails.
         """
         core, outcome = self._run(
-            params,
+            parameters,
             lambda core, analysis, settings: core.run(
                 analysis, settings, engine_pool()
             ),
@@ -246,12 +246,12 @@ class Function:
     def _encoded(self) -> str:
         """The analysis, differentiated, in the engine's format."""
         of = None if isinstance(self.analysis, OperatingPoint) else self.analysis
-        level = (
-            swept_level(self.elaborated.circuit, of)
+        dimension = (
+            swept_dimension(self.elaborated.circuit, of)
             if isinstance(of, DcSweep)
             else VOLTAGE
         )
-        return json.dumps(differentiated(of, level), allow_nan=False)
+        return json.dumps(differentiated(of, dimension), allow_nan=False)
 
     def _settings(self) -> str:
         """The options in the engine's format."""
@@ -273,32 +273,32 @@ class Function:
         analysis = self.analysis
         return isinstance(analysis, PeriodicSteadyState) and analysis.period is None
 
-    def _named(self, params: Parameters) -> list[tuple[str, str]]:
-        """The parameters `params` names, each its instance's path and its name."""
-        return [(path, name) for path, named in params.items() for name in named]
+    def _named(self, parameters: Parameters) -> list[tuple[str, str]]:
+        """The parameters `parameters` names, each its instance's path and its name."""
+        return [(path, name) for path, named in parameters.items() for name in named]
 
     def _run[T](
-        self, params: Parameters, run: Callable[[_core.Simulator, str, str], T]
+        self, parameters: Parameters, run: Callable[[_core.Simulator, str, str], T]
     ) -> tuple[_core.Simulator, T]:
-        """The simulator at `params`, and what `run` finds of it."""
-        core = self.elaborated.simulator(params)
+        """The simulator at `parameters`, and what `run` finds of it."""
+        core = self.elaborated.simulator(parameters)
         try:
             return core, run(core, self._encoded(), self._settings())
         except _core.SimulationError as error:
             raise SimulationError(str(error)) from None
 
     def pushed(
-        self, params: Parameters, tangents: Parameters
+        self, parameters: Parameters, tangents: Parameters
     ) -> tuple[Outputs, Outputs]:
         """As [`jvp`][jolty.simulate.jvp] finds it."""
-        names = self._named(params)
+        names = self._named(parameters)
         given = {(path, name) for path, named in tangents.items() for name in named}
         if unknown := sorted(given - set(names)):
             message = f"a tangent moves only the parameters given, not {unknown}"
             raise ValueError(message)
         tangent = [float(tangents.get(path, {}).get(name, 0.0)) for path, name in names]
         core, found = self._run(
-            params,
+            parameters,
             lambda core, analysis, settings: core.jvp(
                 analysis, names, [tangent], settings, engine_pool()
             ),
@@ -312,11 +312,11 @@ class Function:
             pushed[PERIOD] = float(period[0])
         return outputs, pushed
 
-    def pulled(self, params: Parameters) -> tuple[Outputs, Pullback]:
+    def pulled(self, parameters: Parameters) -> tuple[Outputs, Pullback]:
         """As [`vjp`][jolty.simulate.vjp] finds it."""
-        names = self._named(params)
+        names = self._named(parameters)
         core, (outcome, pullback) = self._run(
-            params,
+            parameters,
             lambda core, analysis, settings: core.vjp(
                 analysis, names, settings, engine_pool()
             ),
@@ -521,8 +521,8 @@ def function(
 ) -> Function:
     """The analysis `analysis` of a circuit as a function of its parameters.
 
-    ``function(circuit, analysis)(params)`` runs it with `options` at the parameters
-    `params` and gives its outputs; see [`Function`][jolty.simulate.Function].
+    ``function(circuit, analysis)(parameters)`` runs it with `options` at `parameters`
+    and gives its outputs; see [`Function`][jolty.simulate.Function].
 
     Raises:
         ElaborationError: With every problem the engine finds in the circuit.
@@ -531,39 +531,39 @@ def function(
 
 
 def jvp(
-    f: Function, params: Parameters, tangents: Parameters
+    function: Function, parameters: Parameters, tangents: Parameters
 ) -> tuple[Outputs, Outputs]:
-    """The outputs of `f` at `params`, and their derivative along `tangents`.
+    """The outputs of `function` at `parameters`, and their derivative along `tangents`.
 
-    As ``jax.jvp(f, primals, tangents)``: the parameters `params` names are those
+    As ``jax.jvp(f, primals, tangents)``: the parameters `parameters` names are those
     differentiated, and `tangents` moves some of them, in SI base units, the others
     held. The derivatives, by output as the outputs are, are exact, by the direct
     method: one solve at each point of the analysis.
 
     Raises:
-        ValueError: When a tangent moves a parameter `params` does not give.
-        ElaborationError: As calling `f` raises it.
+        ValueError: When a tangent moves a parameter `parameters` does not give.
+        ElaborationError: As calling `function` raises it.
         SimulationError: When the analysis or a Jacobian's solve fails.
     """
-    return f.pushed(params, tangents)
+    return function.pushed(parameters, tangents)
 
 
-def vjp(f: Function, params: Parameters) -> tuple[Outputs, Pullback]:
-    """The outputs of `f` at `params`, and its pullback.
+def vjp(function: Function, parameters: Parameters) -> tuple[Outputs, Pullback]:
+    """The outputs of `function` at `parameters`, and its pullback.
 
     As ``jax.vjp(f, primals)``: the pullback takes a cotangent on the outputs, by
     output as they are, each unknown's at every point, those it leaves out zero, and
-    gives its value on each parameter of `params`, by instance then parameter, by the
-    adjoint method: one transposed solve at each point of the analysis, however many
-    the parameters. A scalar loss's derivatives with respect to the outputs are its
-    cotangent, and the pullback gives its gradient. Over frequency, the cotangents and
-    their values are complex, `vᵀ dx/dp`: a real loss of the phasors `a + jb` has the
-    real part of the pullback of `∂L/∂a - j ∂L/∂b`.
+    gives its value on each parameter of `parameters`, by instance then parameter, by
+    the adjoint method: one transposed solve at each point of the analysis, however
+    many the parameters. A scalar loss's derivatives with respect to the outputs are
+    its cotangent, and the pullback gives its gradient. Over frequency, the cotangents
+    and their values are complex, `vᵀ dx/dp`: a real loss of the phasors `a + jb` has
+    the real part of the pullback of `∂L/∂a - j ∂L/∂b`.
 
     Raises:
-        ElaborationError: As calling `f` raises it.
+        ElaborationError: As calling `function` raises it.
         SimulationError: When the analysis fails, or over time on a circuit with delay
             lines or logic, whose points the adjoint method cannot evaluate again as
             they were.
     """
-    return f.pulled(params)
+    return function.pulled(parameters)

@@ -26,10 +26,10 @@ Examples:
     ...     upper = c.place(devices.resistor(1 * kohm, tolerance=0.01), name="R1")
     ...     c.connect(source.positive, upper.a)
     ...     c.connect(upper.b, source.negative, ground)
-    >>> (varied,) = toleranced(circuit(divider()))
-    >>> (varied.instance, varied.parameter, varied.nominal)
+    >>> (parameter,) = toleranced(circuit(divider()))
+    >>> (parameter.instance, parameter.parameter, parameter.nominal)
     ('R1', 'resistance', 1000.0)
-    >>> drawn = sample((varied,), seed=0, index=0)["R1"]["resistance"]
+    >>> drawn = sample((parameter,), seed=0, index=0)["R1"]["resistance"]
     >>> 990 <= drawn <= 1010
     True
 """
@@ -76,8 +76,8 @@ def toleranced(circuit: ir.Circuit) -> tuple[Toleranced, ...]:
     )
 
 
-def payload(varied: Iterable[Toleranced]) -> list[JsonValue]:
-    """Encodes `varied` as the JSON payload expected by the engine."""
+def payload(toleranced: Iterable[Toleranced]) -> list[JsonValue]:
+    """Encodes `toleranced` as the JSON payload expected by the engine."""
     return [
         {
             "instance": parameter.instance,
@@ -85,14 +85,14 @@ def payload(varied: Iterable[Toleranced]) -> list[JsonValue]:
             "nominal": parameter.nominal,
             "tolerance": parameter.tolerance.model_dump(mode="json"),
         }
-        for parameter in varied
+        for parameter in toleranced
     ]
 
 
 def sample(
-    varied: Iterable[Toleranced], seed: int, index: int
+    toleranced: Iterable[Toleranced], seed: int, index: int
 ) -> dict[str, dict[str, float]]:
-    """The sample `index` of `varied`, drawn from `seed` as the engine draws it.
+    """The sample `index` of `toleranced`, drawn from `seed` as the engine draws it.
 
     It holds each parameter's value, by instance path then by parameter path: its
     nominal value times its own factor and, if it has a lot, the lot's, each drawn from
@@ -102,7 +102,7 @@ def sample(
     Raises:
         OverflowError: When the seed or the index is negative, or 2**64 or more.
     """
-    chosen = tuple(varied)
+    chosen = tuple(toleranced)
     encoded = json.dumps(payload(chosen), allow_nan=False)
     drawn: dict[str, dict[str, float]] = {}
     for parameter, value in zip(
@@ -116,37 +116,37 @@ type LotMember = tuple[str, str]
 """A lot's spread of one parameter: the lot's name and the parameter's path."""
 
 
-def lot(varied: Toleranced) -> LotMember | None:
-    """The lot whose spread `varied` shares, by name and parameter; None for none."""
-    shared = varied.tolerance.lot
-    return None if shared is None else (shared.name, varied.parameter)
+def lot(toleranced: Toleranced) -> LotMember | None:
+    """The lot whose spread `toleranced` shares, by name and parameter, if any."""
+    shared = toleranced.tolerance.lot
+    return None if shared is None else (shared.name, toleranced.parameter)
 
 
 def moved(
-    varied: Sequence[Toleranced], index: int, fraction: float
+    toleranced: Sequence[Toleranced], index: int, fraction: float
 ) -> dict[str, dict[str, float]]:
-    """The parameter of `varied` at `index` moved `fraction` of its tolerance up.
+    """The parameter of `toleranced` at `index` moved `fraction` of its tolerance up.
 
     The others keep their nominal values, which the circuit holds already.
     """
-    parameter = varied[index]
+    parameter = toleranced[index]
     value = parameter.nominal * edge(parameter.tolerance, fraction)
     return {parameter.instance: {parameter.parameter: value}}
 
 
 def extreme(
-    varied: Iterable[Toleranced],
+    toleranced: Iterable[Toleranced],
     directions: Sequence[float],
     lots: Mapping[LotMember, float],
 ) -> dict[str, dict[str, float]]:
-    """Each of `varied` at the extreme of its tolerance in its direction.
+    """Each of `toleranced` at the extreme of its tolerance in its direction.
 
     A direction is 1 up, -1 down, or 0 for the nominal value; each part is scaled by its
     lot's spread too, at the extreme in the lot's direction in `lots`, 0 unless given.
     The values come by instance path, then by parameter path.
     """
     found: dict[str, dict[str, float]] = {}
-    for parameter, direction in zip(varied, directions, strict=True):
+    for parameter, direction in zip(toleranced, directions, strict=True):
         factor = edge(parameter.tolerance, direction)
         if (shared := parameter.tolerance.lot) is not None:
             key = (shared.name, parameter.parameter)

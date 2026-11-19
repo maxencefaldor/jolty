@@ -117,7 +117,7 @@ def _independent(model: str) -> ElementTranslator:
             waveform = {"dc": 0.0 if level is None else level}
         elif level is not None:
             try:
-                at_zero = _core.level(json.dumps(waveform), 0.0)
+                at_zero = _core.waveform_value(json.dumps(waveform), 0.0)
             except ValueError as error:
                 raise statement.fail(str(error)) from None
             if level != at_zero:
@@ -311,7 +311,7 @@ def _semiconductor(
                 middle = (
                     None
                     if first_bin is None
-                    else models.centre(
+                    else models.center(
                         first_bin, translation.scope, functions=translation.functions
                     )
                 )

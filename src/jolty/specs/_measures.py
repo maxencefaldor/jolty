@@ -19,7 +19,6 @@ from jolty.errors import DimensionError
 from jolty.specs._requirements import (
     Measure,
     MeasureError,
-    Plain,
     Reading,
     ResolvedMeasure,
 )
@@ -35,7 +34,7 @@ from jolty.units import (
 from jolty.unknowns import Unknown
 
 type Edge = Literal["rising", "falling", "either"]
-"""Which way a signal crosses a level."""
+"""Which way a signal crosses a threshold."""
 
 type MeasureCategory = Literal[
     "plain", "noise", "transfer", "value", "statistic", "transient"
@@ -180,21 +179,21 @@ def value(
 
 def gain(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     at: Quantity,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """The gain of `output` at a frequency of a small-signal response, in decibels.
+    """The gain of `signal` at a frequency of a small-signal response, in decibels.
 
-    The gain is of `output` over `over`, or per unit excitation, interpolated over log
-    frequency `at` the frequency. Without an output, it is the loop gain of a
+    The gain is of `signal` over `over`, or per unit excitation, interpolated over log
+    frequency `at` the frequency. Without a signal, it is the loop gain of a
     stability analysis.
     """
     return _transfer_at(
         analysis,
-        _Transfer(*_signals(output, over, reference)),
+        _Transfer(*_signals(signal, over, reference)),
         at,
         ("gain", "dB", _core.Measure.gain),
     )
@@ -202,21 +201,21 @@ def gain(
 
 def phase(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     at: Quantity,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """The phase of `output` at a frequency of a small-signal response, in degrees.
+    """The phase of `signal` at a frequency of a small-signal response, in degrees.
 
     The phase is relative to `over`, or to the excitation, unwrapped from the lowest
-    frequency and interpolated over log frequency `at` the frequency. Without an output,
+    frequency and interpolated over log frequency `at` the frequency. Without a signal,
     it is the loop gain's, of a stability analysis.
     """
     return _transfer_at(
         analysis,
-        _Transfer(*_signals(output, over, reference)),
+        _Transfer(*_signals(signal, over, reference)),
         at,
         ("phase", "°", _core.Measure.phase),
     )
@@ -224,16 +223,16 @@ def phase(
 
 def bandwidth(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     drop: float = 3.0,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """The frequency where the gain of `output` first falls `drop` decibels.
+    """The frequency where the gain of `signal` first falls `drop` decibels.
 
-    The gain, of `output` over `over` or per unit excitation, or the loop gain of a
-    stability analysis without an output, falls below its gain at the lowest frequency;
+    The gain, of `signal` over `over` or per unit excitation, or the loop gain of a
+    stability analysis without a signal, falls below its gain at the lowest frequency;
     the frequency is interpolated over log frequency.
 
     Raises:
@@ -242,7 +241,7 @@ def bandwidth(
     if not drop > 0:
         message = f"a bandwidth's drop is positive, not {drop}"
         raise ValueError(message)
-    transfer = _Transfer(*_signals(output, over, reference))
+    transfer = _Transfer(*_signals(signal, over, reference))
 
     def stays(numbers: Sequence[float]) -> str:
         lowest = format_si(numbers[0], "Hz")
@@ -261,18 +260,18 @@ def bandwidth(
 
 def crossover(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """The frequency where the gain of `output` first falls through 0 dB.
+    """The frequency where the gain of `signal` first falls through 0 dB.
 
-    The gain is of `output` over `over`, or per unit excitation, in a small-signal
-    response; without an output, it is the loop gain of a stability analysis, and this
+    The gain is of `signal` over `over`, or per unit excitation, in a small-signal
+    response; without a signal, it is the loop gain of a stability analysis, and this
     its crossover frequency. It is interpolated over log frequency.
     """
-    transfer = _Transfer(*_signals(output, over, reference))
+    transfer = _Transfer(*_signals(signal, over, reference))
     return _transfer_measure(
         analysis,
         transfer,
@@ -284,18 +283,18 @@ def crossover(
 
 def phase_margin(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """180° plus the phase of `output` where its gain first falls through 0 dB.
+    """180° plus the phase of `signal` where its gain first falls through 0 dB.
 
-    The gain and the phase are of `output` relative to `over`, or to the excitation, in
-    a small-signal response. Without an output, they are the loop gain's, of a
+    The gain and the phase are of `signal` relative to `over`, or to the excitation, in
+    a small-signal response. Without a signal, they are the loop gain's, of a
     stability analysis, and this is the loop's phase margin.
     """
-    transfer = _Transfer(*_signals(output, over, reference))
+    transfer = _Transfer(*_signals(signal, over, reference))
     return _transfer_measure(
         analysis,
         transfer,
@@ -307,19 +306,19 @@ def phase_margin(
 
 def gain_margin(
     analysis: str,
-    output: str | None = None,
+    signal: str | None = None,
     *,
     over: str | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """Minus the gain of `output` where its phase first falls through -180°, in dB.
+    """Minus the gain of `signal` where its phase first falls through -180°, in dB.
 
-    The gain and the phase, unwrapped from the lowest frequency, are of `output`
-    relative to `over`, or to the excitation, in a small-signal response. Without an
-    output, they are the loop gain's, of a stability analysis, and this is the loop's
+    The gain and the phase, unwrapped from the lowest frequency, are of `signal`
+    relative to `over`, or to the excitation, in a small-signal response. Without a
+    signal, they are the loop gain's, of a stability analysis, and this is the loop's
     gain margin.
     """
-    transfer = _Transfer(*_signals(output, over, reference))
+    transfer = _Transfer(*_signals(signal, over, reference))
     inverted = f"the phase of {transfer} never falls through -180°"
     return _transfer_measure(
         analysis,
@@ -414,12 +413,12 @@ def rms(
     return _statistic("rms", analysis, window, _core.Measure.rms)
 
 
-def rise_time(  # noqa: PLR0913 - a window, its signal and the two levels
+def rise_time(  # noqa: PLR0913 - a window, its signal and the two bounds
     analysis: str,
     signal: str,
     *,
-    low: float = 0.1,
-    high: float = 0.9,
+    lower: float = 0.1,
+    upper: float = 0.9,
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
@@ -427,13 +426,15 @@ def rise_time(  # noqa: PLR0913 - a window, its signal and the two levels
     """The time a transient's `signal` takes to rise, or fall, through its step.
 
     The step runs from the signal's value at the window's start to its value at the
-    window's end, and the time from `low` to `high` of the way.
+    window's end, and the time from `lower` to `upper` of the way.
 
     Raises:
-        ValueError: Unless 0 < `low` < `high` < 1.
+        ValueError: Unless 0 < `lower` < `upper` < 1.
     """
-    if not 0 < low < high < 1:
-        message = f"a rise time's levels lie between 0 and 1, low first: {low}, {high}"
+    if not 0 < lower < upper < 1:
+        message = (
+            f"a rise time's bounds lie between 0 and 1, lower first: {lower}, {upper}"
+        )
         raise ValueError(message)
     window = _Window(_Signal(signal, reference), start, stop)
     unresolved = f"{window} steps too little to resolve its levels"
@@ -442,7 +443,7 @@ def rise_time(  # noqa: PLR0913 - a window, its signal and the two levels
         window,
         ("a rise time", f"rise time of {window}", TIME),
         lambda resolved: (
-            _core.Measure.rise_time(resolved.signal, resolved.window, low, high),
+            _core.Measure.rise_time(resolved.signal, resolved.window, lower, upper),
             {"uncrossed": lambda _: unresolved},
         ),
     )
@@ -506,57 +507,62 @@ def settling_time(  # noqa: PLR0913 - a window, its signal and the band
     )
 
 
-def crossing(  # noqa: PLR0913 - a window, its signal, the level and the edge
+def crossing(  # noqa: PLR0913 - a window, its signal, the threshold and the edge
     analysis: str,
     signal: str,
-    level: Quantity,
+    threshold: Quantity,
     *,
     edge: Edge = "either",
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """The first time a transient's `signal` crosses `level` the way `edge` says."""
-    _check(level, "the level")
+    """The first time a transient's `signal` crosses `threshold` the way `edge` says."""
+    _check(threshold, "the threshold")
     window = _Window(_Signal(signal, reference), start, stop)
-    uncrossed = f"{window} does not cross {level}"
+    uncrossed = f"{window} does not cross {threshold}"
     way = "" if edge == "either" else f" {edge}"
     return _transient_measure(
         analysis,
         window,
-        ("a crossing", f"first{way} crossing of {level} by {window}", TIME),
+        ("a crossing", f"first{way} crossing of {threshold} by {window}", TIME),
         lambda resolved: (
             _core.Measure.crossing(
                 resolved.signal,
                 resolved.window,
-                level.to(resolved.dimension, "the level"),
+                threshold.to(resolved.dimension, "the threshold"),
                 edge,
             ),
             {"uncrossed": lambda _: uncrossed},
         ),
-        level=level,
+        threshold=threshold,
     )
 
 
-def frequency(  # noqa: PLR0913 - a window, its signal and the level
+def frequency(  # noqa: PLR0913 - a window, its signal and the threshold
     analysis: str,
     signal: str,
     *,
-    level: Quantity | None = None,
+    threshold: Quantity | None = None,
     start: Quantity | None = None,
     stop: Quantity | None = None,
     reference: str | None = None,
 ) -> Measure:
-    """How often a transient's `signal` rises through `level`.
+    """How often a transient's `signal` rises through `threshold`.
 
-    The level is by default the midpoint of the signal's lowest and highest values, and
-    the frequency is the rises less one over the time from the first rise to the last.
+    The threshold is by default the midpoint of the signal's lowest and highest values,
+    and the frequency is the rises less one over the time from the first rise to the
+    last.
     """
-    _check(level, "the level")
+    _check(threshold, "the threshold")
     window = _Window(_Signal(signal, reference), start, stop)
 
     def make(resolved: _Resolved) -> tuple[_core.Measure, _Explainer]:
-        through = None if level is None else level.to(resolved.dimension, "the level")
+        through = (
+            None
+            if threshold is None
+            else threshold.to(resolved.dimension, "the threshold")
+        )
         measure = _core.Measure.frequency(resolved.signal, resolved.window, through)
 
         def rises(numbers: Sequence[float]) -> str:
@@ -570,7 +576,7 @@ def frequency(  # noqa: PLR0913 - a window, its signal and the level
         window,
         ("a frequency", f"frequency of {window}", FREQUENCY),
         make,
-        level=level,
+        threshold=threshold,
     )
 
 
@@ -768,7 +774,7 @@ def dominant_pole(analysis: str) -> Measure:
 def _native(
     analysis: str,
     description: str,
-    plain: Plain | None,
+    plain: results.Plain | None,
     resolve: _Resolve,
     check: _Diagnose | None = None,
 ) -> Measure:
@@ -784,7 +790,7 @@ def _transfer_at(
     analysis: str,
     transfer: _Transfer,
     at: Quantity,
-    kind: tuple[str, Plain, Callable[[_core.Transfer, float], _core.Measure]],
+    kind: tuple[str, results.Plain, Callable[[_core.Transfer, float], _core.Measure]],
 ) -> Measure:
     """Builds a small-signal measure evaluated at one frequency `at`."""
     label, unit, build = kind
@@ -807,7 +813,7 @@ def _transfer_measure(
     analysis: str,
     transfer: _Transfer,
     description: str,
-    unit: Dimension | Plain,
+    unit: Dimension | results.Plain,
     make: Callable[[_core.Transfer], tuple[_core.Measure, _Explainer]],
 ) -> Measure:
     """Builds a small-signal transfer or stability measure without a frequency point."""
@@ -823,12 +829,12 @@ def _transfer_measure(
 def _transient_measure(
     analysis: str,
     window: _Window,
-    what: tuple[str, str, Dimension | Plain],
+    what: tuple[str, str, Dimension | results.Plain],
     make: Callable[[_Resolved], tuple[_core.Measure, _Explainer]],
     *,
-    level: Quantity | None = None,
+    threshold: Quantity | None = None,
 ) -> Measure:
-    """Builds a transient-only windowed measure with optional threshold level check."""
+    """Builds a transient-only windowed measure with optional threshold check."""
     noun, description, unit = what
     plain = None if isinstance(unit, Dimension) else unit
 
@@ -840,28 +846,32 @@ def _transient_measure(
     def check(result: results.AnalysisResult) -> list[str]:
         problems = window.problems(result, noun, transient=True)
         if (
-            level is not None
+            threshold is not None
             and isinstance(result, results.TransientResult)
-            and (level_error := _check_level(window.signal, result.unknowns, level))
+            and (
+                threshold_error := _check_threshold(
+                    window.signal, result.unknowns, threshold
+                )
+            )
             is not None
         ):
-            problems.append(level_error)
+            problems.append(threshold_error)
         return problems
 
     return _native(analysis, description, plain, resolve, check)
 
 
-def _check_level(
-    signal: _Signal, unknowns_list: tuple[Unknown, ...], level: Quantity
+def _check_threshold(
+    signal: _Signal, unknowns_list: tuple[Unknown, ...], threshold: Quantity
 ) -> str | None:
-    """Checks `level` against `signal`'s dimension when `signal` names an unknown."""
+    """Checks `threshold` against `signal`'s dimension when `signal` is known."""
     try:
         index = results.column(unknowns_list, signal.name)
     except KeyError:
         return None
     dimension = unknowns.DIMENSIONS[unknowns_list[index].nature]
     try:
-        level.to(dimension, "the level")
+        threshold.to(dimension, "the threshold")
     except DimensionError as error:
         return str(error.args[0])
     return None
@@ -1089,11 +1099,11 @@ class _Window:
 class _Transfer:
     """What a small-signal measure reads.
 
-    It reads `output` over `divisor`, or per unit excitation, in a response, and a loop
-    gain without an output.
+    It reads `signal` over `divisor`, or per unit excitation, in a response, and a loop
+    gain without a signal.
     """
 
-    output: _Signal | None
+    signal: _Signal | None
     divisor: _Signal | None
 
     @property
@@ -1105,7 +1115,7 @@ class _Transfer:
     def _mismatch(self, result: results.AnalysisResult) -> str:
         """Error message when `result` does not match this transfer's shape."""
         if isinstance(result, results.StabilityResult):
-            return f"a loop gain is read without an output, not at {self.output}"
+            return f"a loop gain is read without an output, not at {self.signal}"
         if isinstance(result, results.AcResult):
             return "a small-signal response is read at an output"
         return (
@@ -1118,26 +1128,26 @@ class _Transfer:
 
         Raises:
             MeasureError: When the result is neither a small-signal response read at
-                an output nor a loop gain read at none.
-            KeyError: When the response has no unknown of the output's or the divisor's
+                a signal nor a loop gain read at none.
+            KeyError: When the response has no unknown of the signal's or the divisor's
                 names.
         """
-        if isinstance(result, results.StabilityResult) and self.output is None:
+        if isinstance(result, results.StabilityResult) and self.signal is None:
             return None
-        if isinstance(result, results.AcResult) and self.output is not None:
-            output, _ = self.output.resolve(result.unknowns)
+        if isinstance(result, results.AcResult) and self.signal is not None:
+            signal, _ = self.signal.resolve(result.unknowns)
             if self.divisor is None:
-                return output, None
+                return signal, None
             divisor, _ = self.divisor.resolve(result.unknowns)
-            return output, divisor
+            return signal, divisor
         raise MeasureError(self._mismatch(result))
 
     def problems(self, result: results.AnalysisResult) -> list[str]:
         """Every static problem resolving this transfer against `result`."""
-        if isinstance(result, results.StabilityResult) and self.output is None:
+        if isinstance(result, results.StabilityResult) and self.signal is None:
             return []
-        if isinstance(result, results.AcResult) and self.output is not None:
-            found = self.output.problems(result.unknowns)
+        if isinstance(result, results.AcResult) and self.signal is not None:
+            found = self.signal.problems(result.unknowns)
             if self.divisor is not None:
                 found.extend(self.divisor.problems(result.unknowns))
             return found
@@ -1163,11 +1173,11 @@ class _Transfer:
     @override
     def __str__(self) -> str:
         """The transfer, such as ``out``, ``out over in`` or ``the loop``."""
-        if self.output is None:
+        if self.signal is None:
             return "the loop"
         if self.divisor is None:
-            return str(self.output)
-        return f"{self.output} over {self.divisor.name}"
+            return str(self.signal)
+        return f"{self.signal} over {self.divisor.name}"
 
 
 def _statistic(
@@ -1221,21 +1231,21 @@ def _axis(result: results.AnalysisResult, what: str) -> _Axis:
 
 
 def _signals(
-    output: str | None, over: str | None, reference: str | None
+    signal: str | None, over: str | None, reference: str | None
 ) -> tuple[_Signal | None, _Signal | None]:
     """What a small-signal measure reads, and what over; neither for a loop gain.
 
     Raises:
-        ValueError: When there is a divisor or a reference, but no output.
+        ValueError: When there is a divisor or a reference, but no signal.
     """
-    if output is None:
+    if signal is None:
         if over is not None or reference is not None:
             message = (
                 "a loop gain is read without an output, so without over or a reference"
             )
             raise ValueError(message)
         return None, None
-    return _Signal(output, reference), None if over is None else _Signal(over)
+    return _Signal(signal, reference), None if over is None else _Signal(over)
 
 
 def _spectrum(
@@ -1414,19 +1424,19 @@ _MEASURE_SPECS: dict[str, MeasureSpec] = {
         )
         for factory in (maximum, minimum, peak_to_peak, mean, rms)
     },
-    "rise_time": _transient_spec(rise_time, "low", "high"),
+    "rise_time": _transient_spec(rise_time, "lower", "upper"),
     "overshoot": _transient_spec(overshoot),
     "settling_time": _transient_spec(settling_time, "band"),
     "crossing": _transient_spec(
         crossing,
-        "level",
+        "threshold",
         "edge",
-        required={"level": "a level"},
-        extra_quantities={"level": "signal"},
-        positional=("signal", "level"),
+        required={"threshold": "a threshold"},
+        extra_quantities={"threshold": "signal"},
+        positional=("signal", "threshold"),
     ),
     "frequency": _transient_spec(
-        frequency, "level", extra_quantities={"level": "signal"}
+        frequency, "threshold", extra_quantities={"threshold": "signal"}
     ),
     "distortion": _transient_spec(
         distortion,

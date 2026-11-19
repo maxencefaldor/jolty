@@ -30,8 +30,8 @@ Examples:
     ...     c.connect(bottom.b, source.negative, ground)
     >>> drawn = circuit(divider())
     >>> point = Simulation(drawn).run(OperatingPoint())
-    >>> scene_ = scene(drawn, {"op": point})
-    >>> scene_["analyses"][0]["nets"]["out"]
+    >>> data = scene(drawn, {"op": point})
+    >>> data["analyses"][0]["nets"]["out"]
     [2.5]
 """
 
@@ -172,7 +172,7 @@ type _RecordedResult = (
     results.OperatingPointResult | results.DcSweepResult | results.TransientResult
 )
 
-_OBSERVED: Final = (
+_RECORDED: Final = (
     results.OperatingPointResult,
     results.DcSweepResult,
     results.TransientResult,
@@ -296,7 +296,7 @@ def _analysis(name: str, result: results.AnalysisResult) -> dict[str, JsonValue]
         values = np.abs(result.values)
         currents = np.abs(result.currents)
         devices = {"currents": _currents(result.recording, frames, currents)}
-    elif isinstance(result, _OBSERVED):
+    elif isinstance(result, _RECORDED):
         values = _rows(result, "values")
         currents = _rows(result, "currents")
         devices = {
@@ -421,14 +421,14 @@ def _compact_analysis(entry: JsonValue) -> JsonValue:
     return compacted
 
 
-def _compact_scene(scene_: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
-    """Returns a losslessly compacted copy of `scene_` for HTML serialization.
+def _compact_scene(data: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """Returns a losslessly compacted copy of `data` for HTML serialization.
 
     Integer-valued floats in analysis axes and series take their shorter integer form,
     and any constant series collapses to its scalar value; the viewer script expands
     scalars back to full-length arrays on load.
     """
-    compacted: dict[str, JsonValue] = dict(scene_)
+    compacted: dict[str, JsonValue] = dict(data)
     analyses = compacted.get("analyses")
     if isinstance(analyses, list):
         compacted["analyses"] = [_compact_analysis(entry) for entry in analyses]
@@ -478,7 +478,7 @@ def _asset_tags(assets: str | None) -> tuple[str, str]:
 
 
 def page(
-    scene_: Mapping[str, JsonValue],
+    data: Mapping[str, JsonValue],
     three: str = _THREE,
     *,
     assets: str | None = None,
@@ -495,8 +495,8 @@ def page(
             "three/addons/": f"{three}/examples/jsm/",
         }
     }
-    text = json.dumps(_compact_scene(scene_), separators=(",", ":"), allow_nan=False)
-    title = str(scene_.get("title", "jolty"))
+    text = json.dumps(_compact_scene(data), separators=(",", ":"), allow_nan=False)
+    title = str(data.get("title", "jolty"))
     style, script = _asset_tags(assets)
     return _PAGE.format(
         title=html.escape(title, quote=True),
@@ -507,7 +507,7 @@ def page(
     )
 
 
-def write_viewer(  # noqa: PLR0913 - path, circuit, analyses, title and asset bases
+def save_viewer(  # noqa: PLR0913 - path, circuit, analyses, title and asset bases
     path: Path,
     circuit: ir.Circuit,
     analyses: Mapping[str, results.AnalysisResult],

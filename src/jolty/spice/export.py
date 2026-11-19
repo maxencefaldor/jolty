@@ -60,9 +60,9 @@ class Dialect:
     instant: float
     """The time, in seconds, a pulse of no width and an exponential's delay of zero are
     written with, which the simulator reads as given."""
-    zero_level: bool
-    """Whether a source that varies states its level at time zero as its DC level, as
-    the simulator takes a level of 0 where none is stated, rather than jolty's, its
+    zero_dc_value: bool
+    """Whether a source that varies states its value at time zero as its DC value, as
+    the simulator takes a value of 0 where none is stated, rather than jolty's, its
     waveform's at time zero."""
     flicker_over_oxide: bool
     """Whether a MOSFET's flicker coefficient is written over its oxide's capacitance,
@@ -89,7 +89,7 @@ NGSPICE: Final = Dialect(
     # exponential's delays of 0 as its step (both measured on ngspice 47), while 1e-40 s
     # vanishes beside any rise or time constant longer than 1e-24 s.
     instant=1e-40,
-    zero_level=False,
+    zero_dc_value=False,
     flicker_over_oxide=True,
     cards=None,
     passives=None,
@@ -147,9 +147,9 @@ XYCE: Final = Dialect(
     # Xyce reads a width of 0 as no width: only a width it is not given is its stop
     # time (`N_DEV_SourceData.C`, line 824).
     instant=0.0,
-    # Xyce's operating point and DC sweeps take a source's DC level, 0 where none is
+    # Xyce's operating point and DC sweeps take a source's DC value, 0 where none is
     # given, where its transient starts from its waveform at time zero.
-    zero_level=True,
+    zero_dc_value=True,
     flicker_over_oxide=False,
     expressions=(
         "jolty writes its expressions in ngspice's language, and not yet in Xyce's, "
@@ -202,16 +202,16 @@ so is a device whose Xyce model is another version or another model than jolty's
 
 
 def _node(path: str) -> str:
-    """A path as a flat SPICE name: its ids joined by underscores."""
+    """A path as a flat SPICE name: its names joined by underscores."""
     return path.replace("/", "_")
 
 
 def flatten(circuit: ir.Circuit, subcircuits: Collection[str] = ()) -> ir.Circuit:
     """The circuit with its top placing only devices, and instances of `subcircuits`.
 
-    Each instance inside a component instance takes its path as its id, its ids joined
-    by underscores, and each net inside takes its path the same way, but those of the
-    component's ports, which are the nets outside.
+    Each instance inside a component instance takes its path as its name, its names
+    joined by underscores, and each net inside takes its path the same way, but those of
+    the component's ports, which are the nets outside.
 
     Examples:
         >>> from jolty import Builder, Role, circuit, component, devices
@@ -723,7 +723,7 @@ def _vbic_resistances(values: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
         if key in _VBIC_SERIES and value == 0:
             continue
         resistance = key.endswith("_resistance") and isinstance(value, float)
-        if resistance and value < models.VBIC_LEAST_RESISTANCE:
+        if resistance and value < models.VBIC_MIN_RESISTANCE:
             message = (
                 f"a VBIC's {key} is {value!r} Ω, below the 0.01 Ω ngspice raises it to"
             )
@@ -779,7 +779,7 @@ _EXPRESSED: Final = frozenset(
 
 
 def element(instance: ir.Instance, dialect: Dialect = NGSPICE) -> str:
-    """The SPICE name of a device instance: its model's letter, then its id.
+    """The SPICE name of a device instance: its model's letter, then its name.
 
     Raises:
         JoltyError: When the instance is no device, or the dialect writes none like it:
@@ -1058,7 +1058,7 @@ def _value(model: str, values: Mapping[str, JsonValue]) -> str:
 
 
 def _varying(
-    id: str,
+    name: str,
     model: str,
     values: Mapping[str, JsonValue],
     nodes: list[str],
@@ -1072,9 +1072,11 @@ def _varying(
     """
     a, b, *light = nodes
     if model == "photocell":
-        conductance, lines = _photocell(id, values, light)
+        conductance, lines = _photocell(name, values, light)
     else:
-        conductance, lines = _memristor(id, model, values, [a, b], transient=transient)
+        conductance, lines = _memristor(
+            name, model, values, [a, b], transient=transient
+        )
     return f"{a} {b}", f"I={{V({a},{b})*{conductance}}}", lines
 
 
@@ -1083,7 +1085,7 @@ _DARKNESS: Final = 1e-6
 
 
 def _photocell(
-    id: str, values: Mapping[str, JsonValue], light: list[str]
+    name: str, values: Mapping[str, JsonValue], light: list[str]
 ) -> tuple[str, list[str]]:
     """A photocell's conductance as an ngspice expression, and the lines that lag it.
 
@@ -1096,11 +1098,11 @@ def _photocell(
     settled = f"pow({lit}/{given['illuminance']!r},{given['gamma']!r})"
     response, lines = settled, list[str]()
     if given["response_time"] != 0:
-        node = f"_{id}_response"
+        node = f"_{name}_response"
         lines = [
-            f"B{id}_settled _{id}_settled 0 V={{{settled}}}",
-            f"R{id}_lag _{id}_settled {node} 1",
-            f"C{id}_lag {node} 0 {given['response_time']!r}",
+            f"B{name}_settled _{name}_settled 0 V={{{settled}}}",
+            f"R{name}_lag _{name}_settled {node} 1",
+            f"C{name}_lag {node} 0 {given['response_time']!r}",
         ]
         response = f"V({node})"
     conductance = f"(1/{given['dark_resistance']!r}+{response}/{given['resistance']!r})"
@@ -1121,7 +1123,7 @@ multiply-adds, as for x86-64, stalled in steps of 1e-16 s.
 
 
 def _memristor(
-    id: str,
+    name: str,
     model: str,
     values: Mapping[str, JsonValue],
     terminals: list[str],
@@ -1145,18 +1147,18 @@ def _memristor(
     Jacobian rather than a slope of zero.
     """
     given = _defaulted(model, values)
-    made = _number(id, given, "state")
-    node = f"_{id}_state"
+    made = _number(name, given, "state")
+    node = f"_{name}_state"
     state = f"V({node})"
     held = f"min(1,max(0,{state}))"
-    on, off = (_number(id, given, key) for key in ("on_resistance", "off_resistance"))
+    on, off = (_number(name, given, key) for key in ("on_resistance", "off_resistance"))
     conductance = (
         f"(1/({on!r}+{off - on!r}*{held}))"
         if given["law"] == "linear"
         else f"(exp({-math.log(off / on)!r}*{held})/{on!r})"
     )
     if not transient:
-        return conductance, [f"V{id}_state {node} 0 {made!r}"]
+        return conductance, [f"V{name}_state {node} 0 {made!r}"]
     voltage = f"V({terminals[0]},{terminals[1]})"
     if model == "voltage_controlled_memristor":
         drive = (
@@ -1173,8 +1175,8 @@ def _memristor(
     toward_on = f"(1-exp(-max(0,{on_distance}))+min({on_distance},0))"
     rate = f"max({drive},0)*{toward_off}+min(0,{drive})*{toward_on}"
     lines = [
-        f"B{id}_state 0 {node} I={{{STATE_CAPACITANCE!r}*({rate})}}",
-        f"C{id}_state {node} 0 {STATE_CAPACITANCE!r}",
+        f"B{name}_state 0 {node} I={{{STATE_CAPACITANCE!r}*({rate})}}",
+        f"C{name}_state {node} 0 {STATE_CAPACITANCE!r}",
         f".ic {state}={made!r}",
     ]
     return conductance, lines
@@ -1188,8 +1190,8 @@ def _defaulted(model: str, values: Mapping[str, JsonValue]) -> dict[str, JsonVal
     return _PARAMETERS.validate_json(_core.defaulted(model, json.dumps(values)))
 
 
-def _number(id: str, values: Mapping[str, JsonValue], key: str) -> float:
-    """The number `key` among the parameters `values` of the device `id`.
+def _number(name: str, values: Mapping[str, JsonValue], key: str) -> float:
+    """The number `key` among the parameters `values` of the device `name`.
 
     Raises:
         JoltyError: When it is no number.
@@ -1199,7 +1201,7 @@ def _number(id: str, values: Mapping[str, JsonValue], key: str) -> float:
             pass
         case int() | float() as found:
             return float(found)
-    message = f"{id}'s {key} is no number"
+    message = f"{name}'s {key} is no number"
     raise _unwritable(message)
 
 
@@ -1270,7 +1272,7 @@ def _passive(
 
     A value that changes with the voltage is ngspice's expression for the resistance,
     or for the charge, of the voltage across the device. A resistor's flicker noise is
-    a model card's, which `card`, the device's id and the lines before its element's,
+    a model card's, which `card`, the device's name and the lines before its element's,
     takes.
 
     Raises:
@@ -1297,10 +1299,10 @@ def _passive(
     flicker = {_FLICKER[key]: amount for key, amount in rest if key in _FLICKER}
     named = ""
     if flicker and card is not None:
-        id, lines = card
+        device_name, lines = card
         written = " ".join(f"{name}={amount!r}" for name, amount in flicker.items())
-        lines.append(f".model M{id} R({written})")
-        named = f"M{id} "
+        lines.append(f".model M{device_name} R({written})")
+        named = f"M{device_name} "
     drift = _passive_drift(model, rest, named)
     linear, quadratic = (values.get(key, 0.0) for key in _CURVATURE)
     if linear == 0 and quadratic == 0:
@@ -1331,29 +1333,29 @@ def _passive(
 def _coupled(instance: ir.Instance, ground: str, dialect: Dialect) -> list[str]:
     """Coupled inductors as SPICE writes them.
 
-    Each winding is an inductor ``L{id}_{k}``, and each coupling a mutual inductance
-    ``K{id}_{j}_{k}``.
+    Each winding is an inductor ``L{name}_{k}``, and each coupling a mutual inductance
+    ``K{name}_{j}_{k}``.
     """
     element(instance, dialect)
-    id, terminals = instance.name, instance.terminals
+    name, terminals = instance.name, instance.terminals
     values = _cool(instance.parameters)
     lines = []
     match values:
         case {"windings": list(windings), "couplings": list(couplings)}:
             pass
         case _:
-            message = f"{id} is coupled inductors without windings and couplings"
+            message = f"{name} is coupled inductors without windings and couplings"
             raise _unwritable(message)
     for number, winding in enumerate(windings, start=1):
         if not isinstance(winding, dict):
-            message = f"winding {number} of {id} is no inductor"
+            message = f"winding {number} of {name} is no inductor"
             raise _unwritable(message)
         nodes = [
             "0" if net == ground else net
             for net in (terminals[f"a{number}"], terminals[f"b{number}"])
         ]
         written = _passive("inductor", winding, nodes, dialect)
-        lines.append(f"L{id}_{number} {' '.join(nodes)} {written}")
+        lines.append(f"L{name}_{number} {' '.join(nodes)} {written}")
     for coupling in couplings:
         match coupling:
             case {
@@ -1361,10 +1363,11 @@ def _coupled(instance: ir.Instance, ground: str, dialect: Dialect) -> list[str]:
                 "coefficient": float(value),
             } if not (isinstance(first, bool) or isinstance(second, bool)):
                 lines.append(
-                    f"K{id}_{first}_{second} L{id}_{first} L{id}_{second} {value!r}"
+                    f"K{name}_{first}_{second} L{name}_{first} "
+                    f"L{name}_{second} {value!r}"
                 )
             case _:
-                message = f"{id} has a coupling SPICE cannot write: {coupling}"
+                message = f"{name} has a coupling SPICE cannot write: {coupling}"
                 raise _unwritable(message)
     return lines
 
@@ -1724,8 +1727,8 @@ def vector(
         )
         return _voltage_vector(unknown.name, names, dialect)
     path, _, label = unknown.name.rpartition(":")
-    id = _node(path)
-    found = [instance for instance in top.instances if instance.name == id]
+    name = _node(path)
+    found = [instance for instance in top.instances if instance.name == name]
     if not found:
         message = (
             f"{dialect.simulator} names the internal unknown {unknown.name} its own way"
@@ -1733,7 +1736,7 @@ def vector(
         raise _unwritable(message)
     (instance,) = found
     if instance.of == ir.DeviceOf(model="coupled_inductors"):
-        return f"i(l{id.lower()}_{label.removeprefix('current')})"
+        return f"i(l{name.lower()}_{label.removeprefix('current')})"
     source = _sense(instance) if label == "control" else element(instance, dialect)
     return f"i({source.lower()})"
 
@@ -1783,11 +1786,11 @@ def node_voltages(
 def _waveform(spec: JsonValue, dialect: Dialect) -> str:
     """A source's waveform in the dialect's SPICE.
 
-    Its level at time zero comes first as its DC level where the dialect states it.
+    Its value at time zero comes first as its DC value where the dialect states it.
     """
     written = _shape(spec, dialect.instant)
-    if dialect.zero_level and not written.startswith("DC"):
-        return f"DC {_core.level(json.dumps(spec), 0.0)!r} {written}"
+    if dialect.zero_dc_value and not written.startswith("DC"):
+        return f"DC {_core.waveform_value(json.dumps(spec), 0.0)!r} {written}"
     return written
 
 

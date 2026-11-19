@@ -162,13 +162,13 @@ class _Cell:
         held = dict[int, float]() if held is None else held
 
         def instance(
-            id: str, of: ir.DeviceOf | ir.ComponentOf, terminals: dict[str, str]
+            name: str, of: ir.DeviceOf | ir.ComponentOf, terminals: dict[str, str]
         ) -> ir.Instance:
-            return ir.Instance(name=id, of=of, terminals=terminals)
+            return ir.Instance(name=name, of=of, terminals=terminals)
 
-        def source(id: str, waveform: JsonValue, net: str) -> ir.Instance:
+        def source(name: str, waveform: JsonValue, net: str) -> ir.Instance:
             return ir.Instance(
-                name=id,
+                name=name,
                 of=ir.DeviceOf(model="voltage_source"),
                 parameters={"waveform": waveform},
                 terminals={"positive": net, "negative": "ground"},
@@ -985,8 +985,8 @@ def _outputs(built: ir.Circuit, path: str) -> list[tuple[str, str]]:
     """
     *parents, own = path.split("/")
     names = [built.top]
-    for id in parents:
-        names.append(_component(_placed(built, names[-1], id)))
+    for name in parents:
+        names.append(_component(_placed(built, names[-1], name)))
     instance = _placed(built, names[-1], own)
     component = built.components[_component(instance)]
     found = []
@@ -1000,7 +1000,7 @@ def _outputs(built: ir.Circuit, path: str) -> list[tuple[str, str]]:
                 break
             outer = _placed(built, names[level - 1], parents[level - 1])
             net, level = outer.terminals[net], level - 1
-        prefix = "".join(f"{id}/" for id in parents[:level])
+        prefix = "".join(f"{name}/" for name in parents[:level])
         found.append((port.name, f"{prefix}{net}"))
     return found
 
@@ -1017,11 +1017,11 @@ def _component(instance: ir.Instance) -> str:
     raise JoltyError(message)
 
 
-def _placed(built: ir.Circuit, component: str, id: str) -> ir.Instance:
-    """The instance `id` that `component` places."""
-    found = built.components[component].instance(id)
+def _placed(built: ir.Circuit, component: str, name: str) -> ir.Instance:
+    """The instance `name` that `component` places."""
+    found = built.components[component].instance(name)
     if found is None:
-        message = f"{component} places no instance `{id}`"
+        message = f"{component} places no instance `{name}`"
         raise KeyError(message)
     return found
 

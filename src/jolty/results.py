@@ -4,8 +4,8 @@
 Every result holds the circuit's unknowns: node voltages, named by net path such as
 ``out`` or ``amplifier/mid``, and branch currents and other internal unknowns, named by
 instance path and label such as ``V1:current``. ``voltage`` and ``current`` read them by
-name. It holds the levels of the circuit's logic nets too, which ``level`` reads by
-name: 0, 1, or NaN for an unknown level.
+name. It holds the levels of the circuit's logic nets too, which ``logic_level`` reads
+by name: 0, 1, or NaN for an unknown level.
 
 It holds what its [`Recording`][jolty.results.Recording] says of the instances its
 plan's or its analysis's ``record`` names. For a device: the current into each terminal,
@@ -1056,7 +1056,7 @@ class SensitivityResult(_Watched):
         return _find(list(self.outputs), output, "the analysis has no output")
 
 
-type Part = Literal["magnitude", "phase"]
+type PhasorPart = Literal["magnitude", "phase"]
 """What of a response's phasor a mismatch analysis spreads: its magnitude, or its phase,
 in radians."""
 
@@ -1114,7 +1114,7 @@ class MismatchResult(_Watched):
     """For an oscillator's periodic steady state, its period's derivative with respect
     to each random variable, in their order; None otherwise."""
 
-    def contributions(self, output: str, part: Part | None = None) -> Real:
+    def contributions(self, output: str, part: PhasorPart | None = None) -> Real:
         """Each random variable's contribution to `output`, in their order.
 
         It is one row at an operating point, and one per point of `result` otherwise;
@@ -1144,7 +1144,9 @@ class MismatchResult(_Watched):
             return along.real / magnitudes
         return along.imag / magnitudes**2
 
-    def standard_deviation(self, output: str, part: Part | None = None) -> float | Real:
+    def standard_deviation(
+        self, output: str, part: PhasorPart | None = None
+    ) -> float | Real:
         """The standard deviation of `output`, to first order.
 
         It is one number at an operating point, and one per point of `result` otherwise;
@@ -1172,7 +1174,7 @@ class MismatchResult(_Watched):
         )
         return float(np.sqrt(np.sum((self.period_derivatives * deviations) ** 2)))
 
-    def shares(self, output: str, part: Part | None = None) -> Real:
+    def shares(self, output: str, part: PhasorPart | None = None) -> Real:
         """Each random variable's share of the variance of `output`, in their order.
 
         It is one row at an operating point, and one per point of `result` otherwise;
@@ -1530,7 +1532,7 @@ def result_kind(result: AnalysisResult) -> str:
 
 
 def axis_of(result: DcSweepResult | AcResult | TransientResult) -> Real:
-    """The swept levels, frequencies, or times along which `result` varies."""
+    """The swept values, frequencies, or times along which `result` varies."""
     match result:
         case DcSweepResult():
             return result.swept

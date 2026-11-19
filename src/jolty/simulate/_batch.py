@@ -31,7 +31,7 @@ from jolty.simulate._decode import (
     engine_pool,
     points_of,
     sweep_nature,
-    swept_level,
+    swept_dimension,
 )
 from jolty.units import FREQUENCY, TIME, Dimension
 
@@ -574,9 +574,9 @@ def _axis(analysis: Analysis, built: ir.Circuit) -> results.Real:
     """The points a batch traces `analysis` along: none at an operating point."""
     match analysis:
         case DcSweep():
-            level = swept_level(built, analysis)
+            dimension = swept_dimension(built, analysis)
             return np.array(
-                [value.to(level, "a sweep level") for value in analysis.values]
+                [value.to(dimension, "a sweep level") for value in analysis.values]
             )
         case Ac(frequencies=frequencies):
             return np.array([each.to(FREQUENCY, "a frequency") for each in frequencies])

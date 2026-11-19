@@ -181,8 +181,8 @@ THERMAL_VOLTAGE: Final = (
 JUNCTION_POTENTIAL: Final = 0.7
 """A fitted body diode's junction potential, in volts, with a grading coefficient of
 0.5."""
-LEAST_JUNCTION_TEMPERATURE: Final = -55.0
-"""The least junction temperature every sheet here states, in degrees Celsius."""
+MIN_JUNCTION_TEMPERATURE: Final = -55.0
+"""The minimum junction temperature every sheet here states, in degrees Celsius."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -406,7 +406,7 @@ def power_mosfet(sheet: Datasheet, *, heated: bool = False) -> Component:
         .rated(
             "temperature",
             celsius(sheet.junction_temperature),
-            minimum=celsius(LEAST_JUNCTION_TEMPERATURE),
+            minimum=celsius(MIN_JUNCTION_TEMPERATURE),
         )
     )
 

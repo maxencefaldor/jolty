@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""Measurement queries on saved simulation results, driven by `jolty.specs.MEASURES`.
+"""Measure queries on saved simulation results, driven by `jolty.specs.MEASURES`.
 
 Validates request options against each measure's declarative specification, maps
 scalar SI values into dimensioned quantities for the target analysis axis or signal,
@@ -49,7 +49,7 @@ type MeasureKind = Literal[
     "damping",
     "dominant_pole",
 ]
-"""Every measurement that ``jolty measure`` reads from a saved results file."""
+"""Every measure that ``jolty measure`` reads from a saved results file."""
 
 _MEASURE_OPTION_FIELDS: Final[tuple[str, ...]] = (
     "signal",
@@ -59,10 +59,10 @@ _MEASURE_OPTION_FIELDS: Final[tuple[str, ...]] = (
     "start",
     "stop",
     "drop",
-    "low",
-    "high",
+    "lower",
+    "upper",
     "band",
-    "level",
+    "threshold",
     "edge",
     "fundamental",
     "harmonics",
@@ -71,7 +71,7 @@ _MEASURE_OPTION_FIELDS: Final[tuple[str, ...]] = (
 
 
 class MeasureRequest(FrozenModel):
-    """Read a measurement from a saved results file without running a simulation.
+    """Read a measure from a saved results file without running a simulation.
 
     Evaluates any measure of ``jolty.specs`` (``value``, ``gain``, ``phase``,
     ``bandwidth``, ``crossover``, ``phase_margin``, ``gain_margin``, ``maximum``,
@@ -79,15 +79,15 @@ class MeasureRequest(FrozenModel):
     ``settling_time``, ``crossing``, ``frequency``, ``distortion``, ``noise_density``,
     ``integrated_noise``, ``solutions``, ``damping``, ``dominant_pole``), plus
     ``period`` on a periodic steady state, directly from a saved ``.results.npz``
-    file. Numeric options (``at``, ``start``, ``stop``, ``level``, ``fundamental``)
+    file. Numeric options (``at``, ``start``, ``stop``, ``threshold``, ``fundamental``)
     are in SI base units: seconds for transients and periodic steady states, hertz
     for small-signal and noise analyses, and volts, amperes, kelvins or plain
-    numbers for signal levels and DC sweeps.
+    numbers for signal values and DC sweeps.
     """
 
     results: CliPositionalArg[Path] = Field(description="A .results.npz file.")
     measure: MeasureKind = Field(
-        description="Measurement to read from the analysis result."
+        description="Measure to read from the analysis result."
     )
     analysis: str | None = Field(
         default=None,
@@ -101,39 +101,39 @@ class MeasureRequest(FrozenModel):
     )
     reference: str | None = Field(
         default=None,
-        description="Reference net for a differential voltage measurement.",
+        description="Reference net for a differential voltage measure.",
     )
     over: str | None = Field(
         default=None,
-        description="Divisor unknown for a small-signal transfer measurement (gain, "
+        description="Divisor unknown for a small-signal transfer measure (gain, "
         "phase, bandwidth, crossover, phase_margin, gain_margin).",
     )
     at: float | None = Field(
         default=None,
         description="Point along the analysis axis in SI base units: time in seconds "
-        "for a transient or periodic steady state, swept level for a DC sweep, or "
+        "for a transient or periodic steady state, swept value for a DC sweep, or "
         "frequency in hertz for gain, phase and noise_density.",
     )
     start: float | None = Field(
         default=None,
-        description="Window start in SI base units: time in seconds, swept level, or "
+        description="Window start in SI base units: time in seconds, swept value, or "
         "frequency in hertz for integrated_noise; defaults to the start of the axis.",
     )
     stop: float | None = Field(
         default=None,
-        description="Window stop in SI base units: time in seconds, swept level, or "
+        description="Window stop in SI base units: time in seconds, swept value, or "
         "frequency in hertz for integrated_noise; defaults to the end of the axis.",
     )
     drop: float | None = Field(
         default=None,
         description="Gain drop in decibels for bandwidth; defaults to 3.0.",
     )
-    low: float | None = Field(
+    lower: float | None = Field(
         default=None,
         description="Lower step fraction (between 0 and 1) for rise_time; defaults "
         "to 0.1.",
     )
-    high: float | None = Field(
+    upper: float | None = Field(
         default=None,
         description="Upper step fraction (between 0 and 1) for rise_time; defaults "
         "to 0.9.",
@@ -143,9 +143,9 @@ class MeasureRequest(FrozenModel):
         description="Settling band fraction (positive) for settling_time; defaults "
         "to 0.02.",
     )
-    level: float | None = Field(
+    threshold: float | None = Field(
         default=None,
-        description="Threshold level in SI base units of the signal (volts, amperes, "
+        description="Threshold in SI base units of the signal (volts, amperes, "
         "kelvins or plain number) for crossing (required) or frequency (optional "
         "midpoint default).",
     )
@@ -245,7 +245,7 @@ def evaluate_measure(
 
     Raises:
         JoltyError: When required inputs are missing, unknown names fail to resolve, or
-            the measurement cannot be read from `result`.
+            the measure cannot be read from `result`.
     """
     description, reading = _read_measure(request, analysis_name, result, max_unknowns)
     if math.isnan(reading.value):

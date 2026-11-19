@@ -53,7 +53,7 @@ class Catalog:
     probes: tuple[str, ...]
     unknowns: Mapping[str, results.Unknown]
     unknown_names: tuple[str, ...]
-    reference_node: str | None
+    ground: str | None
     voltage_nets: tuple[str, ...]
     has_logic_devices: bool
     overrides: Mapping[str, Mapping[str, float]]
@@ -117,7 +117,7 @@ def build_catalog(  # noqa: PLR0913 - elaborated circuit topology and metadata
         probes=probes,
         unknowns=unknown_map,
         unknown_names=tuple(unknown_map),
-        reference_node=built.ground_port(),
+        ground=built.ground_port(),
         voltage_nets=voltage_nets,
         has_logic_devices=has_logic_devices,
         overrides=overrides,
@@ -144,7 +144,7 @@ def _is_probe(
     unknowns: Mapping[str, results.Unknown],
     joined: Callable[[str, str], Joined | None],
 ) -> bool:
-    """Whether `path` is a voltage source with both terminals off the reference node."""
+    """Whether `path` is a voltage source with both terminals off ground."""
     positive = joined(path, "positive")
     negative = joined(path, "negative")
     return (
@@ -211,9 +211,9 @@ def nodeset_problems(
                 f"the {what} names `{net}`, which is no net of the circuit "
                 f"({nature} unknown){close}"
             )
-        elif net == catalog.reference_node:
+        elif net == catalog.ground:
             problems.append(
-                f"the {what} names `{net}`, which is the reference node, "
+                f"the {what} names `{net}`, which is ground, "
                 f"not an electrical net{close}"
             )
         else:
@@ -240,22 +240,20 @@ def _source_problem(source: str, catalog: Catalog) -> str | None:
     return None
 
 
-def _output_problem(
-    name: str, catalog: Catalog, *, allow_reference: bool
-) -> str | None:
+def _output_problem(name: str, catalog: Catalog, *, allow_ground: bool) -> str | None:
     """Returns a problem string when `name` is not a valid output name."""
     if name in catalog.unknowns:
         return None
-    if allow_reference and name == catalog.reference_node:
+    if allow_ground and name == catalog.ground:
         return None
     candidates = (
-        (*catalog.unknown_names, catalog.reference_node)
-        if allow_reference and catalog.reference_node is not None
+        (*catalog.unknown_names, catalog.ground)
+        if allow_ground and catalog.ground is not None
         else catalog.unknown_names
     )
     close = close_names(candidates, name)
-    if not allow_reference and name == catalog.reference_node:
-        return f"there is no unknown named `{name}` (it is the reference node){close}"
+    if not allow_ground and name == catalog.ground:
+        return f"there is no unknown named `{name}` (it is ground){close}"
     return f"there is no unknown named `{name}`{close}"
 
 
@@ -264,29 +262,25 @@ def _differential_problems(
     reference: str | None,
     catalog: Catalog,
     *,
-    allow_reference: bool,
+    allow_ground: bool,
 ) -> list[str]:
     """Checks both `output` and optional `reference`, collecting every problem."""
     problems: list[str] = []
-    output_issue = _output_problem(output, catalog, allow_reference=allow_reference)
+    output_issue = _output_problem(output, catalog, allow_ground=allow_ground)
     if output_issue is not None:
         problems.append(output_issue)
     if reference is None:
         return problems
-    reference_issue = _output_problem(
-        reference, catalog, allow_reference=allow_reference
-    )
+    reference_issue = _output_problem(reference, catalog, allow_ground=allow_ground)
     if reference_issue is not None:
         problems.append(reference_issue)
     if output_issue is None and reference_issue is None:
         output_nature = (
-            "voltage"
-            if output == catalog.reference_node
-            else catalog.unknowns[output].nature
+            "voltage" if output == catalog.ground else catalog.unknowns[output].nature
         )
         reference_nature = (
             "voltage"
-            if reference == catalog.reference_node
+            if reference == catalog.ground
             else catalog.unknowns[reference].nature
         )
         if output_nature != "voltage" or reference_nature != "voltage":
@@ -300,7 +294,7 @@ def _differential_problems(
 def _dc_sweep_problems(
     analysis: DcSweep, catalog: Catalog
 ) -> tuple[list[str], DimensionError | None]:
-    """Checks `DcSweep` source, optional parameter, and level dimension."""
+    """Checks `DcSweep` source, optional parameter, and value dimension."""
     if analysis.parameter is not None:
         if analysis.source not in catalog.devices:
             close = close_names(catalog.device_paths, analysis.source)
@@ -332,7 +326,7 @@ def _dc_sweep_problems(
 
 
 def _stability_problems(analysis: Stability, catalog: Catalog) -> list[str]:
-    """Checks that `Stability.probe` is a voltage source off the reference node."""
+    """Checks that `Stability.probe` is a voltage source off ground."""
     probes_list = f"; probes: {', '.join(catalog.probes)}" if catalog.probes else ""
     if analysis.probe not in catalog.devices:
         candidates = catalog.probes or catalog.voltage_sources or catalog.device_paths
@@ -341,9 +335,7 @@ def _stability_problems(analysis: Stability, catalog: Catalog) -> list[str]:
         )
         return [f"there is no instance at `{analysis.probe}`{close}{probes_list}"]
     if analysis.probe not in catalog.probes:
-        return [
-            f"`{analysis.probe}` is not a voltage source off the reference{probes_list}"
-        ]
+        return [f"`{analysis.probe}` is not a voltage source off ground{probes_list}"]
     return []
 
 
@@ -396,14 +388,14 @@ def _transfer_function_problems(
     problems: list[str] = []
     if (source_issue := _source_problem(analysis.source, catalog)) is not None:
         problems.append(source_issue)
-    output_issue = _output_problem(analysis.output, catalog, allow_reference=False)
+    output_issue = _output_problem(analysis.output, catalog, allow_ground=False)
     if output_issue is not None:
         problems.append(output_issue)
     if (
         analysis.reference is not None
         and (
             reference_issue := _output_problem(
-                analysis.reference, catalog, allow_reference=False
+                analysis.reference, catalog, allow_ground=False
             )
         )
         is not None
@@ -497,7 +489,7 @@ def _transient_problems(analysis: Transient, catalog: Catalog) -> list[str]:
 def _noise_problems(analysis: Noise, catalog: Catalog) -> list[str]:
     """Checks `Noise` output, reference, and optional referred source."""
     problems = _differential_problems(
-        analysis.output, analysis.reference, catalog, allow_reference=True
+        analysis.output, analysis.reference, catalog, allow_ground=True
     )
     if (
         analysis.source is not None
@@ -521,7 +513,7 @@ def _pole_zero_problems(analysis: PoleZero, catalog: Catalog) -> list[str]:
                 analysis.output,
                 analysis.reference,
                 catalog,
-                allow_reference=True,
+                allow_ground=True,
             )
         )
     return problems
@@ -538,8 +530,7 @@ def _differentiated_problems(
     problems = [
         issue
         for output in analysis.outputs
-        if (issue := _output_problem(output, catalog, allow_reference=False))
-        is not None
+        if (issue := _output_problem(output, catalog, allow_ground=False)) is not None
     ]
     if isinstance(analysis, Mismatch):
         problems.extend(
@@ -633,7 +624,7 @@ def analyses_problems(
 def noise_unit_unknown(analysis: Noise, catalog: Catalog) -> bool:
     """Whether `analysis`'s output or referred input unit cannot be determined."""
     output_known = (
-        analysis.output in catalog.unknowns or analysis.output == catalog.reference_node
+        analysis.output in catalog.unknowns or analysis.output == catalog.ground
     )
     if not output_known:
         return True

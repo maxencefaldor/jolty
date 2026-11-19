@@ -6,7 +6,7 @@ one. Build scripts never write this format by hand: [`jolty.builder`][jolty.buil
 produces it, and the engine validates and elaborates it. Parameter values are numbers in
 SI base units, and a device may give some of them a [`Tolerance`][jolty.ir.Tolerance],
 each naming its parameter by [path][jolty.ir.parameter], so that it may reach into an
-object, as ``waveform.dc`` names a source's DC level. A device may also state
+object, as ``waveform.dc`` names a source's DC value. A device may also state
 [`Rating`][jolty.ir.Rating]s, the limits its maker states on its stresses. A
 [`RandomVariable`][jolty.ir.RandomVariable], a number a sample draws at random and the
 parameters it moves, is no part of a circuit, but what its tolerances and a process
@@ -275,10 +275,10 @@ class Component(FrozenModel):
     ports: tuple[Port, ...] = ()
     instances: tuple[Instance, ...] = ()
 
-    def instance(self, id: str) -> Instance | None:
-        """The instance `id`, or None when the component places none by that id."""
+    def instance(self, name: str) -> Instance | None:
+        """The instance `name`, or None when the component places none by that name."""
         return next(
-            (instance for instance in self.instances if instance.name == id), None
+            (instance for instance in self.instances if instance.name == name), None
         )
 
 
@@ -286,7 +286,7 @@ class Circuit(FrozenModel):
     """A circuit: every component, and the one at the top of the hierarchy."""
 
     format: Literal["jolty-circuit"] = "jolty-circuit"
-    version: Literal[4] = 4
+    version: Literal[5] = 5
     top: str
     components: dict[str, Component]
 
@@ -294,8 +294,8 @@ class Circuit(FrozenModel):
         """The instance at `path`, such as ``X1/R1``, or None when there is none."""
         component = self.components.get(self.top)
         found = None
-        for id in path.split(SEPARATOR):
-            found = component.instance(id) if component is not None else None
+        for name in path.split(SEPARATOR):
+            found = component.instance(name) if component is not None else None
             if found is None:
                 return None
             component = (

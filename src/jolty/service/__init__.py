@@ -65,10 +65,10 @@ from jolty.service._docs import (
     DOCS_URI_PREFIX,
     EXAMPLE_MIME_TYPE,
     GUIDE_MIME_TYPE,
-    DocsRequest,
     Document,
     DocumentSection,
     DocumentSummary,
+    ReadDocsRequest,
     document_summaries,
     read_document,
     resolve_document,
@@ -103,8 +103,6 @@ __all__ = [
     "CommandResult",
     "CostRequest",
     "CostResult",
-    "DocsRequest",
-    "DocsResult",
     "Document",
     "DocumentSection",
     "DocumentSummary",
@@ -122,7 +120,9 @@ __all__ = [
     "Plot",
     "PlotRequest",
     "PlotResult",
-    "RuleInfo",
+    "ReadDocsRequest",
+    "ReadDocsResult",
+    "RuleSummary",
     "ScriptOutput",
     "SimulateRequest",
     "SimulateResult",
@@ -132,7 +132,6 @@ __all__ = [
     "build_instructions",
     "check",
     "cost",
-    "docs",
     "document_summaries",
     "draw",
     "explain",
@@ -140,6 +139,7 @@ __all__ = [
     "measure",
     "merge",
     "plot",
+    "read_docs",
     "read_document",
     "resolve_document",
     "simulate",
@@ -845,11 +845,11 @@ def _merged(directory: Path, target: Path) -> tuple[tuple[Path, ...], MonteCarlo
         JoltyError: When the shards do not merge.
     """
     shard, ordered = shards.merge(sorted(directory.glob(files.SHARD_PATTERN)))
-    analysed, batch = shards.monte_carlo(shard)
+    analyzed, batch = shards.monte_carlo(shard)
     _write_atomic(
         target, lambda staged: files.save_batches(staged, {runner.MONTE_CARLO: batch})
     )
-    return ordered, analysed
+    return ordered, analyzed
 
 
 class PlotRequest(FrozenModel):
@@ -898,7 +898,7 @@ async def plot(request: PlotRequest, settings: Settings) -> PlotResult:
 
 
 class MeasureResult(CommandResult):
-    """A measurement read from a saved results file."""
+    """A measure read from a saved results file."""
 
     results: Path = Field(description="The saved results file.")
     analysis: str = Field(description="The analysis read.")
@@ -925,7 +925,7 @@ class MeasureResult(CommandResult):
 
 
 async def measure(request: MeasureRequest, settings: Settings) -> MeasureResult:
-    """Reads a measurement from a saved results file without running any simulation.
+    """Reads a measure from a saved results file without running any simulation.
 
     Raises:
         JoltyError: When the file is missing or invalid, the requested analysis or
@@ -1159,7 +1159,7 @@ async def view(request: ViewRequest, settings: Settings) -> ViewResult:
     )
     target = request.output or files.viewer_path(request.circuit)
     await asyncio.to_thread(
-        viewer.write_viewer, target, circuit, analyses, request.title
+        viewer.save_viewer, target, circuit, analyses, request.title
     )
     return ViewResult(viewer=target)
 
@@ -1413,7 +1413,7 @@ class ExplainRequest(FrozenModel):
     )
 
 
-class RuleInfo(FrozenModel):
+class RuleSummary(FrozenModel):
     """One rule: its name, its levels and its condition."""
 
     name: str
@@ -1425,7 +1425,7 @@ class RuleInfo(FrozenModel):
 class ExplainResult(CommandResult):
     """The rules explained."""
 
-    rules: tuple[RuleInfo, ...]
+    rules: tuple[RuleSummary, ...]
 
     @override
     def describe(self) -> str:
@@ -1460,7 +1460,7 @@ async def explain(request: ExplainRequest, settings: Settings) -> ExplainResult:
     names = request.rules or list(known)
     return ExplainResult(
         rules=tuple(
-            RuleInfo(
+            RuleSummary(
                 name=name,
                 level=chosen[name],
                 default_level=known[name].level,
@@ -1471,7 +1471,7 @@ async def explain(request: ExplainRequest, settings: Settings) -> ExplainResult:
     )
 
 
-class DocsResult(CommandResult):
+class ReadDocsResult(CommandResult):
     """Either the listing of offline documents, or the single document requested."""
 
     entries: tuple[DocumentSummary, ...] = Field(
@@ -1491,7 +1491,7 @@ class DocsResult(CommandResult):
         return _docs.describe_entries(self.entries)
 
 
-async def docs(request: DocsRequest, settings: Settings) -> DocsResult:
+async def read_docs(request: ReadDocsRequest, settings: Settings) -> ReadDocsResult:
     """Lists available offline documents or reads the topic `request` names.
 
     Raises:
@@ -1501,9 +1501,9 @@ async def docs(request: DocsRequest, settings: Settings) -> DocsResult:
     del settings
     if request.topic is None:
         entries = await asyncio.to_thread(document_summaries, request.section)
-        return DocsResult(entries=entries)
+        return ReadDocsResult(entries=entries)
     document = await asyncio.to_thread(resolve_document, request.topic, request.section)
-    return DocsResult(document=document)
+    return ReadDocsResult(document=document)
 
 
 def _load_validated[Loaded](
@@ -1627,9 +1627,9 @@ async def _child(directory: Path, limit: int) -> tuple[ScriptOutput, int]:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = _pipes(process)
-        (out, out_cut), (err, err_cut) = await asyncio.gather(
-            _read_capped(stdout, limit), _read_capped(stderr, limit)
+        stdout_pipe, stderr_pipe = _pipes(process)
+        (stdout, stdout_truncated), (stderr, stderr_truncated) = await asyncio.gather(
+            _read_capped(stdout_pipe, limit), _read_capped(stderr_pipe, limit)
         )
         code = await process.wait()
     except BaseException:
@@ -1637,7 +1637,9 @@ async def _child(directory: Path, limit: int) -> tuple[ScriptOutput, int]:
             process.kill()
             await process.wait()
         raise
-    output = ScriptOutput(stdout=out, stderr=err, truncated=out_cut or err_cut)
+    output = ScriptOutput(
+        stdout=stdout, stderr=stderr, truncated=stdout_truncated or stderr_truncated
+    )
     return output, code
 
 
@@ -1670,10 +1672,10 @@ async def _read_capped(stream: asyncio.StreamReader, limit: int) -> tuple[str, b
     return text[:limit], dropped or len(text) > limit
 
 
-def _read(path: Path) -> runner.Outcome | None:
-    """The runner's outcome, or None when it exited before writing all of it."""
+def _read(path: Path) -> runner.JobResult | None:
+    """The runner's job result, or None when it exited before writing all of it."""
     try:
-        return runner.OUTCOMES.validate_json(path.read_bytes())
+        return runner.JOB_RESULTS.validate_json(path.read_bytes())
     except FileNotFoundError, ValidationError:
         return None
 

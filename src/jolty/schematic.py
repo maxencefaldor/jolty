@@ -4,7 +4,7 @@
 [`jolty.layout`][jolty.layout] places the instances and routes the wires; this module
 draws them with the standard symbols: zigzag resistors, plate capacitors, coiled
 inductors, triangle diodes, circled sources, diamond controlled sources, and boxes for
-components, with their ports as pins. Each instance carries its id and its value, a
+components, with their ports as pins. Each instance carries its name and its value, a
 ground symbol or a supply flag marks each pin on a rail, and a dot marks where wires
 join.
 
@@ -165,10 +165,10 @@ def _scope(circuit: ir.Circuit, path: str) -> _Scope:
         JoltyError: When no component instance is at `path`.
     """
     scope = _Scope(circuit.top)
-    for id in path.split("/") if path else ():
+    for name in path.split("/") if path else ():
         component = circuit.components.get(scope.component)
-        found = component.instance(id) if component is not None else None
-        reached = scope.prefix + id
+        found = component.instance(name) if component is not None else None
+        reached = scope.prefix + name
         if found is None:
             message = f"no instance is at {reached}"
             raise JoltyError(message)
@@ -280,7 +280,10 @@ def _draw_flag(axes: Axes, name: str, point: Point, side: int) -> None:
     length, tip = 2.2, 0.5
     start = x - length if side < 0 else x
     outline = [(0, 0.45), (length - tip, 0.45), (length, 0), (length - tip, -0.45)]
-    corners = [(start + dx, y + dy) for dx, dy in [*outline, (0, -0.45)]]
+    corners = [
+        (start + offset_x, y + offset_y)
+        for offset_x, offset_y in [*outline, (0, -0.45)]
+    ]
     axes.add_patch(
         Polygon(corners, closed=True, fill=False, edgecolor=_INK, linewidth=_LINE)
     )
@@ -423,7 +426,7 @@ _SYMBOLS: Final[Mapping[str, Callable[[_Pen], None]]] = {
 
 
 def _draw_instance(axes: Axes, placed: Placed, *, marked: bool) -> None:
-    """An instance's symbol, its id and its value, or a box for a component."""
+    """An instance's symbol, its name and its value, or a box for a component."""
     color = _MARKED if marked else _INK
     label = f"! {placed.name}" if marked else placed.name
     x, y = placed.origin

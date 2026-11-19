@@ -128,13 +128,13 @@ _CHARACTER: Final = 0.2
 """The width of a character of a box's labels, in grid units."""
 
 
-def _box(ports: list[tuple[str, ir.Role]], name: str, id: str) -> Shape:
+def _box(ports: list[tuple[str, ir.Role]], name: str, instance: str) -> Shape:
     """A box with signal ports on its sides, supplies on top and grounds below.
 
     Inputs go on the left and outputs on the right, and other signals fill the sides in
     turn, the left first, to balance them. The box is wide enough to write the
     component's function, and its arguments below it, between the names of its side
-    ports, and to write the instance's id between its upper-left corner and its first
+    ports, and to write the instance's name between its upper-left corner and its first
     supply.
     """
     inputs = [port for port, role in ports if role is ir.Role.INPUT]
@@ -149,7 +149,7 @@ def _box(ports: list[tuple[str, ir.Role]], name: str, id: str) -> Shape:
     title, arguments = split_name(name)
     inside = max(len(title), len(arguments))
     text = max(map(len, left), default=0) + max(map(len, right), default=0) + inside
-    beside = len(supplies) + math.ceil(_CHARACTER * len(id)) if supplies else 0
+    beside = len(supplies) + math.ceil(_CHARACTER * len(instance)) if supplies else 0
     half_width = max(len(grounds), beside, math.ceil(_CHARACTER * text / 2) + 1)
     half_height = max(len(left), len(right), 1)
     pins: dict[str, Point] = {}
@@ -397,29 +397,31 @@ def _rows(
     stacks: dict[int, list[str]] = {}
     for instance in instances:
         stacks.setdefault(columns[instance.name], []).append(instance.name)
-    rows = {id: index for stack in stacks.values() for index, id in enumerate(stack)}
+    rows = {
+        name: index for stack in stacks.values() for index, name in enumerate(stack)
+    }
     sums: dict[str, int] = {}
     counts: dict[str, int] = {}
-    for id, shared in nets.items():
+    for name, shared in nets.items():
         for net in shared:
-            sums[net] = sums.get(net, 0) + rows[id]
+            sums[net] = sums.get(net, 0) + rows[name]
             counts[net] = counts.get(net, 0) + 1
 
-    def barycenter(id: str) -> tuple[bool, float]:
+    def barycenter(name: str) -> tuple[bool, float]:
         """An instance's sort key: whether it is alone, then its neighbors' mean row."""
-        others = sum(counts[net] - 1 for net in nets[id])
+        others = sum(counts[net] - 1 for net in nets[name])
         if not others:
-            return True, rows[id]
-        return False, sum(sums[net] - rows[id] for net in nets[id]) / others
+            return True, rows[name]
+        return False, sum(sums[net] - rows[name] for net in nets[name]) / others
 
     for _ in range(4):
         for column in sorted(stacks):
             stack = stacks[column]
             stack.sort(key=barycenter)
-            for index, id in enumerate(stack):
-                for net in nets[id]:
-                    sums[net] += index - rows[id]
-                rows[id] = index
+            for index, name in enumerate(stack):
+                for net in nets[name]:
+                    sums[net] += index - rows[name]
+                rows[name] = index
     return rows
 
 
@@ -442,40 +444,48 @@ def _place(
         for net in instance.terminals.values():
             column = columns[instance.name]
             earliest[net] = min(earliest.get(net, column), column)
-    by_id = {instance.name: instance for instance in instances}
+    by_name = {instance.name: instance for instance in instances}
     shapes = {instance.name: _shape(instance, circuit) for instance in instances}
     orientations = {
         instance.name: _orientation(instance, roles, earliest) for instance in instances
     }
-    extents = {id: _extent(shapes[id], orientations[id]) for id in by_id}
+    extents = {name: _extent(shapes[name], orientations[name]) for name in by_name}
     anchors = {
-        id: _anchor(by_id[id], shapes[id], orientations[id], roles) for id in by_id
+        name: _anchor(by_name[name], shapes[name], orientations[name], roles)
+        for name in by_name
     }
     slots: dict[int, list[list[str]]] = {}
-    for id in sorted(by_id, key=lambda id: (columns[id], rows[id])):
-        stack = slots.setdefault(columns[id], [])
-        hanging = _hanging(by_id[id], roles)
+    for name in sorted(by_name, key=lambda name: (columns[name], rows[name])):
+        stack = slots.setdefault(columns[name], [])
+        hanging = _hanging(by_name[name], roles)
         if (
             stack
             and hanging is not None
-            and _hanging(by_id[stack[-1][-1]], roles) == hanging
+            and _hanging(by_name[stack[-1][-1]], roles) == hanging
         ):
-            stack[-1].append(id)
+            stack[-1].append(name)
         else:
-            stack.append([id])
+            stack.append([name])
     lines = _lines(slots.values(), extents, anchors)
     placed = []
     x = 0
     for column in sorted(slots):
         stack = slots[column]
-        width = max(_width(extents[id]) for slot in stack for id in slot)
+        width = max(_width(extents[name]) for slot in stack for name in slot)
         pitch = width + _LANE_GAP
         for row, slot in enumerate(stack):
-            for lane, id in enumerate(slot):
-                (left, _), _ = extents[id]
-                origin = (x - left + lane * pitch, lines[row] - anchors[id])
+            for lane, name in enumerate(slot):
+                (left, _), _ = extents[name]
+                origin = (x - left + lane * pitch, lines[row] - anchors[name])
                 placed.append(
-                    Placed(id, by_id[id], shapes[id], origin, orientations[id], column)
+                    Placed(
+                        name,
+                        by_name[name],
+                        shapes[name],
+                        origin,
+                        orientations[name],
+                        column,
+                    )
                 )
         x += (max(map(len, stack)) - 1) * pitch + width + _COLUMN_GAP
     order = {instance.name: index for index, instance in enumerate(instances)}
@@ -492,10 +502,10 @@ def _lines(
     below: dict[int, int] = {}
     for stack in stacks:
         for row, slot in enumerate(stack):
-            for id in slot:
-                (_, bottom), (_, top) = extents[id]
-                above[row] = max(above.get(row, 0), top - anchors[id])
-                below[row] = max(below.get(row, 0), anchors[id] - bottom)
+            for name in slot:
+                (_, bottom), (_, top) = extents[name]
+                above[row] = max(above.get(row, 0), top - anchors[name])
+                below[row] = max(below.get(row, 0), anchors[name] - bottom)
     lines: list[int] = [0]
     for row in range(1, len(above)):
         lines.append(lines[-1] - below[row - 1] - _ROW_GAP - above[row])

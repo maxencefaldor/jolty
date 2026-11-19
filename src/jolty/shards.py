@@ -35,7 +35,7 @@ from jolty.specs import Specs
 def digest(described: Mapping[str, JsonValue]) -> str:
     """A SHA-256 digest, in hexadecimal, of what a shard's numbers depend on.
 
-    It hashes `described`, which says what the shard ran, with jolty's version, its
+    It digests `described`, which says what the shard ran, with jolty's version, its
     [`build`][jolty.files.build] and its [`platform`][jolty.files.platform]: the
     determinism contract holds the bits to one build on one platform.
 
@@ -203,7 +203,7 @@ def monte_carlo(
     failed, spreads_found, passing = spreads(
         shard.analyses, shard.conditions, count, shard.specs
     )
-    analysed = report.MonteCarloReport(
+    analyzed = report.MonteCarloReport(
         samples=shard.samples,
         seed=shard.seed,
         toleranced=shard.toleranced,
@@ -213,7 +213,7 @@ def monte_carlo(
         spreads=spreads_found,
         yield_=passing,
     )
-    return analysed, saved(shard.conditions[0], count, shard.analyses, shard.specs)
+    return analyzed, saved(shard.conditions[0], count, shard.analyses, shard.specs)
 
 
 def spreads(

@@ -49,16 +49,16 @@ class PeriodicSteadyStateCard:
     """Time-domain grid points per period (``psspoints``), if given."""
     harmonics: int | None = None
     """Harmonics requested for spectral output (``harms``), if given."""
-    shooting_iterations: int | None = None
-    """Shooting iteration limit (``sc_iter``), if given."""
+    max_shooting_iterations: int | None = None
+    """Maximum shooting iterations (``sc_iter``), if given."""
     steady_coefficient: float | None = None
     """Steady-state convergence coefficient (``steady_coeff``), if given."""
     max_step: float | None = None
     """Longest time step allowed, in seconds, if given."""
     method: IntegrationMethod | None = None
     """Integration method requested, if given."""
-    uic: bool = False
-    """Whether initial conditions alone start the transient (``uic``)."""
+    operating_point: bool = True
+    """Whether to find the operating point first (False when ``uic`` is set)."""
     statement: Statement | None = None
     """The source statement with its file and line number."""
 
@@ -69,7 +69,7 @@ _PSS_POSITIONALS: Final[tuple[str, ...]] = (
     "oscillator_node",
     "points",
     "harmonics",
-    "shooting_iterations",
+    "max_shooting_iterations",
     "steady_coefficient",
 )
 
@@ -85,7 +85,7 @@ _PSS_ALIASES: Final[dict[str, str]] = {
     "psspoints": "points",
     "harms": "harmonics",
     "harmonics": "harmonics",
-    "sc_iter": "shooting_iterations",
+    "sc_iter": "max_shooting_iterations",
     "steady_coeff": "steady_coefficient",
     "max_step": "max_step",
     "tstep": "max_step",
@@ -305,12 +305,12 @@ def parse_periodic_steady_state(
         oscillator_node=oscillator_node,
         points=reader.positive_int("points", "points"),
         harmonics=reader.positive_int("harmonics", "harmonics"),
-        shooting_iterations=reader.positive_int(
-            "shooting_iterations", "shooting iterations"
+        max_shooting_iterations=reader.positive_int(
+            "max_shooting_iterations", "shooting iterations"
         ),
         steady_coefficient=reader.positive("steady_coefficient", "steady coefficient"),
         max_step=reader.positive("max_step", "max_step"),
         method=_pss_method(raw["method"], statement) if "method" in raw else None,
-        uic="uic" in flags,
+        operating_point="uic" not in flags,
         statement=statement,
     )

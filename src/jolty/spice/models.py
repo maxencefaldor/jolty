@@ -172,7 +172,7 @@ DIODE_KNEES: Final = frozenset(
     name for name, (jolty, _) in DIODE.items() if jolty.endswith("knee_current")
 )
 """A diode card's knee currents, each of which ngspice turns off below
-`SMALLEST_CURRENT`."""
+`MIN_CURRENT`."""
 
 DIODE_SELECTORS: Final = frozenset({"tlev", "tlevc"})
 """A diode card's selectors of its temperature equations, whole numbers."""
@@ -199,8 +199,8 @@ area, which only its checks read; the flag ``D`` that names its type; and HSPICE
 scale ``SCALM``, which ngspice's diode does not have, and which ngspice ignores, as it
 ignores every parameter a model does not have (``inpgmod.c``, lines 157 to 191)."""
 
-SMALLEST_CURRENT: Final = 1e-28
-"""ngspice's ``epsmin`` (``cktinit.c``, line 98), the least saturation current a diode
+MIN_CURRENT: Final = 1e-28
+"""ngspice's ``epsmin`` (``cktinit.c``, line 98), the minimum saturation current a diode
 takes, and below which it turns a knee current off (``diosetup.c``, lines 110 to 130 and
 230)."""
 
@@ -377,7 +377,7 @@ VDMOS: Final[Table] = _table(
         "tcvth vtotc": "threshold_voltage_temperature_coefficient",
         "mu bex": "transconductance_parameter_temperature_exponent",
         "texp0": "drain_resistance_temperature_exponent",
-        "texp1": "quasi_saturation_temperature_exponent",
+        "texp1": "quasi_saturation_resistance_temperature_exponent",
     },
     drifts=("ksubthres", "rd", "rs", "rg", "rb"),
     extra=FLICKER,
@@ -547,8 +547,8 @@ VBIC: Final[Table] = _table(
     {
         "rcx": "extrinsic_collector_resistance",
         "rci": "intrinsic_collector_resistance",
-        "vo v0": "epi_saturation_voltage",
-        "gamm": "epi_doping_parameter",
+        "vo v0": "epitaxial_saturation_voltage",
+        "gamm": "epitaxial_doping_parameter",
         "hrcf": "high_current_collector_factor",
         "rbx": "extrinsic_base_resistance",
         "rbi": "intrinsic_base_resistance",
@@ -566,7 +566,7 @@ VBIC: Final[Table] = _table(
         "aje": "base_emitter_smoothing",
         "cbco cbc0": "base_collector_overlap_capacitance",
         "cjc": "base_collector_capacitance",
-        "qco qc0": "epi_charge",
+        "qco qc0": "epitaxial_charge",
         "cjep": "extrinsic_base_collector_capacitance",
         "pc": "base_collector_potential",
         "mc": "base_collector_grading",
@@ -657,11 +657,11 @@ VBIC_LEVELS: Final = frozenset({4.0, 9.0})
 """The levels of a bipolar transistor's card at which ngspice selects VBIC."""
 
 VBIC_RESISTANCES: Final = ("rcx", "rci", "rbx", "rbi", "re", "rs", "rbp")
-"""A VBIC card's resistances, each of which ngspice raises to `VBIC_LEAST_RESISTANCE`
+"""A VBIC card's resistances, each of which ngspice raises to `VBIC_MIN_RESISTANCE`
 where a card gives it below that, and divides by the area."""
 
-VBIC_LEAST_RESISTANCE: Final = 0.01
-"""The least resistance ngspice's VBIC takes from a card, in ohms, its ``R_MIN``."""
+VBIC_MIN_RESISTANCE: Final = 0.01
+"""The minimum resistance ngspice's VBIC takes from a card, in ohms, its ``R_MIN``."""
 
 BIPOLAR_ABSENT_AT_ZERO: Final = frozenset(
     {"vaf", "va", "var", "vb", "ikf", "ik", "ikr", "irb", "vtf", "iss"}
@@ -738,8 +738,8 @@ VBIC_INSTANCE: Final = frozenset({"area", "m", "ic", "icvbe", "icvce"})
 card, and its initial conditions, which only act where a transient skips its operating
 point."""
 
-VBIC_LEAST_THERMAL_CAPACITANCE: Final = 1e-12
-"""The least thermal capacitance ngspice's VBIC takes from a card that gives a thermal
+VBIC_MIN_THERMAL_CAPACITANCE: Final = 1e-12
+"""The minimum thermal capacitance ngspice's VBIC takes from a card that gives a thermal
 resistance, in joules per kelvin."""
 
 CONSTRUCTIONS: Final = {1.0: "vertical", -1.0: "lateral"}
@@ -860,7 +860,7 @@ DEFAULT_RESISTOR_LENGTH: Final = 10e-6
 (``ressetup.c``, line 32); a capacitor's is 0, its card's ``DEFL`` unread
 (``capsetup.c``, line 96)."""
 
-LEAST_RESISTANCE: Final = 1e-3
+MIN_RESISTANCE: Final = 1e-3
 """The resistance, in ohms, of a resistor of a card that gives it none, nor a sheet
 resistance its geometry makes one of (``restemp.c``, line 79)."""
 
@@ -968,7 +968,7 @@ def geometric(
                 raise statement.fail(message)
             value = long / wide * sheet
         else:
-            value = values.get("r", LEAST_RESISTANCE)
+            value = values.get("r", MIN_RESISTANCE)
         if "kf" in drift and sized:
             drift["kf"] /= _noise_area(card, values, long, wide, statement)
     else:
@@ -1371,15 +1371,15 @@ def _diode(
         DIODE[name][0]: _whole(card, name, values.pop(name), statement)
         for name in DIODE_SELECTORS & values.keys()
     }
-    # A knee current below `SMALLEST_CURRENT` turns its effect off; a saturation current
+    # A knee current below `MIN_CURRENT` turns its effect off; a saturation current
     # below it is raised to it.
     values = {
         name: value
         for name, value in values.items()
-        if name not in DIODE_KNEES or value >= SMALLEST_CURRENT
+        if name not in DIODE_KNEES or value >= MIN_CURRENT
     }
     for name in {"is", "js"} & values.keys():
-        values[name] = max(values[name], SMALLEST_CURRENT)
+        values[name] = max(values[name], MIN_CURRENT)
     copies = instance.get("m", 1.0)
     sized = "w" in instance or "l" in instance
     area = instance.get("area", 1.0 if sized else geometry["area"])
@@ -1727,7 +1727,7 @@ def holds(
     return _within(length, lmin, lmax) and _within(width, wmin, wmax)
 
 
-def centre(
+def center(
     card: ModelCard,
     scope: Mapping[str, float],
     *,
@@ -2060,7 +2060,7 @@ def _vbic_read(values: Mapping[str, float]) -> dict[str, float]:
     }
     for name in VBIC_RESISTANCES:
         if name in read:
-            read[name] = max(read[name], VBIC_LEAST_RESISTANCE)
+            read[name] = max(read[name], VBIC_MIN_RESISTANCE)
     return {
         name: value
         for name, value in read.items()
@@ -2094,5 +2094,5 @@ def vbic_heating(
     area = instance.get("area", 1.0) * instance.get("m", 1.0)
     if not (area > 0 and math.isfinite(area)):
         return None
-    capacitance = max(given.get("cth", 0.0), VBIC_LEAST_THERMAL_CAPACITANCE)
+    capacitance = max(given.get("cth", 0.0), VBIC_MIN_THERMAL_CAPACITANCE)
     return resistance / area, capacitance * area

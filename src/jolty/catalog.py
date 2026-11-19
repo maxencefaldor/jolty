@@ -18,7 +18,7 @@ values a decade, for tolerances of 5 %, to E192 for 0.5 % and better.
 Examples:
     >>> values("E12", 1e3, 2e3)
     (1000.0, 1200.0, 1500.0, 1800.0)
-    >>> neighbours("E24", 4.8e3)
+    >>> neighbors("E24", 4.8e3)
     (4700.0, 5100.0)
 """
 
@@ -92,7 +92,7 @@ def values(series: Series, low: float, high: float) -> tuple[float, ...]:
     return tuple(value for value in found if _within(value, low, high))
 
 
-def neighbours(series: Series, value: float) -> tuple[float, float]:
+def neighbors(series: Series, value: float) -> tuple[float, float]:
     """The values of `series` nearest `value` at or below it and at or above it.
 
     Raises:

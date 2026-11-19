@@ -11,7 +11,7 @@ each, and spot checks run again with sampled instances at their circuit's fideli
 evaluates the requirements its ``specs()`` returns, when it defines one, on every run,
 then on each sample of the plan's Monte Carlo analysis and each run of its variants,
 which run at the plan's own conditions and at each corner. It writes the
-[`Outcome`][jolty.runner.Outcome], what was built or why it failed, to
+[`JobResult`][jolty.runner.JobResult], what was built or why it failed, to
 ``DIRECTORY/outcome.json``, the results of the analyses at the plan's
 own conditions to ``DIRECTORY/results.npz``, and the plan's batches of runs, its Monte
 Carlo analysis's and its variants', at the plan's own conditions, to
@@ -249,11 +249,11 @@ class Failure(FrozenModel):
         )
 
 
-type Outcome = Annotated[Built | Failure, Field(discriminator="kind")]
+type JobResult = Annotated[Built | Failure, Field(discriminator="kind")]
 """What a job produced: a circuit, or why the script failed."""
 
-OUTCOMES: Final = TypeAdapter[Outcome](Outcome)
-"""Reads and writes outcomes as JSON."""
+JOB_RESULTS: Final = TypeAdapter[JobResult](JobResult)
+"""Reads and writes job results as JSON."""
 
 
 @dataclass(slots=True)
@@ -298,7 +298,7 @@ class _Structure:
     """The conditions, by their places among the plan's."""
 
 
-def run(job: Job, directory: Path) -> Outcome:
+def run(job: Job, directory: Path) -> JobResult:
     """Runs `job` in this process, writing the results of its analyses to `directory`.
 
     The directories of the scripts come first on the import path while they run, so a
@@ -813,15 +813,15 @@ def _described(
     and the unknowns `traces` names.
     """
     plan, specs = context.plan, context.specs
-    hashed: dict[int, str] = {}
+    digests: dict[int, str] = {}
 
     def circuit_of(condition: _Condition) -> str | None:
         chosen = condition.chosen
         if chosen is None:
             return None
-        if id(chosen.built) not in hashed:
-            hashed[id(chosen.built)] = files.circuit_digest(chosen.built)
-        return hashed[id(chosen.built)]
+        if id(chosen.built) not in digests:
+            digests[id(chosen.built)] = files.circuit_digest(chosen.built)
+        return digests[id(chosen.built)]
 
     options = plan.options.to_json()
     spread = options.pop("parallelism", None)
@@ -871,7 +871,7 @@ def _variants(
     failed, spreads, passing = shards.spreads(planned, found, count, context.specs)
     structures = _structures(context.conditions, {})
     varied = structures[0].simulation.varied(variants) if structures else ()
-    analysed = report.VariantsReport(
+    analyzed = report.VariantsReport(
         runs=count,
         parameters=varied,
         corners=tuple(condition.corner or "" for condition in context.conditions[1:]),
@@ -879,7 +879,7 @@ def _variants(
         spreads=spreads,
         yield_=passing,
     )
-    return analysed, shards.saved(found[0], count, planned, context.specs)
+    return analyzed, shards.saved(found[0], count, planned, context.specs)
 
 
 def _traces(context: _RunContext) -> tuple[str, ...]:
@@ -1223,7 +1223,7 @@ def main(argv: list[str] | None = None) -> None:
     (argument,) = sys.argv[1:] if argv is None else argv
     directory = Path(argument)
     job = Job.model_validate_json((directory / JOB).read_bytes())
-    (directory / OUTCOME).write_bytes(OUTCOMES.dump_json(run(job, directory)))
+    (directory / OUTCOME).write_bytes(JOB_RESULTS.dump_json(run(job, directory)))
 
 
 if __name__ == "__main__":

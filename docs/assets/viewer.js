@@ -197,7 +197,7 @@ const atFrame = (values, at = frame) => (values ? values[Math.min(at, values.len
 const voltageUnit = (at = analysis()) => (at?.kind === "ac" ? "V/V" : "V");
 const globalNet = (local) => view().nets[local] ?? local;
 const voltage = (global, at = frame) => (global === data.ground ? 0 : atFrame(analysis()?.nets[global], at));
-const level = (global, at = frame) => {
+const readLogicLevel = (global, at = frame) => {
   const values = analysis()?.logic?.[global];
   return values ? atFrame(values, at) : undefined;
 };
@@ -609,7 +609,7 @@ function computePowerPeak() {
 
 function paint() {
   for (const trace of traces) {
-    const logicLevel = level(trace.global);
+    const logicLevel = readLogicLevel(trace.global);
     let color;
     if (logicLevel !== undefined) color = logicLevel === null ? new THREE.Color("#c9a14a") : new THREE.Color(logicLevel ? "#f2d31b" : "#3b528b");
     else color = colorOf(trace.net.role === "ground" ? 0 : voltage(trace.global));

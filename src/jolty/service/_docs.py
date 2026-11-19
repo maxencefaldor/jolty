@@ -80,7 +80,7 @@ class Document(DocumentSummary):
     content: str = Field(description="The full UTF-8 text of the document.")
 
 
-class DocsRequest(FrozenModel):
+class ReadDocsRequest(FrozenModel):
     """List or read jolty's offline guide pages and example scripts."""
 
     topic: CliPositionalArg[str | None] = Field(

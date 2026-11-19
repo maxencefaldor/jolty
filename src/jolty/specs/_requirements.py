@@ -45,9 +45,6 @@ from jolty.units import (
     format_si,
 )
 
-type Plain = results.Plain
-"""The unit of a measure that reads a plain number: none for a ratio."""
-
 type Bound = Quantity | float
 """A bound: a quantity, or a number for a measure in dB, degrees or percent."""
 
@@ -127,7 +124,7 @@ class Reading:
     """What a measure read: a value in SI base units, and its unit."""
 
     value: float
-    unit: Dimension | Plain
+    unit: Dimension | results.Plain
 
     @property
     def dimension(self) -> Dimension:
@@ -140,12 +137,12 @@ class ResolvedMeasure:
     """A measure resolved for the engine to read, against one kind of result.
 
     Its `measure` holds its signals as the indices of the result's unknowns, and its
-    times, levels and frequencies in SI base units, so the engine reads it without
+    times, values and frequencies in SI base units, so the engine reads it without
     Python.
     """
 
     measure: _core.Measure
-    unit: Dimension | Plain
+    unit: Dimension | results.Plain
     """The unit of what the engine reads."""
     explain: Callable[[_core.MeasureError], str] = field(repr=False, compare=False)
     """Says in words why the engine could not read a result, from its error."""
@@ -220,7 +217,7 @@ class Measure:
     analysis: str
     description: str
     """What the measure reads, such as ``gain of out at 1 kHz``."""
-    plain: Plain | None
+    plain: results.Plain | None
     """The unit of a measure that reads a plain number; None for a quantity."""
     read: Callable[[results.AnalysisResult], Reading] = field(repr=False, compare=False)
     """Reads the measure from the analysis's result; raises a `JoltyError`, or a
@@ -259,9 +256,9 @@ class Measure:
         Raises:
             DimensionError: When the target and the tolerance differ in dimension.
         """
-        centre, spread = _quantity(target), _quantity(tolerance)
+        center, spread = _quantity(target), _quantity(tolerance)
         return Requirement(
-            self, centre - spread, centre + spread, source_location=caller()
+            self, center - spread, center + spread, source_location=caller()
         )
 
     @override
@@ -890,7 +887,9 @@ def _tag(requirement: Requirement, message: str) -> str:
     return f"{head}\n  = {requirement.source_location}"
 
 
-def _bound_problems(requirement: Requirement, unit: Dimension | Plain) -> list[str]:
+def _bound_problems(
+    requirement: Requirement, unit: Dimension | results.Plain
+) -> list[str]:
     """Every bound or margin on `requirement` whose dimension differs from `unit`."""
     expected = Reading(0.0, unit)
     problems: list[str] = []

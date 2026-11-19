@@ -42,16 +42,16 @@ V/√Hz."""
 
 @dataclass(frozen=True, slots=True)
 class Dimension:
-    """The exponents of the SI base units kilogram, metre, second, ampere and kelvin."""
+    """The exponents of the SI base units kilogram, meter, second, ampere and kelvin."""
 
     kilogram: Exponent = 0
-    metre: Exponent = 0
+    meter: Exponent = 0
     second: Exponent = 0
     ampere: Exponent = 0
     kelvin: Exponent = 0
 
     def _exponents(self) -> tuple[Exponent, ...]:
-        return (self.kilogram, self.metre, self.second, self.ampere, self.kelvin)
+        return (self.kilogram, self.meter, self.second, self.ampere, self.kelvin)
 
     def __mul__(self, other: Dimension) -> Dimension:
         """The dimension of a product."""
@@ -93,7 +93,7 @@ class Dimension:
 
 DIMENSIONLESS: Final = Dimension()
 MASS: Final = Dimension(kilogram=1)
-LENGTH: Final = Dimension(metre=1)
+LENGTH: Final = Dimension(meter=1)
 TIME: Final = Dimension(second=1)
 CURRENT: Final = Dimension(ampere=1)
 TEMPERATURE: Final = Dimension(kelvin=1)

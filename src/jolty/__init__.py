@@ -21,7 +21,16 @@ __lazy_modules__ = [
 from importlib.metadata import version
 
 from jolty import devices, files, parts, plan, specs, spice, units, waveforms
-from jolty.builder import Builder, Component, Net, Placed, Terminal, circuit, component
+from jolty.builder import (
+    Builder,
+    Component,
+    Connectable,
+    Net,
+    Placed,
+    Terminal,
+    circuit,
+    component,
+)
 from jolty.errors import (
     BuildError,
     CharacterizationError,
@@ -67,6 +76,7 @@ __all__ = [
     "CharacterizationError",
     "Characterized",
     "Component",
+    "Connectable",
     "Corner",
     "DcSweep",
     "DimensionError",

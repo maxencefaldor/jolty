@@ -319,10 +319,10 @@ def _exponent(doubled: int) -> Exponent:
 
 def _dimension(exponents: tuple[int, int, int, int, int]) -> Dimension:
     """A dimension from the five doubled SI base exponents the engine exports."""
-    kilogram, metre, second, ampere, kelvin = exponents
+    kilogram, meter, second, ampere, kelvin = exponents
     return Dimension(
         kilogram=_exponent(kilogram),
-        metre=_exponent(metre),
+        meter=_exponent(meter),
         second=_exponent(second),
         ampere=_exponent(ampere),
         kelvin=_exponent(kelvin),
@@ -1152,8 +1152,8 @@ def vbic(  # noqa: PLR0913 - VBIC 1.2 has 103 parameters
     polarity: Literal["npn", "pnp"] | None = None,
     extrinsic_collector_resistance: Quantity | None = None,
     intrinsic_collector_resistance: Quantity | None = None,
-    epi_saturation_voltage: Quantity | None = None,
-    epi_doping_parameter: float | None = None,
+    epitaxial_saturation_voltage: Quantity | None = None,
+    epitaxial_doping_parameter: float | None = None,
     high_current_collector_factor: float | None = None,
     extrinsic_base_resistance: Quantity | None = None,
     intrinsic_base_resistance: Quantity | None = None,
@@ -1171,7 +1171,7 @@ def vbic(  # noqa: PLR0913 - VBIC 1.2 has 103 parameters
     base_emitter_smoothing: Quantity | None = None,
     base_collector_overlap_capacitance: Quantity | None = None,
     base_collector_capacitance: Quantity | None = None,
-    epi_charge: Quantity | None = None,
+    epitaxial_charge: Quantity | None = None,
     extrinsic_base_collector_capacitance: Quantity | None = None,
     base_collector_potential: Quantity | None = None,
     base_collector_grading: float | None = None,
@@ -1248,7 +1248,7 @@ def vbic(  # noqa: PLR0913 - VBIC 1.2 has 103 parameters
     emitter_resistance_temperature_exponent: float | None = None,
     substrate_resistance_temperature_exponent: float | None = None,
     parasitic_base_resistance_temperature_exponent: float | None = None,
-    epi_saturation_voltage_temperature_exponent: float | None = None,
+    epitaxial_saturation_voltage_temperature_exponent: float | None = None,
     breakdown_voltage_temperature_coefficient: Quantity | None = None,
     breakdown_voltage_quadratic_temperature_coefficient: Quantity | None = None,
     breakdown_emission_temperature_coefficient: Quantity | None = None,
@@ -1265,8 +1265,8 @@ def vbic(  # noqa: PLR0913 - VBIC 1.2 has 103 parameters
     of the intrinsic collector by Kull's model, the base-emitter breakdown, the
     reach-through of the base-collector junction, and capacitances smoothed at the
     junctions' potentials. Parameters left out take ngspice's defaults, an Early
-    voltage, a knee current, the epi saturation voltage and the transit time's voltage
-    infinite.
+    voltage, a knee current, the epitaxial saturation voltage and the transit time's
+    voltage infinite.
 
     The extrinsic collector, extrinsic base, emitter and substrate resistances add the
     internal unknowns ``collector``, ``base``, ``emitter`` and ``substrate``; the
@@ -1446,7 +1446,7 @@ def vdmos(  # noqa: PLR0913 - ngspice's VDMOS has 49 parameters
     drain_resistance_temperature_exponent: float | None = None,
     drain_resistance_temperature_coefficient: Quantity | None = None,
     drain_resistance_quadratic_temperature_coefficient: Quantity | None = None,
-    quasi_saturation_temperature_exponent: float | None = None,
+    quasi_saturation_resistance_temperature_exponent: float | None = None,
     source_resistance_temperature_coefficient: Quantity | None = None,
     source_resistance_quadratic_temperature_coefficient: Quantity | None = None,
     gate_resistance_temperature_coefficient: Quantity | None = None,

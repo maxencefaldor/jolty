@@ -108,11 +108,11 @@ PREFIX: Final = "sky130_fd_pr__"
 """The prefix of the names of the primitive devices' models."""
 
 SCALE: Final = 1e-6
-"""The length, in metres, that a size of 1 in the kit's netlists stands for: its library
-sets ngspice's ``scale`` to a micrometre."""
+"""The length, in meters, that a size of 1 in the kit's netlists stands for: its library
+sets ngspice's ``scale`` to a micrometer."""
 
 DIFFUSION: Final = 0.29
-"""The length of the diffusion beside each finger, in micrometres, from which the kit's
+"""The length of the diffusion beside each finger, in micrometers, from which the kit's
 xschem symbols estimate a transistor's diffusion areas and perimeters."""
 
 
@@ -165,7 +165,7 @@ def mosfet(
 def written(parameters: Mapping[str, JsonValue]) -> str:
     """The model and the instance parameters a netlist writes for a SKY130 transistor.
 
-    Its sizes are in micrometres, as the kit's library scales them, and its diffusions'
+    Its sizes are in micrometers, as the kit's library scales them, and its diffusions'
     areas and perimeters, and their squares, are estimated from `DIFFUSION`, as the
     kit's xschem symbols estimate them; the multiplier is the kit's ``mult``, for its
     mismatch, and ngspice's ``m``.
@@ -203,7 +203,7 @@ def written(parameters: Mapping[str, JsonValue]) -> str:
     if multiplier < 1:
         message = f"a transistor's multiplier is 1 or more, not {multiplier}"
         raise ValueError(message)
-    wide, long = _micrometres(width), _micrometres(length)
+    wide, long = _micrometers(width), _micrometers(length)
     if not (wide > 0 and math.isfinite(wide) and long > 0 and math.isfinite(long)):
         message = (
             f"a transistor's scaled size is positive and finite, not "
@@ -261,8 +261,8 @@ def inner(element: str, model: str) -> str:
     return f"m.{element}.m{model}".lower()
 
 
-def _micrometres(size: float) -> float:
-    """`size`, in metres, in micrometres, to twelve significant digits."""
+def _micrometers(size: float) -> float:
+    """`size`, in meters, in micrometers, to twelve significant digits."""
     return float(f"{size / SCALE:.12g}")
 
 

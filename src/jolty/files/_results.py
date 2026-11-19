@@ -61,7 +61,7 @@ LOAD_ERRORS: Final = (
 )
 """Exceptions raised when decoding arrays or header metadata from a corrupt archive."""
 
-_OBSERVED: Final = ("currents", "charges", "conductances", "capacitances", "variables")
+_RECORDED: Final = ("currents", "charges", "conductances", "capacitances", "variables")
 """The arrays of what the recorded devices did, by the names of their fields."""
 
 _TRANSFER_LENGTH: Final = 3
@@ -170,10 +170,10 @@ def open_validated[M: BaseModel](
 def circuit_digest(circuit: ir.Circuit) -> str:
     """A SHA-256 digest, in hexadecimal, of what a simulation reads of `circuit`.
 
-    It hashes the circuit in the circuit format without each instance's
+    It digests the circuit in the circuit format without each instance's
     [`SourceLocation`][jolty.ir.SourceLocation], the script line that placed it, which
     names where a problem lies and which no simulation reads: the same circuit built by
-    scripts in two places, or on two machines, hashes alike.
+    scripts in two places, or on two machines, digests alike.
 
     Examples:
         >>> from jolty.ir import Circuit, Component, DeviceOf, Instance, SourceLocation
@@ -204,16 +204,16 @@ def circuit_digest(circuit: ir.Circuit) -> str:
 def build() -> str:
     """A SHA-256 digest of jolty's build: its engine, its Python modules and the Python.
 
-    It hashes the bytes of the engine's library and of every module of the package, by
+    It digests the bytes of the engine's library and of every module of the package, by
     their paths within it, and the interpreter's version, since a measure a script
     writes computes in Python.
     """
-    hashed = hashlib.sha256(Path(_core.__file__).read_bytes())
+    digester = hashlib.sha256(Path(_core.__file__).read_bytes())
     for module in sorted(_PACKAGE.rglob("*.py")):
-        hashed.update(module.relative_to(_PACKAGE).as_posix().encode())
-        hashed.update(module.read_bytes())
-    hashed.update(sys.version.encode())
-    return hashed.hexdigest()
+        digester.update(module.relative_to(_PACKAGE).as_posix().encode())
+        digester.update(module.read_bytes())
+    digester.update(sys.version.encode())
+    return digester.hexdigest()
 
 
 def platform() -> str:
@@ -408,7 +408,7 @@ class _Found(ir.FrozenModel):
     iterations: int | None = None
 
     @classmethod
-    def of(cls, point: results.OperatingPointResult) -> Self:
+    def from_point(cls, point: results.OperatingPointResult) -> Self:
         return cls(strategy=point.strategy, iterations=point.iterations)
 
 
@@ -619,7 +619,7 @@ def save_results(
     """Writes the results of `analyses`, by name, to `path`, of `circuit` and `plan`.
 
     The file states their [`Provenance`][jolty.files.Provenance]: this jolty, its
-    build and the platform, and the hashes of `circuit` and `plan` when they are given.
+    build and the platform, and the digests of `circuit` and `plan` when they are given.
 
     Raises:
         ValueError: When the analyses are of different circuits, or none is given.
@@ -665,7 +665,7 @@ def load_results(
         if circuit is not None and of is not None and of != circuit_digest(circuit):
             message = (
                 f"{path} holds the results of another circuit than the one given: "
-                f"its circuit's hash is {of[:12]}, the one given's "
+                f"its circuit's digest is {of[:12]}, the one given's "
                 f"{circuit_digest(circuit)[:12]}; simulate the circuit again"
             )
             raise JoltyError(message)
@@ -730,21 +730,21 @@ class _Saver:
     def index(self, recording: results.Recording) -> int:
         return self.recordings.setdefault(recording, len(self.recordings))
 
-    def put_observed(
+    def put_recorded(
         self,
         name: str,
         result: results.OperatingPointResult
         | results.DcSweepResult
         | results.TransientResult,
     ) -> None:
-        for field in _OBSERVED:
+        for field in _RECORDED:
             self.arrays[f"{name}.{field}"] = getattr(result, field)
 
     def put_point(self, name: str, point: results.OperatingPointResult) -> _Found:
         self.arrays[f"{name}.values"] = point.values
         self.arrays[f"{name}.logic"] = point.logic
-        self.put_observed(name, point)
-        return _Found.of(point)
+        self.put_recorded(name, point)
+        return _Found.from_point(point)
 
     def save(self, name: str, result: results.AnalysisResult) -> _Entry:
         match result:
@@ -765,7 +765,7 @@ class _Saver:
                 self.arrays[f"{name}.swept"] = result.swept
                 self.arrays[f"{name}.values"] = result.values
                 self.arrays[f"{name}.logic"] = result.logic
-                self.put_observed(name, result)
+                self.put_recorded(name, result)
                 return _DcSweepResult(
                     source=result.source,
                     nature=result.nature,
@@ -786,7 +786,7 @@ class _Saver:
     ) -> _TransientResult | _PeriodicSteadyStateResult:
         self.arrays[f"{name}.times"] = result.times
         self.arrays[f"{name}.values"] = result.values
-        self.put_observed(name, result)
+        self.put_recorded(name, result)
         traces = result.logic
         self.arrays[f"{name}.logic.counts"] = np.array(
             [len(trace.times) for trace in traces], dtype=np.int64
@@ -933,7 +933,7 @@ class _Loader:
             raise IndexError(message)
         return self.recordings[index]
 
-    def observed(
+    def recorded(
         self, name: str, recording: results.Recording
     ) -> results.RecordedValues:
         data = self.data
@@ -956,7 +956,7 @@ class _Loader:
             found.iterations,
             self.header.nets,
             self.data[f"{name}.logic"],
-            **self.observed(name, recording),
+            **self.recorded(name, recording),
         )
 
     def load(self, name: str, entry: _Entry) -> results.AnalysisResult:
@@ -980,7 +980,7 @@ class _Loader:
                     self.data[f"{name}.values"],
                     nets,
                     self.data[f"{name}.logic"],
-                    **self.observed(name, self.recording(entry.recording)),
+                    **self.recorded(name, self.recording(entry.recording)),
                     parameter=entry.parameter,
                     strategies=entry.strategies,
                     iterations=entry.iterations,
@@ -1017,12 +1017,12 @@ class _Loader:
             self.header.nets,
             _traces(self.data, name),
         )
-        observed = self.observed(name, self.recording(entry.recording))
+        recorded = self.recorded(name, self.recording(entry.recording))
         if isinstance(entry, _PeriodicSteadyStateResult):
             return results.PeriodicSteadyStateResult(
-                *waveform_fields, **observed, period=entry.period, periods=entry.periods
+                *waveform_fields, **recorded, period=entry.period, periods=entry.periods
             )
-        return results.TransientResult(*waveform_fields, **observed)
+        return results.TransientResult(*waveform_fields, **recorded)
 
     def load_differentiated(
         self, name: str, entry: _SensitivityResult | _MismatchResult

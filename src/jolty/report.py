@@ -25,10 +25,8 @@ from jolty.devices import LogicLevel, format_logic_level
 from jolty.specs import Spread, Verdict, Yield
 from jolty.units import format_si
 
-type Nature = results.Nature
 
-
-def _shown(value: float, nature: Nature) -> str:
+def _shown(value: float, nature: results.Nature) -> str:
     """`value`, an unknown's of `nature`, with an SI prefix to its unit.
 
     A device's state has no unit, and is written as a plain number.
@@ -73,7 +71,7 @@ class Value(ir.FrozenModel):
     """The value of one unknown, in volts or amperes."""
 
     unknown: str
-    nature: Nature
+    nature: results.Nature
     value: float
 
 
@@ -81,7 +79,7 @@ class Extent(ir.FrozenModel):
     """The values one unknown takes over an analysis, in volts or amperes."""
 
     unknown: str
-    nature: Nature
+    nature: results.Nature
     first: float
     minimum: float
     maximum: float
@@ -178,7 +176,7 @@ class Solutions(ir.FrozenModel):
     """The value of one unknown at each DC solution, in volts or amperes."""
 
     unknown: str
-    nature: Nature
+    nature: results.Nature
     values: tuple[float, ...] = Field(description="Its value at each solution.")
 
 
@@ -225,27 +223,27 @@ class DcSweepReport(ir.FrozenModel):
     kind: Literal["dc_sweep"] = "dc_sweep"
     name: str
     source: str = Field(description="The swept instance's path.")
-    nature: Nature | None = Field(
-        description="Whether its levels are voltages or currents; null for a "
+    nature: results.Nature | None = Field(
+        description="Whether its values are voltages or currents; null for a "
         "parameter's."
     )
     parameter: str | None = Field(
         default=None,
         description="The parameter swept, such as 'resistance'; null for a source's "
-        "level.",
+        "value.",
     )
-    first: float = Field(description="The first level, in SI base units.")
-    last: float = Field(description="The last level, in SI base units.")
+    first: float = Field(description="The first value, in SI base units.")
+    last: float = Field(description="The last value, in SI base units.")
     swept: int = Field(description="Values the sweep solved.")
     iterations: int | None = Field(
         default=None,
         description="The Newton iterations that found the operating points at every "
-        "level, each from the level before it; null for ngspice's, which it does not "
+        "value, each from the value before it; null for ngspice's, which it does not "
         "count.",
     )
     strategies: dict[str, int] = Field(
         default_factory=dict,
-        description="The levels each strategy found the operating point at, by its "
+        description="The values each strategy found the operating point at, by its "
         "name, in the order the sweep first used it; empty for ngspice's, which does "
         "not say.",
     )
@@ -264,13 +262,13 @@ class DcSweepReport(ir.FrozenModel):
             first, last = format_si(self.first, unit), format_si(self.last, unit)
         head = (
             f"{self.name}: DC sweep of {swept} from {first} to {last} "
-            f"in {self.swept} levels"
+            f"in {self.swept} values"
         )
         if self.iterations is not None:
             head += f", {self.iterations} iterations"
         aided = [
-            f"{levels} by {_STRATEGIES.get(strategy, strategy)}"
-            for strategy, levels in self.strategies.items()
+            f"{values} by {_STRATEGIES.get(strategy, strategy)}"
+            for strategy, values in self.strategies.items()
             if strategy != "direct"
         ]
         if aided:
@@ -311,7 +309,7 @@ class AcReport(_FrequencyReport):
         return _join(head, _extents(self.magnitudes), self.unlisted)
 
 
-class ChargeLeak(ir.FrozenModel):
+class NetChargeLeak(ir.FrozenModel):
     """The electrical net with the largest integrated KCL residual over a run."""
 
     net: str = Field(description="The electrical net with the largest absolute leak.")
@@ -339,7 +337,7 @@ class _WaveformReport(ir.FrozenModel):
     )
     extents: tuple[Extent, ...]
     unlisted: int = Field(description="Unknowns and logic nets left out of the list.")
-    charge_leak: ChargeLeak | None = Field(
+    charge_leak: NetChargeLeak | None = Field(
         default=None,
         description="The electrical net with the largest cumulative absolute charge "
         "leak over the run, when nonzero; null when zero, when there are no "
@@ -511,7 +509,7 @@ class NoiseReport(_FrequencyReport):
     reference: str | None = Field(
         description="The node the output voltage is over; null for the ground."
     )
-    nature: Nature = Field(description="What the output is.")
+    nature: results.Nature = Field(description="What the output is.")
     first: float = Field(
         description="The output's noise density at the lowest frequency, in V/√Hz or "
         "A/√Hz."
@@ -529,10 +527,10 @@ class NoiseReport(_FrequencyReport):
     )
     referred: float | None = Field(
         description="The RMS noise referred to the source over the frequencies, in "
-        "the unit of its level; null without a source or for one frequency."
+        "the unit of its value; null without a source or for one frequency."
     )
-    referred_nature: Nature | None = Field(
-        description="What the source's level is; null without a source."
+    referred_nature: results.Nature | None = Field(
+        description="What the source's value is; null without a source."
     )
     contributions: tuple[NoiseContribution, ...] = Field(
         description="The noise sources that make the most noise, the most first."
@@ -647,7 +645,7 @@ class Derivative(ir.FrozenModel):
     )
     at: float | None = Field(
         default=None,
-        description="The level, frequency or time it is largest at, in SI base units; "
+        description="The value, frequency or time it is largest at, in SI base units; "
         "null at an operating point.",
     )
 
@@ -656,7 +654,7 @@ class OutputSensitivity(ir.FrozenModel):
     """An output's derivatives with respect to the parameters."""
 
     output: str
-    nature: Nature
+    nature: results.Nature
     value: float | None = Field(
         default=None,
         description="Its value at the operating point, in volts or amperes; null "
@@ -674,7 +672,7 @@ type Differentiated = Literal[
 """The analysis a sensitivity or a mismatch analysis differentiates."""
 
 _ALONG: Final[dict[Differentiated, str]] = {
-    "dc_sweep": "along a DC sweep at {points} levels",
+    "dc_sweep": "along a DC sweep at {points} values",
     "ac": "over a response at {points} frequencies",
     "transient": "over a transient at {points} times",
     "periodic_steady_state": "over a periodic steady state's period at {points} times",
@@ -808,8 +806,8 @@ class OutputMismatch(ir.FrozenModel):
     """How far an output, or a response's magnitude or phase, spreads, and why."""
 
     output: str
-    nature: Nature
-    part: results.Part | None = Field(
+    nature: results.Nature
+    part: results.PhasorPart | None = Field(
         default=None,
         description="What of a response's phasor spreads, its magnitude or its phase; "
         "null for real values.",
@@ -825,7 +823,7 @@ class OutputMismatch(ir.FrozenModel):
     )
     at: float | None = Field(
         default=None,
-        description="The level, frequency or time it is largest at, in SI base units; "
+        description="The value, frequency or time it is largest at, in SI base units; "
         "null at an operating point.",
     )
     contributions: tuple[MismatchContribution, ...] = Field(
@@ -1029,7 +1027,7 @@ class ShardReport(ir.FrozenModel):
         "a sample as this shard's."
     )
     digest: str = Field(
-        description="The SHA-256 hash of what the shard's numbers depend on, which "
+        description="The SHA-256 digest of what the shard's numbers depend on, which "
         "every shard of one analysis shares."
     )
 
@@ -1130,7 +1128,7 @@ type AnalysisReport = Annotated[
 """The report of any analysis."""
 
 
-def _largest_charge_leak(result: results.TransientResult) -> ChargeLeak | None:
+def _largest_charge_leak(result: results.TransientResult) -> NetChargeLeak | None:
     """The electrical net with the largest absolute charge leak, if nonzero."""
     leak = result.statistics.charge_leak
     if leak is None:
@@ -1146,7 +1144,7 @@ def _largest_charge_leak(result: results.TransientResult) -> ChargeLeak | None:
             worst_index = index
     if worst_index is None:
         return None
-    return ChargeLeak(
+    return NetChargeLeak(
         net=result.unknowns[worst_index].name,
         signed=float(leak.signed[worst_index]),
         absolute=worst_absolute,
@@ -1570,7 +1568,7 @@ def _mismatch(
 ) -> MismatchReport:
     """The report of the mismatch analysis `name`."""
     of, points, unit, point = _differentiated(result.result)
-    parts: tuple[results.Part | None, ...] = (
+    parts: tuple[results.PhasorPart | None, ...] = (
         ("magnitude", "phase") if of == "ac" else (None,)
     )
     listed = min(max_unknowns, len(result.random_variables))
@@ -1602,7 +1600,7 @@ def _mismatch(
 def _output_mismatch(
     result: results.MismatchResult,
     output: str,
-    part: results.Part | None,
+    part: results.PhasorPart | None,
     listed: int,
 ) -> OutputMismatch:
     """How far `output`, or `part` of its phasor, spreads, and why."""

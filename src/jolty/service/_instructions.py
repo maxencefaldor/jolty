@@ -2,7 +2,7 @@
 """Programmatic MCP server instructions derived from code and offline docs.
 
 Introspects jolty's waveforms, devices, real parts, analyses, plan controls, and spec
-measurements lazily on first call, combining them with the current offline
+measures lazily on first call, combining them with the current offline
 documentation URIs so server instructions stay synchronized with the codebase without
 imposing import-time work or coupling `jolty.mcp` to lower layers.
 """
@@ -41,7 +41,7 @@ first operating point's voltages on the schematic, checks specs() verdicts (pass
 marginal, failed, unmeasured, with slack, worst corner and Wilson yield interval), plots
 each analysis except operating points and sensitivities, and saves results to a .npz
 file readable by jolty.files.load_results. plot_results draws other unknowns from saved
-results; measure_results reads any measurement from saved results without running a
+results; measure_results reads any measure from saved results without running a
 simulation; draw_schematic draws the component inside an instance; view_circuit writes a
 standalone 3D HTML viewer; check_circuit checks a saved circuit; cost_circuit prices
 instances against a catalog file; export_kicad_netlist writes a KiCad netlist; and
@@ -265,10 +265,10 @@ def _format_plan_controls() -> str:
 
 
 def _format_specs() -> str:
-    """Formats `Specs`, `specs()`, and every public measurement in `jolty.specs`."""
+    """Formats `Specs`, `specs()`, and every public measure in `jolty.specs`."""
     specs_signature = _compact_signature(specs.Specs)
     header = (
-        f"Specs and measurements (jolty.specs): define specs() returning "
+        f"Specs and measures (jolty.specs): define specs() returning "
         f"Specs{specs_signature} to verify requirements such as "
         'value("op", "out") >= 2 * V across nominal, corners, Monte Carlo (Wilson '
         "interval via wilson) and worst case."
@@ -302,7 +302,7 @@ def _render_instructions(
     """Assembles and caches full instructions for one set of offline doc URIs."""
     header = (
         "Offline documentation and examples (read via MCP resources, read_docs tool, "
-        "or `jolty docs [TOPIC]`):"
+        "or `jolty read-docs [TOPIC]`):"
     )
     templates = (
         f"- Templates: {DOCS_URI_PREFIX}/guide/{{slug}}, "

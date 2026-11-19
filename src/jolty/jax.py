@@ -106,24 +106,24 @@ class _Dtypes:
 
 
 class _Saved:
-    """The pullbacks of the latest forward passes, by a key each, at most `most`."""
+    """The pullbacks of the latest forward passes, up to `max_entries`."""
 
-    def __init__(self, most: int) -> None:
-        self._most = most
+    def __init__(self, max_entries: int) -> None:
+        self._max_entries = max_entries
         self._kept: OrderedDict[int, BatchPullback] = OrderedDict()
         self._keys = itertools.count()
         self._lock = threading.Lock()
 
     def keep(self, pullback: BatchPullback, bound: int) -> int:
-        """Keeps `pullback`, the oldest dropped past `most`, and gives its key.
+        """Keeps `pullback`, the oldest dropped past `max_entries`, and gives its key.
 
         The key is below `bound`, the largest a handle's integers hold.
         """
         with self._lock:
             key = next(self._keys) % bound
-            if self._most > 0:
+            if self._max_entries > 0:
                 self._kept[key] = pullback
-                while len(self._kept) > self._most:
+                while len(self._kept) > self._max_entries:
                     self._kept.popitem(last=False)
             return key
 
@@ -133,15 +133,15 @@ class _Saved:
             return self._kept.get(key)
 
 
-def _static(native: Function) -> None:
-    """Checks that each output of `native`'s batches has a fixed number of points.
+def _static(target: Function) -> None:
+    """Checks that each output of `target`'s batches has a fixed number of points.
 
     Raises:
         ValueError: For a transient or a driven periodic steady state without
             breakpoints, the times its outputs are read at, or for a circuit of a
             foundry's devices, which the engine does not run.
     """
-    analysis = native.analysis
+    analysis = target.analysis
     driven = isinstance(analysis, Transient) or (
         isinstance(analysis, PeriodicSteadyState) and analysis.period is not None
     )
@@ -151,7 +151,7 @@ def _static(native: Function) -> None:
             "so it needs some"
         )
         raise ValueError(message)
-    if native.elaborated.simulator().foundry_devices:
+    if target.elaborated.simulator().foundry_devices:
         message = (
             "jolty.jax runs the circuits the engine simulates, not foundry devices"
         )
@@ -204,7 +204,7 @@ def _rows(theta: npt.ArrayLike) -> tuple[npt.NDArray[np.float64], tuple[int, ...
 
 
 def _pulled(  # noqa: PLR0913 - a backward pass reads its forward pass's whole state
-    native: Function,
+    target: Function,
     names: tuple[_Name, ...],
     saved: _Saved,
     *,
@@ -222,7 +222,7 @@ def _pulled(  # noqa: PLR0913 - a backward pass reads its forward pass's whole s
         members = np.flatnonzero(held[:, 0] == key)
         kept = saved.get(int(key))
         if kept is None:
-            _, kept = native.batch_vjp(names, rows[members])
+            _, kept = target.batch_vjp(names, rows[members])
             runs = np.arange(len(members))
         else:
             runs = held[members, 1]
@@ -232,7 +232,7 @@ def _pulled(  # noqa: PLR0913 - a backward pass reads its forward pass's whole s
 
 
 def _runner(
-    native: Function,
+    target: Function,
     names: tuple[_Name, ...],
     dtypes: _Dtypes,
     saved: _Saved,
@@ -243,10 +243,10 @@ def _runner(
     says, which its type does not state, so each call's result is cast to it.
     """
     shapes = {
-        name: jax.ShapeDtypeStruct((native.points,), dtypes.output)
-        for name in native.unknowns
+        name: jax.ShapeDtypeStruct((target.points,), dtypes.output)
+        for name in target.unknowns
     }
-    if native.oscillates:
+    if target.oscillates:
         shapes[PERIOD] = jax.ShapeDtypeStruct((), dtypes.real)
     gradient = jax.ShapeDtypeStruct((len(names),), dtypes.real)
     handles = jax.ShapeDtypeStruct((_HANDLE_INTEGERS,), dtypes.handle)
@@ -262,11 +262,11 @@ def _runner(
 
     def forward(theta: npt.ArrayLike) -> object:
         rows, batch = _rows(theta)
-        return shaped(native.batch(names, rows), batch)
+        return shaped(target.batch(names, rows), batch)
 
     def saving(theta: npt.ArrayLike) -> object:
         rows, batch = _rows(theta)
-        outputs, pullback = native.batch_vjp(names, rows)
+        outputs, pullback = target.batch_vjp(names, rows)
         key = saved.keep(pullback, bound)
         held = np.stack([np.full(len(rows), key), np.arange(len(rows))], axis=-1)
         held = held.astype(dtypes.handle).reshape((*batch, _HANDLE_INTEGERS))
@@ -283,7 +283,7 @@ def _runner(
             for name, value in cotangent.items()
         }
         handles = np.asarray(held).reshape(len(rows), _HANDLE_INTEGERS)
-        pulled = _pulled(native, names, saved, rows=rows, held=handles, cotangent=given)
+        pulled = _pulled(target, names, saved, rows=rows, held=handles, cotangent=given)
         return pulled.astype(dtypes.real).reshape((*batch, len(names)))
 
     @jax.custom_vjp
@@ -344,8 +344,8 @@ def function(
         ValueError: For a circuit of a foundry's devices, or a transient or a driven
             periodic steady state without breakpoints.
     """
-    native = Function(circuit_or_top, analysis, options)
-    _static(native)
+    target = Function(circuit_or_top, analysis, options)
+    _static(target)
     saved = _Saved(saved_pullbacks)
     lock = threading.Lock()
     runners: dict[tuple[_Structure, _Dtypes], jax.custom_vjp[JaxOutputs]] = {}
@@ -355,7 +355,7 @@ def function(
         real = np.dtype(jax.dtypes.canonicalize_dtype(np.float64))
         output = (
             np.dtype(jax.dtypes.canonicalize_dtype(np.complex128))
-            if isinstance(native.analysis, Ac)
+            if isinstance(target.analysis, Ac)
             else real
         )
         dtypes = _Dtypes(
@@ -365,12 +365,12 @@ def function(
         with lock:
             run = runners.get(key)
         if run is None:
-            native.elaborated.check(dict(structure))
+            target.elaborated.check(dict(structure))
             names = tuple((path, name) for path, named in structure for name in named)
             with lock:
                 run = runners.get(key)
                 if run is None:
-                    run = _runner(native, names, dtypes, saved)
+                    run = _runner(target, names, dtypes, saved)
                     runners[key] = run
         theta = (
             jnp.stack([leaf.astype(real) for leaf in leaves])
