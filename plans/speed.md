@@ -38,7 +38,7 @@ On machine D (18 November), the mesh runs 7.07× faster on 24 threads than seria
 **An agent's command end to end** (machine D, 18 November, item 8): `jolty simulate bjt_amp.py` takes 951.7 ms without images, 1,336.9 ms with schematic only, and 2,101.0 ms with schematic and plots, against 3.8 ms for `ngspice -b` (553× slower at defaults); the engine itself takes 1.24 ms (0.13%), while cold `import jolty` takes 440 ms and runs twice because `jolty.runner` spawns a fresh child Python process.
 **Not measured yet:** anything above 350,004 unknowns.
 
-**Memory, the first wall at ten million devices** (counted from the code, estimates): about 1.4 KB of group state per MOSFET and 1–2 KB of global arrays; every unknown recorded at every time point, 2.1 GiB for the 50,000 chain; a heap string per unknown; 32-bit indices that cap the slab, the unknowns and the matrix entries at about 1.4 × 10⁸ MOSFETs (item 10).
+**Memory, the first wall at ten million devices** (counted from the code, estimates): about 1.4 KB of group state per MOSFET and 1 to 2 KB of global arrays; every unknown recorded at every time point, 2.1 GiB for the 50,000 chain; a heap string per unknown; 32-bit indices that cap the slab, the unknowns and the matrix entries at about 1.4 × 10⁸ MOSFETs (item 10).
 
 ## 3. Gaps
 
@@ -70,11 +70,11 @@ A fixture that gets faster while another gets slower is a finding to explain, no
     Its results passed the fixture's 4 GiB, from more steps since SPICE's charge tolerance; it ran with 16.
 - **Traced** (16 November, machine A, the 5,000 chain profiled at each thread count, `profile-5000-by-threads.txt`): evaluating takes 63.6 s serially, 64.5 on 2 threads (it does not spread there at all: the break-even table's least instances per task for 2 threads keeps it in one task), 34.0 on 4, 23.4 on 8 and 18.3 on 16, 3.5× where 16 would allow 16; and everything else stays serial: assembling 10.5 s, factoring 7.4 (the chain is not dissected), solving 3.6, step control 5.0, the rest 1.9, 28 s of the 47 on 16 threads, which bounds the run at 3.3× however fast evaluation becomes.
     6× needs, beyond evaluation spreading well: the gather's assembly spread (item 3b shrinks it), factoring spread for chains (item 4's dissection by cost finds it unprofitable today), step control's per-unknown passes spread, and the 2-thread threshold measured again without the bench's old ordering bias.
-- **Traced again** (16 November evening, machine B at load 1.5–4, the 5,000 chain to 5 ns, main `982c48b`, raw logs, not kept): evaluating takes 3.40 s serially and 1.34 s on 16 threads, 2.5×.
+- **Traced again** (16 November evening, machine B at load 1.5 to 4, the 5,000 chain to 5 ns, main `982c48b`, raw logs, not kept): evaluating takes 3.40 s serially and 1.34 s on 16 threads, 2.5×.
     Each instance costs 150 ns on one thread and about 3× that on 16 threads over both CCDs, while 8 cores of one CCD scale almost perfectly: blocks written on one core are gathered on another, and work stealing moves chunks between cores each iteration.
     The gather barely spreads (0.31 → 0.20 ms; its one supply entry of 20,000 terms is summed on one thread), and threads asleep through the serial passes take about 180 µs per evaluation to wake on 16.
-    Measured and not kept: each task kept on its own thread (rayon broadcast), −4% end to end on 16 threads only, and it would stall a batch's runs on one another; spreading over only as many threads as the work fills, 6–10% faster on 16 threads but 23% slower on 32 (locality lost, SMT siblings spinning), which needs a pool of exactly that size.
-    The largest lever found: spreading the per-unknown passes (`min_unknowns_per_task`, never on by default) makes the 5,000 chain 21–28% faster on 4–16 threads (assembling 0.50 → 0.22 s, step control 0.32 → 0.11 s, evaluation 1.37 → 1.15 s as threads stay awake) but the 500 chain 23–40% slower on 16–32: its break-even is a few hundred to 1,000 unknowns per task, to be measured on large circuits (machine A's sweep reached 14,004 unknowns), not "never"; and a 64-thread run never spreads evaluation, since its break-even there is none.
+    Measured and not kept: each task kept on its own thread (rayon broadcast), −4% end to end on 16 threads only, and it would stall a batch's runs on one another; spreading over only as many threads as the work fills, 6 to 10% faster on 16 threads but 23% slower on 32 (locality lost, SMT siblings spinning), which needs a pool of exactly that size.
+    The largest lever found: spreading the per-unknown passes (`min_unknowns_per_task`, never on by default) makes the 5,000 chain 21 to 28% faster on 4 to 16 threads (assembling 0.50 → 0.22 s, step control 0.32 → 0.11 s, evaluation 1.37 → 1.15 s as threads stay awake) but the 500 chain 23 to 40% slower on 16 to 32: its break-even is a few hundred to 1,000 unknowns per task, to be measured on large circuits (machine A's sweep reached 14,004 unknowns), not "never"; and a 64-thread run never spreads evaluation, since its break-even there is none.
     Open policy: a run confined to the threads its work fills.
 - **Measured on machine D** (18 November, `5efde61`, 24 cores, host load 124 to 315 over its 96): the 300 × 300 mesh runs 7.07× faster on 24 threads than serially (54.56 s to 7.713 s; 3.39× on 2, 5.18× on 4, 6.52× on 8, 6.90× on 16), the same bits on 8 threads and more; the 5,000 chain 2.18× on 16 threads (89.69 s to 41.21 s; 1.91× on 4, 2.11× on 8) and only 1.69× on 24, the same bits on every count; the 50,000 chain takes 489.7 s on 16 threads and 446.8 s on 24, not run serially there.
     On 24 threads the 50,000 chain's time goes 28% to evaluating, 23% to assembling, 18% to factoring, 15% to solving and 12% to step control: the serial passes still bound it.
@@ -132,7 +132,7 @@ A fixture that gets faster while another gets slower is a finding to explain, no
   1. Whether to dissect is decided by computing the cost of the two orderings for the circuit at hand, not by a size threshold, since the break-even differs by kind of circuit: a mesh from about 4,900 unknowns, a chain barely at 35,004.
 - **Also:** `min_instances_per_task` spreads at one task's worth and `min_solves_per_task` at two; they should start at the same multiple.
 - **And the names, as the owner decided** (`naming.md`, choices 8 and 9): `threads` becomes `max_threads`, and the thresholds one family of least sizes per task, `min_solves_per_task`, `min_instances_per_task` (an exact size today) and `min_unknowns_per_task` (a size of the whole circuit today, `min_unknowns_inside`); the break-evens are retaken for the new definitions.
-- **Done when:** a run spreads by default exactly where it pays, results bit-identical on any thread count; `rc_mesh_100`, which the inside-work threshold slows by 23–43%, not slowed.
+- **Done when:** a run spreads by default exactly where it pays, results bit-identical on any thread count; `rc_mesh_100`, which the inside-work threshold slows by 23 to 43%, not slowed.
 - **Result** (`6c6d08d` to `3f1124b`): the owner's names (`max_threads`, `min_solves_per_task`, `min_instances_per_task`, `min_unknowns_per_task`, least sizes per task); every threshold defaults to its break-even on machine A per number of threads (`jolty.plan.BREAK_EVENS`, the guide's table held to it); dissection decided by the two orderings' multiply-adds.
     Serial against the defaults: `ac_wide` −54% on machine A, −48% on this Mac; `rc_mesh_100` −22% and −57%; the chain −40% on the Mac, unchanged on machine A; `bjt_amp` +4.1% on the Mac (its 70 solves spread in tasks of 11).
     The bench's interleaving now alternates its order: the serial run had always followed the 64-thread run, which made spreading look up to 16% better; the break-evens of 15 November (item 2) carry that bias.
@@ -156,7 +156,7 @@ A fixture that gets faster while another gets slower is a finding to explain, no
 
 - **What:** resistors, capacitors, inductors, fixed source entries and a MOSFET's overlap capacitances contribute the same matrix entries at every Newton iteration.
     Summed once per run into a base, each iteration would start from it and add only what varies; a linear device's residual and charge come from the base times the unknowns, so it is not evaluated at all.
-- **Why:** 19–23% of `rc_mesh_100`'s run is evaluation, nearly all of it linear devices; ngspice reloads everything each iteration (`cktload.c`, lines 62–75), so this would lead it.
+- **Why:** 19 to 23% of `rc_mesh_100`'s run is evaluation, nearly all of it linear devices; ngspice reloads everything each iteration (`cktload.c`, lines 62-75), so this would lead it.
 - **Done when:** the meshes' evaluation share falls by a measured amount, bits within rounding, unchanged on any thread count.
 - **Result** (`4e3499a`): a kernel declares itself linear (`Kernel::linear`), its entries evaluated once a run into a base each iteration starts from: `rc_mesh_100` 4.2% faster, its evaluation share 16.3% to 10.9%; the buck 3.4%; results moved by rounding only (3.7e-15 V on the mesh), the same on any thread count.
 - **Left:** the constant entries of nonlinear devices (sources' ±1, fixed series resistances, MOSFET overlaps), which share slots with varying ones.
@@ -167,7 +167,7 @@ A fixture that gets faster while another gets slower is a finding to explain, no
 - **What:** three passes cost more than their work on a circuit of a few dozen unknowns: the slab's two-stage add (devices write blocks, then a gather adds them), the `|J|·|x|` product the convergence test needs, and the error filter's refactorization at each judged step.
 - **Done when:** the buck's iteration costs at most 1.5× ngspice's, with no accuracy given up.
 - **Result, in part** (`3f53643`, `9277c9b`, 16 November): the refactorization's loop tighter and the error filter allocating nothing, the same bits; the buck 848 → 825 ms (−2.8%), `bjt_amp` and `ac_wide` unchanged, the 500 inverters +0.7% from the general condensation's bookkeeping (3,000 unknowns eliminated per factor).
-    The buck's iteration: jolty 2,661–2,697 ns against ngspice's 1,036, evaluation 1,074–1,101 against 433, factoring 449–467 against 95, solving 351–362 against 86; jolty factors 1.35 times an iteration, its error filter refactoring once per judged step, and runs 331,020 iterations to ngspice's 196,438.
+    The buck's iteration: jolty 2,661 to 2,697 ns against ngspice's 1,036, evaluation 1,074 to 1,101 against 433, factoring 449 to 467 against 95, solving 351 to 362 against 86; jolty factors 1.35 times an iteration, its error filter refactoring once per judged step, and runs 331,020 iterations to ngspice's 196,438.
     Still 2.4× ngspice's, not 1.5×: evaluation (item 5) and the filter's factorization are what remain.
 - **Source:** row S4.
 
@@ -279,7 +279,7 @@ A fixture that gets faster while another gets slower is a finding to explain, no
 ### 📋 18. Approximations as knobs that report their own error
 
 - **What:** bypass, multirate integration and partitioned relaxation, the FastSPICE methods, each a knob a run opts into, never a default, each run reporting the measured defect of the whole circuit's equations.
-- **Why:** FastSPICE tools claim 10–1000× on very large mostly quiet circuits, at 10–15% error.
+- **Why:** FastSPICE tools claim 10 to 1000× on very large mostly quiet circuits, at 10 to 15% error.
 - **Done when:** each knob's runs state their measured defect.
 - **Lead.**
     **Source:** row L3; blueprint §2.3; `AGENTS.md`, "Exact before approximate".
@@ -315,13 +315,13 @@ A fixture that gets faster while another gets slower is a finding to explain, no
 - Meyer's capacitances conserve charge in neither engine: they have no charge function.
     jolty's displacement unknowns give `C(v)·dv/dt` exact derivatives and put error control on the oxide's linear charge; ngspice averages the capacitance over the step.
     VDMOS's gate charge does conserve.
-- A MOSFET's junctions and overlaps are differentiated along their own voltage: 4–12% faster evaluation, the bits moved by at most 3.6e-14 V on the chain and 2.6 µV on the buck.
+- A MOSFET's junctions and overlaps are differentiated along their own voltage: 4 to 12% faster evaluation, the bits moved by at most 3.6e-14 V on the chain and 2.6 µV on the buck.
 - `#[inline(always)]` on the functions that sum a model's derivatives in registers and on the solve's rows above a block, each with its measured reason.
-- Phase 6 partitions by nested dissection, after independent blocks and level scheduling measured 1.0–1.4×.
+- Phase 6 partitions by nested dissection, after independent blocks and level scheduling measured 1.0 to 1.4×.
 - The pivot threshold is a tenth, not KLU's thousandth, for accuracy without row scaling.
 - The remembered operating point keeps a copy of the solver, so later analyses are the same bits whatever ran between: `rc_mesh_300`'s peak memory +26% serially, +42% dissected.
 - One scheduler: a single rayon pool, owned by the caller, runs every level, so nested parallelism never oversubscribes the cores; kernels know nothing of threads (an archived note, not kept).
-- mimalloc is the Python extension's allocator: Monte Carlo at 95.9% of linear on 8 threads, against 64–68%.
+- mimalloc is the Python extension's allocator: Monte Carlo at 95.9% of linear on 8 threads, against 64 to 68%.
 - How speed claims are made is `benchmarks.md`'s: references at their best configuration, engine and end-to-end times, efficiency against attainable throughput.
 
 ## 6. Open principles

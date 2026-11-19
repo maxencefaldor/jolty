@@ -6,7 +6,7 @@ of the output, so a larger swing pinches the channel and lowers the gain to exac
 three. Dividing before the detector scales the JFET's threshold and the diode's drop
 alike. It settles within 100 ms to 2.02 V peak at 995.5 Hz with 0.068 % distortion,
 and drifts +16 % at -40 °C and -11 % at 85 °C, the detector diode's -2 mV/K. Simulate
-it with ``jolty simulate discovery/sine_oscillator/design.py``.
+it with ``jolty simulate docs/discovery/sine_oscillator/design.py``.
 """
 
 import sys

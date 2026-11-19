@@ -709,7 +709,7 @@ def _trace(
 def _si(value: float | None, unit: str | None) -> str:
     """A value with an SI prefix, as reports write it, to six digits."""
     if value is None:
-        return "—"
+        return "-"
     if unit in {"dB", "%", "°", None, ""}:
         return f"{value:.6g} {unit or ''}".strip()
     return EngFormatter(unit=unit, sep=" ", places=None).format_data(value)
@@ -755,7 +755,7 @@ def _specs_section(built: Built) -> list[str]:
 def _reading(verdict: specs.Verdict | None) -> str:
     """A verdict's value, the corner it comes from if any, and its status."""
     if verdict is None:
-        return "—"
+        return "-"
     at = "" if verdict.corner is None else f" at {verdict.corner}"
     return f"{_si(verdict.value, verdict.unit)}{at}, {verdict.status}"
 
@@ -767,7 +767,7 @@ def _difference(ours: specs.Verdict, theirs: specs.Verdict | None) -> str:
     difference says what each engine reads that is not a finite number.
     """
     if theirs is None or theirs.value is None or ours.value is None:
-        return "—"
+        return "-"
     unbounded = [
         f"{engine} reads {_unbounded(value, unit)}"
         for engine, value, unit in (
@@ -826,7 +826,7 @@ def _replication_section(built: Built) -> list[str]:
             cells = []
             for nature in ("voltage", "current"):
                 count, deviation = natures.get(nature, (0, 0.0))
-                cells += [str(count), _ratio(deviation) if count else "—"]
+                cells += [str(count), _ratio(deviation) if count else "-"]
             lines.append(f"| `{name}` | {' | '.join(cells)} |")
         lines.append("")
     if built.entry.free_running:

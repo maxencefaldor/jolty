@@ -76,18 +76,18 @@ The shunt draws current through every write, and a gate in a crossbar would need
 
 | Requirement | jolty | ngspice | Difference |
 | --- | --- | --- | --- |
-| X1/MO:state at 12.5 ns in write ≥ -0.1 and ≤ 0.1 | 0.00109992 at high, passed | — at high, unmeasured | — |
-| X1/MA:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 0.994904 at high, passed | — at high, unmeasured | — |
-| X1/MB:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 0.994904 at high, passed | — at high, unmeasured | — |
-| X2/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1 at low, passed | — at high, unmeasured | — |
-| X2/MA:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 1, passed | — at high, unmeasured | — |
-| X2/MB:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | — at high, unmeasured | — |
-| X3/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1 at low, passed | — at high, unmeasured | — |
-| X3/MA:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | — at high, unmeasured | — |
-| X3/MB:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 1, passed | — at high, unmeasured | — |
-| X4/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1, passed | — at high, unmeasured | — |
-| X4/MA:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | — at high, unmeasured | — |
-| X4/MB:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | — at high, unmeasured | — |
+| X1/MO:state at 12.5 ns in write ≥ -0.1 and ≤ 0.1 | 0.00109992 at high, passed | - at high, unmeasured | - |
+| X1/MA:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 0.994904 at high, passed | - at high, unmeasured | - |
+| X1/MB:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 0.994904 at high, passed | - at high, unmeasured | - |
+| X2/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1 at low, passed | - at high, unmeasured | - |
+| X2/MA:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 1, passed | - at high, unmeasured | - |
+| X2/MB:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | - at high, unmeasured | - |
+| X3/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1 at low, passed | - at high, unmeasured | - |
+| X3/MA:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | - at high, unmeasured | - |
+| X3/MB:state at 12.5 ns in write ≥ 0.95 and ≤ 1.05 | 1, passed | - at high, unmeasured | - |
+| X4/MO:state at 12.5 ns in write ≥ 0.9 and ≤ 1.1 | 1, passed | - at high, unmeasured | - |
+| X4/MA:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | - at high, unmeasured | - |
+| X4/MB:state at 12.5 ns in write ≥ -0.05 and ≤ 0.05 | 0, passed | - at high, unmeasured | - |
 
 ## Replicated in ngspice
 

@@ -26,3 +26,9 @@ def test_a_reading_of_an_exact_zero_is_stated_rather_than_differenced() -> None:
 def test_finite_readings_differ_relative_to_the_larger() -> None:
     # |1 - 1.0001| / 1.0001 is 9.999e-5, written to two digits.
     assert GALLERY["_difference"](_gain(1.0), _gain(1.0001)) == "1.0e-04"
+
+
+def test_missing_gallery_values_use_ascii_hyphen_not_em_dash() -> None:
+    assert GALLERY["_si"](None, "V") == "-"
+    assert GALLERY["_reading"](None) == "-"
+    assert GALLERY["_difference"](_gain(1.0), None) == "-"

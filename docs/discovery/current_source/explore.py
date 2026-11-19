@@ -1,7 +1,7 @@
 # Copyright 2026 Maxence Faldor
 """Each candidate tuned to 1 mA at 12 V and 27 °C, then its line regulation and drift.
 
-Run with ``uv run python discovery/current_source/explore.py``.
+Run with ``uv run python docs/discovery/current_source/explore.py``.
 """
 
 import math

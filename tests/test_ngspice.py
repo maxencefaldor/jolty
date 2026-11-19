@@ -1847,7 +1847,7 @@ def test_operating_points_agree_across_temperatures(
     raw = ngspice.run(netlist(simulation.circuit), "op", temperature=temperature.value)
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))[0]
-        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
+        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
         compare(point.values[column], spice, unknown, scale=abs(spice), tolerance=1e-6)
 
 
@@ -1885,7 +1885,7 @@ def test_dc_sweeps_agree_across_temperatures(
     )
     for column, unknown in compared(simulation):
         spice = raw.real(vector(simulation.circuit, unknown))
-        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
+        # TIGHT (reltol=1e-6) DC sweep agreement vs ngspice.
         compare(
             sweep.values[:, column], spice, unknown, scale=size(spice), tolerance=1e-6
         )
@@ -2892,7 +2892,7 @@ def test_bsim3_ac_responses_agree(name: str) -> None:
     raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
     for column, unknown in compared(simulation):
         spice_value = raw.real(vector(simulation.circuit, unknown))[0]
-        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
+        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
         compare(
             point.values[column],
             spice_value,
@@ -3376,7 +3376,7 @@ def test_vbic_ac_response_agrees() -> None:
     raw = ngspice.run(netlist(simulation.circuit), "op", temperature=kelvins)
     for column, unknown in compared(simulation):
         spice_value = raw.real(vector(simulation.circuit, unknown))[0]
-        # TIGHT (reltol=1e-6) linearized AC phasor agreement vs ngspice.
+        # TIGHT (reltol=1e-6) DC operating-point agreement vs ngspice.
         compare(
             point.values[column],
             spice_value,

@@ -19,7 +19,7 @@ while read -r _ local_commit _ _; do
         continue
     fi
     tree="$(mktemp -d)"
-    trap 'git -C "$root" worktree remove --force "$tree"' EXIT
+    trap 'git -C "$root" worktree remove --force "$tree" 2>/dev/null || rm -rf "$tree"' EXIT
     git -C "$root" worktree add --quiet --detach "$tree" "$local_commit"
     echo "checking $(git -C "$root" log -1 --format='%h %s' "$local_commit")" >&2
     "$tree/scripts/check"

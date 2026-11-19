@@ -8,7 +8,7 @@ cell's output moves 44 mV for each volt of supply; fed by a 2N5457 whose gate is
 source, a current source of its Idss, it moves 0.31 mV, and the JFET's own drift turns
 out to straighten the bandgap's curvature: 1.2414 V within 1.08 mV from -40 °C to
 125 °C, 5.3 ppm/K, with seven parts. Simulate it with
-``jolty simulate discovery/bandgap/design.py``.
+``jolty simulate docs/discovery/bandgap/design.py``.
 """
 
 import sys

@@ -66,16 +66,16 @@ At 300 a side the dissected mesh takes 7.37 s on 64 threads against 27.6 s undis
 
 | Simulator | Kind | Failed | Runs | Rate | 95% Wilson interval |
 | --- | --- | --- | --- | --- | --- |
-| jolty | DC | 0 | 21 | 0% | 0–15% |
-| jolty | transient | 0 | 19 | 0% | 0–17% |
-| ngspice, Sparse | DC | 1 | 25 | 4% | 1–20% |
-| ngspice, Sparse | transient | 0 | 23 | 0% | 0–14% |
+| jolty | DC | 0 | 21 | 0% | 0 to 15% |
+| jolty | transient | 0 | 19 | 0% | 0 to 17% |
+| ngspice, Sparse | DC | 1 | 25 | 4% | 1 to 20% |
+| ngspice, Sparse | transient | 0 | 23 | 0% | 0 to 14% |
 
 On 15 November jolty read 11 of the 15 decks; since `models.md` 7b (`.ic`, `.nodeset`, `EXP`), it reads all 15 decks (48 of 48 runs): on machine D (`5efde61`, 18 November), jolty failed 0 of 25 DC runs (25 agreed) and 0 of 23 transients (6 agreed, 16 solved, 1 disagreed on `impasse/tran`, matching ngspice), while ngspice Sparse failed 1 DC run (`folded_sources/op`) and disagreed on `vreg/dc` and `impasse/tran`.
 The intervals are wide: more cases narrow them (item 8b).
 
 **The precision suite's first diagrams** (`3525ac5`; 16 fixtures, exact answers in mpmath at 50 digits, 2,448 runs; this Mac, load 5.9 to 11.5; `benchmarks/precision/README.md`, results kept out of the repository per `.gitignore`): jolty leads on DC (14.6 correct digits to ngspice's 8.0), noise (15.2 to 8.1, ngspice held by its 2014 electron charge), poles (15.3 to 14.7) and stiff networks with every tolerance scaled (5.1 to 5.4 against 3.2 to 3.9); it loses where `accuracy.md` 4 and 16 to 18 say.
-At equal digits jolty is faster on the RC, RLC and tank, about twice as slow on the networks; at the defaults both get 1.2–3.8 digits on transients.
+At equal digits jolty is faster on the RC, RLC and tank, about twice as slow on the networks; at the defaults both get 1.2 to 3.8 digits on transients.
 
 **The coverage matrix** (`benchmarks/coverage/coverage.json`, 80 rows after v2): jolty offers **62 agreed** (`lib` and `include` now agree inside subcircuits, `vbic` agrees to 8.1e-8 against its exact coupled-KCL closed form, `bsim3` agrees to 3.3e-16 in strong-inversion saturation, plus `corners`, `worst-case`, `switch-voltage`, `switch-current`, `logic`, `ic`, `nodeset`, `pdk-library`, and `four`), **3 documented** (`kit-sky130`, `kit-gf180mcu`, `kit-sg13g2`), **0 failed**, **0 disagreed**, **0 unknown**, and **15 unsupported** (`disto`, `sp`, `trnoise`, `mos2`, `mos6`, `mos9`, `bsimsoi`, `hisim2`, `hicum`, `mesfet`, `jfet2`, `ltra`, `urc`, `xspice`, `osdi`); ngspice Sparse: 49 agreed, 3 reference, 9 solved, 2 disagreed (`sens-ac`, and `disto` whose `disto2` `HD3` returns `-Vt/12` instead of exact `+Vt/12`), 7 documented, 10 unsupported, 0 failed; ngspice KLU: 50 agreed, 9 solved, 1 failed (`sens-ac`), 7 documented, 13 unsupported (including `disto`, which KLU refuses); Xyce serial: 35 agreed, 2 solved, 1 disagreed (`noise`, by its 1973 electron charge), 26 documented, 16 unsupported (all 65 prior cells preserved identically).
 
@@ -127,7 +127,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Result** (on `main`, `d191f1b` to `3945c01`, 16 November, raw logs, not kept): `scripts/bench --view matched | defaults | equal-error`, jolty, ngspice with Sparse and KLU and Xyce, each run's options stated in the table's first row, its time end to end and in its analyses, its distance from jolty's run at matched options; a failed or timed-out run a row saying what stopped it.
     At defaults on machine B: `bjt_amp` 1.06 ms against ngspice's 4.82 ms; `ac_wide` 13.3 against 31.0 ms; the buck 770 against 227 ms (3.4× slower); the 500 inverters 4.59 against 1.17 s; `rc_mesh_100` 645 ms against 12.6 s (Sparse) and 1.60 s (KLU); Xyce slowest on each, past 300 s on the buck.
     At matched options jolty alone finishes the buck (6.2 s; ngspice stops at 1 ns, Xyce at step 14,762).
-    At equal error jolty is fastest on `rc_step`, `rc_ramp`, `lc_tank`, `butterworth_poles` and `rc_noise`, ngspice on the ladders and trees at 0.4–0.8 of jolty's time.
+    At equal error jolty is fastest on `rc_step`, `rc_ramp`, `lc_tank`, `butterworth_poles` and `rc_noise`, ngspice on the ladders and trees at 0.4 to 0.8 of jolty's time.
     **Not the same work:** on the 500 inverters every simulator at its defaults lies a whole swing from jolty's tight run, and 0.18 at matched options.
     **Traced and fixed (`bjt_amp` 3.8e-3, 18 November, machine D, ngspice 47 KLU at `TIGHT` / 300.15 K):** not a model or source difference, purely linear chord sag in `deviations()`'s `np.interp`.
     OP agrees to `2.0e-11` relative (`+3.17e-12 V` on `out`) and AC to `7.5e-13` relative across all 71 frequencies.

@@ -22,8 +22,8 @@ Measured by the precision suite, against answers computed exactly, and by the fa
 
 **Measured for the first time on 15 November** (`benchmarks.md` §2):
 
-- **Against exact answers** (the precision suite, 16 fixtures): jolty leads on DC (14.6 correct digits to ngspice's 8.0), noise (15.2 to 8.1), poles (15.3 to 14.7) and stiff networks (5.1–5.4 to 3.2–3.9); it loses on small RCs, held by the charge tolerance's floor (item 4), on a lossless LC tank its ringing test damps (item 16), on AC near 650 MHz (item 17) and on a 1,000-node ladder whose start needs a step below jolty's shortest (item 18).
-    At the defaults both simulators get only 1.2–3.8 digits on transients.
+- **Against exact answers** (the precision suite, 16 fixtures): jolty leads on DC (14.6 correct digits to ngspice's 8.0), noise (15.2 to 8.1), poles (15.3 to 14.7) and stiff networks (5.1 to 5.4 against 3.2 to 3.9); it loses on small RCs, held by the charge tolerance's floor (item 4), on a lossless LC tank its ringing test damps (item 16), on AC near 650 MHz (item 17) and on a 1,000-node ladder whose start needs a step below jolty's shortest (item 18).
+    At the defaults both simulators get only 1.2 to 3.8 digits on transients.
 - **On hard circuits** (the corpus, 48 cases): on 15 November jolty failed none of the 40 runs it then supported, ngspice 1 of 48.
     Since `models.md` 7b (`.ic`, `.nodeset`, `EXP`), jolty runs all 48 cases (25 DC, 23 transient): on machine D (`5efde61`, 18 November), 0 failed (DC: 25 agreed; transient: 6 agreed, 16 solved, 1 disagreed on `impasse/tran`, the same disagreement as ngspice), while ngspice failed 1 (`folded_sources/op`) and disagreed on `vreg/dc` and `impasse/tran`.
     jolty still needs gmin stepping on one deck where ngspice's Newton iteration alone succeeds, and pseudo-transient continuation on `folded_sources` (items 8 and 9).
@@ -31,7 +31,7 @@ Measured by the precision suite, against answers computed exactly, and by the fa
 **What the research found weaker than the documentation said:**
 
 1. `charge_tolerance` was not SPICE's `chgtol`: jolty allowed `reltol·|q| + chgtol` of charge error per step, SPICE `reltol·max(|q|, chgtol)`, about a thousand times more on a net holding under 10 fC (item 4).
-1. ngspice 47 gives each time step 100 Newton iterations, not 10: it raises any limit below 100 to 100 (`niiter.c`, lines 37–39).
+1. ngspice 47 gives each time step 100 Newton iterations, not 10: it raises any limit below 100 to 100 (`niiter.c`, lines 37-39).
     Measured (item 1).
 1. Gear2's error estimate used the equal-step constant after a step change, up to 7.6 times too small (item 2, fixed).
 
@@ -76,9 +76,9 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ### ✅ 4. `charge_tolerance` with SPICE's meaning
 
-- **What:** a charge's error per time step held to `reltol·max(|q|, chgtol)`, as SPICE and ngspice hold it (`cktterr.c`, lines 40–41), instead of jolty's `reltol·|q| + chgtol`: the option is named after SPICE's, so it must mean SPICE's quantity (`AGENTS.md`, "Knobs").
+- **What:** a charge's error per time step held to `reltol·max(|q|, chgtol)`, as SPICE and ngspice hold it (`cktterr.c`, lines 40-41), instead of jolty's `reltol·|q| + chgtol`: the option is named after SPICE's, so it must mean SPICE's quantity (`AGENTS.md`, "Knobs").
 - **Result** (`f673b49`): every test passing, each failure the first attempt exposed fixed where it arose: the buck's stop at `reltol` 1e-5 came from a real 10 ps settling at a switch's internal source, below jolty's shortest step, now ngspice's (item 18); the NAND gate's, from a near double root at a node only gmin holds, which Newton's contraction rule now carries (item 6); a currents test's bound and the random circuits' charge tolerance derived again; the comparisons now run both engines at the shared default of 1e-14 C.
-    Measured at the defaults: the 500-inverter chain takes 2,448 accepted steps instead of 749 and 5.2–5.4 s instead of 2.33 s, every extra rejection at a p-channel displacement, since jolty judges the whole oxide's charge where ngspice judges Meyer's; at equal error it still takes fewer points than ngspice (2,448 at 0.23 ns mean edge error against ngspice's 3,602 at 0.22 ns).
+    Measured at the defaults: the 500-inverter chain takes 2,448 accepted steps instead of 749 and 5.2 to 5.4 s instead of 2.33 s, every extra rejection at a p-channel displacement, since jolty judges the whole oxide's charge where ngspice judges Meyer's; at equal error it still takes fewer points than ngspice (2,448 at 0.23 ns mean edge error against ngspice's 3,602 at 0.22 ns).
     The buck: 82,710 steps instead of 73,880, 0.77 s instead of 0.69 s, its settled output 3.6 mV off instead of 6.5 mV.
 - **Since resolved:** the buck at `reltol` 3e-6 and 1e-6 was fixed by item 6b (`da286de`), and the gallery and discoveries were rebuilt on the new engine with ngspice 47 (`0552d20`, `c766183`, 16 November).
 - **Source:** row 2; raw logs, not kept.
@@ -118,7 +118,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Why:** the buck at `reltol` 3e-6 and 1e-6 stops at 1.7 ns, where M1's Meyer capacitance turns on with a kink.
 - **Done when:** the buck runs at every `reltol` down to 1e-6.
 - **Result** (`da286de`, 16 November): the diagnosis did not hold: an exact floor, the largest move no equation registers, left the buck stopping at 1.70 ns.
-    The cause was a junction's depletion charge, `1 − (1 − v/φ)^(1−m)` losing its digits near 0 V, 3.5e-25 C at 1 nF, 5e-12 A through a step's weight; computed as `−expm1((1−m)·ln1p(−v/φ))`, with `ln_1p` and `exp_m1` in `Real` and `Dual`, the buck runs at 1.25e-4, 1e-5, 3e-6 and 1e-6, with 13–15% fewer iterations.
+    The cause was a junction's depletion charge, `1 − (1 − v/φ)^(1−m)` losing its digits near 0 V, 3.5e-25 C at 1 nF, 5e-12 A through a step's weight; computed as `−expm1((1−m)·ln1p(−v/φ))`, with `ln_1p` and `exp_m1` in `Real` and `Dual`, the buck runs at 1.25e-4, 1e-5, 3e-6 and 1e-6, with 13 to 15% fewer iterations.
     No floor added.
 - **Source:** the charge tolerance's second attempt.
 
@@ -223,7 +223,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Result** (`ae943be`, 16 November): not a band but the response's size: digits fell as `16 + log10|v(out)|`, an absolute error of ε volts, from 13.8 at 100 MHz to 11.4 at 1 GHz.
     The sweep keeps the pivots it chose at 1 Hz, where conductances rule; with them elimination computes the output as a difference of volts.
     Every solve with `G + jωC` (AC, noise, stability, AC sensitivity, pole-zero) now refines in working precision while Oettli and Prager's componentwise backward error exceeds ε and each step halves it (Higham §12.3; Skeel 1980): 15.6 to 16.5 digits from 1 Hz to 1 GHz, a test holding the RLC within 32 ε.
-    Cost, interleaved against `3945c01` on this Mac: `ac_wide` +10% (20,000 solves of 22 unknowns, the worst case), `bjt_amp` +2%; measured with each complex number's `|re| + |im|` and buffers kept between solves, the modulus and allocation had cost 26–29%.
+    Cost, interleaved against `3945c01` on this Mac: `ac_wide` +10% (20,000 solves of 22 unknowns, the worst case), `bjt_amp` +2%; measured with each complex number's `|re| + |im|` and buffers kept between solves, the modulus and allocation had cost 26 to 29%.
     On `ac_wide` itself ω was already 0.71 ε at the median and 2.3 ε at worst, 13% of solves refined.
 - **Source:** the precision suite's first run.
 
@@ -236,12 +236,12 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ### 🚧 19. The departures found on 15 November added to the guide, ngspice's and Xyce's
 
-- **What:** three found by today's suites: ngspice 47 multiplies a bipolar transistor's base-collector saturation current by the area twice when its card gives no `IBE` or `IBC` (`bjttemp.c`, lines 168, 177–179, 198–202), so `vreg`'s output differs by 8–12 mV; ngspice's AC sensitivity is right only at the first frequency, its `lin` sweep's frequencies growing geometrically (to be checked in its source); Xyce's noise is 9.5e-6 above 4kTR, from its 1973 electron charge.
+- **What:** three found by today's suites: ngspice 47 multiplies a bipolar transistor's base-collector saturation current by the area twice when its card gives no `IBE` or `IBC` (`bjttemp.c`, lines 168, 177-179, 198-202), so `vreg`'s output differs by 8 to 12 mV; ngspice's AC sensitivity is right only at the first frequency, its `lin` sweep's frequencies growing geometrically (to be checked in its source); Xyce's noise is 9.5e-6 above 4kTR, from its 1973 electron charge.
 - **Xyce's, from its agreement tests:** a MOSFET's reverse bulk junction linear, SPICE3f5's, where jolty and ngspice 47 use an exponential with a cubic tail; a bipolar transistor's gmin divided by beta inside the junction current; no noise in its JFET; its JFET's temperature dependence SPICE3f5's; its own excess phase.
     Two unexplained: at 125 °C `nmos_stage`'s output 1.4e-4 from jolty's, and `cmos_inverter`'s 55 µV across its threshold.
     Xyce finds no operating point for `negative_load`, after 7,692 Newton iterations, and stalls on the buck.
 - **Done when:** each stated in `docs/guide/departures.md` with its evidence, ngspice's AC sensitivity checked in its source first, Xyce's two unexplained differences explained.
-- **Result, in part** (`00a9e75`, 16 November): in `departures.md`, ngspice's base-collector saturation current multiplied by the area twice (`bjttemp.c`, lines 168, 177–179, 198–202, read); its AC sensitivity's linear sweep, checked in its source: `inc_freq` tests `SENS_LINEAR` (15) against AC's `LINEAR` (3), so each frequency after the first is the one before times the step (`cktsens.c`, line 831); Xyce's departures in the SPICE guide as `tests/test_xyce.py` names them.
+- **Result, in part** (`00a9e75`, 16 November): in `departures.md`, ngspice's base-collector saturation current multiplied by the area twice (`bjttemp.c`, lines 168, 177-179, 198-202, read); its AC sensitivity's linear sweep, checked in its source: `inc_freq` tests `SENS_LINEAR` (15) against AC's `LINEAR` (3), so each frequency after the first is the one before times the step (`cktsens.c`, line 831); Xyce's departures in the SPICE guide as `tests/test_xyce.py` names them.
     **Left:** Xyce's noise 9.5e-6 above 4kTR, its electron charge to be read in its source; Xyce's two unexplained differences.
 - **Source:** the corpus's and the coverage matrix's first runs.
 

@@ -92,9 +92,13 @@ The plan says how to simulate the circuit, and the specs what its results must s
 
 | Part | What it holds |
 | --- | --- |
+| `crates/jolty-derive` | The derive macros (`Lift`), lifting device parameters across scalar and dual types |
 | `crates/jolty-ir` | The circuit format and its validation |
 | `crates/jolty-numerics` | Sparse LU for circuit matrices, and integration formulas |
+| `crates/jolty-expressions` | The behavioral-source expression language, compiled and differentiated |
 | `crates/jolty-models` | The device models, each a kernel evaluated in parallel |
 | `crates/jolty-engine` | Elaboration, Newton iteration, the analyses and the batch executor |
+| `crates/jolty-checks` | Structural and linearized operating-point rules and diagnostics |
+| `crates/jolty-veriloga` | The Verilog-A compiler and its compiled device kernels |
 | `crates/jolty-python` | The Python extension module `jolty._core` |
 | `src/jolty` | What an agent reads and writes: units, the builder, plans, specs, results, reports, the command line and the MCP server |

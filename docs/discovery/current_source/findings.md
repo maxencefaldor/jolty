@@ -7,7 +7,7 @@ No design of ten parts or fewer met both bounds; the best traded line regulation
 
 `candidates.py` writes each topology as a component with its resistors as arguments.
 `explore.py` tunes each to 1 mA at 12 V and 27 °C by bisection on its resistor, then measures the line regulation over a DC sweep from 3 V to 24 V and the drift at six temperatures, each from the exact terminal currents jolty reports.
-The final design runs through the command line, `jolty simulate discovery/current_source/design.py`, with its corners and the prompt's bound as specs.
+The final design runs through the command line, `jolty simulate docs/discovery/current_source/design.py`, with its corners and the prompt's bound as specs.
 
 ## Results
 

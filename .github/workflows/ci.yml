@@ -91,6 +91,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
+      JOLTY_REQUIRE_NGSPICE: "1"
       CARGO_PROFILE_RELEASE_LTO: "false"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
     steps:

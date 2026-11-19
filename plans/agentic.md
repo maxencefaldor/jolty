@@ -20,7 +20,7 @@ Measured by the old roadmap's item 8: the same tasks done by the same agent with
 - **Twelve analyses** (operating point, operating points, DC sweep, AC, transient, periodic steady state, sensitivity, mismatch, stability, noise, pole-zero and transfer function), batches across threads, shards across machines; bounds on every output (300 s a script, 40 unknowns, 20 diagnostics).
 - **Derivatives:** a JVP and a VJP of every analysis, exact, in Python as `jolty.function`, `jolty.jvp` and `jolty.vjp`, and inside JAX as `jolty.jax.function` (items 12b and 19).
 - **Discovery:** six hard design problems and the circuits an agent found for them with jolty alone (`docs/discovery`).
-- **Item 8's harness** (`benchmarks/compare.py`): both arms, a clean configuration and the platform's sandbox for each session, scorers run confined, failure kinds, Wilson intervals; every analysis counted whatever runs it (item 1); proven on a stub agent.
+- **Item 8's harness** (`benchmarks/agents/compare.py`): both arms, a clean configuration and the platform's sandbox for each session, scorers run confined, failure kinds, Wilson intervals; every analysis counted whatever runs it (item 1); proven on a stub agent.
 
 **None of it is measured on a real agent:** item 8's paid run waits for the owner's credential (item 14).
 

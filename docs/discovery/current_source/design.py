@@ -7,7 +7,7 @@ and its Vbe, follow the line: 17 % over 3 V to 24 V. Here a PNP mirror feeds Q2 
 tenth of the source's own current instead, and the line regulation falls to 2.6 %,
 what the 2N3906's 18.7 V Early voltage leaves. The current is Vbe/Rs, so it still
 falls 0.3 %/K with temperature. Simulate it with
-``jolty simulate discovery/current_source/design.py``.
+``jolty simulate docs/discovery/current_source/design.py``.
 """
 
 import sys

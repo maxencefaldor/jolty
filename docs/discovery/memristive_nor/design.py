@@ -9,7 +9,7 @@ turns them on just above their own. A resistor across the inputs takes the volta
 both-off inputs while barely changing a gate with one input on, and 2.2 kΩ balances
 the inputs' turning on against the output's turning off: every input computes NOR from
 1.14 V to 1.91 V, ±25 % about 1.525 V. Simulate it with
-``jolty simulate discovery/memristive_nor/design.py``.
+``jolty simulate docs/discovery/memristive_nor/design.py``.
 """
 
 import sys

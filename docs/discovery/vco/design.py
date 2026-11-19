@@ -8,7 +8,7 @@ with the 1 nF integrating capacitor steps the triangle towards the next threshol
 twice its current times 2 kΩ at each reversal, the voltage it would have travelled in
 2 µs: a time advance that cancels the delay at every frequency. Every frequency from
 0.5 V to 5 V lies within 0.1 % of 996 Hz/V. Simulate it with
-``jolty simulate discovery/vco/design.py``.
+``jolty simulate docs/discovery/vco/design.py``.
 """
 
 import sys

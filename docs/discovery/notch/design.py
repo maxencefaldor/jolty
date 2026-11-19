@@ -7,7 +7,7 @@ virtual ground through a capacitor and a resistor, which turn them 90° further 
 their currents cancel at the frequency where their magnitudes meet: the parts' values
 place the notch, but cannot make it shallow. Over 200 samples of 1 % resistors and 5 %
 capacitors, every one notches deeper than 65 dB between 45 Hz and 55 Hz. Simulate it
-with ``jolty simulate discovery/notch/design.py``.
+with ``jolty simulate docs/discovery/notch/design.py``.
 """
 
 import sys
