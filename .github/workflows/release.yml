@@ -41,25 +41,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, target: x86_64, manylinux: "2_28", python: "3.15" }
-          - { os: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28", python: "3.15" }
-          - { os: macos-15, target: aarch64, manylinux: "off", python: "3.15" }
-          - { os: macos-15-intel, target: x86_64, manylinux: "off", python: "3.15" }
-          - { os: windows-2025, target: x64, manylinux: "off", python: "3.15" }
-          - { os: ubuntu-24.04, target: x86_64, manylinux: "2_28", python: "3.15t" }
-          - { os: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28", python: "3.15t" }
-          - { os: macos-15, target: aarch64, manylinux: "off", python: "3.15t" }
-          - { os: macos-15-intel, target: x86_64, manylinux: "off", python: "3.15t" }
-          - { os: windows-2025, target: x64, manylinux: "off", python: "3.15t" }
+          # Strip release wheel symbols on Linux and Windows. Keep macOS unstripped
+          # because Apple Command Line Tools 27.2 strip corrupts the Mach-O LINKEDIT
+          # string pool alignment, causing macOS 27.2 dyld to reject the extension
+          # ("mis-aligned LINKEDIT string pool").
+          - { os: ubuntu-24.04, target: x86_64, manylinux: "2_28", python: "3.15", strip: symbols }
+          - { os: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28", python: "3.15", strip: symbols }
+          - { os: macos-15, target: aarch64, manylinux: "off", python: "3.15", strip: none }
+          - { os: macos-15-intel, target: x86_64, manylinux: "off", python: "3.15", strip: none }
+          - { os: windows-2025, target: x64, manylinux: "off", python: "3.15", strip: symbols }
+          - { os: ubuntu-24.04, target: x86_64, manylinux: "2_28", python: "3.15t", strip: symbols }
+          - { os: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28", python: "3.15t", strip: symbols }
+          - { os: macos-15, target: aarch64, manylinux: "off", python: "3.15t", strip: none }
+          - { os: macos-15-intel, target: x86_64, manylinux: "off", python: "3.15t", strip: none }
+          - { os: windows-2025, target: x64, manylinux: "off", python: "3.15t", strip: symbols }
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
+      # Forward CARGO_PROFILE_RELEASE_STRIP into manylinux containers as well as native
+      # host builds so Linux and Windows strip symbols while macOS stays at "none".
       - uses: PyO3/maturin-action@v1
+        env:
+          CARGO_PROFILE_RELEASE_STRIP: ${{ matrix.strip }}
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux }}
+          docker-options: ${{ matrix.manylinux != 'off' && '-e CARGO_PROFILE_RELEASE_STRIP' || '' }}
           args: --release --out dist --interpreter python${{ matrix.python }}
       # The wheel alone in a fresh environment, its dependencies from PyPI, simulates an
       # example and meets its specs; a free-threaded one loads without the GIL.

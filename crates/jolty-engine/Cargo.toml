@@ -9,6 +9,8 @@ repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+# Omit the recorded kernel test corpus from published crates.io tarballs.
+exclude = ["tests/data/kernels.json"]
 
 [dependencies]
 jolty-ir.workspace = true
