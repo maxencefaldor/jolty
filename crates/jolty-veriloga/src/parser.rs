@@ -129,27 +129,33 @@ impl Parser<'_> {
         }
     }
 
+    /// Items parsed by `parse_item`, separated by commas, up to `terminator`.
+    fn comma_separated<T>(
+        &mut self,
+        terminator: &str,
+        mut parse_item: impl FnMut(&mut Self) -> Result<T, Error>,
+    ) -> Result<Vec<T>, Error> {
+        let mut items = vec![parse_item(self)?];
+        while self.eat(",") {
+            items.push(parse_item(self)?);
+        }
+        self.expect(terminator)?;
+        Ok(items)
+    }
+
     /// Names separated by commas, up to the `;` that ends them.
     fn names(&mut self) -> Result<Vec<String>, Error> {
-        let mut names = vec![self.name()?];
-        while self.eat(",") {
-            names.push(self.name()?);
-        }
-        self.expect(";")?;
-        Ok(names)
+        self.comma_separated(";", Self::name)
     }
 
     fn module(&mut self) -> Result<Module, Error> {
         self.expect_keyword("module")?;
         let name = self.name()?;
-        let mut ports = Vec::new();
-        if self.eat("(") && !self.eat(")") {
-            ports.push(self.name()?);
-            while self.eat(",") {
-                ports.push(self.name()?);
-            }
-            self.expect(")")?;
-        }
+        let ports = if self.eat("(") && !self.eat(")") {
+            self.comma_separated(")", Self::name)?
+        } else {
+            Vec::new()
+        };
         self.expect(";")?;
         let mut module = Module {
             name,
@@ -262,21 +268,69 @@ impl Parser<'_> {
     fn attributes(&mut self) -> Result<BTreeMap<String, String>, Error> {
         let mut attributes = BTreeMap::new();
         while self.eat("(*") {
-            loop {
-                let name = self.name()?;
-                self.expect("=")?;
-                let Some(Token::Text(value)) = self.next() else {
-                    self.at -= 1;
-                    return Err(self.error("expected an attribute's text"));
+            attributes.extend(self.comma_separated("*)", |parser| {
+                let name = parser.name()?;
+                parser.expect("=")?;
+                let Some(Token::Text(value)) = parser.next() else {
+                    parser.at -= 1;
+                    return Err(parser.error("expected an attribute's text"));
                 };
-                attributes.insert(name, value);
-                if !self.eat(",") {
-                    break;
-                }
-            }
-            self.expect("*)")?;
+                Ok((name, value))
+            })?);
         }
         Ok(attributes)
+    }
+
+    /// Consumes an optional `integer` or `real` type keyword.
+    fn optional_type(&mut self) -> Option<Type> {
+        if self.keyword("integer") {
+            Some(Type::Integer)
+        } else if self.keyword("real") {
+            Some(Type::Real)
+        } else {
+            None
+        }
+    }
+
+    /// Parses comma-separated `name = expr` declarations terminated by `;`, allowing
+    /// `from`/`exclude` ranges for `parameter` declarations and rejecting arrays and
+    /// ranges for `localparam` declarations.
+    fn declaration_entries<T>(
+        &mut self,
+        allow_ranges: bool,
+        out: &mut Vec<T>,
+        mut build: impl FnMut(usize, String, Expression, Vec<Range>) -> T,
+    ) -> Result<(), Error> {
+        let entries = self.comma_separated(";", |parser| {
+            let line = parser.line();
+            let name = parser.name()?;
+            if !allow_ranges && parser.eat("[") {
+                return Err(Error::at(
+                    line,
+                    "an array localparam is not compiled yet".into(),
+                ));
+            }
+            parser.expect("=")?;
+            let value = parser.expression()?;
+            let mut ranges = Vec::new();
+            loop {
+                let range_line = parser.line();
+                let exclude = if parser.keyword("from") {
+                    false
+                } else if parser.keyword("exclude") {
+                    true
+                } else {
+                    break;
+                };
+                if !allow_ranges {
+                    return Err(Error::at(range_line, "a localparam takes no range".into()));
+                }
+                ranges.push(parser.range(exclude)?);
+            }
+            Ok(build(line, name, value, ranges))
+        })?;
+        out.extend(entries);
+        Ok(())
     }
 
     /// The parameters of one `parameter` declaration, each with its ranges.
@@ -285,42 +339,16 @@ impl Parser<'_> {
         attributes: &BTreeMap<String, String>,
         parameters: &mut Vec<Parameter>,
     ) -> Result<(), Error> {
-        let kind = if self.keyword("integer") {
-            Type::Integer
-        } else {
-            self.keyword("real");
-            Type::Real
-        };
-        loop {
-            let line = self.line();
-            let name = self.name()?;
-            self.expect("=")?;
-            let default = self.expression()?;
-            let mut ranges = Vec::new();
-            loop {
-                let exclude = if self.keyword("from") {
-                    false
-                } else if self.keyword("exclude") {
-                    true
-                } else {
-                    break;
-                };
-                ranges.push(self.range(exclude)?);
-            }
-            parameters.push(Parameter {
-                name,
-                kind,
-                default,
-                ranges,
-                description: attributes.get("desc").cloned(),
-                units: attributes.get("units").cloned(),
-                line,
-            });
-            if !self.eat(",") {
-                break;
-            }
-        }
-        self.expect(";")
+        let kind = self.optional_type().unwrap_or(Type::Real);
+        self.declaration_entries(true, parameters, |line, name, default, ranges| Parameter {
+            name,
+            kind,
+            default,
+            ranges,
+            description: attributes.get("desc").cloned(),
+            units: attributes.get("units").cloned(),
+            line,
+        })
     }
 
     /// The constants of one `localparam` declaration:
@@ -329,26 +357,14 @@ impl Parser<'_> {
         &mut self,
         local_parameters: &mut Vec<LocalParameter>,
     ) -> Result<(), Error> {
-        let type_line = self.line();
+        let line = self.line();
         if self.keyword("string") {
             return Err(Error::at(
-                type_line,
+                line,
                 "a string localparam is not compiled yet".into(),
             ));
         }
-        if self.keyword("signed") || self.keyword("unsigned") {
-            return Err(Error::at(
-                type_line,
-                "a signed or unsigned localparam is not compiled yet".into(),
-            ));
-        }
-        let kind = if self.keyword("integer") {
-            Some(Type::Integer)
-        } else if self.keyword("real") {
-            Some(Type::Real)
-        } else {
-            None
-        };
+        let kind = self.optional_type();
         let modifier_line = self.line();
         if self.keyword("signed") || self.keyword("unsigned") {
             return Err(Error::at(
@@ -362,32 +378,14 @@ impl Parser<'_> {
                 "a vector range on a localparam is not compiled yet".into(),
             ));
         }
-        loop {
-            let line = self.line();
-            let name = self.name()?;
-            if self.eat("[") {
-                return Err(Error::at(
-                    line,
-                    "an array localparam is not compiled yet".into(),
-                ));
-            }
-            self.expect("=")?;
-            let value = self.expression()?;
-            let range_line = self.line();
-            if self.keyword("from") || self.keyword("exclude") {
-                return Err(Error::at(range_line, "a localparam takes no range".into()));
-            }
-            local_parameters.push(LocalParameter {
+        self.declaration_entries(false, local_parameters, |line, name, value, _| {
+            LocalParameter {
                 name,
                 kind,
                 value,
                 line,
-            });
-            if !self.eat(",") {
-                break;
             }
-        }
-        self.expect(";")
+        })
     }
 
     /// A range `[a:b]`, `(a:b)` or the like, or for `exclude` a single value.
@@ -437,6 +435,23 @@ impl Parser<'_> {
         self.expression().map(Some)
     }
 
+    /// Parses one `real`, `integer`, or `localparam` declaration inside a function or
+    /// named block, returning whether one was parsed.
+    fn block_declaration(
+        &mut self,
+        local_parameters: &mut Vec<LocalParameter>,
+        variables: &mut Vec<(String, Type)>,
+    ) -> Result<bool, Error> {
+        if let Some(kind) = self.optional_type() {
+            variables.extend(self.names()?.into_iter().map(|name| (name, kind)));
+        } else if self.keyword("localparam") {
+            self.local_parameters(local_parameters)?;
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     /// An analog function, after `analog function`.
     fn function(&mut self) -> Result<Function, Error> {
         if !self.keyword("real") && self.keyword("integer") {
@@ -450,13 +465,7 @@ impl Parser<'_> {
             let _ = self.attributes()?;
             if self.keyword("input") {
                 inputs.extend(self.names()?);
-            } else if self.keyword("real") {
-                variables.extend(self.names()?.into_iter().map(|name| (name, Type::Real)));
-            } else if self.keyword("integer") {
-                variables.extend(self.names()?.into_iter().map(|name| (name, Type::Integer)));
-            } else if self.keyword("localparam") {
-                self.local_parameters(&mut local_parameters)?;
-            } else {
+            } else if !self.block_declaration(&mut local_parameters, &mut variables)? {
                 break;
             }
         }
@@ -487,21 +496,7 @@ impl Parser<'_> {
             let mut variables = Vec::new();
             while name.is_some() {
                 let _ = self.attributes()?;
-                if self.keyword("real") {
-                    variables.extend(
-                        self.names()?
-                            .into_iter()
-                            .map(|variable| (variable, Type::Real)),
-                    );
-                } else if self.keyword("integer") {
-                    variables.extend(
-                        self.names()?
-                            .into_iter()
-                            .map(|variable| (variable, Type::Integer)),
-                    );
-                } else if self.keyword("localparam") {
-                    self.local_parameters(&mut local_parameters)?;
-                } else {
+                if !self.block_declaration(&mut local_parameters, &mut variables)? {
                     break;
                 }
             }
@@ -598,11 +593,7 @@ impl Parser<'_> {
         if matches!(self.peek_at(1), Some(Token::Symbol("("))) {
             let nature = self.name()?;
             self.expect("(")?;
-            let mut operands = vec![self.name()?];
-            while self.eat(",") {
-                operands.push(self.name()?);
-            }
-            self.expect(")")?;
+            let operands = self.comma_separated(")", Self::name)?;
             self.expect("<+")?;
             let value = self.expression()?;
             self.expect(";")?;
@@ -639,12 +630,7 @@ impl Parser<'_> {
 
     /// Expressions separated by commas, up to the `)` that ends them.
     fn arguments(&mut self) -> Result<Vec<Expression>, Error> {
-        let mut arguments = vec![self.expression()?];
-        while self.eat(",") {
-            arguments.push(self.expression()?);
-        }
-        self.expect(")")?;
-        Ok(arguments)
+        self.comma_separated(")", Self::expression)
     }
 
     pub(crate) fn expression(&mut self) -> Result<Expression, Error> {
