@@ -17,13 +17,31 @@ const data = JSON.parse(document.getElementById("scene").textContent);
 const PREFIXES = [[1e12, "T"], [1e9, "G"], [1e6, "M"], [1e3, "k"], [1, ""], [1e-3, "m"], [1e-6, "µ"], [1e-9, "n"], [1e-12, "p"], [1e-15, "f"], [1e-18, "a"]];
 
 function si(value, unit = "") {
-  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  if (value === null || value === undefined || Number.isNaN(value)) return "-";
   if (value === 0) return `0 ${unit}`.trim();
   const magnitude = Math.abs(value);
   for (const [scale, prefix] of PREFIXES) {
     if (magnitude >= scale * 0.9995) return `${(value / scale).toPrecision(4).replace(/\.?0+$/, "")} ${prefix}${unit}`.trim();
   }
   return `${value.toExponential(3)} ${unit}`.trim();
+}
+
+function minMax(values) {
+  let low = Infinity;
+  let high = -Infinity;
+  let found = false;
+  for (const value of values) {
+    if (value === null || value === undefined || !Number.isFinite(value)) continue;
+    if (!found) {
+      low = value;
+      high = value;
+      found = true;
+    } else {
+      if (value < low) low = value;
+      if (value > high) high = value;
+    }
+  }
+  return found ? { low, high, empty: false } : { low: 0, high: 0, empty: true };
 }
 
 const h = (tag, attributes = {}, ...children) => {
@@ -156,9 +174,9 @@ const materials = {
   edge: new THREE.MeshStandardMaterial({ color: "#163a2a", roughness: 0.9 }),
   pad: new THREE.MeshStandardMaterial({ color: "#c9a14a", metalness: 0.8, roughness: 0.35 }),
   lead: new THREE.MeshStandardMaterial({ color: "#c8ccd0", metalness: 0.9, roughness: 0.3 }),
-  black: new THREE.MeshStandardMaterial({ color: "#1b1b1d", roughness: 0.55 }),
   label: new THREE.MeshStandardMaterial({ color: "#e8e8e8", roughness: 0.6 }),
 };
+const sharedMaterials = new Set(Object.values(materials));
 
 const BAND_COLORS = ["#000000", "#7a4a1d", "#d62f2f", "#f08a1c", "#f2d31b", "#2f9e44", "#2a5fd6", "#8a4fd6", "#8a8a8a", "#f5f5f5"];
 
@@ -376,9 +394,31 @@ function railPost(point, role, name) {
 // Building the board for the view at `viewPath`.
 
 function clearBoard() {
+  const disposedGeometries = new Set();
+  const disposedMaterials = new Set();
+  const disposedTextures = new Set();
+  const disposeMaterial = (material) => {
+    if (!material || sharedMaterials.has(material) || disposedMaterials.has(material)) return;
+    disposedMaterials.add(material);
+    if (material.map && !disposedTextures.has(material.map)) {
+      disposedTextures.add(material.map);
+      material.map.dispose?.();
+    }
+    material.dispose?.();
+  };
   board.traverse((object) => {
-    object.geometry?.dispose?.();
+    if (object.geometry && !disposedGeometries.has(object.geometry)) {
+      disposedGeometries.add(object.geometry);
+      object.geometry.dispose?.();
+    }
+    const material = object.material;
+    if (Array.isArray(material)) {
+      for (const entry of material) disposeMaterial(entry);
+    } else {
+      disposeMaterial(material);
+    }
   });
+  for (const trace of traces) disposeMaterial(trace.material);
   board.clear();
   traces = [];
   parts = [];
@@ -395,7 +435,9 @@ function build() {
   for (const flag of drawn.flags) points.push(flag.point);
   const xs = points.map(([x]) => x);
   const ys = points.map(([, y]) => y);
-  const [minX, maxX, minY, maxY] = [Math.min(...xs) - 2.5, Math.max(...xs) + 2.5, Math.min(...ys) - 2.5, Math.max(...ys) + 2.5];
+  const xRange = minMax(xs);
+  const yRange = minMax(ys);
+  const [minX, maxX, minY, maxY] = [xRange.low - 2.5, xRange.high + 2.5, yRange.low - 2.5, yRange.high + 2.5];
   bounds = { minX, maxX, minY, maxY };
   const width = maxX - minX;
   const depth = maxY - minY;
@@ -474,6 +516,7 @@ function build() {
   for (const label of labels) label.visible = showLabels;
   updateCrumbs();
   fit();
+  computePowerPeak();
   paint();
 }
 
@@ -482,21 +525,40 @@ function build() {
 let colorRange = { low: 0, high: 1, diverging: false };
 
 function computeRange() {
-  const values = [];
-  for (const series of Object.values(analysis()?.nets ?? {})) for (const value of series) if (value !== null) values.push(value);
-  const low = Math.min(0, ...values);
-  const high = Math.max(0, ...values);
-  const diverging = low < -0.1 * high && high > 1e-12;
-  const bound = Math.max(Math.abs(low), Math.abs(high)) || 1;
-  const lowest = Math.min(...values);
-  colorRange = diverging ? { low: -bound, high: bound, diverging } : { low: Math.min(lowest, high), high: high > lowest ? high : lowest + 1, diverging };
+  let dataLow = Infinity;
+  let dataHigh = -Infinity;
+  let hasFinite = false;
+  for (const series of Object.values(analysis()?.nets ?? {})) {
+    const range = minMax(series);
+    if (range.empty) continue;
+    if (!hasFinite) {
+      dataLow = range.low;
+      dataHigh = range.high;
+      hasFinite = true;
+    } else {
+      if (range.low < dataLow) dataLow = range.low;
+      if (range.high > dataHigh) dataHigh = range.high;
+    }
+  }
+  let diverging = false;
+  if (!hasFinite) {
+    colorRange = { low: 0, high: 1, diverging: false };
+  } else {
+    const low = Math.min(0, dataLow);
+    const high = Math.max(0, dataHigh);
+    diverging = low < -0.1 * high && high > 1e-12;
+    const bound = Math.max(Math.abs(low), Math.abs(high)) || 1;
+    colorRange = diverging
+      ? { low: -bound, high: bound, diverging }
+      : { low: Math.min(dataLow, high), high: high > dataLow ? high : dataLow + 1, diverging };
+  }
   const stops = diverging ? DIVERGING : VIRIDIS;
   legendRamp.style.background = `linear-gradient(90deg, ${stops.join(", ")})`;
   const unit = analysis()?.kind === "ac" ? "V/V" : "V";
   legendEnds.children[0].textContent = si(colorRange.low, unit);
   legendEnds.children[1].textContent = si(colorRange.high, unit);
   let peak = 0;
-  for (const series of Object.values(analysis()?.currents ?? {})) for (const value of series) if (value !== null) peak = Math.max(peak, Math.abs(value));
+  for (const series of Object.values(analysis()?.currents ?? {})) for (const value of series) if (value !== null && Number.isFinite(value)) peak = Math.max(peak, Math.abs(value));
   currentPeak = peak || 1;
 }
 
@@ -622,7 +684,6 @@ function open(path) {
   selection = null;
   inspector.classList.remove("open");
   build();
-  computePowerPeak();
 }
 
 function up() {
@@ -663,19 +724,44 @@ function chart(canvasChart, lines, unit) {
     context.fillText("one point: no axis to plot along", 8, 16);
     return;
   }
-  const log = at.kind === "ac";
-  const xs = at.axis.map((value) => (log ? Math.log10(value) : value));
-  const all = lines.flatMap((line) => line.values.filter((value) => value !== null));
-  if (!all.length) return;
-  let low = Math.min(...all);
-  let high = Math.max(...all);
+  let positiveCount = 0;
+  if (at.kind === "ac") {
+    for (const value of at.axis) {
+      if (value !== null && Number.isFinite(value) && value > 0) positiveCount += 1;
+    }
+  }
+  const log = at.kind === "ac" && positiveCount >= 2;
+  const xs = at.axis.map((value) => {
+    if (value === null || !Number.isFinite(value)) return null;
+    if (!log) return value;
+    return value > 0 ? Math.log10(value) : null;
+  });
+  const xRange = minMax(xs);
+  if (xRange.empty) return;
+  let low = Infinity;
+  let high = -Infinity;
+  let hasValues = false;
+  for (const line of lines) {
+    const range = minMax(line.values);
+    if (range.empty) continue;
+    if (!hasValues) {
+      low = range.low;
+      high = range.high;
+      hasValues = true;
+    } else {
+      if (range.low < low) low = range.low;
+      if (range.high > high) high = range.high;
+    }
+  }
+  if (!hasValues) return;
   if (high - low < 1e-15) { high += 1; low -= 1; }
   // The axis is as wide as its longest label, a sign included.
   context.font = "11px ui-monospace, monospace";
   const labels = [low, high].map((tick) => si(tick, unit));
   const widest = Math.max(...labels.map((label) => context.measureText(label).width));
   const pad = { left: Math.ceil(widest) + 8, right: 8, top: 6, bottom: 16 };
-  const x = (value) => pad.left + ((value - xs[0]) / (xs[xs.length - 1] - xs[0] || 1)) * (width - pad.left - pad.right);
+  const xSpan = xRange.high - xRange.low || 1;
+  const x = (value) => pad.left + ((value - xRange.low) / xSpan) * (width - pad.left - pad.right);
   const y = (value) => height - pad.bottom - ((value - low) / (high - low)) * (height - pad.top - pad.bottom);
   const style = getComputedStyle(root);
   context.strokeStyle = style.getPropertyValue("--line");
@@ -696,22 +782,26 @@ function chart(canvasChart, lines, unit) {
     context.beginPath();
     let started = false;
     line.values.forEach((value, point) => {
-      if (value === null) { started = false; return; }
-      if (!started) { context.moveTo(x(xs[point]), y(value)); started = true; } else context.lineTo(x(xs[point]), y(value));
+      const xValue = xs[point];
+      if (value === null || xValue === null || !Number.isFinite(value) || !Number.isFinite(xValue)) { started = false; return; }
+      if (!started) { context.moveTo(x(xValue), y(value)); started = true; } else context.lineTo(x(xValue), y(value));
     });
     context.stroke();
     context.textAlign = "left";
     context.fillStyle = palette[index % palette.length];
     context.fillText(line.name, pad.left + 4 + (index % 3) * 110, pad.top + 10 + Math.floor(index / 3) * 12);
   });
-  const cursor = x(xs[Math.min(frame, xs.length - 1)]);
-  context.strokeStyle = style.getPropertyValue("--ink");
-  context.setLineDash([3, 3]);
-  context.beginPath();
-  context.moveTo(cursor, pad.top);
-  context.lineTo(cursor, height - pad.bottom);
-  context.stroke();
-  context.setLineDash([]);
+  const cursorValue = xs[Math.min(frame, xs.length - 1)];
+  if (cursorValue !== null && Number.isFinite(cursorValue)) {
+    const cursor = x(cursorValue);
+    context.strokeStyle = style.getPropertyValue("--ink");
+    context.setLineDash([3, 3]);
+    context.beginPath();
+    context.moveTo(cursor, pad.top);
+    context.lineTo(cursor, height - pad.bottom);
+    context.stroke();
+    context.setLineDash([]);
+  }
 }
 
 function drawPlot() {
@@ -738,16 +828,17 @@ function renderInspector() {
   if (selection.kind === "net") {
     const global = globalNet(selection.local);
     const values = series(global, "nets");
+    const unitV = at?.kind === "ac" ? "V/V" : "V";
     inspector.append(
       h("h2", {}, selection.local),
       h("div", { class: "kind" }, `net ${global}`),
       h("h3", {}, "Now"),
-      h("table", {}, h("tr", {}, h("th", {}, at?.kind === "ac" ? "Magnitude" : "Voltage"), h("td", { class: "num" }, si(voltage(global), at?.kind === "ac" ? "V/V" : "V")))),
+      h("table", {}, h("tr", {}, h("th", {}, at?.kind === "ac" ? "Magnitude" : "Voltage"), h("td", { class: "num" }, si(voltage(global), unitV)))),
     );
     if (values && values.length > 1) {
       const canvasChart = h("canvas", { class: "chart" });
       inspector.append(h("h3", {}, "Over the analysis"), canvasChart);
-      requestAnimationFrame(() => chart(canvasChart, [{ name: global, values }], "V"));
+      requestAnimationFrame(() => chart(canvasChart, [{ name: global, values }], unitV));
     }
     return;
   }
@@ -770,7 +861,7 @@ function renderInspector() {
       h("td", {}, local),
       h("td", { class: "num" }, si(voltage(globalNet(local)), unitV)),
       h("td", { class: "num" }, si(current(name), unitI)),
-      h("td", { class: "num" }, charges ? si(charges[Math.min(frame, charges.length - 1)], "C") : "—"));
+      h("td", { class: "num" }, charges ? si(charges[Math.min(frame, charges.length - 1)], "C") : "-"));
   });
   inspector.append(h("h3", {}, "Terminals"), h("table", {}, h("tr", {}, h("th", {}, "Terminal"), h("th", {}, "Net"), h("th", {}, "Voltage"), h("th", {}, "Current in"), h("th", {}, "Charge")), rows));
   if (at?.kind !== "ac") inspector.append(h("table", {}, h("tr", {}, h("th", {}, "Power taken"), h("td", { class: "num" }, si(power(part), "W")))));
@@ -859,8 +950,9 @@ function setAnalysis(index) {
 }
 
 function setFrame(index) {
+  if (!Number.isFinite(index)) return;
   const count = analysis()?.axis.length ?? 1;
-  frame = ((index % count) + count) % count;
+  frame = ((Math.trunc(index) % count) + count) % count;
   slider.value = String(frame);
   paint();
 }
@@ -893,11 +985,12 @@ const screenshot = () => {
   link.click();
 };
 
+const labelsToggle = toggle("Labels", true, () => { showLabels = !showLabels; for (const label of labels) label.visible = showLabels; return showLabels; }, "Labels (L)");
 tools.append(
   h("button", { title: "Up a level (U)", onclick: () => up() }, "Up"),
   h("button", { title: "Fit the view (F)", onclick: () => fit() }, "Fit"),
   h("button", { title: "View from the top (T)", onclick: () => topView() }, "Top"),
-  toggle("Labels", true, () => { showLabels = !showLabels; for (const label of labels) label.visible = showLabels; return showLabels; }, "Labels (L)"),
+  labelsToggle,
   toggle("Flow", true, () => { showFlow = !showFlow; return showFlow; }, "Current flow"),
   toggle("Plot", true, () => { plotPanel.classList.toggle("open"); drawPlot(); return plotPanel.classList.contains("open"); }, "The named nets' voltages"),
   h("button", { title: "Save a PNG", onclick: screenshot }, "PNG"),
@@ -907,20 +1000,21 @@ tools.append(
 
 window.addEventListener("keydown", (event) => {
   if (event.target.closest?.("input, select, textarea")) return;
+  if (event.ctrlKey || event.metaKey || event.altKey) return;
   const keys = {
     " ": () => setPlaying(!playing),
-    ArrowRight: () => { setPlaying(false); setFrame(frame + 1); },
-    ArrowLeft: () => { setPlaying(false); setFrame(frame - 1); },
-    Home: () => setFrame(0),
-    End: () => setFrame((analysis()?.axis.length ?? 1) - 1),
+    arrowright: () => { setPlaying(false); setFrame(frame + 1); },
+    arrowleft: () => { setPlaying(false); setFrame(frame - 1); },
+    home: () => setFrame(0),
+    end: () => setFrame((analysis()?.axis.length ?? 1) - 1),
     f: fit,
     t: topView,
-    l: () => tools.children[3].click(),
+    l: () => labelsToggle.click(),
     u: up,
-    Escape: up,
+    escape: up,
     "?": () => help.classList.toggle("open"),
   };
-  const run = keys[event.key];
+  const run = keys[event.key.toLowerCase()];
   if (run) { event.preventDefault(); run(); }
 });
 
@@ -956,7 +1050,11 @@ const named = data.analyses.findIndex((at) => at.name === wanted.get("analysis")
 const timed = (at) => at?.kind === "transient" || at?.kind === "periodic_steady_state";
 setAnalysis(named >= 0 ? named : Math.max(0, data.analyses.findIndex(timed)));
 analysisSelect.value = String(analysisIndex);
-if (wanted.has("point")) setFrame(Number(wanted.get("point")));
+const rawPoint = wanted.get("point");
+if (rawPoint !== null && rawPoint.trim() !== "") {
+  const parsed = Number(rawPoint);
+  if (Number.isFinite(parsed)) setFrame(Math.trunc(parsed));
+}
 setPlaying(timed(analysis()) && !wanted.has("paused"));
 root.dataset.state = "ready";
 loop();

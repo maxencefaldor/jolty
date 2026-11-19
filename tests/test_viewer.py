@@ -5,6 +5,8 @@ import json
 import re
 from pathlib import Path
 
+import numpy as np
+
 from jolty import (
     Builder,
     Role,
@@ -15,9 +17,11 @@ from jolty import (
     devices,
 )
 from jolty.files import save_circuit, save_results
+from jolty.results import DcSweepResult
 from jolty.service import ViewRequest, view
 from jolty.settings import Settings
 from jolty.units import V, kohm, nF, us
+from jolty.unknowns import Unknown
 from jolty.viewer import FRAMES, page, scene
 from jolty.waveforms import Piecewise
 
@@ -118,3 +122,74 @@ def test_the_page_embeds_the_scene_and_the_script(tmp_path: Path) -> None:
     written = asyncio.run(view(ViewRequest(circuit=path, results=results), Settings()))
     assert written.viewer == tmp_path / "bench.view.html"
     assert written.viewer.read_text(encoding="utf-8").startswith("<!doctype html>")
+
+
+def test_page_escapes_title_and_importmap_urls() -> None:
+    drawn = circuit(bench())
+    raw_title = 'A & B <script>"quote"</script>'
+    malicious_three = "https://cdn.example/</script><script>alert(1)</script>"
+    rendered = page(scene(drawn, {}, title=raw_title), three=malicious_three)
+    assert (
+        "<title>A &amp; B &lt;script&gt;&quot;quote&quot;&lt;/script&gt;</title>"
+        in rendered
+    )
+    importmap = re.search(
+        r'<script type="importmap">(.*?)</script>', rendered, re.DOTALL
+    )
+    assert importmap is not None
+    assert "</script>" not in importmap[1]
+    assert "<\\/script>" in importmap[1]
+    parsed = json.loads(importmap[1])
+    assert parsed["imports"]["three"] == f"{malicious_three}/build/three.module.js"
+
+
+def test_dc_sweep_temperature_axis_uses_kelvin_unit() -> None:
+    drawn = circuit(bench())
+    sweep = DcSweepResult(
+        unknowns=(Unknown("out", "voltage"),),
+        source="T1",
+        nature="temperature",
+        swept=np.array([273.15, 300.0, 350.0]),
+        values=np.array([[1.0], [1.1], [1.2]]),
+    )
+    current_sweep = DcSweepResult(
+        unknowns=(Unknown("out", "voltage"),),
+        source="I1",
+        nature="current",
+        swept=np.array([0.0, 1e-3]),
+        values=np.array([[0.0], [1.0]]),
+    )
+    voltage_sweep = DcSweepResult(
+        unknowns=(Unknown("out", "voltage"),),
+        source="V1",
+        nature="voltage",
+        swept=np.array([0.0, 1.0]),
+        values=np.array([[0.0], [1.0]]),
+    )
+    untyped_sweep = DcSweepResult(
+        unknowns=(Unknown("out", "voltage"),),
+        source="X1",
+        nature=None,
+        swept=np.array([0.0, 1.0]),
+        values=np.array([[0.0], [1.0]]),
+    )
+    found = scene(
+        drawn,
+        {
+            "temp": sweep,
+            "curr": current_sweep,
+            "volt": voltage_sweep,
+            "none": untyped_sweep,
+        },
+    )
+    analyses = found["analyses"]
+    assert isinstance(analyses, list)
+    units_by_name: dict[str, str] = {}
+    for entry in analyses:
+        assert isinstance(entry, dict)
+        name = entry["name"]
+        unit = entry["unit"]
+        assert isinstance(name, str)
+        assert isinstance(unit, str)
+        units_by_name[name] = unit
+    assert units_by_name == {"temp": "K", "curr": "A", "volt": "V", "none": ""}

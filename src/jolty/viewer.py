@@ -35,6 +35,7 @@ Examples:
     [2.5]
 """
 
+import html
 import json
 import math
 from collections.abc import Mapping
@@ -187,6 +188,15 @@ _OBSERVED: Final = (
 """The results that hold what every device did at each point."""
 
 
+_UNITS: Final[dict[results.Nature, str]] = {
+    "voltage": "V",
+    "current": "A",
+    "temperature": "K",
+    "state": "",
+}
+"""SI unit symbol for each unknown nature swept by a DC sweep."""
+
+
 def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | None:
     """What an analysis plays along: its kind, its points, their label and unit."""
     match result:
@@ -195,7 +205,7 @@ def _axis(result: results.AnalysisResult) -> tuple[str, np.ndarray, str, str] | 
         case results.DcSweepResult() if result.parameter is not None:
             return "dc_sweep", result.swept, f"{result.source} {result.parameter}", ""
         case results.DcSweepResult():
-            unit = "A" if result.nature == "current" else "V"
+            unit = "" if result.nature is None else _UNITS[result.nature]
             return "dc_sweep", result.swept, f"{result.source} level", unit
         case results.TransientResult():
             periodic = isinstance(result, results.PeriodicSteadyStateResult)
@@ -405,9 +415,9 @@ def page(scene_: Mapping[str, JsonValue], three: str = _THREE) -> str:
     text = json.dumps(scene_, separators=(",", ":"), allow_nan=False)
     title = str(scene_.get("title", "jolty"))
     return _PAGE.format(
-        title=title.replace("<", "&lt;"),
+        title=html.escape(title, quote=True),
         style=assets.joinpath("viewer.css").read_text(encoding="utf-8"),
-        imports=json.dumps(imports),
+        imports=json.dumps(imports).replace("</", "<\\/"),
         scene=text.replace("</", "<\\/"),
         script=assets.joinpath("viewer.js").read_text(encoding="utf-8"),
     )
