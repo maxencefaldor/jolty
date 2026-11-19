@@ -96,9 +96,10 @@ const SYMBOLS: [Symbol; 19] = [
 pub(crate) fn tokenize(text: &str) -> Result<Vec<Token>, SyntaxError> {
     let mut tokens = Vec::new();
     let mut rest = text;
+    let mut column = 1;
     loop {
         let trimmed = rest.trim_start();
-        let column = text[..text.len() - trimmed.len()].chars().count() + 1;
+        column += rest[..rest.len() - trimmed.len()].chars().count();
         rest = trimmed;
         let Some(first) = rest.chars().next() else {
             tokens.push(Token {
@@ -120,6 +121,7 @@ pub(crate) fn tokenize(text: &str) -> Result<Vec<Token>, SyntaxError> {
             return Err(SyntaxError::new(format!("unexpected `{first}`"), column));
         };
         tokens.push(Token { kind, column });
+        column += rest[..length].chars().count();
         rest = &rest[length..];
     }
 }
@@ -192,5 +194,22 @@ mod tests {
         assert_eq!(error.to_string(), "unexpected `$` at column 5");
         let error = tokenize(" . ").expect_err("a lone point");
         assert_eq!(error.to_string(), "`.` is not a number at column 2");
+    }
+
+    #[test]
+    fn preserves_one_based_char_columns_with_unicode_and_multiline_whitespace() {
+        let empty = tokenize("").expect("empty token stream");
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty[0].column, 1);
+
+        let unicode = "\u{00A0}v(a)\n\t\u{2003}+ 1.5\u{3000}";
+        let tokens = tokenize(unicode).expect("valid tokens");
+        let columns: Vec<usize> = tokens.iter().map(|token| token.column).collect();
+        // Characters: [1:\u{00A0}, 2:v, 3:(, 4:a, 5:), 6:\n, 7:\t, 8:\u{2003}, 9:+, 10:' ',
+        // 11:1, 12:., 13:5, 14:\u{3000}], End at 15.
+        assert_eq!(columns, [2, 3, 4, 5, 9, 11, 15]);
+
+        let error = tokenize("\u{00A0}\n  \u{03B1}").expect_err("unexpected Greek letter");
+        assert_eq!(error.to_string(), "unexpected `α` at column 5");
     }
 }

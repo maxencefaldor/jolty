@@ -14,7 +14,7 @@ pub(crate) enum Instruction {
     Binary(Binary, usize, usize),
     Limit([usize; 3]),
     Conditional([usize; 3]),
-    Table(usize, Points),
+    Table(usize, Box<Points>),
 }
 
 /// The kind of three-operand instruction emitted by [`compile`].
@@ -101,7 +101,7 @@ pub(crate) fn compile(node: &Node) -> Vec<Instruction> {
                 Build::TernaryThird(Ternary::Conditional, first, second) => {
                     Instruction::Conditional([first, second, index])
                 }
-                Build::Table(points) => Instruction::Table(index, points.clone()),
+                Build::Table(points) => Instruction::Table(index, Box::new(points.clone())),
             };
             tape.push(instruction);
             index = tape.len() - 1;
@@ -483,28 +483,32 @@ impl Points {
     /// The interpolation of `points`, at least one, with ascending abscissae, rounded and
     /// its input's steps limited, as XSPICE's `pwl` does, if `rounding` is positive.
     pub(crate) fn new(points: &[(f64, f64)], beyond: Beyond, rounding: f64) -> Self {
-        let mut abscissae: Vec<f64> = points.iter().map(|point| point.0).collect();
-        let mut ordinates: Vec<f64> = points.iter().map(|point| point.1).collect();
-        let last = abscissae.len() - 1;
+        let last = points.len() - 1;
         // A lone point is held, one unit away on each side.
         let (before, after) = if last == 0 {
-            (abscissae[0] - 1.0, abscissae[0] + 1.0)
+            (points[0].0 - 1.0, points[0].0 + 1.0)
         } else {
             (
-                2.0 * abscissae[0] - abscissae[1],
-                2.0 * abscissae[last] - abscissae[last - 1],
+                2.0 * points[0].0 - points[1].0,
+                2.0 * points[last].0 - points[last - 1].0,
             )
         };
         let (first, final_) = match beyond {
             Beyond::Extend if last > 0 => (
-                2.0 * ordinates[0] - ordinates[1],
-                2.0 * ordinates[last] - ordinates[last - 1],
+                2.0 * points[0].1 - points[1].1,
+                2.0 * points[last].1 - points[last - 1].1,
             ),
-            _ => (ordinates[0], ordinates[last]),
+            _ => (points[0].1, points[last].1),
         };
-        abscissae.insert(0, before);
+        let mut abscissae = Vec::with_capacity(points.len() + 2);
+        let mut ordinates = Vec::with_capacity(points.len() + 2);
+        abscissae.push(before);
+        ordinates.push(first);
+        for &(abscissa, ordinate) in points {
+            abscissae.push(abscissa);
+            ordinates.push(ordinate);
+        }
         abscissae.push(after);
-        ordinates.insert(0, first);
         ordinates.push(final_);
         Self {
             abscissae: abscissae.into(),
@@ -533,8 +537,18 @@ impl Points {
     /// no further than 30% of the segment `last` lies in, and not past its ends. Returns
     /// `None` when the step needs no limiting.
     pub(crate) fn limit(&self, x: f64, last: f64) -> Option<f64> {
+        /// Maximum fraction of a segment crossed in one Newton step.
+        ///
+        /// Origin: ngspice XSPICE `pwl` step limiter limits each step to 30% of the active segment.
         const FRACTION: f64 = 0.3;
+        /// Small offset below a breakpoint keeping a downward-limited step inside the preceding
+        /// segment.
+        ///
+        /// Origin: ngspice XSPICE `pwl` step limiter boundary offset (`1e-9`).
         const EPSILON: f64 = 1e-9;
+        if !x.is_finite() || !last.is_finite() {
+            return None;
+        }
         let step = |lower: f64, upper: f64| {
             let most = FRACTION * (upper - lower);
             (most < (x - last).abs()).then(|| last + most.copysign(x - last))
@@ -579,6 +593,9 @@ impl Points {
 
     /// The interpolation at `x`, its slope there, and its second derivative there.
     pub(crate) fn interpolate(&self, x: f64) -> (f64, f64, f64) {
+        if x.is_nan() {
+            return (f64::NAN, f64::NAN, f64::NAN);
+        }
         let (xs, ys) = (&self.abscissae, &self.ordinates);
         let last = xs.len() - 1;
         let line = |anchor: usize, from: usize, to: usize| {
@@ -592,10 +609,12 @@ impl Points {
             return line(last, last - 1, last);
         }
         // The corner at `xs[i]` holds the inputs between the midpoints beside it.
-        let i = 1
-            + (1..last)
-                .take_while(|&k| x >= f64::midpoint(xs[k], xs[k + 1]))
-                .count();
+        let j = xs.partition_point(|&abscissa| abscissa <= x);
+        let i = if x < f64::midpoint(xs[j - 1], xs[j]) {
+            j - 1
+        } else {
+            j
+        };
         let (below, above) = (xs[i] - xs[i - 1], xs[i + 1] - xs[i]);
         let domain = self.rounding * below.min(above);
         if x < xs[i] - domain {
@@ -670,5 +689,73 @@ mod tests {
         );
         // The ends are corners too, held beyond: the first rounded over a tenth of 1.
         assert!(points.interpolate(-0.05).0 > 0.0 && points.interpolate(-0.2).0 == 0.0);
+    }
+
+    #[test]
+    fn interpolate_returns_nan_tuple_for_nan_input() {
+        let pairs = [(0.0, 0.0), (1.0, 2.0), (3.0, 1.0)];
+        for rounding in [0.0, 0.25] {
+            let points = Points::new(&pairs, Beyond::Hold, rounding);
+            let (value, slope, curvature) = points.interpolate(f64::NAN);
+            assert!(value.is_nan() && slope.is_nan() && curvature.is_nan());
+        }
+    }
+
+    #[test]
+    fn limit_returns_none_for_non_finite_inputs() {
+        let points = Points::new(&[(0.0, 0.0), (1.0, 1.0), (2.0, 0.0)], Beyond::Hold, 0.1);
+        for non_finite in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(points.limit(non_finite, 0.5), None);
+            assert_eq!(points.limit(0.5, non_finite), None);
+            assert_eq!(points.limit(non_finite, non_finite), None);
+        }
+    }
+
+    #[test]
+    fn interpolate_binary_search_matches_linear_scan() {
+        let raw = [
+            (-5.0, 2.0),
+            (-1.0, -3.0),
+            (0.0, 0.0),
+            (1.0, 4.0),
+            (1.0_f64.next_up(), 4.0),
+            (2.5, 1.5),
+            (10.0, -2.0),
+        ];
+        let points = Points::new(&raw, Beyond::Hold, 0.2);
+        let xs = points.abscissae();
+        let last = xs.len() - 1;
+        let mut samples = vec![-10.0, 15.0];
+        for pair in xs.windows(2) {
+            let mid = f64::midpoint(pair[0], pair[1]);
+            samples.extend([
+                pair[0],
+                pair[0].next_up(),
+                mid.next_down(),
+                mid,
+                mid.next_up(),
+                pair[1].next_down(),
+                pair[1],
+            ]);
+        }
+        for x in samples {
+            if x <= f64::midpoint(xs[0], xs[1]) || x >= f64::midpoint(xs[last - 1], xs[last]) {
+                continue;
+            }
+            let linear = 1
+                + (1..last)
+                    .take_while(|&k| x >= f64::midpoint(xs[k], xs[k + 1]))
+                    .count();
+            let j = xs.partition_point(|&abscissa| abscissa <= x);
+            let binary = if x < f64::midpoint(xs[j - 1], xs[j]) {
+                j - 1
+            } else {
+                j
+            };
+            assert_eq!(binary, linear, "mismatch at x = {x:?}");
+            let (value, slope, curvature) = points.interpolate(x);
+            assert!(value.is_finite() && slope.is_finite() && curvature.is_finite());
+        }
+        assert!(std::mem::size_of::<Instruction>() <= 32);
     }
 }

@@ -220,10 +220,21 @@ impl Parser {
     }
 
     fn next(&mut self) -> Token {
-        let token = self.tokens[self.position].clone();
-        if token.kind != Kind::End {
-            self.position += 1;
+        let slot = &mut self.tokens[self.position];
+        if slot.kind == Kind::End {
+            return Token {
+                kind: Kind::End,
+                column: slot.column,
+            };
         }
+        let token = std::mem::replace(
+            slot,
+            Token {
+                kind: Kind::End,
+                column: 0,
+            },
+        );
+        self.position += 1;
         token
     }
 

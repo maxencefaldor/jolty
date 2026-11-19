@@ -25,7 +25,7 @@ mod operations;
 mod parser;
 mod tape;
 
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::str::FromStr;
 
 use tape::Instruction;
@@ -45,7 +45,6 @@ pub enum Variable {
 }
 
 /// A term of an expression's [tree](Expression::tree).
-#[derive(Debug, Clone, PartialEq)]
 pub enum Term {
     /// A number.
     Constant(f64),
@@ -73,9 +72,379 @@ pub enum Term {
     },
 }
 
+/// Explicit frame for iterative post-order cloning of [`Term`].
+enum CloneFrame<'a> {
+    Operation {
+        name: &'static str,
+        remaining: std::slice::Iter<'a, Term>,
+        cloned: Vec<Term>,
+    },
+    Table {
+        abscissae: &'a [f64],
+        ordinates: &'a [f64],
+        rounding: f64,
+    },
+}
+
+impl Clone for Term {
+    fn clone(&self) -> Self {
+        let mut frames: Vec<CloneFrame<'_>> = Vec::new();
+        let mut current = self;
+        'visit: loop {
+            let mut built = loop {
+                match current {
+                    Self::Constant(value) => break Self::Constant(*value),
+                    Self::Variable(variable) => break Self::Variable(variable.clone()),
+                    Self::Operation(name, operands) => {
+                        let mut remaining = operands.iter();
+                        let Some(first) = remaining.next() else {
+                            break Self::Operation(*name, Vec::new());
+                        };
+                        frames.push(CloneFrame::Operation {
+                            name: *name,
+                            remaining,
+                            cloned: Vec::with_capacity(operands.len()),
+                        });
+                        current = first;
+                    }
+                    Self::Table {
+                        input,
+                        abscissae,
+                        ordinates,
+                        rounding,
+                    } => {
+                        frames.push(CloneFrame::Table {
+                            abscissae,
+                            ordinates,
+                            rounding: *rounding,
+                        });
+                        current = input.as_ref();
+                    }
+                }
+            };
+            while let Some(frame) = frames.pop() {
+                match frame {
+                    CloneFrame::Operation {
+                        name,
+                        mut remaining,
+                        mut cloned,
+                    } => {
+                        cloned.push(built);
+                        if let Some(next) = remaining.next() {
+                            frames.push(CloneFrame::Operation {
+                                name,
+                                remaining,
+                                cloned,
+                            });
+                            current = next;
+                            continue 'visit;
+                        }
+                        built = Self::Operation(name, cloned);
+                    }
+                    CloneFrame::Table {
+                        abscissae,
+                        ordinates,
+                        rounding,
+                    } => {
+                        built = Self::Table {
+                            input: Box::new(built),
+                            abscissae: abscissae.to_vec(),
+                            ordinates: ordinates.to_vec(),
+                            rounding,
+                        };
+                    }
+                }
+            }
+            return built;
+        }
+    }
+}
+
+impl PartialEq for Term {
+    fn eq(&self, other: &Self) -> bool {
+        let mut stack: Vec<(&Self, &Self)> = Vec::new();
+        let mut current = (self, other);
+        loop {
+            match current {
+                (Self::Constant(a), Self::Constant(b)) => {
+                    if !a.eq(b) {
+                        return false;
+                    }
+                }
+                (Self::Variable(a), Self::Variable(b)) => {
+                    if a != b {
+                        return false;
+                    }
+                }
+                (Self::Operation(name_a, operands_a), Self::Operation(name_b, operands_b)) => {
+                    if name_a != name_b || operands_a.len() != operands_b.len() {
+                        return false;
+                    }
+                    match (operands_a.as_slice(), operands_b.as_slice()) {
+                        ([], []) => {}
+                        ([only_a], [only_b]) => {
+                            current = (only_a, only_b);
+                            continue;
+                        }
+                        _ => stack.extend(operands_a.iter().zip(operands_b).rev()),
+                    }
+                }
+                (
+                    Self::Table {
+                        input: input_a,
+                        abscissae: abscissae_a,
+                        ordinates: ordinates_a,
+                        rounding: rounding_a,
+                    },
+                    Self::Table {
+                        input: input_b,
+                        abscissae: abscissae_b,
+                        ordinates: ordinates_b,
+                        rounding: rounding_b,
+                    },
+                ) => {
+                    if !rounding_a.eq(rounding_b)
+                        || abscissae_a != abscissae_b
+                        || ordinates_a != ordinates_b
+                    {
+                        return false;
+                    }
+                    current = (input_a.as_ref(), input_b.as_ref());
+                    continue;
+                }
+                _ => return false,
+            }
+            let Some(next) = stack.pop() else {
+                return true;
+            };
+            current = next;
+        }
+    }
+}
+
+/// Explicit step for iterative [`fmt::Debug`] formatting of [`Term`].
+enum DebugStep<'a> {
+    Term(&'a Term),
+    OperationTail(std::slice::Iter<'a, Term>),
+    CloseOperation,
+    TableRest {
+        abscissae: &'a [f64],
+        ordinates: &'a [f64],
+        rounding: f64,
+    },
+}
+
+/// Adapter that indents each line break by `depth` four-space levels when pretty-printing.
+struct Indented<'a, 'b> {
+    formatter: &'a mut fmt::Formatter<'b>,
+    depth: usize,
+}
+
+impl fmt::Write for Indented<'_, '_> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        let mut lines = text.split('\n');
+        if let Some(first) = lines.next() {
+            self.formatter.write_str(first)?;
+        }
+        for line in lines {
+            self.formatter.write_str("\n")?;
+            write_indent(self.formatter, self.depth)?;
+            self.formatter.write_str(line)?;
+        }
+        Ok(())
+    }
+}
+
+fn write_indent(f: &mut fmt::Formatter<'_>, depth: usize) -> fmt::Result {
+    for _ in 0..depth {
+        f.write_str("    ")?;
+    }
+    Ok(())
+}
+
+fn write_indented_debug(
+    f: &mut fmt::Formatter<'_>,
+    depth: usize,
+    value: &(impl fmt::Debug + ?Sized),
+) -> fmt::Result {
+    let mut writer = Indented {
+        formatter: f,
+        depth,
+    };
+    write!(writer, "{value:#?}")
+}
+
+fn format_table_rest(
+    f: &mut fmt::Formatter<'_>,
+    pretty: bool,
+    depth: &mut usize,
+    abscissae: &[f64],
+    ordinates: &[f64],
+    rounding: f64,
+) -> fmt::Result {
+    if pretty {
+        f.write_str(",\n")?;
+        write_indent(f, *depth)?;
+        f.write_str("abscissae: ")?;
+        write_indented_debug(f, *depth, abscissae)?;
+        f.write_str(",\n")?;
+        write_indent(f, *depth)?;
+        f.write_str("ordinates: ")?;
+        write_indented_debug(f, *depth, ordinates)?;
+        f.write_str(",\n")?;
+        write_indent(f, *depth)?;
+        writeln!(f, "rounding: {rounding:?},")?;
+        *depth -= 1;
+        write_indent(f, *depth)?;
+        f.write_str("}")
+    } else {
+        write!(
+            f,
+            ", abscissae: {abscissae:?}, ordinates: {ordinates:?}, rounding: {rounding:?} }}"
+        )
+    }
+}
+
+fn format_term<'a>(
+    term: &'a Term,
+    f: &mut fmt::Formatter<'_>,
+    pretty: bool,
+    depth: &mut usize,
+    stack: &mut Vec<DebugStep<'a>>,
+) -> fmt::Result {
+    match term {
+        Term::Constant(value) => {
+            if pretty {
+                f.write_str("Constant(\n")?;
+                write_indent(f, *depth + 1)?;
+                writeln!(f, "{value:?},")?;
+                write_indent(f, *depth)?;
+                f.write_str(")")
+            } else {
+                write!(f, "Constant({value:?})")
+            }
+        }
+        Term::Variable(variable) => {
+            if pretty {
+                f.write_str("Variable(\n")?;
+                write_indent(f, *depth + 1)?;
+                write_indented_debug(f, *depth + 1, variable)?;
+                f.write_str(",\n")?;
+                write_indent(f, *depth)?;
+                f.write_str(")")
+            } else {
+                write!(f, "Variable({variable:?})")
+            }
+        }
+        Term::Operation(name, operands) => {
+            let mut remaining = operands.iter();
+            if let Some(first) = remaining.next() {
+                if pretty {
+                    f.write_str("Operation(\n")?;
+                    write_indent(f, *depth + 1)?;
+                    writeln!(f, "{name:?},")?;
+                    write_indent(f, *depth + 1)?;
+                    f.write_str("[\n")?;
+                    *depth += 2;
+                    write_indent(f, *depth)?;
+                } else {
+                    write!(f, "Operation({name:?}, [")?;
+                }
+                stack.push(DebugStep::CloseOperation);
+                stack.push(DebugStep::OperationTail(remaining));
+                stack.push(DebugStep::Term(first));
+                Ok(())
+            } else if pretty {
+                f.write_str("Operation(\n")?;
+                write_indent(f, *depth + 1)?;
+                writeln!(f, "{name:?},")?;
+                write_indent(f, *depth + 1)?;
+                f.write_str("[],\n")?;
+                write_indent(f, *depth)?;
+                f.write_str(")")
+            } else {
+                write!(f, "Operation({name:?}, [])")
+            }
+        }
+        Term::Table {
+            input,
+            abscissae,
+            ordinates,
+            rounding,
+        } => {
+            if pretty {
+                f.write_str("Table {\n")?;
+                *depth += 1;
+                write_indent(f, *depth)?;
+                f.write_str("input: ")?;
+            } else {
+                f.write_str("Table { input: ")?;
+            }
+            stack.push(DebugStep::TableRest {
+                abscissae,
+                ordinates,
+                rounding: *rounding,
+            });
+            stack.push(DebugStep::Term(input.as_ref()));
+            Ok(())
+        }
+    }
+}
+
+impl fmt::Debug for Term {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let pretty = f.alternate();
+        let mut depth = 0;
+        let mut stack = vec![DebugStep::Term(self)];
+        while let Some(step) = stack.pop() {
+            match step {
+                DebugStep::Term(term) => format_term(term, f, pretty, &mut depth, &mut stack)?,
+                DebugStep::OperationTail(mut remaining) => {
+                    if let Some(next) = remaining.next() {
+                        if pretty {
+                            f.write_str(",\n")?;
+                            write_indent(f, depth)?;
+                        } else {
+                            f.write_str(", ")?;
+                        }
+                        stack.push(DebugStep::OperationTail(remaining));
+                        stack.push(DebugStep::Term(next));
+                    }
+                }
+                DebugStep::CloseOperation => {
+                    if pretty {
+                        f.write_str(",\n")?;
+                        depth -= 1;
+                        write_indent(f, depth)?;
+                        f.write_str("],\n")?;
+                        depth -= 1;
+                        write_indent(f, depth)?;
+                        f.write_str(")")?;
+                    } else {
+                        f.write_str("])")?;
+                    }
+                }
+                DebugStep::TableRest {
+                    abscissae,
+                    ordinates,
+                    rounding,
+                } => format_table_rest(f, pretty, &mut depth, abscissae, ordinates, rounding)?,
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Drop for Term {
     fn drop(&mut self) {
-        if matches!(self, Self::Constant(_) | Self::Variable(_)) {
+        let is_empty_leaf = match self {
+            Self::Constant(_) | Self::Variable(_) => true,
+            Self::Operation(_, operands) => operands.is_empty(),
+            Self::Table { input, .. } => {
+                matches!(input.as_ref(), Self::Constant(_) | Self::Variable(_))
+            }
+        };
+        if is_empty_leaf {
             return;
         }
         let mut stack = Vec::new();
@@ -96,8 +465,10 @@ fn detach_term_children(term: &mut Term, stack: &mut Vec<Term>) {
     match term {
         Term::Constant(_) | Term::Variable(_) => {}
         Term::Operation(_, operands) => {
-            for operand in operands {
-                push_term_if_nested(operand, stack);
+            for operand in std::mem::take(operands) {
+                if !matches!(operand, Term::Constant(_) | Term::Variable(_)) {
+                    stack.push(operand);
+                }
             }
         }
         Term::Table { input, .. } => push_term_if_nested(input, stack),
@@ -179,7 +550,9 @@ impl Expression {
     pub fn tree(&self) -> Term {
         let mut terms: Vec<Option<Term>> = Vec::with_capacity(self.tape.len());
         let take_term = |terms: &mut [Option<Term>], index: usize| {
-            terms[index].take().unwrap_or(Term::Constant(f64::NAN))
+            let slot = terms[index].take();
+            debug_assert!(slot.is_some(), "tape instruction {index} already consumed");
+            slot.unwrap_or(Term::Constant(f64::NAN))
         };
         for instruction in &self.tape {
             let term = match instruction {
@@ -815,5 +1188,162 @@ mod tests {
                 "unexpected error for `{invalid}`: {error}"
             );
         }
+    }
+
+    #[test]
+    fn term_clone_eq_and_debug_stay_iterative_on_small_stack() {
+        let handle = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let terms = 5_000;
+                let long_sum = format!("v(a){}", " + v(a)".repeat(terms - 1));
+                let expression: Expression = long_sum.parse().expect("valid");
+                let tree = expression.tree();
+                let cloned = tree.clone();
+                assert_eq!(tree, cloned);
+                let formatted = format!("{tree:?}");
+                assert!(formatted.starts_with("Operation(\"+\", ["));
+                assert!(formatted.contains("Voltage(\"a\", None)"));
+            })
+            .expect("spawn thread");
+        handle.join().expect("thread succeeded without stack overflow");
+    }
+
+    #[test]
+    fn term_debug_matches_compact_and_pretty_layouts() {
+        let constant = Term::Constant(1.5);
+        assert_eq!(format!("{constant:?}"), "Constant(1.5)");
+        assert_eq!(format!("{constant:#?}"), "Constant(\n    1.5,\n)");
+
+        let time = Term::Variable(Variable::Time);
+        assert_eq!(format!("{time:?}"), "Variable(Time)");
+        assert_eq!(format!("{time:#?}"), "Variable(\n    Time,\n)");
+
+        let empty = Term::Operation("f", Vec::new());
+        assert_eq!(format!("{empty:?}"), "Operation(\"f\", [])");
+        assert_eq!(format!("{empty:#?}"), "Operation(\n    \"f\",\n    [],\n)");
+
+        let nested = Term::Operation(
+            "+",
+            vec![
+                Term::Operation("-", vec![Term::Constant(1.0)]),
+                Term::Variable(Variable::Voltage("a".to_owned(), None)),
+            ],
+        );
+        assert_eq!(
+            format!("{nested:?}"),
+            "Operation(\"+\", [Operation(\"-\", [Constant(1.0)]), Variable(Voltage(\"a\", None))])"
+        );
+        assert_eq!(
+            format!("{nested:#?}"),
+            concat!(
+                "Operation(\n",
+                "    \"+\",\n",
+                "    [\n",
+                "        Operation(\n",
+                "            \"-\",\n",
+                "            [\n",
+                "                Constant(\n",
+                "                    1.0,\n",
+                "                ),\n",
+                "            ],\n",
+                "        ),\n",
+                "        Variable(\n",
+                "            Voltage(\n",
+                "                \"a\",\n",
+                "                None,\n",
+                "            ),\n",
+                "        ),\n",
+                "    ],\n",
+                ")"
+            )
+        );
+
+        let table = Term::Table {
+            input: Box::new(Term::Variable(Variable::Current("p".to_owned()))),
+            abscissae: vec![0.0, 1.0],
+            ordinates: vec![2.0, 3.0],
+            rounding: 0.25,
+        };
+        assert_eq!(
+            format!("{table:?}"),
+            "Table { input: Variable(Current(\"p\")), abscissae: [0.0, 1.0], \
+             ordinates: [2.0, 3.0], rounding: 0.25 }"
+        );
+        assert_eq!(
+            format!("{table:#?}"),
+            concat!(
+                "Table {\n",
+                "    input: Variable(\n",
+                "        Current(\n",
+                "            \"p\",\n",
+                "        ),\n",
+                "    ),\n",
+                "    abscissae: [\n",
+                "        0.0,\n",
+                "        1.0,\n",
+                "    ],\n",
+                "    ordinates: [\n",
+                "        2.0,\n",
+                "        3.0,\n",
+                "    ],\n",
+                "    rounding: 0.25,\n",
+                "}"
+            )
+        );
+    }
+
+    #[test]
+    fn term_partial_eq_handles_nan_signed_zero_and_mismatches() {
+        assert_ne!(Term::Constant(f64::NAN), Term::Constant(f64::NAN));
+        assert_eq!(Term::Constant(-0.0), Term::Constant(0.0));
+        assert_ne!(Term::Constant(1.0), Term::Variable(Variable::Time));
+        assert_eq!(
+            Term::Operation("f", Vec::new()),
+            Term::Operation("f", Vec::new())
+        );
+        assert_ne!(
+            Term::Operation("f", Vec::new()),
+            Term::Operation("g", Vec::new())
+        );
+        assert_ne!(
+            Term::Operation("+", vec![Term::Constant(1.0)]),
+            Term::Operation("+", vec![Term::Constant(1.0), Term::Constant(2.0)])
+        );
+        let base_table = Term::Table {
+            input: Box::new(Term::Constant(0.0)),
+            abscissae: vec![0.0, 1.0],
+            ordinates: vec![0.0, 1.0],
+            rounding: f64::NAN,
+        };
+        assert_ne!(base_table, base_table.clone());
+    }
+
+    #[test]
+    fn rounded_table_recovers_after_nan_trial_input() {
+        let expression: Expression = "rounded_table(sqrt(v(a)), 0.1, 0, 0, 1, 1)"
+            .parse()
+            .expect("valid");
+        let mut workspace = Workspace::new(&expression);
+        let mut gradient = [0.0];
+
+        let first = expression.evaluate(&[-1.0], &mut workspace, &mut gradient);
+        assert!(first.is_nan());
+        assert!(gradient[0].is_nan());
+        assert!(!workspace.limited());
+
+        // Second evaluation after a NaN input must not underflow in `Points::limit`.
+        let second = expression.evaluate(&[1.0], &mut workspace, &mut gradient);
+        assert!(close(second, 0.975));
+        assert!(close(gradient[0], 0.25));
+        assert!(!workspace.limited());
+
+        let third = expression.evaluate(&[-4.0], &mut workspace, &mut gradient);
+        assert!(third.is_nan());
+        assert!(!workspace.limited());
+
+        let fourth = expression.evaluate(&[0.25], &mut workspace, &mut gradient);
+        assert!(close(fourth, 0.5));
+        assert!(close(gradient[0], 1.0));
     }
 }
