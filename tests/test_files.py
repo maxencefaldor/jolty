@@ -41,9 +41,19 @@ from jolty.files import (
     save_raw,
     save_results,
 )
-from jolty.plan import Explicit, MonteCarlo, Plan, Product, Variant, decade
+from jolty.plan import (
+    Characterized,
+    Corner,
+    Explicit,
+    Mismatch,
+    MonteCarlo,
+    Plan,
+    Product,
+    Variant,
+    decade,
+)
 from jolty.specs import gain, value
-from jolty.units import VOLTAGE, MHz, V, kHz, kohm, nF, ohm
+from jolty.units import VOLTAGE, MHz, V, celsius, kHz, kohm, nF, ohm
 
 UNKNOWNS = (results.Unknown("out", "voltage"), results.Unknown("V1:current", "current"))
 STATISTICS = results.Statistics(
@@ -432,6 +442,78 @@ def test_a_results_file_states_its_provenance(tmp_path: Path) -> None:
     save_results(path, every_kind())
     assert load_provenance(path).circuit is None
     assert load_provenance(path).build == build()
+
+
+def test_plan_digest_is_insensitive_to_mapping_insertion_order() -> None:
+    variable_first = ir.RandomVariable(
+        name="vth0#0",
+        mean=0.0,
+        standard_deviation=0.01,
+        derivatives={"M1": {"vth": 1.0, "kp": 2.0}, "M2": {"vth": 3.0}},
+    )
+    variable_second = ir.RandomVariable(
+        name="vth0#0",
+        mean=0.0,
+        standard_deviation=0.01,
+        derivatives={"M2": {"vth": 3.0}, "M1": {"kp": 2.0, "vth": 1.0}},
+    )
+    first = Plan(
+        analyses={
+            "op": OperatingPoint(),
+            "ac": Ac("V1", decade(1 * kHz, 1 * MHz, 5)),
+            "mis": Mismatch(["out"], random_variables=(variable_first,)),
+        },
+        corners={
+            "hot": Corner(temperature=celsius(85), supply=3.0 * V, bias=1.2 * V),
+            "cold": Corner(temperature=celsius(-40), bias=0.8 * V, supply=2.5 * V),
+        },
+        fidelity={
+            "a/*": Characterized(1.8 * V),
+            "b/*": Characterized(3.3 * V),
+        },
+        variants=Explicit(
+            [Variant({"R1": {"resistance": 1e3}, "R2": {"resistance": 2e3}})]
+        ),
+    )
+    second = Plan(
+        analyses={
+            "mis": Mismatch(["out"], random_variables=(variable_second,)),
+            "ac": Ac("V1", decade(1 * kHz, 1 * MHz, 5)),
+            "op": OperatingPoint(),
+        },
+        corners={
+            "cold": Corner(temperature=celsius(-40), supply=2.5 * V, bias=0.8 * V),
+            "hot": Corner(temperature=celsius(85), bias=1.2 * V, supply=3.0 * V),
+        },
+        fidelity={
+            "b/*": Characterized(3.3 * V),
+            "a/*": Characterized(1.8 * V),
+        },
+        variants=Explicit(
+            [Variant({"R2": {"resistance": 2e3}, "R1": {"resistance": 1e3}})]
+        ),
+    )
+    altered = Plan(
+        analyses={
+            "op": OperatingPoint(),
+            "ac": Ac("V1", decade(1 * kHz, 1 * MHz, 5)),
+            "mis": Mismatch(["out"], random_variables=(variable_first,)),
+        },
+        corners={
+            "hot": Corner(temperature=celsius(90), supply=3.0 * V, bias=1.2 * V),
+            "cold": Corner(temperature=celsius(-40), bias=0.8 * V, supply=2.5 * V),
+        },
+        fidelity={
+            "a/*": Characterized(1.8 * V),
+            "b/*": Characterized(3.3 * V),
+        },
+        variants=Explicit(
+            [Variant({"R1": {"resistance": 1e3}, "R2": {"resistance": 2e3}})]
+        ),
+    )
+    assert plan_digest(first) == plan_digest(second)
+    assert len(plan_digest(first)) == 64
+    assert plan_digest(first) != plan_digest(altered)
 
 
 def test_the_results_of_another_circuit_are_refused(tmp_path: Path) -> None:

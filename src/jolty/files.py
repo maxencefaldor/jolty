@@ -41,8 +41,11 @@ Examples:
 """
 
 import contextlib
+import enum
 import functools
 import hashlib
+import json
+import math
 import platform as platforms
 import struct
 import sys
@@ -50,10 +53,10 @@ import sysconfig
 import zipfile
 import zlib
 from collections.abc import Generator, Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from fractions import Fraction
 from importlib.metadata import version
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Annotated, Final, Literal, Self, override
 
 import numpy as np
@@ -394,10 +397,127 @@ def platform() -> str:
     return f"{sysconfig.get_platform()} {library} {release}"
 
 
-def plan_digest(plan: Plan) -> str:
-    """A SHA-256 digest, in hexadecimal, of `plan`'s analyses, options and conditions.
+def _type_name(value: object) -> str:
+    """Returns the module-qualified type name of `value`."""
+    kind = type(value)
+    return f"{kind.__module__}.{kind.__qualname__}"
 
-    It hashes them as their representations spell them.
+
+def _canonical_json(value: object) -> str:
+    """Serializes a canonicalized value into compact, key-sorted JSON text."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _canonical_float(value: float) -> object:
+    """Canonicalizes a Python float, encoding NaN and infinities deterministically."""
+    if math.isnan(value):
+        return {"__float__": "nan"}
+    if math.isinf(value):
+        return {"__float__": "inf" if value > 0 else "-inf"}
+    return 0.0 if value == 0 else value
+
+
+def _canonical_scalar(value: object) -> tuple[bool, object]:
+    """Canonicalizes primitive scalars, returning `(matched, converted)`."""
+    if value is None or isinstance(value, bool | int | str):
+        return True, value
+    if isinstance(value, float):
+        return True, _canonical_float(value)
+    if isinstance(value, complex):
+        return True, {
+            "__type__": "complex",
+            "real": _canonical(value.real),
+            "imag": _canonical(value.imag),
+        }
+    if isinstance(value, np.generic):
+        return True, _canonical(value.item())
+    return False, None
+
+
+def _canonical_special(value: object) -> tuple[bool, object]:
+    """Canonicalizes arrays, binary buffers, paths, fractions, and enums."""
+    if isinstance(value, np.ndarray):
+        return True, {
+            "__type__": "numpy.ndarray",
+            "dtype": str(value.dtype),
+            "shape": list(value.shape),
+            "data": _canonical(value.tolist()),
+        }
+    if isinstance(value, bytes | bytearray | memoryview):
+        return True, {"__type__": "bytes", "hex": bytes(value).hex()}
+    if isinstance(value, enum.Enum):
+        return True, {"__type__": _type_name(value), "value": _canonical(value.value)}
+    if isinstance(value, PurePath):
+        return True, {"__type__": "pathlib.PurePath", "value": value.as_posix()}
+    if isinstance(value, Fraction):
+        return True, {
+            "__type__": "fractions.Fraction",
+            "numerator": value.numerator,
+            "denominator": value.denominator,
+        }
+    return False, None
+
+
+def _canonical_mapping[K, V](value: Mapping[K, V]) -> object:
+    """Canonicalizes any mapping independently of key insertion order."""
+    if all(isinstance(key, str) for key in value):
+        return {
+            str(key): _canonical(entry)
+            for key, entry in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    entries = [[_canonical(key), _canonical(entry)] for key, entry in value.items()]
+    entries.sort(key=lambda pair: _canonical_json(pair[0]))
+    return {"__type__": "mapping", "items": entries}
+
+
+def _canonical_collection(value: object) -> object:
+    """Canonicalizes mappings, sequences, sets, and arbitrary fallback objects."""
+    if isinstance(value, Mapping):
+        return _canonical_mapping(value)
+    if isinstance(value, list):
+        return [_canonical(item) for item in value]
+    if isinstance(value, tuple):
+        return {"__type__": "tuple", "items": [_canonical(item) for item in value]}
+    if isinstance(value, set | frozenset):
+        items = [_canonical(item) for item in value]
+        items.sort(key=_canonical_json)
+        return {"__type__": "set", "items": items}
+    return {"__type__": _type_name(value), "repr": repr(value)}
+
+
+def _canonical(value: object) -> object:
+    """Converts `value` into a deterministic, JSON-serializable structure."""
+    matched, converted = _canonical_scalar(value)
+    if matched:
+        return converted
+    matched, converted = _canonical_special(value)
+    if matched:
+        return converted
+    if isinstance(value, BaseModel):
+        return {
+            "__type__": _type_name(value),
+            "fields": {
+                name: _canonical(getattr(value, name))
+                for name in sorted(type(value).model_fields)
+            },
+        }
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            "__type__": _type_name(value),
+            "fields": {
+                item.name: _canonical(getattr(value, item.name))
+                for item in sorted(fields(value), key=lambda entry: entry.name)
+            },
+        }
+    return _canonical_collection(value)
+
+
+def plan_digest(plan: Plan) -> str:
+    """Returns a SHA-256 hex digest of `plan`'s analyses, options, and conditions.
+
+    Canonical JSON serialization with sorted mapping keys makes the digest independent
+    of dictionary insertion order across analyses, corners, fidelity scopes, overrides,
+    and corner arguments.
 
     Examples:
         >>> from jolty.plan import OperatingPoint
@@ -406,7 +526,8 @@ def plan_digest(plan: Plan) -> str:
         ... )
         True
     """
-    return hashlib.sha256(repr(plan).encode()).hexdigest()
+    text = _canonical_json(_canonical(plan))
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 class Provenance(BaseModel):
