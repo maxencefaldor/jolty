@@ -6,12 +6,12 @@
 //! where the parameter is named, with no detour through the parameters' written form.
 
 use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as Tokens, TokenTree};
-use quote::{ToTokens, quote};
+use proc_macro2::{Span, TokenStream as Tokens};
+use quote::quote;
 use syn::meta::ParseNestedMeta;
 use syn::{
-    Attribute, Data, DeriveInput, Error, Fields, GenericParam, Ident, LitStr, Result, Token, Type,
-    parse_macro_input,
+    Attribute, Data, DeriveInput, Error, Fields, GenericArgument, GenericParam, Ident, LitStr,
+    Path, PathArguments, Result, ReturnType, Token, Type, TypeParamBound, parse_macro_input,
 };
 
 /// Writes `jolty_models::Lift<R>` for a struct or an enum generic over one kind of number,
@@ -34,6 +34,12 @@ pub fn lift(input: TokenStream) -> TokenStream {
 
 /// The implementation of `Lift` for `input`.
 fn derived(input: &DeriveInput) -> Result<Tokens> {
+    if matches!(input.data, Data::Union(_)) {
+        return Err(Error::new_spanned(
+            input,
+            "Lift is derived for structs and enums",
+        ));
+    }
     let mut parameters = input.generics.params.iter();
     let number = match (parameters.next(), parameters.next()) {
         (None, _) => return Ok(holding_none(&input.ident)),
@@ -193,16 +199,112 @@ fn is_newtype(fields: &Fields) -> bool {
     matches!(fields, Fields::Unnamed(unnamed) if unnamed.unnamed.len() == 1)
 }
 
-/// Whether `field_type` holds the kind of number `number`, as itself or within another type.
+/// Returns whether `field_type` references the type parameter `number` as itself or within
+/// a compound type, skipping const generic expressions, array lengths, module and
+/// associated-type segment names, and parameter names.
 fn holds(field_type: &Type, number: &Ident) -> bool {
-    fn within(tokens: Tokens, number: &Ident) -> bool {
-        tokens.into_iter().any(|tree| match tree {
-            TokenTree::Ident(ident) => ident == *number,
-            TokenTree::Group(group) => within(group.stream(), number),
-            TokenTree::Punct(_) | TokenTree::Literal(_) => false,
-        })
+    match field_type {
+        Type::Path(type_path) => {
+            let head_holds = match &type_path.qself {
+                Some(qself) => holds(&qself.ty, number),
+                None => {
+                    type_path.path.leading_colon.is_none()
+                        && type_path.path.segments.first().is_some_and(|first| {
+                            first.ident == *number && first.arguments.is_none()
+                        })
+                }
+            };
+            head_holds || path_arguments_hold(&type_path.path, number)
+        }
+        Type::Array(array) => holds(&array.elem, number),
+        Type::Slice(slice) => holds(&slice.elem, number),
+        Type::Tuple(tuple) => tuple.elems.iter().any(|elem| holds(elem, number)),
+        Type::Reference(reference) => holds(&reference.elem, number),
+        Type::Ptr(pointer) => holds(&pointer.elem, number),
+        Type::Paren(paren) => holds(&paren.elem, number),
+        Type::Group(group) => holds(&group.elem, number),
+        Type::BareFn(function) => {
+            function.inputs.iter().any(|arg| holds(&arg.ty, number))
+                || return_type_holds(&function.output, number)
+        }
+        Type::ImplTrait(impl_trait) => bounds_hold(&impl_trait.bounds, number),
+        Type::TraitObject(trait_object) => bounds_hold(&trait_object.bounds, number),
+        // Infer, Never, Macro, Verbatim, and future non-exhaustive variants hold no type
+        // parameter directly.
+        _ => false,
     }
-    within(field_type.to_token_stream(), number)
+}
+
+/// Returns whether any generic argument in any segment of `path` references `number`.
+fn path_arguments_hold(path: &Path, number: &Ident) -> bool {
+    path.segments.iter().any(|segment| match &segment.arguments {
+        PathArguments::None => false,
+        PathArguments::AngleBracketed(bracketed) => bracketed
+            .args
+            .iter()
+            .any(|arg| generic_argument_holds(arg, number)),
+        PathArguments::Parenthesized(parenthesized) => {
+            parenthesized
+                .inputs
+                .iter()
+                .any(|input| holds(input, number))
+                || return_type_holds(&parenthesized.output, number)
+        }
+    })
+}
+
+/// Returns whether a generic argument references `number` in a type position, skipping
+/// lifetimes, const expressions, and associated item names.
+fn generic_argument_holds(argument: &GenericArgument, number: &Ident) -> bool {
+    match argument {
+        GenericArgument::Type(ty) => holds(ty, number),
+        GenericArgument::AssocType(assoc) => {
+            holds(&assoc.ty, number)
+                || assoc.generics.as_ref().is_some_and(|generics| {
+                    generics
+                        .args
+                        .iter()
+                        .any(|inner| generic_argument_holds(inner, number))
+                })
+        }
+        GenericArgument::Constraint(constraint) => {
+            bounds_hold(&constraint.bounds, number)
+                || constraint.generics.as_ref().is_some_and(|generics| {
+                    generics
+                        .args
+                        .iter()
+                        .any(|inner| generic_argument_holds(inner, number))
+                })
+        }
+        GenericArgument::AssocConst(assoc) => assoc.generics.as_ref().is_some_and(|generics| {
+            generics
+                .args
+                .iter()
+                .any(|inner| generic_argument_holds(inner, number))
+        }),
+        _ => false,
+    }
+}
+
+/// Returns whether any trait bound in `bounds` references `number` in its generic arguments.
+fn bounds_hold(
+    bounds: &syn::punctuated::Punctuated<TypeParamBound, Token![+]>,
+    number: &Ident,
+) -> bool {
+    bounds.iter().any(|bound| {
+        matches!(
+            bound,
+            TypeParamBound::Trait(trait_bound) if path_arguments_hold(&trait_bound.path, number)
+        )
+    })
+}
+
+/// Returns whether a function's return type references `number`.
+fn return_type_holds(output: &ReturnType, number: &Ident) -> bool {
+    match output {
+        ReturnType::Default => false,
+        ReturnType::Type(_, ty) => holds(ty, number),
+    }
 }
 
 /// The name serde gives `ident`: itself, without the prefix of a raw identifier.
@@ -318,5 +420,106 @@ impl Case {
         match self {
             Self::Lower | Self::Snake => name.to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unraw_strips_raw_identifier_prefix() {
+        let raw_type: Ident = syn::parse_str("r#type").unwrap();
+        let raw_match: Ident = syn::parse_str("r#match").unwrap();
+        let plain = Ident::new("resistance", Span::call_site());
+        let prefix_like = Ident::new("raw_value", Span::call_site());
+        assert_eq!(unraw(&raw_type), "type");
+        assert_eq!(unraw(&raw_match), "match");
+        assert_eq!(unraw(&plain), "resistance");
+        assert_eq!(unraw(&prefix_like), "raw_value");
+    }
+
+    #[test]
+    fn case_variant_converts_variant_names_and_preserves_fields() {
+        assert_eq!(Case::Lower.variant("PiecewiseLinear"), "piecewiselinear");
+        assert_eq!(Case::Lower.variant("DC"), "dc");
+        assert_eq!(Case::Snake.variant("Pulse"), "pulse");
+        assert_eq!(Case::Snake.variant("PiecewiseLinear"), "piecewise_linear");
+        assert_eq!(Case::Snake.variant("SingleEnded"), "single_ended");
+        assert_eq!(Case::Lower.field("camelCase"), "camelCase");
+        assert_eq!(Case::Snake.field("camelCase"), "camelCase");
+    }
+
+    #[test]
+    fn holds_walks_types_without_false_positives() {
+        let number = Ident::new("R", Span::call_site());
+        for present in [
+            "R",
+            "R::Scalar",
+            "Vec<R>",
+            "Option<Vec<(f64, R)>>",
+            "[R; 4]",
+            "[R]",
+            "&'a R",
+            "*const R",
+            "(R)",
+            "<R as Trait>::Item",
+            "foo::Bar<R>",
+            "dyn Iterator<Item = R>",
+            "impl Fn(R) -> f64",
+            "fn(R) -> i32",
+            "fn(i32) -> R",
+            "R<R>",
+        ] {
+            let parsed: Type = syn::parse_str(present).unwrap();
+            assert!(holds(&parsed, &number), "expected `{present}` to hold `R`");
+        }
+        for absent in [
+            "f64",
+            "String",
+            "Vec<f64>",
+            "[f64; R]",
+            "foo::R",
+            "::R",
+            "crate::R",
+            "Self::R",
+            "<Foo as Bar>::R",
+            "<Foo as R>::Item",
+            "Foo<{ R }>",
+            "Iterator<R = i32>",
+            "Trait<R = 4>",
+            "Trait<R: Clone>",
+            "fn(R: i32) -> i32",
+            "dyn R",
+            "R<i32>",
+        ] {
+            let parsed: Type = syn::parse_str(absent).unwrap();
+            assert!(
+                !holds(&parsed, &number),
+                "expected `{absent}` not to hold `R`"
+            );
+        }
+    }
+
+    #[test]
+    fn derived_rejects_unions_with_or_without_generics() {
+        for source in [
+            "union Plain { a: u32 }",
+            "union Generic<R> { a: core::mem::ManuallyDrop<R> }",
+        ] {
+            let input: DeriveInput = syn::parse_str(source).unwrap();
+            let error = derived(&input).unwrap_err();
+            assert_eq!(error.to_string(), "Lift is derived for structs and enums");
+        }
+
+        let plain_struct: DeriveInput = syn::parse_str("struct Plain { a: u32 }").unwrap();
+        assert!(derived(&plain_struct).is_ok());
+
+        let two_params: DeriveInput = syn::parse_str("struct Pair<A, B> { a: A, b: B }").unwrap();
+        let error = derived(&two_params).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Lift is derived for a type generic over one kind of number, or over nothing"
+        );
     }
 }
