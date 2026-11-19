@@ -417,16 +417,16 @@ impl<T: Scalar> Numeric<T> {
             }
             self.marks[start] = column;
             self.visits.push((start, self.first_entry(start)));
-            while let Some(&(row, entry)) = self.visits.last() {
+            while let Some(visit) = self.visits.last_mut() {
+                let (row, entry) = *visit;
                 let position = self.positions[row];
                 if position != NONE && entry < self.lower.starts[position + 1] {
-                    if let Some(visit) = self.visits.last_mut() {
-                        visit.1 += 1;
-                    }
+                    visit.1 += 1;
                     let next = self.lower.indices[entry];
                     if self.marks[next] != column {
                         self.marks[next] = column;
-                        self.visits.push((next, self.first_entry(next)));
+                        let first = self.first_entry(next);
+                        self.visits.push((next, first));
                     }
                 } else {
                     self.visits.pop();
@@ -528,7 +528,7 @@ impl<T: Scalar> Numeric<T> {
                     }
                 };
                 // Each position takes in the rows above it alone, so the positions spread.
-                if threads < 2 {
+                if threads < 2 || taken.len() <= CHUNK {
                     take(0, taken);
                 } else {
                     taken
@@ -640,9 +640,10 @@ fn take_in<T: Scalar>(
 }
 
 /// Sets each of `into` to the value of `from` at its index in `indices`, in chunks of
-/// [`CHUNK`] spread over the current rayon pool's threads when `threads` is two or more.
+/// [`CHUNK`] spread over the current rayon pool's threads when `threads` is two or more and
+/// the copy spans more than one chunk.
 fn gather<T: Scalar>(into: &mut [T], from: &[T], indices: &[usize], threads: usize) {
-    if threads < 2 {
+    if threads < 2 || into.len().min(indices.len()) <= CHUNK {
         for (value, &index) in into.iter_mut().zip(indices) {
             *value = from[index];
         }

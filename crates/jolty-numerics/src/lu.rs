@@ -615,11 +615,16 @@ impl<T: Scalar> Shared<'_, T> {
 }
 
 /// Sets `into` to the values of `from`, in chunks of [`CHUNK`] spread over the current rayon
-/// pool's threads when `threads` is two or more and it holds as many already.
+/// pool's threads when `threads` is two or more, `from` spans more than one chunk, and `into`
+/// holds as many already.
 fn copy<T: Scalar>(into: &mut Vec<T>, from: &[T], threads: usize) {
-    if threads < 2 || into.len() != from.len() {
-        into.clear();
-        into.extend_from_slice(from);
+    if threads < 2 || from.len() <= CHUNK || into.len() != from.len() {
+        if into.len() == from.len() {
+            into.copy_from_slice(from);
+        } else {
+            into.clear();
+            into.extend_from_slice(from);
+        }
         return;
     }
     into.par_chunks_mut(CHUNK)
@@ -628,10 +633,11 @@ fn copy<T: Scalar>(into: &mut Vec<T>, from: &[T], threads: usize) {
 }
 
 /// [`finite`], whose check of the values runs in chunks of [`CHUNK`] spread over the
-/// current rayon pool's threads when `threads` is two or more.
+/// current rayon pool's threads when `threads` is two or more and `solution` spans more than
+/// one chunk.
 fn finite_on<T: Scalar>(solution: &[T], threads: usize) -> Result<(), LinearError> {
     let all = |chunk: &[T]| chunk.iter().all(|&value| value.is_finite());
-    if threads >= 2 && solution.par_chunks(CHUNK).all(all) {
+    if threads >= 2 && solution.len() > CHUNK && solution.par_chunks(CHUNK).all(all) {
         return Ok(());
     }
     finite(solution)

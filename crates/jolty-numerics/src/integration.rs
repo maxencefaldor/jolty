@@ -213,18 +213,31 @@ impl Method {
 }
 
 /// Gear2's error constant for a step `ratio` times as long as the one before it,
-/// `(1 + ω)² / (6 ω (1 + 2ω))`, written as `(1 + 1/ω)(1 + ω) / (6 (1 + 2ω))` so that a long
-/// step overflows nothing: from 1/12 for a step far longer than the last, through 2/9 at a
-/// constant step, to `1/(6ω)` for a step far shorter.
+/// `(1 + ω)² / (6 ω (1 + 2ω))`, rescaled by `1/ω` when `ω > 1` so that large step ratios
+/// avoid overflow: from 1/12 for a step far longer than the last, through 2/9 at a constant
+/// step, to `1/(6ω)` for a step far shorter.
 fn gear2_constant(ratio: f64) -> f64 {
-    (1.0 + ratio.recip()) * (1.0 + ratio) / (6.0 * (1.0 + 2.0 * ratio))
+    if ratio > 1.0 {
+        let inverse = ratio.recip();
+        let factor = 1.0 + inverse;
+        (factor * factor) / (6.0 * (2.0 + inverse))
+    } else {
+        let factor = 1.0 + ratio;
+        (factor * factor) / (6.0 * ratio * (1.0 + 2.0 * ratio))
+    }
 }
 
 /// The logarithmic slope of Gear2's error constant in its step's ratio `u` to the previous
-/// one, `d ln C / d ln u = 2u/(1 + u) − 1 − 2u/(1 + 2u)`: from −1 for a step far shorter than
-/// the last, through −⅔ at a constant step, to 0 for one far longer.
+/// one, `d ln C / d ln u = -(1 + 3u) / ((1 + u)(1 + 2u))`, rescaled by `1/u` when `u > 1`
+/// to avoid both cancellation and overflow: from −1 for a step far shorter than the last,
+/// through −⅔ at a constant step, to 0 for one far longer.
 fn gear2_elasticity(ratio: f64) -> f64 {
-    2.0 * ratio / (1.0 + ratio) - 1.0 - 2.0 * ratio / (1.0 + 2.0 * ratio)
+    if ratio > 1.0 {
+        let inverse = ratio.recip();
+        -(inverse * (3.0 + inverse)) / ((1.0 + inverse) * (2.0 + inverse))
+    } else {
+        -(1.0 + 3.0 * ratio) / ((1.0 + ratio) * (1.0 + 2.0 * ratio))
+    }
 }
 
 /// Which of a charge's two tolerances holds its longest step.
@@ -306,9 +319,19 @@ impl Formula {
     }
 
     /// The part of the derivative that earlier points contribute: `β₀ q_n + β₁ q_{n-1} + γ q̇_n`.
+    ///
+    /// Zero coefficients skip reading their corresponding entries so restarts do not propagate
+    /// `0.0 * NaN` or `0.0 * inf` from unused history slots.
     #[must_use]
     pub fn history(&self, previous: [f64; 2], previous_derivative: f64) -> f64 {
-        self.beta[0] * previous[0] + self.beta[1] * previous[1] + self.gamma * previous_derivative
+        let mut total = self.beta[0] * previous[0];
+        if self.beta[1] != 0.0 {
+            total += self.beta[1] * previous[1];
+        }
+        if self.gamma != 0.0 {
+            total += self.gamma * previous_derivative;
+        }
+        total
     }
 
     /// The charge increment `Δℓ_n` a converged residual `residual` at the new point adds,
@@ -569,6 +592,89 @@ mod tests {
         let increment = formula.integral_increment(3e-9, f64::NAN, f64::INFINITY);
         let expected = 3e-9 / formula.alpha;
         assert_eq!(increment.to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn history_skips_unused_non_finite_slots_when_coefficients_are_zero() {
+        let euler = Formula::new(Method::BackwardEuler, 2e-6, 1e-6);
+        let expected_euler = euler.beta[0] * 3.0;
+        assert_eq!(
+            euler.history([3.0, f64::NAN], f64::INFINITY).to_bits(),
+            expected_euler.to_bits()
+        );
+        assert_eq!(
+            euler.history([3.0, f64::INFINITY], f64::NAN).to_bits(),
+            expected_euler.to_bits()
+        );
+
+        let trap = Formula::new(Method::Trapezoidal, 2e-6, 1e-6);
+        let expected_trap = trap.beta[0] * 3.0 + trap.gamma * 5.0;
+        assert_eq!(
+            trap.history([3.0, f64::NAN], 5.0).to_bits(),
+            expected_trap.to_bits()
+        );
+
+        let gear2 = Formula::new(Method::Gear2, 2e-6, 1e-6);
+        let expected_gear2 = gear2.beta[0] * 3.0 + gear2.beta[1] * 2.0;
+        assert_eq!(
+            gear2.history([3.0, 2.0], f64::NAN).to_bits(),
+            expected_gear2.to_bits()
+        );
+        assert_eq!(
+            gear2.history([3.0, 2.0], f64::INFINITY).to_bits(),
+            expected_gear2.to_bits()
+        );
+    }
+
+    #[test]
+    fn gear2_constant_and_elasticity_are_accurate_and_overflow_safe() {
+        for ratio in [0.01, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0] {
+            let reference_constant = (1.0 + ratio).powi(2) / (6.0 * ratio * (1.0 + 2.0 * ratio));
+            let got_constant = gear2_constant(ratio);
+            assert!(
+                (got_constant - reference_constant).abs()
+                    <= 4.0 * f64::EPSILON * reference_constant,
+                "constant mismatch at ratio {ratio}: {got_constant} vs {reference_constant}"
+            );
+
+            let reference_elasticity =
+                2.0 * ratio / (1.0 + ratio) - 1.0 - 2.0 * ratio / (1.0 + 2.0 * ratio);
+            let got_elasticity = gear2_elasticity(ratio);
+            assert!(
+                (got_elasticity - reference_elasticity).abs() <= 8.0 * f64::EPSILON,
+                "elasticity mismatch at ratio {ratio}: {got_elasticity} vs {reference_elasticity}"
+            );
+        }
+
+        // Exact closed-form checks at large ratios where the subtracted form cancels or overflows.
+        let large = 1e8_f64;
+        let expected_elasticity = -(3.0 * large + 1.0) / ((large + 1.0) * (2.0 * large + 1.0));
+        // Expand -u * (1 + 3u) / ((1 + u)(1 + 2u)) = -1.5 + 1.75 / u + O(1 / u^2).
+        let got_large = gear2_elasticity(large);
+        let asymptotic = (-1.5 + 1.75e-8) / large;
+        assert!(
+            (got_large - asymptotic).abs() < 1e-15 * asymptotic.abs(),
+            "ratio 1e8 elasticity: {got_large:e} vs {asymptotic:e} (naive {expected_elasticity:e})"
+        );
+
+        let huge = 1e200_f64;
+        let got_huge_constant = gear2_constant(huge);
+        assert!(got_huge_constant.is_finite());
+        assert!((got_huge_constant - 1.0 / 12.0).abs() <= f64::EPSILON);
+
+        let got_huge_elasticity = gear2_elasticity(huge);
+        let expected_huge_elasticity = -1.5e-200;
+        assert!(got_huge_elasticity.is_finite());
+        assert!(
+            (got_huge_elasticity - expected_huge_elasticity).abs()
+                <= 4.0 * f64::EPSILON * expected_huge_elasticity.abs(),
+            "ratio 1e200 elasticity: {got_huge_elasticity:e}"
+        );
+
+        assert!((gear2_constant(f64::MAX) - 1.0 / 12.0).abs() <= f64::EPSILON);
+        assert!(gear2_elasticity(f64::MAX).is_finite() && gear2_elasticity(f64::MAX) < 0.0);
+        let tiny_constant = gear2_constant(1e-308);
+        assert!(tiny_constant.is_finite() && tiny_constant > 0.0);
     }
 
     proptest! {

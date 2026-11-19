@@ -248,8 +248,9 @@ mod tests {
                 builder.entry(row, column);
             }
             let pattern = builder.finish(30);
-            #[expect(clippy::cast_precision_loss, reason = "a few hundred entries")]
-            let values: Vec<f64> = (0..pattern.len()).map(|slot| (slot as f64 * 0.7).sin()).collect();
+            let values: Vec<f64> = (0..pattern.len())
+                .map(|slot| (f64::from(u32::try_from(slot).unwrap()) * 0.7).sin())
+                .collect();
             let x: Vec<f64> = (0..30).map(|column| (f64::from(column) * 1.3).cos()).collect();
             let start: Vec<f64> = (0..30).map(|row| f64::from(row) * 0.1).collect();
             let mut by_columns = start.clone();

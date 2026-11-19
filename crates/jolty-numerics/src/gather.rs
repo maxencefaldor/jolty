@@ -108,7 +108,7 @@ impl GatherMap {
     /// Panics if `into` has fewer values than the map has targets, or a source lies
     /// outside `slab`.
     pub fn add(&self, slab: &[f64], into: &mut [f64]) {
-        self.add_from(0, slab, into);
+        self.fold_into(slab, into, |value, term| value + term);
     }
 
     /// Raises each target of `into` to the largest of the values its sources hold in
@@ -118,7 +118,7 @@ impl GatherMap {
     ///
     /// Panics as [`GatherMap::add`] does.
     pub fn raise(&self, slab: &[f64], into: &mut [f64]) {
-        self.raise_from(0, slab, into);
+        self.fold_into(slab, into, f64::max);
     }
 
     /// Sets each target of the plane of `into` of the same place to the fold of the values
@@ -205,22 +205,18 @@ impl GatherMap {
         }
     }
 
-    /// Adds their sources to the targets from `first` on, held by `into`.
-    fn add_from(&self, first: usize, slab: &[f64], into: &mut [f64]) {
-        let starts = &self.starts[first..];
-        for (value, bounds) in into.iter_mut().zip(starts.windows(2)) {
+    /// Folds each target's sources from `slab` into `into` using `combine`.
+    #[inline]
+    fn fold_into(&self, slab: &[f64], into: &mut [f64], combine: impl Fn(f64, f64) -> f64) {
+        let targets = self.targets();
+        let len = into.len();
+        assert!(
+            len >= targets,
+            "destination has {len} entries for {targets} targets"
+        );
+        for (value, bounds) in into[..targets].iter_mut().zip(self.starts.windows(2)) {
             for &source in &self.sources[bounds[0]..bounds[1]] {
-                *value += slab[source as usize];
-            }
-        }
-    }
-
-    /// Raises the targets from `first` on, held by `into`, to their sources.
-    fn raise_from(&self, first: usize, slab: &[f64], into: &mut [f64]) {
-        let starts = &self.starts[first..];
-        for (value, bounds) in into.iter_mut().zip(starts.windows(2)) {
-            for &source in &self.sources[bounds[0]..bounds[1]] {
-                *value = value.max(slab[source as usize]);
+                *value = combine(*value, slab[source as usize]);
             }
         }
     }
@@ -248,6 +244,26 @@ mod tests {
         let mut largest = [0.0, 7.0, 2.0];
         map.raise(&slab, &mut largest);
         assert_eq!(largest, [1e4, 7.0, 1000.0]);
+        // Extra trailing entries in `into` stay untouched.
+        let mut padded = [0.0, 0.0, 0.0, 42.0];
+        map.add(&slab, &mut padded);
+        assert_eq!(padded, [10.0 + 1e4, 0.0, 1.0 + 1000.0, 42.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "destination has 2 entries for 3 targets")]
+    fn add_panics_when_destination_is_shorter_than_targets() {
+        let map = GatherMap::new(3, [(0, 0)].into_iter());
+        let mut short = [0.0; 2];
+        map.add(&[1.0], &mut short);
+    }
+
+    #[test]
+    #[should_panic(expected = "destination has 1 entries for 3 targets")]
+    fn raise_panics_when_destination_is_shorter_than_targets() {
+        let map = GatherMap::new(3, [(0, 0)].into_iter());
+        let mut short = [0.0; 1];
+        map.raise(&[1.0], &mut short);
     }
 
     proptest! {

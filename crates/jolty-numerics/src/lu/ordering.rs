@@ -681,11 +681,10 @@ fn block_triangular(
         stack.push(root);
         open[root] = true;
         visits.push((root, starts[root]));
-        while let Some(&(column, entry)) = visits.last() {
+        while let Some(visit) = visits.last_mut() {
+            let (column, entry) = *visit;
             if entry < starts[column + 1] {
-                if let Some(visit) = visits.last_mut() {
-                    visit.1 += 1;
-                }
+                visit.1 += 1;
                 let successor = column_of_row[rows[entry]];
                 if index[successor] == NONE {
                     index[successor] = count;

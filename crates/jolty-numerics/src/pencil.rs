@@ -36,7 +36,8 @@ pub enum PencilError {
 ///
 /// # Errors
 ///
-/// Returns [`PencilError::Unconverged`] when the QZ iteration does not converge.
+/// Returns [`PencilError::Unconverged`] when either matrix contains a non-finite entry or when
+/// the QZ iteration does not converge.
 ///
 /// # Panics
 ///
@@ -56,10 +57,20 @@ pub fn generalized_eigenvalues(
         dimension * dimension,
         "a square matrix of the dimension"
     );
+    if a.iter().chain(b).any(|value| !value.is_finite()) {
+        return Err(PencilError::Unconverged);
+    }
     let mut h = Square::from_real(dimension, a);
     let mut t = Square::from_real(dimension, b);
     triangularize(&mut h, &mut t);
     reduce_to_hessenberg(&mut h, &mut t);
+    if h.entries
+        .iter()
+        .chain(&t.entries)
+        .any(|entry| !entry.re.is_finite() || !entry.im.is_finite())
+    {
+        return Err(PencilError::Unconverged);
+    }
     qz(&mut h, &mut t)
 }
 
@@ -671,6 +682,30 @@ mod tests {
             assert!(
                 (eigenvalue - exact).abs() <= 4.0 * f64::EPSILON * exact,
                 "{found:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_non_finite_entries_immediately() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                generalized_eigenvalues(1, &[bad], &[1.0]),
+                Err(PencilError::Unconverged)
+            );
+            assert_eq!(
+                generalized_eigenvalues(1, &[1.0], &[bad]),
+                Err(PencilError::Unconverged)
+            );
+            let a = [1.0, 0.0, 0.0, bad];
+            let b = [1.0, 0.0, 0.0, 1.0];
+            assert_eq!(
+                generalized_eigenvalues(2, &a, &b),
+                Err(PencilError::Unconverged)
+            );
+            assert_eq!(
+                generalized_eigenvalues(2, &b, &a),
+                Err(PencilError::Unconverged)
             );
         }
     }

@@ -103,7 +103,33 @@ const WRITTEN: usize = 1 << (usize::BITS - 1);
 
 /// An elimination as it is laid out: its unknown, its pivot's row and where its pivot
 /// lies, where its column's and its row's entries lie, and where its updates begin.
-type Laid = ((usize, usize, Place), (usize, usize), (usize, usize), usize);
+struct Laid {
+    unknown: usize,
+    row: usize,
+    pivot: Place,
+    column: (usize, usize),
+    entries: (usize, usize),
+    updates: usize,
+}
+
+/// One accepted elimination: its pivot's row and column, and the sorted active rows of its
+/// column and columns of its row at the moment it was eliminated.
+struct Step {
+    row: usize,
+    unknown: usize,
+    rows: Vec<usize>,
+    columns: Vec<usize>,
+}
+
+/// Returns the slot of `(row, column)` in the compressed sparse column pattern described by
+/// `starts` and `rows`, if stored.
+fn slot_in(starts: &[usize], rows: &[usize], row: usize, column: usize) -> Option<usize> {
+    let start = starts[column];
+    rows[start..starts[column + 1]]
+        .binary_search(&row)
+        .ok()
+        .map(|offset| start + offset)
+}
 
 /// The eliminations `laid` out, each pivot where `resolve` puts it, each flagged by the
 /// entries of `column` and `row`, every elimination's, of `count` kept unknowns: whether one
@@ -128,26 +154,32 @@ fn eliminations(
     }
     laid.into_iter()
         .zip(shared)
-        .map(
-            |(((unknown, row_of, pivot), columns, entries, updates), shared)| {
-                let pivot = resolve(pivot);
-                let simple = [pivot]
-                    .into_iter()
-                    .chain(column[columns.0..columns.1].iter().map(|entry| entry.at))
-                    .chain(row[entries.0..entries.1].iter().map(|entry| entry.at))
-                    .all(|at| at.0 & WRITTEN == 0);
-                Eliminated {
-                    unknown,
-                    row: row_of,
-                    pivot,
-                    column: columns,
-                    entries,
-                    updates,
-                    shared,
-                    simple,
-                }
-            },
-        )
+        .map(|(item, shared)| {
+            let pivot = resolve(item.pivot);
+            let simple = [pivot]
+                .into_iter()
+                .chain(
+                    column[item.column.0..item.column.1]
+                        .iter()
+                        .map(|entry| entry.at),
+                )
+                .chain(
+                    row[item.entries.0..item.entries.1]
+                        .iter()
+                        .map(|entry| entry.at),
+                )
+                .all(|at| at.0 & WRITTEN == 0);
+            Eliminated {
+                unknown: item.unknown,
+                row: item.row,
+                pivot,
+                column: item.column,
+                entries: item.entries,
+                updates: item.updates,
+                shared,
+                simple,
+            }
+        })
         .collect()
 }
 
@@ -282,12 +314,12 @@ struct Numbering {
 impl Numbering {
     /// The numbering of a full pattern of `dimension` unknowns once each of `taken`, a
     /// pivot's row and column, is eliminated.
-    fn new(dimension: usize, taken: &[(usize, usize)]) -> Self {
+    fn new(dimension: usize, taken: &[Step]) -> Self {
         let (mut eliminated_row, mut eliminated_column) =
             (vec![NONE; dimension], vec![NONE; dimension]);
-        for (index, &(row, column)) in taken.iter().enumerate() {
-            eliminated_row[row] = index;
-            eliminated_column[column] = index;
+        for (index, step) in taken.iter().enumerate() {
+            eliminated_row[step.row] = index;
+            eliminated_column[step.unknown] = index;
         }
         let mut index = vec![NONE; dimension];
         let mut unknowns = Vec::new();
@@ -301,8 +333,8 @@ impl Numbering {
                 _ => NONE,
             })
             .collect();
-        for &(row, column) in taken.iter().filter(|&&(row, column)| row != column) {
-            row_index[column] = index[row];
+        for step in taken.iter().filter(|step| step.row != step.unknown) {
+            row_index[step.unknown] = index[step.row];
         }
         let mut rows = vec![NONE; unknowns.len()];
         for (row, &kept) in row_index.iter().enumerate() {
@@ -374,11 +406,7 @@ impl<'a> Evolving<'a> {
 
     /// The full pattern's slot at `row` and `column`, if it stores one.
     fn slot(&self, row: usize, column: usize) -> Option<usize> {
-        let start = self.starts[column];
-        self.rows[start..self.starts[column + 1]]
-            .binary_search(&row)
-            .ok()
-            .map(|offset| start + offset)
+        slot_in(self.starts, self.rows, row, column)
     }
 
     /// Whether the pattern holds an entry at `row` and `column`, of its own or filled.
@@ -422,20 +450,20 @@ impl<'a> Evolving<'a> {
     }
 
     /// Eliminates the column `unknown` by the row `row`: fills each product of the other
-    /// entries of its column and its row where the pattern held nothing, and returns the
-    /// rows and the columns of those entries, and the places the products were added to an
-    /// entry held before, in the order of the updates.
+    /// entries of its column and its row where the pattern held nothing, clears `proven` for
+    /// every column where a product landed on an entry held before, and returns the sorted
+    /// active rows and columns of the elimination.
     fn eliminate(
         &mut self,
         (row, unknown): (usize, usize),
-    ) -> (Vec<usize>, Vec<usize>, Vec<(usize, usize)>) {
+        proven: &mut [bool],
+    ) -> (Vec<usize>, Vec<usize>) {
         let rows = self.column(unknown, row);
         let columns = self.row(row, unknown);
-        let mut added = Vec::new();
         for &target in &rows {
             for &along in &columns {
                 if self.holds(target, along) {
-                    added.push((target, along));
+                    proven[along] = false;
                 } else {
                     self.fill(target, along);
                 }
@@ -443,7 +471,95 @@ impl<'a> Evolving<'a> {
         }
         self.gone.0[row] = true;
         self.gone.1[unknown] = true;
-        (rows, columns, added)
+        (rows, columns)
+    }
+}
+
+/// Symbolic layout of every accepted elimination step before slot addresses are resolved.
+struct Layout {
+    builder: PatternBuilder,
+    kept_entries: Vec<(Entry, usize)>,
+    later: Vec<usize>,
+    list: Vec<Laid>,
+    column_entries: Vec<(usize, Place)>,
+    row_entries: Vec<(usize, Place)>,
+    updates: Vec<Place>,
+}
+
+impl Layout {
+    /// Records every entry read and written by `taken` against `full` and `numbering`.
+    fn build(full: &Pattern, numbering: &Numbering, taken: &[Step]) -> Self {
+        let mut builder = PatternBuilder::new();
+        // The full pattern's entries among the kept unknowns, in its order of slots, and
+        // each entry the eliminations fill among them, with the full pattern's slot of each,
+        // or `NONE` for one filled.
+        let mut kept_entries: Vec<(Entry, usize)> = full
+            .positions()
+            .enumerate()
+            .filter_map(|(slot, position)| Some((numbering.claim(&mut builder, position)?, slot)))
+            .collect();
+        // Where each entry an elimination writes lies among the values written: a kept
+        // one's claim, or one of a row or a column eliminated later, in the order first
+        // written, with the full pattern's slot of each, or `NONE`.
+        let mut writes: HashMap<(usize, usize), Place> = HashMap::new();
+        let mut later: Vec<usize> = Vec::new();
+        let structure = full.structure();
+        let (col_starts, col_rows) = (structure.col_ptr(), structure.row_idx());
+        let (mut list, mut column_entries, mut row_entries, mut updates) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for step in taken {
+            let (row, unknown) = (step.row, step.unknown);
+            let first = (column_entries.len(), row_entries.len(), updates.len());
+            // An entry no elimination before wrote is read from the full matrix.
+            let read = |position: (usize, usize)| {
+                writes.get(&position).copied().unwrap_or_else(|| {
+                    let slot =
+                        slot_in(col_starts, col_rows, position.0, position.1).unwrap_or(NONE);
+                    debug_assert_ne!(slot, NONE, "unread entry is stored in the full pattern");
+                    Place::Full(slot)
+                })
+            };
+            let pivot = read((row, unknown));
+            for &each in &step.rows {
+                column_entries.push((numbering.solved_row(each), read((each, unknown))));
+            }
+            for &each in &step.columns {
+                row_entries.push((numbering.solved_column(each), read((row, each))));
+            }
+            for &target in &step.rows {
+                for &along in &step.columns {
+                    let position = (target, along);
+                    let place = *writes.entry(position).or_insert_with(|| {
+                        let slot = slot_in(col_starts, col_rows, target, along).unwrap_or(NONE);
+                        if let Some(entry) = numbering.claim(&mut builder, position) {
+                            kept_entries.push((entry, slot));
+                            Place::Kept(kept_entries.len() - 1)
+                        } else {
+                            later.push(slot);
+                            Place::Later(later.len() - 1)
+                        }
+                    });
+                    updates.push(place);
+                }
+            }
+            list.push(Laid {
+                unknown,
+                row,
+                pivot,
+                column: (first.0, column_entries.len()),
+                entries: (first.1, row_entries.len()),
+                updates: first.2,
+            });
+        }
+        Self {
+            builder,
+            kept_entries,
+            later,
+            list,
+            column_entries,
+            row_entries,
+            updates,
+        }
     }
 }
 
@@ -467,91 +583,45 @@ impl Condensation {
             pivot_column[column] = true;
         }
         // Each candidate in turn, eliminated when its column is still as proven.
-        let mut evolving = Evolving::new(&full);
-        let mut proven = pivot_column.clone();
         let mut taken = Vec::new();
-        for &(row, column) in &candidates {
-            let (rows_gone, columns_gone) = &evolving.gone;
-            let paired = row == column || !(pivot_column[row] || pivot_row[column]);
-            if rows_gone[row]
-                || columns_gone[column]
-                || !paired
-                || !proven[column]
-                || evolving.slot(row, column).is_none()
-            {
-                continue;
+        {
+            let mut evolving = Evolving::new(&full);
+            let mut proven = pivot_column.clone();
+            for &(row, column) in &candidates {
+                let (rows_gone, columns_gone) = &evolving.gone;
+                let paired = row == column || !(pivot_column[row] || pivot_row[column]);
+                if rows_gone[row]
+                    || columns_gone[column]
+                    || !paired
+                    || !proven[column]
+                    || evolving.slot(row, column).is_none()
+                {
+                    continue;
+                }
+                let (rows, columns) = evolving.eliminate((row, column), &mut proven);
+                taken.push(Step {
+                    row,
+                    unknown: column,
+                    rows,
+                    columns,
+                });
             }
-            let (_, _, added) = evolving.eliminate((row, column));
-            for (_, along) in added {
-                proven[along] = false;
-            }
-            taken.push((row, column));
         }
         Self::of(full, &taken)
     }
 
-    /// The condensation of `full`'s matrices that eliminates each of `taken`, a pivot's row
-    /// and column, in their order.
-    fn of(full: Arc<Pattern>, taken: &[(usize, usize)]) -> Self {
+    /// The condensation of `full`'s matrices that eliminates each step of `taken` in order.
+    fn of(full: Arc<Pattern>, taken: &[Step]) -> Self {
         let numbering = Numbering::new(full.dimension(), taken);
-        let mut builder = PatternBuilder::new();
-        // The full pattern's entries among the kept unknowns, in its order of slots, and
-        // each entry the eliminations fill among them, with the full pattern's slot of each,
-        // or `NONE` for one filled.
-        let mut kept_entries: Vec<(Entry, usize)> = full
-            .positions()
-            .enumerate()
-            .filter_map(|(slot, position)| Some((numbering.claim(&mut builder, position)?, slot)))
-            .collect();
-        // Where each entry an elimination writes lies among the values written: a kept
-        // one's claim, or one of a row or a column eliminated later, in the order first
-        // written, with the full pattern's slot of each, or `NONE`.
-        let mut writes: HashMap<(usize, usize), Place> = HashMap::new();
-        let mut later: Vec<usize> = Vec::new();
-        let mut evolving = Evolving::new(&full);
-        let (mut list, mut column_entries, mut row_entries, mut updates) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for &(row, unknown) in taken {
-            let rows = evolving.column(unknown, row);
-            let columns = evolving.row(row, unknown);
-            let first = (column_entries.len(), row_entries.len(), updates.len());
-            // An entry no elimination before wrote is read from the full matrix.
-            let read = |position: (usize, usize)| {
-                writes.get(&position).copied().unwrap_or_else(|| {
-                    Place::Full(evolving.slot(position.0, position.1).unwrap_or(NONE))
-                })
-            };
-            let pivot = read((row, unknown));
-            for &each in &rows {
-                column_entries.push((numbering.solved_row(each), read((each, unknown))));
-            }
-            for &each in &columns {
-                row_entries.push((numbering.solved_column(each), read((row, each))));
-            }
-            for &target in &rows {
-                for &along in &columns {
-                    let position = (target, along);
-                    let place = *writes.entry(position).or_insert_with(|| {
-                        let slot = evolving.slot(target, along).unwrap_or(NONE);
-                        if let Some(entry) = numbering.claim(&mut builder, position) {
-                            kept_entries.push((entry, slot));
-                            Place::Kept(kept_entries.len() - 1)
-                        } else {
-                            later.push(slot);
-                            Place::Later(later.len() - 1)
-                        }
-                    });
-                    updates.push(place);
-                }
-            }
-            evolving.eliminate((row, unknown));
-            list.push((
-                (unknown, row, pivot),
-                (first.0, column_entries.len()),
-                (first.1, row_entries.len()),
-                first.2,
-            ));
-        }
+        let Layout {
+            builder,
+            kept_entries,
+            later,
+            list,
+            column_entries,
+            row_entries,
+            updates,
+        } = Layout::build(&full, &numbering, taken);
         let kept = builder.finish(numbering.unknowns.len());
         let mut sources = vec![NONE; kept.len()];
         let claims: Vec<usize> = kept_entries
@@ -673,7 +743,7 @@ impl Condensation {
         (pivots, multipliers, row): &mut (&mut Vec<T>, &mut Vec<T>, &mut Vec<T>),
     ) -> Result<(), LinearError> {
         let pivot = R::read(eliminated.pivot, values, written);
-        if pivot.magnitude() == 0.0 || !pivot.is_finite() {
+        if pivot.size() == 0.0 || !pivot.is_finite() {
             return Err(LinearError::Singular {
                 columns: vec![eliminated.unknown],
             });
@@ -943,5 +1013,121 @@ mod tests {
             .expect("regular");
         // 2a + b = 3 and a + b = 1: a = 2, b = −1, exactly.
         assert_eq!(x, [2.0, -1.0]);
+    }
+
+    /// Returns a 4x4 strictly diagonally dominant pattern and values where eliminating 1 fills
+    /// `(0, 2)` and `(3, 2)` without touching existing entries in column 2, leaving column 2
+    /// proven so elimination 2 reads those fills via `Either` (non-simple).
+    fn chained_system() -> (Arc<Pattern>, Vec<f64>, usize) {
+        let positions = [
+            ((0, 0), 4.0),
+            ((0, 1), -1.0),
+            ((1, 0), -1.0),
+            ((1, 1), 4.0),
+            ((1, 2), -1.0),
+            ((2, 2), 4.0),
+            ((2, 3), -1.0),
+            ((3, 1), -1.0),
+            ((3, 3), 4.0),
+        ];
+        let mut builder = PatternBuilder::new();
+        let entries: Vec<_> = positions
+            .iter()
+            .map(|&((row, column), _)| builder.entry(row, column))
+            .collect();
+        let full = Arc::new(builder.finish(4));
+        let mut values = vec![0.0; full.len()];
+        for (&entry, &(_, value)) in entries.iter().zip(&positions) {
+            values[full.slot(entry)] = value;
+        }
+        let pivot_slot = full.slot(entries[3]);
+        (full, values, pivot_slot)
+    }
+
+    #[test]
+    fn chained_eliminations_match_uncondensed_solves() {
+        let (full, real_values, _) = chained_system();
+        let condensation = Arc::new(Condensation::new(Arc::clone(&full), &[(1, 1), (2, 2)]));
+        assert_eq!(condensation.eliminated(), 2);
+        assert!(condensation.eliminated[0].simple);
+        assert!(!condensation.eliminated[1].simple);
+
+        let direct_ordering = Arc::new(Ordering::new(full).expect("fits"));
+        let condensed_ordering = Arc::new(Ordering::condensed(condensation, None).expect("fits"));
+
+        let mut direct_lu = SparseLu::new(direct_ordering);
+        let mut condensed_lu = SparseLu::new(condensed_ordering);
+        let rhs = [1.0, -2.0, 3.0, -4.0];
+        let (mut direct_x, mut condensed_x) = (rhs, rhs);
+        direct_lu
+            .factor(&real_values)
+            .and_then(|mut f| f.solve(&mut direct_x))
+            .expect("direct");
+        condensed_lu
+            .factor(&real_values)
+            .and_then(|mut f| f.solve(&mut condensed_x))
+            .expect("condensed");
+        for (a, b) in direct_x.iter().zip(&condensed_x) {
+            assert!((a - b).abs() < 1e-14, "{direct_x:?} vs {condensed_x:?}");
+        }
+        let (mut direct_t, mut condensed_t) = (rhs, rhs);
+        direct_lu
+            .factor(&real_values)
+            .and_then(|mut f| f.solve_transpose(&mut direct_t))
+            .expect("direct transpose");
+        condensed_lu
+            .factor(&real_values)
+            .and_then(|mut f| f.solve_transpose(&mut condensed_t))
+            .expect("condensed transpose");
+        for (a, b) in direct_t.iter().zip(&condensed_t) {
+            assert!((a - b).abs() < 1e-14, "{direct_t:?} vs {condensed_t:?}");
+        }
+    }
+
+    #[test]
+    fn complex_condensation_matches_uncondensed_and_guards_pivots() {
+        let (full, real_values, pivot_slot) = chained_system();
+        let condensation = Arc::new(Condensation::new(Arc::clone(&full), &[(1, 1), (2, 2)]));
+        let direct_ordering = Arc::new(Ordering::new(full).expect("fits"));
+        let condensed_ordering =
+            Arc::new(Ordering::condensed(Arc::clone(&condensation), None).expect("fits"));
+
+        let mut complex_values: Vec<num_complex::Complex64> = real_values
+            .iter()
+            .map(|&value| num_complex::Complex64::new(value, 0.25))
+            .collect();
+        let complex_rhs = [
+            num_complex::Complex64::new(1.0, 0.5),
+            num_complex::Complex64::new(-2.0, -0.5),
+            num_complex::Complex64::new(3.0, 1.0),
+            num_complex::Complex64::new(-4.0, -1.0),
+        ];
+        let (mut direct_c, mut condensed_c) = (complex_rhs, complex_rhs);
+        SparseLu::new(direct_ordering)
+            .factor(&complex_values)
+            .and_then(|mut f| f.solve(&mut direct_c))
+            .expect("direct complex");
+        SparseLu::new(Arc::clone(&condensed_ordering))
+            .factor(&complex_values)
+            .and_then(|mut f| f.solve(&mut condensed_c))
+            .expect("condensed complex");
+        for (a, b) in direct_c.iter().zip(&condensed_c) {
+            assert!((a - b).norm() < 1e-14, "{direct_c:?} vs {condensed_c:?}");
+        }
+        for bad in [
+            num_complex::Complex64::new(0.0, 0.0),
+            num_complex::Complex64::new(f64::NAN, 1.0),
+            num_complex::Complex64::new(f64::INFINITY, 0.0),
+        ] {
+            complex_values[pivot_slot] = bad;
+            let mut complex_lu = SparseLu::new(Arc::clone(&condensed_ordering));
+            assert_eq!(
+                complex_lu.factor(&complex_values).map(|_| ()),
+                Err(LinearError::Singular { columns: vec![1] })
+            );
+        }
+        complex_values[pivot_slot] = num_complex::Complex64::new(0.0, 1e-310);
+        let mut saved = Saved::new();
+        assert!(condensation.condense(&complex_values, &mut saved).is_ok());
     }
 }

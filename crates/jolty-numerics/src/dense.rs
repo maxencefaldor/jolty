@@ -2,7 +2,7 @@
 
 use faer::linalg::solvers::Svd;
 use faer::linalg::svd::SvdError;
-use faer::{Mat, MatRef};
+use faer::MatRef;
 
 use crate::LinearError;
 use crate::lu::finite;
@@ -73,9 +73,17 @@ pub fn solve_in_range(
 ///
 /// # Panics
 ///
-/// Panics unless `a` holds the square of the columns' length.
+/// Panics if the columns differ in length, or if `columns` is non-empty and `a` does not hold
+/// the square of their length.
 pub fn solve_each_in_range(a: &[f64], columns: &mut [Vec<f64>]) -> Result<usize, LinearError> {
-    let n = columns.first().map_or(0, Vec::len);
+    let Some(first) = columns.first() else {
+        return Ok(0);
+    };
+    let n = first.len();
+    assert!(
+        columns.iter().all(|column| column.len() == n),
+        "every column has the same length"
+    );
     let Some(decomposed) = Decomposed::new(a, n)? else {
         return Ok(0);
     };
@@ -125,7 +133,7 @@ impl Decomposed {
         if n == 0 {
             return Ok(None);
         }
-        let svd = Mat::from_fn(n, n, |row, column| a[column * n + row])
+        let svd = MatRef::from_column_major_slice(a, n, n)
             .svd()
             .map_err(unconverged)?;
         let values: Vec<f64> = svd.S().column_vector().iter().copied().collect();
@@ -413,5 +421,18 @@ mod tests {
             assert_eq!(rank, if a[1] == 0.0 { 1 } else { 2 });
             assert_eq!(columns, alone);
         }
+    }
+
+    #[test]
+    fn solve_each_in_range_handles_empty_columns_without_panicking() {
+        assert_eq!(solve_each_in_range(&[2.0, 1.0, 1.0, 3.0], &mut []), Ok(0));
+        assert_eq!(solve_each_in_range(&[], &mut []), Ok(0));
+    }
+
+    #[test]
+    #[should_panic(expected = "every column has the same length")]
+    fn solve_each_in_range_rejects_mismatched_column_lengths() {
+        let mut columns = vec![vec![1.0, 2.0], vec![3.0]];
+        let _ = solve_each_in_range(&[1.0, 0.0, 0.0, 1.0], &mut columns);
     }
 }

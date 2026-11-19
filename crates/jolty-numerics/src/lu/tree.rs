@@ -183,7 +183,7 @@ impl<T: Scalar> Tree<T> {
                 }
                 Part::Front(front) => {
                     let size = front.rows.len();
-                    (0..front.steps).map(|step| 2 * (size - step) - 1).sum()
+                    front.steps * (2 * size - front.steps)
                 }
             })
             .sum()
@@ -618,9 +618,10 @@ impl<T: Scalar> Interior<T> {
         );
         self.update_rows.extend(own..size);
         let width = self.update_rows.len();
+        let entries = width.checked_mul(width).ok_or(LinearError::TooLarge)?;
         self.update.clear();
-        self.update.try_reserve(width * width)?;
-        self.update.resize(width * width, T::ZERO);
+        self.update.try_reserve(entries)?;
+        self.update.resize(entries, T::ZERO);
         for index in 0..width {
             let column = self.update_column(index, own);
             let entries = frame_column(node, column);
@@ -767,16 +768,16 @@ impl<T: Scalar> Interior<T> {
             }
             self.marks[start] = stamp;
             self.visits.push((start, self.first_entry(start)));
-            while let Some(&(row, entry)) = self.visits.last() {
+            while let Some(visit) = self.visits.last_mut() {
+                let (row, entry) = *visit;
                 let step = self.steps[row];
                 if step != NONE && entry < self.lower.starts[step + 1] {
-                    if let Some(visit) = self.visits.last_mut() {
-                        visit.1 += 1;
-                    }
+                    visit.1 += 1;
                     let next = self.lower.indices[entry];
                     if self.marks[next] != stamp {
                         self.marks[next] = stamp;
-                        self.visits.push((next, self.first_entry(next)));
+                        let first = self.first_entry(next);
+                        self.visits.push((next, first));
                     }
                 } else {
                     self.visits.pop();
@@ -1076,9 +1077,10 @@ impl<T: Scalar> Front<T> {
         self.columns.extend_from_slice(&node.border);
         let size = self.rows.len();
         let delayed_in = self.fully - own;
+        let entries = size.checked_mul(size).ok_or(LinearError::TooLarge)?;
         self.frame.clear();
-        self.frame.try_reserve(size * size)?;
-        self.frame.resize(size * size, T::ZERO);
+        self.frame.try_reserve(entries)?;
+        self.frame.resize(entries, T::ZERO);
         let slot = |index: usize| {
             if index < own {
                 index
@@ -1286,7 +1288,14 @@ impl<T: Scalar> Front<T> {
         if columns == 0 {
             return;
         }
-        let share = columns.div_ceil(threads.max(1));
+        if threads < 2 || columns == 1 {
+            for (column, taken) in rest.chunks_exact_mut(size).zip(applied) {
+                take_in(earlier, column, *taken..step);
+                *taken = step;
+            }
+            return;
+        }
+        let share = columns.div_ceil(threads);
         rest.par_chunks_mut(share * size)
             .zip(applied.par_chunks_mut(share))
             .for_each(|(columns, applied)| {

@@ -87,7 +87,7 @@ fn norm<T: Scalar>(matrix: &[Vec<T>]) -> f64 {
         .fold(0.0, f64::max)
 }
 
-/// The inverse of the dense `matrix` by Gauss–Jordan elimination with partial pivoting, or
+/// The inverse of the dense `matrix` by Gauss-Jordan elimination with partial pivoting, or
 /// `None` when a column has no nonzero pivot.
 fn inverse<T: Scalar + One>(matrix: &[Vec<T>]) -> Option<Vec<Vec<T>>> {
     let n = matrix.len();
