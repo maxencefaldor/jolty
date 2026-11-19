@@ -26,7 +26,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use crate::convert::{outcome_to_python, problems_to_python, py_dict};
+use crate::convert::{problems_to_python, py_dict, result_to_python};
 use crate::helpers::{
     elaboration_result, filled, into_inner_unpoisoned, lock_unpoisoned, parse_json, slice_mut,
     value_result,
@@ -161,7 +161,7 @@ enum CauseKey {
     Failed,
     Kind,
     Unknown(usize),
-    Mismatch,
+    LengthMismatch,
     Empty,
     Outside(u8, u64, u64),
     EmptyWindow,
@@ -189,7 +189,7 @@ impl From<Cause> for CauseKey {
             Cause::Measure(error) => match error {
                 MeasureError::Kind => Self::Kind,
                 MeasureError::Unknown(index) => Self::Unknown(index),
-                MeasureError::Mismatch => Self::Mismatch,
+                MeasureError::LengthMismatch => Self::LengthMismatch,
                 MeasureError::Empty => Self::Empty,
                 MeasureError::Outside { point, first, last } => Self::Outside(
                     match point {
@@ -212,13 +212,13 @@ impl From<Cause> for CauseKey {
                 MeasureError::Memory => Self::Memory,
                 MeasureError::EmptyBand => Self::EmptyBand,
                 MeasureError::Band {
-                    low,
-                    high,
+                    start,
+                    stop,
                     first,
                     last,
                 } => Self::Band(
-                    low.to_bits(),
-                    high.to_bits(),
+                    start.to_bits(),
+                    stop.to_bits(),
                     first.to_bits(),
                     last.to_bits(),
                 ),
@@ -249,7 +249,7 @@ struct Written<'a> {
 /// a Python callback per completed run.
 struct Columns<'a> {
     first: u64,
-    varied: &'a [Column],
+    toleranced: &'a [Column],
     nominal: &'a [f64],
     temperature: f64,
     analyses: usize,
@@ -323,7 +323,7 @@ impl Each {
         let found = PyList::empty(py);
         for result in outcome.results {
             match result {
-                Ok(result) => found.append(outcome_to_python(py, result)?)?,
+                Ok(result) => found.append(result_to_python(py, result)?)?,
                 Err(error) => found.append(error.to_string())?,
             }
         }
@@ -339,7 +339,7 @@ impl Sink for Columns<'_> {
             return;
         };
         let values: Vec<f64> = self
-            .varied
+            .toleranced
             .iter()
             .map(|column| self.value(column, &outcome.values))
             .collect();
@@ -367,7 +367,7 @@ impl Sink for Columns<'_> {
         {
             let mut written = lock_unpoisoned(&self.written);
             let written = &mut *written;
-            let width = self.varied.len();
+            let width = self.toleranced.len();
             written.values[row * width..(row + 1) * width].copy_from_slice(&values);
             written.ended[row * self.analyses..(row + 1) * self.analyses].copy_from_slice(&ended);
             for (place, measured) in outcome.measured.iter().enumerate() {
@@ -455,8 +455,8 @@ pub(crate) fn trace_result(
             });
         }
         (AnalysisResult::DcSweep(sweep), Points::Swept(_), TracedValues::Real(buffer)) => {
-            for (level, values) in sweep.values.iter().enumerate() {
-                fill_trace(buffer, &columns, level, |column| {
+            for (point, values) in sweep.values.iter().enumerate() {
+                fill_trace(buffer, &columns, point, |column| {
                     values.get(column).copied()
                 });
             }
@@ -469,14 +469,14 @@ pub(crate) fn trace_result(
             }
         }
         (
-            AnalysisResult::Transient(waveforms)
-            | AnalysisResult::PeriodicSteadyState(PeriodicSteadyStateResult { waveforms, .. }),
+            AnalysisResult::Transient(transient)
+            | AnalysisResult::PeriodicSteadyState(PeriodicSteadyStateResult { transient, .. }),
             Points::Times(times),
             TracedValues::Real(buffer),
         ) => {
             for (point, &time) in times.iter().enumerate() {
                 fill_trace(buffer, &columns, point, |column| {
-                    at(&waveforms.times, &waveforms.values, column, time)
+                    at(&transient.times, &transient.values, column, time)
                 });
             }
         }
@@ -733,7 +733,7 @@ fn write(
         .collect::<PyResult<_>>()?;
     let sink = Columns {
         first: prepared.runs.start,
-        varied: columns,
+        toleranced: columns,
         nominal: elaborated.nominal(),
         temperature: elaborated.temperature(),
         analyses: prepared.analyses,
@@ -814,7 +814,7 @@ mod tests {
             Cause::Measure(MeasureError::Kind),
             Cause::Measure(MeasureError::Unknown(0)),
             Cause::Measure(MeasureError::Unknown(1)),
-            Cause::Measure(MeasureError::Mismatch),
+            Cause::Measure(MeasureError::LengthMismatch),
             Cause::Measure(MeasureError::Empty),
             Cause::Measure(MeasureError::Outside {
                 point: Point::At,
@@ -848,8 +848,8 @@ mod tests {
             Cause::Measure(MeasureError::Memory),
             Cause::Measure(MeasureError::EmptyBand),
             Cause::Measure(MeasureError::Band {
-                low: 10.0,
-                high: 100.0,
+                start: 10.0,
+                stop: 100.0,
                 first: 1.0,
                 last: 50.0,
             }),

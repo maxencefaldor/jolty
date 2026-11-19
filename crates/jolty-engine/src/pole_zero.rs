@@ -128,7 +128,7 @@ pub struct PoleZero {
     /// The output the transfer function is to, an unknown by name, such as `out`.
     #[serde(default)]
     pub output: Option<String>,
-    /// The node the output voltage is taken over; by default the reference node.
+    /// The node the output voltage is taken over; by default ground.
     #[serde(default)]
     pub reference: Option<String>,
 }
@@ -140,7 +140,7 @@ pub struct PoleZeroResult {
     pub source: Option<String>,
     /// The output the transfer function is to, if any.
     pub output: Option<String>,
-    /// The node the output voltage is taken over, if not the reference node.
+    /// The node the output voltage is taken over, if not ground.
     pub reference: Option<String>,
     /// The operating point the circuit was linearized at.
     pub operating_point: OperatingPointResult,

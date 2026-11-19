@@ -46,7 +46,7 @@ pub(crate) struct BatchPullback {
     runs: Vec<Derived>,
 }
 
-/// Runs the batch VJP for `request` on `elaborated` at `base`, returning [`outcomes`] and
+/// Runs the batch VJP for `request` on `elaborated` at `base`, returning [`results`] and
 /// the corresponding [`BatchPullback`].
 pub(crate) fn vjp<'py>(
     py: Python<'py>,
@@ -91,7 +91,7 @@ pub(crate) fn vjp<'py>(
             )
         })
     }))?;
-    let found = outcomes(py, &runs, &traced)?;
+    let found = results(py, &runs, &traced)?;
     let pullback = BatchPullback {
         batch,
         traced,
@@ -103,7 +103,7 @@ pub(crate) fn vjp<'py>(
 }
 
 /// Builds the result dictionary for `batch_vjp`: `traces`, `periods`, `problems`, `errors`.
-fn outcomes<'py>(
+fn results<'py>(
     py: Python<'py>,
     runs: &[Derived],
     traced: &Traced,
@@ -336,7 +336,7 @@ impl BatchPullback {
         };
         let times = match &pullback.result {
             AnalysisResult::Transient(waveforms) => Some(waveforms.times.as_slice()),
-            AnalysisResult::PeriodicSteadyState(steady) => Some(steady.waveforms.times.as_slice()),
+            AnalysisResult::PeriodicSteadyState(steady) => Some(steady.transient.times.as_slice()),
             _ => None,
         };
         for (point, row) in values.chunks(unknowns.len().max(1)).enumerate() {

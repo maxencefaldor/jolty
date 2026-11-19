@@ -36,13 +36,13 @@ fn complexes(values: &[Complex64], into: &mut Vec<u64>) {
 
 fn point(point: &OperatingPointResult, into: &mut Vec<u64>) {
     reals(&point.values, into);
-    let observation = &point.observation;
+    let recorded = &point.recorded;
     for values in [
-        &observation.currents,
-        &observation.charges,
-        &observation.conductances,
-        &observation.capacitances,
-        &observation.variables,
+        &recorded.currents,
+        &recorded.charges,
+        &recorded.conductances,
+        &recorded.capacitances,
+        &recorded.variables,
     ] {
         reals(values, into);
     }
@@ -82,13 +82,13 @@ fn numbers_of(outcome: &AnalysisResult, numbers: &mut Vec<u64>) {
             for row in &waveforms.values {
                 reals(row, numbers);
             }
-            let observed = &waveforms.observations;
+            let recorded = &waveforms.recorded;
             for values in [
-                &observed.currents,
-                &observed.charges,
-                &observed.conductances,
-                &observed.capacitances,
-                &observed.variables,
+                &recorded.currents,
+                &recorded.charges,
+                &recorded.conductances,
+                &recorded.capacitances,
+                &recorded.variables,
             ] {
                 reals(values, numbers);
             }
@@ -103,13 +103,13 @@ fn numbers_of(outcome: &AnalysisResult, numbers: &mut Vec<u64>) {
             for row in &sweep.values {
                 reals(row, numbers);
             }
-            let observed = &sweep.observations;
+            let recorded = &sweep.recorded;
             for values in [
-                &observed.currents,
-                &observed.charges,
-                &observed.conductances,
-                &observed.capacitances,
-                &observed.variables,
+                &recorded.currents,
+                &recorded.charges,
+                &recorded.conductances,
+                &recorded.capacitances,
+                &recorded.variables,
             ] {
                 reals(values, numbers);
             }

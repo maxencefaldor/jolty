@@ -2,7 +2,7 @@
 //! arrays.
 
 use jolty_engine::{
-    AnalysisResult, ChargeLeak, DcSweepResult, Derivatives, Jvp, Location, MismatchResult,
+    AnalysisResult, ChargeLeak, DcSweepResult, Derivatives, JvpResult, Location, MismatchResult,
     NoiseResult, OperatingPointResult, RecordedSeries, SensitivityResult, Statistics, Strategy,
     TransientResult,
 };
@@ -52,11 +52,11 @@ fn derivatives_to_py<'py>(
 }
 
 /// Converts a JVP result into a Python dictionary of `tangents`, `period`, and `result`.
-pub(crate) fn jvp_to_python(py: Python<'_>, found: Jvp) -> PyResult<Bound<'_, PyDict>> {
+pub(crate) fn jvp_to_python(py: Python<'_>, found: JvpResult) -> PyResult<Bound<'_, PyDict>> {
     Ok(py_dict!(py;
         "tangents" => derivatives_to_py(py, &found.tangents)?,
         "period" => found.period.map(|period| array1(py, period)),
-        "result" => outcome_to_python(py, found.result)?,
+        "result" => result_to_python(py, found.result)?,
     ))
 }
 
@@ -69,7 +69,7 @@ pub(crate) fn excursions_to_python<'py>(
     let found = PyList::empty(py);
     for excursion in simulator.excursions() {
         found.append(py_dict!(py;
-            "instance" => simulator.logic_devices()[excursion.device].path(),
+            "instance" => simulator.logic_devices()[excursion.instance].path(),
             "bound" => excursion.bound.name(), "minimum" => excursion.minimum,
             "maximum" => excursion.maximum, "value" => excursion.value,
             "time" => excursion.time, "count" => excursion.count,
@@ -78,12 +78,12 @@ pub(crate) fn excursions_to_python<'py>(
     Ok(found)
 }
 
-/// The outcome of an analysis as a dictionary whose `kind` names the analysis.
-pub(crate) fn outcome_to_python(
+/// The result of an analysis as a dictionary whose `kind` names the analysis.
+pub(crate) fn result_to_python(
     py: Python<'_>,
-    outcome: AnalysisResult,
+    result: AnalysisResult,
 ) -> PyResult<Bound<'_, PyDict>> {
-    Ok(match outcome {
+    Ok(match result {
         AnalysisResult::OperatingPoint(point) => {
             let result = operating_point_dict(py, point)?;
             result.set_item("kind", "operating_point")?;
@@ -97,9 +97,9 @@ pub(crate) fn outcome_to_python(
             "currents" => matrix(py, &response.currents)?,
             "operating_point" => operating_point_dict(py, response.operating_point)?,
         ),
-        AnalysisResult::Transient(waveforms) => {
+        AnalysisResult::Transient(transient) => {
             let result = py_dict!(py; "kind" => "transient");
-            add_waveforms(&result, waveforms)?;
+            add_transient(&result, transient)?;
             result
         }
         AnalysisResult::PeriodicSteadyState(found) => {
@@ -107,7 +107,7 @@ pub(crate) fn outcome_to_python(
                 "kind" => "periodic_steady_state",
                 "period" => found.period, "periods" => found.periods,
             );
-            add_waveforms(&result, found.waveforms)?;
+            add_transient(&result, found.transient)?;
             result
         }
         AnalysisResult::Sensitivity(sensitivities) => sensitivity_dict(py, sensitivities)?,
@@ -208,25 +208,25 @@ fn add_differentiated(
         "outputs" => outputs,
         "derivatives" => derivatives_to_py(py, derivatives)?,
         "period_derivatives" => period_derivatives.map(|values| array1(py, values)),
-        "result" => outcome_to_python(py, inner)?,
+        "result" => result_to_python(py, inner)?,
     );
     Ok(())
 }
 
-/// Adds transient or periodic steady state waveforms, logic traces, observations, and
+/// Adds transient or periodic steady state times, values, logic traces, recorded values, and
 /// statistics to `result`.
-fn add_waveforms(result: &Bound<'_, PyDict>, waveforms: TransientResult) -> PyResult<()> {
+fn add_transient(result: &Bound<'_, PyDict>, transient: TransientResult) -> PyResult<()> {
     let py = result.py();
     let traces = PyList::empty(py);
-    for trace in waveforms.logic {
+    for trace in transient.logic {
         let (times, levels): (Vec<f64>, Vec<LogicLevel>) = trace.into_iter().unzip();
         traces.append((array1(py, times), array1(py, numbers(&levels))))?;
     }
     py_dict!(in result;
-        "times" => array1(py, waveforms.times), "values" => stacked(py, waveforms.values)?,
-        "logic" => traces, "statistics" => statistics_to_python(py, waveforms.statistics)?,
+        "times" => array1(py, transient.times), "values" => stacked(py, transient.values)?,
+        "logic" => traces, "statistics" => statistics_to_python(py, transient.statistics)?,
     );
-    add_observations(result, waveforms.observations)
+    add_recorded(result, transient.recorded)
 }
 
 /// Converts a DC sweep result into a `PyDict`.
@@ -244,7 +244,7 @@ fn dc_sweep_dict(py: Python<'_>, sweep: DcSweepResult) -> PyResult<Bound<'_, PyD
         "values" => stacked(py, sweep.values)?, "logic" => matrix(py, &logic)?,
         "strategies" => strategies, "iterations" => sweep.iterations,
     );
-    add_observations(&result, sweep.observations)?;
+    add_recorded(&result, sweep.recorded)?;
     Ok(result)
 }
 
@@ -284,7 +284,7 @@ fn operating_point_dict(
     py: Python<'_>,
     operating_point: OperatingPointResult,
 ) -> PyResult<Bound<'_, PyDict>> {
-    let recorded = operating_point.observation;
+    let recorded = operating_point.recorded;
     Ok(py_dict!(py;
         "values" => array1(py, operating_point.values),
         "logic" => array1(py, numbers(&operating_point.logic)),
@@ -298,19 +298,19 @@ fn operating_point_dict(
 }
 
 /// Adds recorded terminal and variable series to `result`, one row per point.
-fn add_observations(result: &Bound<'_, PyDict>, observations: RecordedSeries) -> PyResult<()> {
+fn add_recorded(result: &Bound<'_, PyDict>, recorded: RecordedSeries) -> PyResult<()> {
     let py = result.py();
-    let points = observations.points;
+    let points = recorded.points;
     // Each quantity's rows already lie end to end, so the arrays take them without a copy.
     let rows = |values: Vec<f64>| {
         let width = values.len().checked_div(points).unwrap_or(0);
         array1(py, values).reshape([points, width])
     };
     py_dict!(in result;
-        "currents" => rows(observations.currents)?, "charges" => rows(observations.charges)?,
-        "conductances" => rows(observations.conductances)?,
-        "capacitances" => rows(observations.capacitances)?,
-        "variables" => rows(observations.variables)?,
+        "currents" => rows(recorded.currents)?, "charges" => rows(recorded.charges)?,
+        "conductances" => rows(recorded.conductances)?,
+        "capacitances" => rows(recorded.capacitances)?,
+        "variables" => rows(recorded.variables)?,
     );
     Ok(())
 }

@@ -332,7 +332,7 @@ impl Simulator {
             PullPeriodBudget {
                 unknowns,
                 rows,
-                waveforms: waveforms_numbers(&found.waveforms),
+                waveforms: waveforms_numbers(&found.transient),
                 cotangents: cotangent_count,
                 parameters,
                 kind: PeriodKind::from_scale(system.scale),

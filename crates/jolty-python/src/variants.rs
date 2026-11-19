@@ -14,7 +14,7 @@ use crate::helpers::{elaboration_result, parse_json, value_result};
 
 /// The variants of a batch as Python composes them.
 #[derive(Debug, Clone)]
-enum Varied {
+enum TolerancedParameter {
     Explicit(Arc<Explicit>),
     Grid(Arc<Grid>),
     /// The samples, and their seed.
@@ -22,7 +22,7 @@ enum Varied {
     Product(Arc<Product<Self, Self>>),
 }
 
-impl Varied {
+impl TolerancedParameter {
     fn inner(&self) -> &dyn EngineVariants {
         match self {
             Self::Explicit(explicit) => explicit.as_ref(),
@@ -49,7 +49,7 @@ impl Varied {
     }
 }
 
-impl EngineVariants for Varied {
+impl EngineVariants for TolerancedParameter {
     fn len(&self) -> u64 {
         self.inner().len()
     }
@@ -76,7 +76,7 @@ pub(crate) enum Column {
 /// at every one of another.
 #[pyclass(module = "jolty._core", frozen)]
 pub(crate) struct Variants {
-    varied: Varied,
+    toleranced: TolerancedParameter,
     elaborated: Arc<jolty_engine::Elaborated>,
     /// The numbers the runs vary, in the order of a batch's columns of values.
     columns: Vec<Column>,
@@ -102,7 +102,7 @@ impl Variants {
         Ok(())
     }
 
-    /// The varied columns in batch output order.
+    /// The toleranced columns in batch output order.
     pub(crate) fn columns(&self) -> &[Column] {
         &self.columns
     }
@@ -111,7 +111,7 @@ impl Variants {
     pub(crate) fn based<'a>(&'a self, base: &'a Values) -> Based<'a> {
         Based {
             base,
-            varied: &self.varied,
+            toleranced: &self.toleranced,
         }
     }
 }
@@ -151,7 +151,7 @@ impl Variants {
             columns.push(Column::Temperature);
         }
         Ok(Self {
-            varied: Varied::Explicit(Arc::new(Explicit(listed))),
+            toleranced: TolerancedParameter::Explicit(Arc::new(Explicit(listed))),
             elaborated: Arc::clone(circuit),
             columns,
         })
@@ -196,13 +196,13 @@ impl Variants {
         }
         let grid = value_result(Grid::new(stepped, warm))?;
         Ok(Self {
-            varied: Varied::Grid(Arc::new(grid)),
+            toleranced: TolerancedParameter::Grid(Arc::new(grid)),
             elaborated: Arc::clone(circuit),
             columns,
         })
     }
 
-    /// `samples` Monte Carlo samples of the numbers `varied`, a JSON list of objects of an
+    /// `samples` Monte Carlo samples of the numbers `toleranced`, a JSON list of objects of an
     /// `instance`, its path, a number's `parameter` path, its `nominal` value and its
     /// `tolerance`, drawn from `seed` as [`crate::sample`] draws them.
     ///
@@ -211,26 +211,26 @@ impl Variants {
     fn monte_carlo(
         py: Python<'_>,
         elaborated: &Elaborated,
-        varied: &str,
+        toleranced: &str,
         seed: u64,
         samples: u64,
     ) -> PyResult<Self> {
         let circuit = &elaborated.inner;
-        let toleranced: Vec<Toleranced> = parse_json!(varied)?;
+        let toleranced: Vec<Toleranced> = parse_json!(toleranced)?;
         let columns = toleranced
             .iter()
-            .filter_map(|toleranced| {
-                let parameter = circuit.parameter(&toleranced.instance, &toleranced.parameter)?;
+            .filter_map(|item| {
+                let parameter = circuit.parameter(&item.instance, &item.parameter)?;
                 Some(Column::Parameter(
                     parameter,
-                    toleranced.instance.clone(),
-                    toleranced.parameter.clone(),
+                    item.instance.clone(),
+                    item.parameter.clone(),
                 ))
             })
             .collect();
         let drawn = elaboration_result(py, MonteCarlo::new(circuit, seed, samples, toleranced))?;
         Ok(Self {
-            varied: Varied::MonteCarlo(Arc::new(drawn), seed),
+            toleranced: TolerancedParameter::MonteCarlo(Arc::new(drawn), seed),
             elaborated: Arc::clone(circuit),
             columns,
         })
@@ -249,7 +249,10 @@ impl Variants {
                 "a product's variants vary one elaborated circuit",
             ));
         }
-        let product = value_result(Product::new(first.varied.clone(), second.varied.clone()))?;
+        let product = value_result(Product::new(
+            first.toleranced.clone(),
+            second.toleranced.clone(),
+        ))?;
         let mut columns = first.columns.clone();
         for column in &second.columns {
             if !columns.contains(column) {
@@ -257,7 +260,7 @@ impl Variants {
             }
         }
         Ok(Self {
-            varied: Varied::Product(Arc::new(product)),
+            toleranced: TolerancedParameter::Product(Arc::new(product)),
             elaborated: Arc::clone(&first.elaborated),
             columns,
         })
@@ -265,7 +268,7 @@ impl Variants {
 
     /// How many runs there are.
     fn __len__(&self) -> PyResult<usize> {
-        usize::try_from(self.varied.len())
+        usize::try_from(self.toleranced.len())
             .map_err(|_| PyValueError::new_err("more runs than an index counts"))
     }
 
@@ -287,13 +290,13 @@ impl Variants {
     ///
     /// Raises `ValueError` for an index past the last run.
     fn overrides(&self, index: u64) -> PyResult<(Replaced, Option<f64>)> {
-        if index >= self.varied.len() {
+        if index >= self.toleranced.len() {
             return Err(PyValueError::new_err(format!(
                 "run {index} lies past the {} runs",
-                self.varied.len()
+                self.toleranced.len()
             )));
         }
-        let values = self.varied.values(index);
+        let values = self.toleranced.values(index);
         let mut replaced = Replaced::new();
         for column in &self.columns {
             if let Column::Parameter(parameter, path, name) = column
@@ -311,8 +314,8 @@ impl Variants {
     /// The Monte Carlo sample the run at `index` draws, as its seed and its index among the
     /// samples; `None` when it draws none.
     fn sample(&self, index: u64) -> Option<(u64, u64)> {
-        (index < self.varied.len())
-            .then(|| self.varied.sample(index))
+        (index < self.toleranced.len())
+            .then(|| self.toleranced.sample(index))
             .flatten()
     }
 }
@@ -321,21 +324,21 @@ impl Variants {
 /// with those of its variant in their place where it gives them.
 pub(crate) struct Based<'a> {
     base: &'a Values,
-    varied: &'a Varied,
+    toleranced: &'a TolerancedParameter,
 }
 
 impl EngineVariants for Based<'_> {
     fn len(&self) -> u64 {
-        self.varied.len()
+        self.toleranced.len()
     }
 
     fn values(&self, index: u64) -> Values {
         let mut values = self.base.clone();
-        values.extend(&self.varied.values(index));
+        values.extend(&self.toleranced.values(index));
         values
     }
 
     fn chain(&self) -> u64 {
-        self.varied.chain()
+        self.toleranced.chain()
     }
 }

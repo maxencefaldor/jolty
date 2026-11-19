@@ -73,7 +73,7 @@ fn apart_from_work(outcome: AnalysisResult) -> AnalysisResult {
             AnalysisResult::Transient(waveforms)
         }
         AnalysisResult::PeriodicSteadyState(mut found) => {
-            found.waveforms.statistics.work = Work::default();
+            found.transient.statistics.work = Work::default();
             AnalysisResult::PeriodicSteadyState(found)
         }
         AnalysisResult::Sensitivity(sensitivities) => {
@@ -89,7 +89,7 @@ fn apart_from_work(outcome: AnalysisResult) -> AnalysisResult {
 /// `outcome` without what it records of the devices.
 fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
     let point = |point: OperatingPointResult| OperatingPointResult {
-        observation: RecordedValues::default(),
+        recorded: RecordedValues::default(),
         ..point
     };
     match outcome {
@@ -98,7 +98,7 @@ fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
             AnalysisResult::OperatingPoints(found.into_iter().map(point).collect())
         }
         AnalysisResult::DcSweep(sweep) => AnalysisResult::DcSweep(DcSweepResult {
-            observations: RecordedSeries::default(),
+            recorded: RecordedSeries::default(),
             ..sweep
         }),
         AnalysisResult::Ac(response) => AnalysisResult::Ac(AcResult {
@@ -107,14 +107,14 @@ fn unrecorded(outcome: AnalysisResult) -> AnalysisResult {
             ..response
         }),
         AnalysisResult::Transient(waveforms) => AnalysisResult::Transient(TransientResult {
-            observations: RecordedSeries::default(),
+            recorded: RecordedSeries::default(),
             ..waveforms
         }),
         AnalysisResult::PeriodicSteadyState(found) => {
             AnalysisResult::PeriodicSteadyState(PeriodicSteadyStateResult {
-                waveforms: TransientResult {
-                    observations: RecordedSeries::default(),
-                    ..found.waveforms
+                transient: TransientResult {
+                    recorded: RecordedSeries::default(),
+                    ..found.transient
                 },
                 ..found
             })
@@ -153,7 +153,7 @@ fn iterations(outcome: &AnalysisResult) -> Option<usize> {
     match outcome {
         AnalysisResult::Transient(waveforms) => Some(waveforms.statistics.work.iterations),
         AnalysisResult::PeriodicSteadyState(found) => {
-            Some(found.waveforms.statistics.work.iterations)
+            Some(found.transient.statistics.work.iterations)
         }
         _ => None,
     }

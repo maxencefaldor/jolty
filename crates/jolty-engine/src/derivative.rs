@@ -99,7 +99,7 @@ const KINDS: &str =
 /// What [`Simulator::jvp`] finds: the analysis's result, and the derivative of every
 /// unknown at each of its points along each tangent.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Jvp {
+pub struct JvpResult {
     /// The parameters the tangents move, in their order, each at its value.
     pub parameters: Vec<Parameter>,
     /// The derivatives, by point, then unknown, then tangent: of values, or over
@@ -159,7 +159,7 @@ pub struct Pullback {
 pub(crate) enum Saved {
     /// Nothing, at an operating point or over frequency.
     Nothing,
-    /// The sweep, whose levels it holds again.
+    /// The sweep, whose values it holds again.
     DcSweep(DcSweep),
     /// The transient's start, and each step's formula and whether the integration
     /// restarts after it.
@@ -220,17 +220,17 @@ pub(crate) enum Start {
     Held(Option<Vec<Vec<f64>>>),
 }
 
-/// The total `f64` numbers held inside a transient's recorded waveforms and observations.
+/// The total `f64` numbers held inside a transient's waveforms and recorded values.
 pub(crate) fn waveforms_numbers(waveforms: &TransientResult) -> f64 {
     let values = float_count(waveforms.values.len())
         * float_count(waveforms.values.first().map_or(0, Vec::len));
-    let recorded = &waveforms.observations;
-    let observations = float_count(recorded.currents.len())
+    let recorded = &waveforms.recorded;
+    let recorded_count = float_count(recorded.currents.len())
         + float_count(recorded.charges.len())
         + float_count(recorded.conductances.len())
         + float_count(recorded.capacitances.len())
         + float_count(recorded.variables.len());
-    values + observations
+    values + recorded_count
 }
 
 /// Size parameters for [`forward_period_numbers`].
@@ -537,7 +537,7 @@ impl Simulator {
         parameters: &[(String, String)],
         tangents: &[Vec<f64>],
         options: &Options,
-    ) -> Result<Jvp, SimulationError> {
+    ) -> Result<JvpResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
             let named = self.named_parameters(parameters)?;
@@ -554,7 +554,7 @@ impl Simulator {
                 .map_err(|unread| SimulationError::UnknownParameters(named_of(&unread)))?;
             let kept: Vec<usize> = (0..self.elaborated.unknowns.len()).collect();
             let pushed = self.push_forward(analysis, twins, directions, &kept, options)?;
-            Ok(Jvp {
+            Ok(JvpResult {
                 parameters: pushed.twins.parameters,
                 tangents: pushed.tangents,
                 period: pushed.period,
@@ -636,7 +636,7 @@ impl Simulator {
                         PullPeriodBudget {
                             unknowns,
                             rows,
-                            waveforms: waveforms_numbers(&steady.waveforms),
+                            waveforms: waveforms_numbers(&steady.transient),
                             cotangents: cotangent_count,
                             parameters: parameter_count,
                             kind: PeriodKind::from_scale(system.scale),
@@ -748,7 +748,7 @@ impl Simulator {
             Differentiated::DcSweep(sweep) => {
                 let result = self.dc_sweep(sweep, options)?;
                 let found =
-                    self.along_levels(sweep, &result, &mut twins, |simulator, twins, x| {
+                    self.along_values(sweep, &result, &mut twins, |simulator, twins, x| {
                         let moved = simulator.dc_shifts(twins, x, &directions, &[], options)?;
                         Ok(kept_of(kept, &moved))
                     })?;
@@ -937,10 +937,10 @@ impl Simulator {
                 self.dc_cotangents(twins, &point.values, &at, fold, options)
             }
             (Saved::DcSweep(sweep), AnalysisResult::DcSweep(found)) => {
-                let mut level = 0;
-                self.along_levels(sweep, found, twins, |simulator, twins, x| {
-                    let at = seeds_at(&seeds, level);
-                    level += 1;
+                let mut point_index = 0;
+                self.along_values(sweep, found, twins, |simulator, twins, x| {
+                    let at = seeds_at(&seeds, point_index);
+                    point_index += 1;
                     simulator.dc_cotangents(twins, x, &at, &mut *fold, options)
                 })?;
                 Ok(())
@@ -1065,10 +1065,10 @@ impl Simulator {
         Ok(())
     }
 
-    /// What `each` finds at each level of the sweep `result`, of `sweep`, given the
+    /// What `each` finds at each swept value of the sweep `result`, of `sweep`, given the
     /// solution there, its source held there, and the twins of its device prepared again
     /// there, from what its instance is made of: a number the sweep holds moves nothing.
-    fn along_levels<R>(
+    fn along_values<R>(
         &mut self,
         sweep: &DcSweep,
         result: &DcSweepResult,
@@ -1078,8 +1078,8 @@ impl Simulator {
         let swept = self.swept(sweep)?;
         let mut found = Vec::with_capacity(result.swept.len());
         let mut run = || {
-            for (&level, x) in result.swept.iter().zip(&result.values) {
-                self.hold(swept, Some(level))?;
+            for (&value, x) in result.swept.iter().zip(&result.values) {
+                self.hold(swept, Some(value))?;
                 twins.hold(self, &swept, sweep.parameter.as_deref());
                 found.push(each(self, twins, x)?);
             }
@@ -1339,12 +1339,12 @@ impl Simulator {
         } = system;
         if forward.directions.is_empty() {
             forward.found =
-                vec![vec![Vec::new(); forward.kept.len()]; found.waveforms.values.len()];
+                vec![vec![Vec::new(); forward.kept.len()]; found.transient.values.len()];
             forward.stretch = scale.map(|_| (found.period, Vec::new()));
             return Ok(forward);
         }
         let trajectory = Trajectory {
-            waveforms: &found.waveforms,
+            waveforms: &found.transient,
             steps,
         };
         let unknowns = self.elaborated.unknowns.len();
@@ -1352,8 +1352,8 @@ impl Simulator {
         let needed = forward_period_numbers(ForwardPeriodBudget {
             unknowns,
             rows,
-            points: found.waveforms.values.len(),
-            waveforms: waveforms_numbers(&found.waveforms),
+            points: found.transient.values.len(),
+            waveforms: waveforms_numbers(&found.transient),
             directions: forward.directions.len(),
             kept: forward.kept.len(),
             kind: PeriodKind::from_scale(*scale),
@@ -1445,7 +1445,7 @@ impl Simulator {
         PullPeriodBudget {
             unknowns,
             rows,
-            waveforms: waveforms_numbers(&found.waveforms),
+            waveforms: waveforms_numbers(&found.transient),
             cotangents: float_count(cotangents.len()),
             parameters: twins.len(),
             kind: PeriodKind::from_scale(*scale),
@@ -1453,7 +1453,7 @@ impl Simulator {
         }
         .check(options)?;
         let trajectory = Trajectory {
-            waveforms: &found.waveforms,
+            waveforms: &found.transient,
             steps,
         };
         let seeds = cotangent_seeds(cotangents);
@@ -1470,7 +1470,7 @@ impl Simulator {
         // cotangent on the start and the period to the period's end.
         let mut map = units(rows);
         solve_each_in_range(matrix, &mut map).map_err(|error| self.state.solver.name(error))?;
-        let last = found.waveforms.values.len() - 1;
+        let last = found.transient.values.len() - 1;
         let ended: Vec<BTreeMap<usize, Vec<f64>>> = ends
             .into_iter()
             .zip(cotangents)
@@ -1533,7 +1533,7 @@ impl Simulator {
             .as_ref()
             .map(|_| Tangent::new(self.state.workspace.contributions.charge.clone()));
         forward.tangents.clear();
-        let inside = options.parallelism.inside(x.len());
+        let grain = options.parallelism.unknown_grain(x.len());
         forward
             .twins
             .evaluate(x, Some(0.0), options.gmin, &options.parallelism);
@@ -1545,7 +1545,7 @@ impl Simulator {
                 capacitances,
                 moved,
                 &mut charge,
-                inside,
+                grain,
             );
             forward.tangents.push(Tangent::new(charge));
         }
@@ -1569,12 +1569,12 @@ impl Simulator {
     ) -> Result<(), SimulationError> {
         self.evaluate(point.values, Some(point.time), 1.0, options.gmin, false);
         let unknowns = point.values.len();
-        let inside = options.parallelism.inside(unknowns);
+        let grain = options.parallelism.unknown_grain(unknowns);
         let mut factors = factor_step_jacobian(
             &mut self.state.solver,
             &mut self.state.workspace,
             step.formula.alpha,
-            inside,
+            grain,
         )?;
         let contributions = &self.state.workspace.contributions;
         let stretched = match (&forward.stretch, &forward.charges) {
@@ -1597,7 +1597,7 @@ impl Simulator {
             pattern: &self.elaborated.pattern,
             capacitance: &contributions.capacitance,
             step,
-            inside,
+            grain,
         };
         let mut solutions = Vec::with_capacity(forward.directions.len());
         for (index, (direction, tangent)) in forward
@@ -1669,7 +1669,7 @@ impl Simulator {
     ) -> Result<Ends, SimulationError> {
         let dimension = self.elaborated.unknowns.len();
         let gmin = options.gmin;
-        let inside = options.parallelism.inside(dimension);
+        let grain = options.parallelism.unknown_grain(dimension);
         let zeros = || vec![0.0; dimension];
         let mut adjoints: Vec<Adjoint> = pass
             .seeds
@@ -1725,7 +1725,7 @@ impl Simulator {
                 &mut self.state.solver,
                 &mut self.state.workspace,
                 step.formula.alpha,
-                inside,
+                grain,
             )?;
             for vectors in &mut solved {
                 factors.solve_transpose(&mut vectors.solution)?;
@@ -1867,14 +1867,14 @@ fn fold_dots(
     }
 }
 
-/// The number of points of `result`: one at an operating point, and a level's,
+/// The number of points of `result`: one at an operating point, and a swept value's,
 /// frequency's or time's each otherwise.
 pub(crate) fn points(result: &AnalysisResult) -> usize {
     match result {
         AnalysisResult::DcSweep(sweep) => sweep.values.len(),
         AnalysisResult::Ac(response) => response.values.len(),
         AnalysisResult::Transient(waveforms) => waveforms.values.len(),
-        AnalysisResult::PeriodicSteadyState(found) => found.waveforms.values.len(),
+        AnalysisResult::PeriodicSteadyState(found) => found.transient.values.len(),
         _ => 1,
     }
 }

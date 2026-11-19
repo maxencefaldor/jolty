@@ -360,15 +360,16 @@ impl Parallelism {
 
     /// Whether a run spreads its work on each of the circuit's `unknowns` unknowns and on
     /// each stored entry of its matrix among threads, in Newton iteration and in a
-    /// transient's step control, as [`Inside`] does: once its unknowns fill a task of at
+    /// transient's step control, as [`UnknownGrain`] does: once its unknowns fill a task of at
     /// least [`Parallelism::min_unknowns_per_task`] for every thread the run may use, two
     /// or more; none, to do it all on the run's thread. The bits found are the same either
     /// way.
     #[must_use]
-    pub(crate) fn inside(&self, unknowns: usize) -> Option<Inside> {
-        self.split(Kind::Unknowns, unknowns).map(|tasks| Inside {
-            chunks: tasks.least.get().div_ceil(reduce::CHUNK),
-        })
+    pub(crate) fn unknown_grain(&self, unknowns: usize) -> Option<UnknownGrain> {
+        self.split(Kind::Unknowns, unknowns)
+            .map(|tasks| UnknownGrain {
+                chunks: tasks.least.get().div_ceil(reduce::CHUNK),
+            })
     }
 
     /// `each` of every one of `items`, in their order, spread over [`Parallelism::tasks`]
@@ -439,7 +440,7 @@ pub struct Sizes {
 /// takes more chunks than a slow one, each task at least `chunks` of them; a sum adds the
 /// chunks' totals in their order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Inside {
+pub(crate) struct UnknownGrain {
     /// The fewest chunks a task takes.
     pub(crate) chunks: usize,
 }

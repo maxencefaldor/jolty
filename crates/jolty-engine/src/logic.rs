@@ -139,8 +139,8 @@ impl ExcursionKind {
 /// A logic device used outside its domain: where its timing was never measured.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Excursion {
-    /// The device's index among [`Simulator::logic_devices`](crate::Simulator::logic_devices).
-    pub device: usize,
+    /// The logic device's index among [`Simulator::logic_devices`](crate::Simulator::logic_devices).
+    pub instance: usize,
     /// What left the domain.
     pub bound: ExcursionKind,
     /// The domain's minimum.
@@ -437,7 +437,7 @@ impl Events {
             return;
         }
         let excursion = self.excursions.entry((device, bound)).or_insert(Excursion {
-            device,
+            instance: device,
             bound,
             minimum: bounds.minimum,
             maximum: bounds.maximum,

@@ -57,7 +57,7 @@ pub struct Elaborated {
     pub(crate) unknowns: Vec<Unknown>,
     pub(crate) devices: Vec<Placed>,
     pub(crate) logic: LogicSystem,
-    /// The name of the reference node: the top component's ground port.
+    /// The name of ground: the top component's ground port.
     pub(crate) reference: Name,
     pub(crate) pattern: Arc<Pattern>,
     /// The unknowns of the pattern's matrices the sparse solver eliminates before it
@@ -178,8 +178,10 @@ impl Origin {
     pub(crate) fn kernel(&self) -> Instance<'_> {
         match self {
             Self::Model(made) => made.specification.kernel(),
-            Self::Detector(parameters) => Instance::of::<ThresholdDetector>(parameters),
-            Self::Driver(parameters) => Instance::of::<LogicDriver>(parameters),
+            Self::Detector(parameters) => {
+                Instance::from_parameters::<ThresholdDetector>(parameters)
+            }
+            Self::Driver(parameters) => Instance::from_parameters::<LogicDriver>(parameters),
         }
     }
 }
@@ -831,8 +833,8 @@ impl Elaborated {
         &patches[first..last]
     }
 
-    /// What the device at `index`, an independent source, is made from held at `level`:
-    /// its model's device from the parameters of a source of that constant level.
+    /// What the device at `index`, an independent source, is made from held at `value`:
+    /// its model's device from the parameters of a source of that constant value.
     ///
     /// # Errors
     ///
@@ -841,17 +843,17 @@ impl Elaborated {
     pub(crate) fn held_at(
         &self,
         index: usize,
-        level: f64,
+        value: f64,
     ) -> Result<Origin, Box<ElaborationProblem>> {
         let placed = &self.devices[index];
         let at = || placed.location().clone();
         let Origin::Model(made) = &placed.template.origin else {
             return Err(Box::new(ElaborationProblem::Parameters {
                 at: at(),
-                message: "a connect element is held at no level".to_owned(),
+                message: "a connect element is held at no value".to_owned(),
             }));
         };
-        let parameters = jolty_models::held_source(level);
+        let parameters = jolty_models::held_source(value);
         self.read(index, made, parameters)
     }
 

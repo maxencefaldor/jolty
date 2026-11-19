@@ -6,8 +6,8 @@ use jolty_models::Nature;
 use jolty_numerics::{Ordering, Pattern, PatternBuilder};
 
 use super::{
-    CachedSources, Detector, Domain, Linearized, Run, classify_domains, domain_is_skew_lossless,
-    is_harmonic_scalar, turns_alternate,
+    CachedSources, Detector, Domain, Linearized, StepWindow, classify_domains,
+    domain_is_skew_lossless, is_harmonic_scalar, turns_alternate,
 };
 use crate::Options;
 use crate::newton::Workspace;
@@ -236,7 +236,7 @@ fn evaluate_rings(
         matrices.capacitance,
         jacobian,
     );
-    let run = Run {
+    let window = StepWindow {
         times,
         charges,
         derivatives,
@@ -248,7 +248,7 @@ fn evaluate_rings(
         &circuit.natures,
         &mut solver,
         &mut workspace,
-        &run,
+        &window,
         &Options::default(),
     )
 }
@@ -337,7 +337,7 @@ fn simulate_linear(
             && ringing_derivatives.len() == 2
             && times.len() == 3
         {
-            let run = Run {
+            let window = StepWindow {
                 times: [times[0], times[1], times[2], time],
                 charges: [&charges[0], &charges[1], &charges[2], &runner.charges],
                 derivatives: [
@@ -353,7 +353,7 @@ fn simulate_linear(
                 &circuit.natures,
                 &mut ring_solver,
                 &mut workspace,
-                &run,
+                &window,
                 &options,
             )
         } else {
@@ -685,7 +685,7 @@ fn vcvs_inside_two_mode_lc_has_zero_loop_multiplier() {
     let mut detector = Detector::default();
     assert!(detector.refresh_sources(system));
     for step in 3..derivative_history.len() {
-        let run = Run {
+        let window = StepWindow {
             times: [0.0, step_size, 2.0 * step_size, 3.0 * step_size],
             charges: [
                 &charge_history[step - 3],
@@ -701,7 +701,7 @@ fn vcvs_inside_two_mode_lc_has_zero_loop_multiplier() {
             ],
             alpha,
         };
-        let rings = detector.has_voltage_source_loop_ringing(system, &[0, 1, 2], &run, &options);
+        let rings = detector.has_voltage_source_loop_ringing(system, &[0, 1, 2], &window, &options);
         assert!(!rings);
     }
     let saddle = detector

@@ -30,7 +30,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::convert::{
-    diagnostics_to_python, excursions_to_python, jvp_to_python, outcome_to_python, quantity_name,
+    diagnostics_to_python, excursions_to_python, jvp_to_python, quantity_name, result_to_python,
 };
 use crate::helpers::{
     cotangent, elaboration_result, lock_unpoisoned, parse_json, simulation_result, value_result,
@@ -303,7 +303,7 @@ impl Simulator {
     /// options; reads `measures`, each the index of the analysis it reads and the measure;
     /// and traces `traces`, each the index of an analysis and the indices of the unknowns
     /// whose values it keeps at each of its points: an operating point's one, a DC sweep's
-    /// levels, a response's frequencies, or a transient's times, interpolated linearly
+    /// values, a response's frequencies, or a transient's times, interpolated linearly
     /// between the times it accepted. Returns a dictionary of `NumPy` arrays, one row per
     /// run: `values`, of each number the variants vary; `measured`, what each measure read,
     /// or not a number; `causes`, -1 where it read a number and else the index among
@@ -316,7 +316,7 @@ impl Simulator {
     ///
     /// `each`, if given, is called under the interpreter's lock as each run ends, in no
     /// particular order, with the run's index, the simulator of its structure when its
-    /// values gave the circuit another, its problems, if any, and each analysis's outcome,
+    /// values gave the circuit another, its problems, if any, and each analysis's result,
     /// as `run` returns it, or why it failed; the first exception it raises is raised once
     /// every run has ended. Raises `ValueError` for input the engine cannot read, or runs
     /// that do not lie within the variants'.
@@ -392,7 +392,7 @@ impl Simulator {
         self.unknowns.clone()
     }
 
-    /// Each logic net's name, in the order of every result's levels.
+    /// Each logic net's name, in the order of every result's logic levels.
     #[getter]
     fn nets(&self) -> Vec<String> {
         self.nets.clone()
@@ -484,8 +484,8 @@ impl Simulator {
 
     /// Where the terminal `terminal` of the device, component instance or logic device at
     /// `instance` joins the circuit: the unknown that is its voltage, by name, or `None` on
-    /// the reference, and whether it is thermal; `None` when there is no such terminal on
-    /// an electrical or a thermal net.
+    /// ground, and whether it is thermal; `None` when there is no such terminal on an
+    /// electrical or a thermal net.
     fn terminal(&self, instance: &str, terminal: &str) -> Option<(Option<String>, bool)> {
         let simulator = self.lock();
         let (node, thermal) = simulator.terminal(instance, terminal)?;
@@ -596,7 +596,7 @@ impl Simulator {
             |simulator| spreads_differentiating(simulator, &analysis, &options, pool),
             |simulator, options| simulator.vjp(&analysis, &parameters, options),
         )?;
-        let result = outcome_to_python(py, inner.result.clone())?;
+        let result = result_to_python(py, inner.result.clone())?;
         Ok((result, Pullback { inner }))
     }
 
@@ -648,14 +648,14 @@ impl Simulator {
     ) -> PyResult<Bound<'py, PyDict>> {
         let analysis: Analysis = parse_json!(analysis)?;
         let options: Options = parse_json!(options)?;
-        let outcome = self.simulate(
+        let result = self.simulate(
             py,
             pool,
             &options,
             |simulator| simulator.spreads(&analysis, &options, pool.threads()),
             |simulator, options| simulator.run(&analysis, options),
         )?;
-        outcome_to_python(py, outcome)
+        result_to_python(py, result)
     }
 }
 
@@ -839,10 +839,10 @@ fn expression_tree(expression: &str) -> PyResult<String> {
     value_result(term_to_json_string(&parsed.tree()))
 }
 
-/// The level of `waveform`, a source's waveform as JSON, at `time` in seconds: at time
-/// zero, the level every analysis but a transient one reads.
+/// The value of `waveform`, a source's waveform as JSON, at `time` in seconds: at time
+/// zero, the value every analysis but a transient one reads.
 #[pyfunction]
-fn level(waveform: &str, time: f64) -> PyResult<f64> {
+fn waveform_value(waveform: &str, time: f64) -> PyResult<f64> {
     let waveform: jolty_models::waveform::Waveform = parse_json!(waveform)?;
     Ok(waveform.value(time))
 }
@@ -947,18 +947,18 @@ fn mantissas(series: &str) -> PyResult<Vec<f64>> {
         .ok_or_else(|| PyValueError::new_err(format!("no E series is named `{series}`")))
 }
 
-/// The value of each number of `varied`, a JSON list of objects of an `instance`, its path, a
+/// The value of each number of `toleranced`, a JSON list of objects of an `instance`, its path, a
 /// number's `parameter` path, its `nominal` value and its `tolerance`, in the sample `index`
 /// of a Monte Carlo analysis seeded with `seed`, in order: each drawn from the seed, the
 /// index and its own name alone, as the engine draws it in a batch.
 ///
 /// Raises `ValueError` for a list the engine cannot read.
 #[pyfunction]
-fn sample(varied: &str, seed: u64, index: u64) -> PyResult<Vec<f64>> {
-    let varied: Vec<jolty_engine::variants::Toleranced> = parse_json!(varied)?;
-    Ok(varied
+fn sample(toleranced: &str, seed: u64, index: u64) -> PyResult<Vec<f64>> {
+    let toleranced: Vec<jolty_engine::variants::Toleranced> = parse_json!(toleranced)?;
+    Ok(toleranced
         .iter()
-        .map(|varied| varied.drawn(seed, index))
+        .map(|parameter| parameter.drawn(seed, index))
         .collect())
 }
 
@@ -995,9 +995,14 @@ fn toleranced(circuit: &str) -> PyResult<Vec<(String, String, f64, String)>> {
     let found = value_result(jolty_engine::variants::toleranced(&circuit))?;
     found
         .into_iter()
-        .map(|varied| {
-            let tolerance = value_result(serde_json::to_string(&varied.tolerance))?;
-            Ok((varied.instance, varied.parameter, varied.nominal, tolerance))
+        .map(|parameter| {
+            let tolerance = value_result(serde_json::to_string(&parameter.tolerance))?;
+            Ok((
+                parameter.instance,
+                parameter.parameter,
+                parameter.nominal,
+                tolerance,
+            ))
         })
         .collect()
 }
@@ -1024,7 +1029,7 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(defaulted, module)?)?;
     module.add_function(wrap_pyfunction!(default_options, module)?)?;
     module.add_function(wrap_pyfunction!(break_evens, module)?)?;
-    module.add_function(wrap_pyfunction!(level, module)?)?;
+    module.add_function(wrap_pyfunction!(waveform_value, module)?)?;
     module.add_function(wrap_pyfunction!(models, module)?)?;
     module.add_function(wrap_pyfunction!(schema, module)?)?;
     module.add_function(wrap_pyfunction!(parameter_dimensions, module)?)?;

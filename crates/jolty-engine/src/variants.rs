@@ -56,7 +56,7 @@ pub enum Axis {
 /// consecutive.
 ///
 /// A warm grid runs each line along its last axis as a chain, each run starting from the
-/// solution of the run before it, as a DC sweep does from one level to the next.
+/// solution of the run before it, as a DC sweep does from one value to the next.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Grid {
     axes: Vec<(Axis, Vec<f64>)>,
@@ -283,7 +283,7 @@ impl Spread {
     /// logarithmic one `(1 + relative)^u`, its derivative `ln(1 + relative)`, `u` uniform
     /// within 1 of 0, of standard deviation `1 / √3`, or normal of standard deviation `1/3`.
     #[must_use]
-    pub fn of(distribution: Distribution, relative: f64) -> Self {
+    pub fn from_tolerance(distribution: Distribution, relative: f64) -> Self {
         let uniform = 3.0_f64.sqrt().recip();
         let normal = 3.0_f64.recip();
         match distribution {
@@ -309,15 +309,15 @@ impl Spread {
 
 impl Toleranced {
     /// The random variables its value is drawn from: its own factor's spread, and its lot's
-    /// name and spread if it is in one, each as [`Spread::of`] takes it.
+    /// name and spread if it is in one, each as [`Spread::from_tolerance`] takes it.
     #[must_use]
     pub fn random_variables(&self) -> (Spread, Option<(&str, Spread)>) {
         let tolerance = &self.tolerance;
-        let own = Spread::of(tolerance.distribution, tolerance.relative);
+        let own = Spread::from_tolerance(tolerance.distribution, tolerance.relative);
         let lot = tolerance.lot.as_ref().map(|lot| {
             (
                 lot.name.as_str(),
-                Spread::of(lot.distribution, lot.relative),
+                Spread::from_tolerance(lot.distribution, lot.relative),
             )
         });
         (own, lot)
@@ -502,11 +502,11 @@ fn walk(circuit: &Circuit, found: &mut Vec<Toleranced>) -> Result<(), Toleranced
 pub struct MonteCarlo {
     seed: u64,
     samples: u64,
-    varied: Vec<(ParameterId, Toleranced)>,
+    toleranced: Vec<(ParameterId, Toleranced)>,
 }
 
 impl MonteCarlo {
-    /// `samples` samples of the numbers `varied` of `elaborated`, drawn from `seed`.
+    /// `samples` samples of the numbers `toleranced` of `elaborated`, drawn from `seed`.
     ///
     /// # Errors
     ///
@@ -517,19 +517,19 @@ impl MonteCarlo {
         elaborated: &Elaborated,
         seed: u64,
         samples: u64,
-        varied: Vec<Toleranced>,
+        toleranced: Vec<Toleranced>,
     ) -> Result<Self, ElaborationError> {
         let mut problems = Vec::new();
-        let mut found = Vec::with_capacity(varied.len());
-        for toleranced in varied {
-            match elaborated.parameter(&toleranced.instance, &toleranced.parameter) {
-                Some(parameter) => found.push((parameter, toleranced)),
-                None => problems.push(match elaborated.location(&toleranced.instance) {
+        let mut found = Vec::with_capacity(toleranced.len());
+        for item in toleranced {
+            match elaborated.parameter(&item.instance, &item.parameter) {
+                Some(parameter) => found.push((parameter, item)),
+                None => problems.push(match elaborated.location(&item.instance) {
                     Some(at) => ElaborationProblem::UnknownParameter {
                         at,
-                        parameter: toleranced.parameter,
+                        parameter: item.parameter,
                     },
-                    None => ElaborationProblem::UnknownOverride(toleranced.instance),
+                    None => ElaborationProblem::UnknownOverride(item.instance),
                 }),
             }
         }
@@ -537,7 +537,7 @@ impl MonteCarlo {
             Ok(Self {
                 seed,
                 samples,
-                varied: found,
+                toleranced: found,
             })
         } else {
             Err(ElaborationError::new(problems))
@@ -552,7 +552,7 @@ impl Variants for MonteCarlo {
 
     fn values(&self, index: u64) -> Values {
         let mut values = Values::default();
-        for (parameter, toleranced) in &self.varied {
+        for (parameter, toleranced) in &self.toleranced {
             values.set(*parameter, toleranced.drawn(self.seed, index));
         }
         values

@@ -133,8 +133,8 @@ fn measures_read_a_response_and_a_loop_gain() {
         &json!({"ac": {"source": "V1", "frequencies": frequencies}}),
     );
     let corner = 1.0 / (std::f64::consts::TAU * 1e3 * 1e-6);
-    let output = Transfer::Output {
-        output: out,
+    let output = Transfer::Signal {
+        signal: out,
         over: None,
     };
     let bandwidth = measure(
@@ -297,14 +297,14 @@ fn measures_read_exact_signals_exactly() {
     let crossing = Measure::Crossing {
         signal: relative,
         window,
-        level: 0.0,
+        threshold: 0.0,
         edge: Edge::Rising,
     };
     assert_eq!(read(crossing), Ok(0.75));
     let falling = Measure::Crossing {
         signal: ramp,
         window,
-        level: 0.0,
+        threshold: 0.0,
         edge: Edge::Falling,
     };
     assert_eq!(read(falling), Err(MeasureError::Uncrossed));
@@ -364,7 +364,7 @@ fn transfer_strategy() -> impl Strategy<Value = Transfer> {
     prop_oneof![
         Just(Transfer::Loop),
         (signal_strategy(), prop::option::of(signal_strategy()))
-            .prop_map(|(output, over)| Transfer::Output { output, over }),
+            .prop_map(|(signal, over)| Transfer::Signal { signal, over }),
     ]
 }
 
@@ -387,12 +387,12 @@ fn measure_strategy() -> impl Strategy<Value = Measure> {
         (signal(), window()).prop_map(|(signal, window)| Measure::PeakToPeak { signal, window }),
         (signal(), window()).prop_map(|(signal, window)| Measure::Mean { signal, window }),
         (signal(), window()).prop_map(|(signal, window)| Measure::Rms { signal, window }),
-        (signal(), window(), number(), number()).prop_map(|(signal, window, low, high)| {
+        (signal(), window(), number(), number()).prop_map(|(signal, window, lower, upper)| {
             Measure::RiseTime {
                 signal,
                 window,
-                low,
-                high,
+                lower,
+                upper,
             }
         }),
         (signal(), window()).prop_map(|(signal, window)| Measure::Overshoot { signal, window }),
@@ -401,19 +401,19 @@ fn measure_strategy() -> impl Strategy<Value = Measure> {
             window,
             band
         }),
-        (signal(), window(), number(), edge).prop_map(|(signal, window, level, edge)| {
+        (signal(), window(), number(), edge).prop_map(|(signal, window, threshold, edge)| {
             Measure::Crossing {
                 signal,
                 window,
-                level,
+                threshold,
                 edge,
             }
         }),
-        (signal(), window(), prop::option::of(number())).prop_map(|(signal, window, level)| {
+        (signal(), window(), prop::option::of(number())).prop_map(|(signal, window, threshold)| {
             Measure::Frequency {
                 signal,
                 window,
-                level,
+                threshold,
             }
         }),
         // A fundamental below 10 Hz over times within 10 s keeps a window's whole periods to a

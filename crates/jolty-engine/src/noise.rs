@@ -21,11 +21,10 @@ use crate::{OperatingPointResult, Options, SimulationError, Simulator};
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Noise {
-    /// The output, an unknown by name, such as `out` or `V1:current`, or the reference
-    /// node's name.
+    /// The output, an unknown by name, such as `out` or `V1:current`, or ground's name.
     pub output: String,
     /// The node the output voltage is taken over, for a differential output; by default
-    /// the reference node.
+    /// ground.
     #[serde(default)]
     pub reference: Option<String>,
     /// The path of an independent source to refer the noise back to, such as `V1`.
@@ -40,7 +39,7 @@ pub struct Noise {
 pub struct NoiseResult {
     /// The output's unknown, by name.
     pub output: String,
-    /// The node the output voltage is taken over, if not the reference node.
+    /// The node the output voltage is taken over, if not ground.
     pub reference: Option<String>,
     /// What the output is: a voltage, or a current.
     pub nature: Nature,

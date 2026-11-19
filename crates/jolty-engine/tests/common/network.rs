@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use proptest::prelude::*;
 
-/// The net name of `index`: `"0"` for the reference node and `"n<index>"` otherwise.
+/// The net name of `index`: `"0"` for ground and `"n<index>"` otherwise.
 pub(crate) fn node(index: usize) -> String {
     if index == 0 {
         "0".to_owned()

@@ -68,9 +68,9 @@ use crate::{
 /// The most periods shooting simulates before it gives up, and the most stretches of
 /// transient an oscillator's settling runs, each twice as long as the one before: the
 /// last 2³⁹, some 5.5·10¹¹, times the first, past the 10¹¹ by which a transient's
-/// longest step may exceed its shortest (`SMALLEST_STEP_FRACTION`), so that no orbit
+/// longest step may exceed its shortest (`MIN_STEP_FRACTION`), so that no orbit
 /// slower than that shares a transient with the mode that starts it.
-const MOST_PERIODS: usize = 40;
+const MAX_PERIODS: usize = 40;
 
 /// The most dense matrices of a row and a column per unknown, and one more for an
 /// oscillator's period, that shooting holds at once, while it solves for the next start
@@ -111,12 +111,12 @@ pub struct PeriodicSteadyStateResult {
     /// The period, in seconds: the analysis's, or an oscillator's, which shooting found.
     pub period: f64,
     /// The periods shooting simulated to find the steady state, the last the one
-    /// `waveforms` hold.
+    /// `transient` holds.
     pub periods: usize,
     /// The period from the state it repeats, its times from zero to the period. Its
     /// statistics' work counts every period's, the operating point's and an oscillator's
     /// settling.
-    pub waveforms: TransientResult,
+    pub transient: TransientResult,
 }
 
 /// The derivatives with respect to the state a period starts from, at the last point a
@@ -366,7 +366,7 @@ impl Simulator {
             period,
         };
         let (mut found, shot) = self.shoot(analysis, initial, &period_options)?;
-        let statistics = &mut found.waveforms.statistics;
+        let statistics = &mut found.transient.statistics;
         (statistics.work, statistics.profile) = self.metered_since(&reading);
         Ok((found, shot))
     }
@@ -387,14 +387,14 @@ impl Simulator {
         let unknowns = start.len();
         let mut mismatches = Vec::new();
         let mut simulated = 0;
-        for periods in 1..=MOST_PERIODS {
+        for periods in 1..=MAX_PERIODS {
             simulated = periods;
             let mut monodromy = if oscillator {
                 Monodromy::stretched(period)
             } else {
                 Monodromy::default()
             };
-            let transient = Transient {
+            let period_transient = Transient {
                 stop: period,
                 max_step: analysis.max_step,
                 method: analysis.method,
@@ -404,8 +404,8 @@ impl Simulator {
             };
             let carried = Carried::Monodromy(&mut monodromy);
             let begun = Some((start.clone(), Some(strategy)));
-            let waveforms = self.transient_with(&transient, options, begun, carried)?;
-            let end = waveforms.values.last().unwrap_or(&start);
+            let transient = self.transient_with(&period_transient, options, begun, carried)?;
+            let end = transient.values.last().unwrap_or(&start);
             let tolerances = self.tolerances(&start, end, options);
             mismatches = start
                 .iter()
@@ -431,7 +431,7 @@ impl Simulator {
                 let found = PeriodicSteadyStateResult {
                     period,
                     periods,
-                    waveforms,
+                    transient,
                 };
                 return Ok((found, shot));
             }
@@ -493,7 +493,7 @@ impl Simulator {
         let mut state: Vec<f64> = equilibrium.iter().zip(&kick).map(|(x, k)| x + k).collect();
         let (mut time, mut length) = (0.0, TAU / mode.pole.norm());
         let mut returns = Returns::default();
-        for _ in 0..MOST_PERIODS {
+        for _ in 0..MAX_PERIODS {
             // A stretch's steps are at most a fiftieth of the period the returns before it
             // show, as a period's own are, or of the stretch while none shows one.
             let shown = returns.apart.map(|(period, _)| period / STEPS_PER_RUN);
@@ -599,19 +599,19 @@ impl Simulator {
         monodromy.steps.push(step);
         self.evaluate(point.values, Some(point.time), 1.0, options.gmin, false);
         let unknowns = point.values.len();
-        let inside = options.parallelism.inside(unknowns);
+        let grain = options.parallelism.unknown_grain(unknowns);
         let mut factors = factor_step_jacobian(
             &mut self.state.solver,
             &mut self.state.workspace,
             step.formula.alpha,
-            inside,
+            grain,
         )?;
         let contributions = &self.state.workspace.contributions;
         let linear = TangentLinear {
             pattern: &self.elaborated.pattern,
             capacitance: &contributions.capacitance,
             step,
-            inside,
+            grain,
         };
         for (tangent, at) in monodromy.tangents.iter_mut().zip(&mut monodromy.at) {
             let history = tangent.history(&step.formula);

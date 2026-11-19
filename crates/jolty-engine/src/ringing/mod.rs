@@ -75,7 +75,7 @@ const TRAPEZOIDAL_REAL_FILTER_BOUND: f64 = 0.5;
 const ABSENT: usize = usize::MAX;
 
 /// The four consecutive trapezoidal points tested for numerical ringing, oldest first.
-pub(crate) struct Run<'a> {
+pub(crate) struct StepWindow<'a> {
     /// The four accepted times `[t_0, t_1, t_2, t_3]`, strictly increasing.
     pub(crate) times: [f64; 4],
     /// The charges at each of the four times.
@@ -357,7 +357,7 @@ impl CachedComponent {
         &mut self,
         system: Linearized<'_>,
         position: &mut [usize],
-        run: &Run<'_>,
+        window: &StepWindow<'_>,
         options: &Options,
     ) -> bool {
         for (local, &node) in self.nodes.iter().enumerate() {
@@ -400,8 +400,11 @@ impl CachedComponent {
         let mut loop_derivatives = vec![[0.0; 4]; self.sources.len()];
         let mut loop_charges = vec![[0.0; 4]; self.sources.len()];
         let mut rounding_floor = 0.0_f64;
-        for (step, (&derivative_slice, &charge_slice)) in
-            run.derivatives.iter().zip(&run.charges).enumerate()
+        for (step, (&derivative_slice, &charge_slice)) in window
+            .derivatives
+            .iter()
+            .zip(&window.charges)
+            .enumerate()
         {
             if !solve_saddle_slice(
                 &mut factors,
@@ -435,7 +438,7 @@ impl CachedComponent {
                 let tolerance =
                     alternating_tolerance(derivatives, absolute, options).max(rounding_floor);
                 turns_alternate(derivatives, tolerance)
-                    && !is_harmonic_scalar(run.times, charges, derivatives)
+                    && !is_harmonic_scalar(window.times, charges, derivatives)
             })
     }
 }
@@ -548,7 +551,7 @@ pub(crate) struct Detector {
 }
 
 impl Detector {
-    /// Whether the trapezoidal formula is numerically ringing at the end of `run`.
+    /// Whether the trapezoidal formula is numerically ringing at the end of `window`.
     ///
     /// The step Jacobian `G + α C` and the device matrices `G`, `C` must remain in `workspace`
     /// from the step's error-filter pass; the cached factorization in `solver` is reused
@@ -559,27 +562,27 @@ impl Detector {
         natures: &[Nature],
         solver: &mut Solver<f64>,
         workspace: &mut Workspace,
-        run: &Run<'_>,
+        window: &StepWindow<'_>,
         options: &Options,
     ) -> bool {
         let count = natures.len();
-        let inside = options.parallelism.inside(count);
-        if all(count, inside, |index| {
-            !unknown_alternates(natures, run, index, options)
+        let grain = options.parallelism.unknown_grain(count);
+        if all(count, grain, |index| {
+            !unknown_alternates(natures, window, index, options)
         }) {
             return false;
         }
         let candidates: Vec<usize> = (0..count)
-            .filter(|&index| unknown_alternates(natures, run, index, options))
+            .filter(|&index| unknown_alternates(natures, window, index, options))
             .collect();
         let suspects: Vec<usize> = candidates
             .iter()
             .copied()
             .filter(|&index| {
                 !is_harmonic_scalar(
-                    run.times,
-                    run.charges.map(|slice| slice[index]),
-                    run.derivatives.map(|slice| slice[index]),
+                    window.times,
+                    window.charges.map(|slice| slice[index]),
+                    window.derivatives.map(|slice| slice[index]),
                 )
             })
             .collect();
@@ -603,11 +606,12 @@ impl Detector {
             return false;
         }
         if !suspects.is_empty()
-            && has_dissipative_ringing(system, solver, jacobian, moved, meter, &suspects, run)
+            && has_dissipative_ringing(system, solver, jacobian, moved, meter, &suspects, window)
         {
             return true;
         }
-        has_ideal_sources && self.has_voltage_source_loop_ringing(system, &candidates, run, options)
+        has_ideal_sources
+            && self.has_voltage_source_loop_ringing(system, &candidates, window, options)
     }
 
     fn refresh_sources(&mut self, system: Linearized<'_>) -> bool {
@@ -631,7 +635,7 @@ impl Detector {
         &mut self,
         system: Linearized<'_>,
         active: &[usize],
-        run: &Run<'_>,
+        window: &StepWindow<'_>,
         options: &Options,
     ) -> bool {
         let Some(ideal_sources) = self
@@ -658,7 +662,7 @@ impl Detector {
         let position = &mut cache.position;
         let detected = cache.components.iter_mut().any(|component| {
             let touched = component.nodes.iter().any(|&node| active_marks[node]);
-            touched && component.check(system, position, run, options)
+            touched && component.check(system, position, window, options)
         });
         for &index in active {
             cache.active_marks[index] = false;
@@ -688,7 +692,7 @@ fn has_dissipative_ringing(
     buffer: &mut Vec<f64>,
     meter: &mut Meter,
     suspects: &[usize],
-    run: &Run<'_>,
+    window: &StepWindow<'_>,
 ) -> bool {
     let domains = classify_domains(system);
     let needs_displacement = suspects
@@ -719,7 +723,7 @@ fn has_dissipative_ringing(
         &domains,
         &non_skew,
         suspects,
-        run,
+        window,
     );
     meter.leave(previous);
     detected
@@ -733,7 +737,7 @@ fn check_dissipative_stages(
     domains: &[(Domain, f64)],
     non_skew: &[Domain],
     suspects: &[usize],
-    run: &Run<'_>,
+    window: &StepWindow<'_>,
 ) -> bool {
     let count = system.count();
     for &index in suspects {
@@ -741,7 +745,7 @@ fn check_dissipative_stages(
             continue;
         }
         if !solve_unit(factors, buffer, count, index)
-            || run.alpha * system.row_dot(system.capacitance, index, buffer)
+            || window.alpha * system.row_dot(system.capacitance, index, buffer)
                 < TRAPEZOIDAL_REAL_FILTER_BOUND
         {
             return true;
@@ -753,12 +757,12 @@ fn check_dissipative_stages(
         for &index in suspects {
             if domains[index].0 == domain {
                 let [value_0, value_1, value_2, value_3] =
-                    run.derivatives.map(|slice| slice[index]);
+                    window.derivatives.map(|slice| slice[index]);
                 buffer[index] = value_3 - 3.0 * value_2 + 3.0 * value_1 - value_0;
             }
         }
         if factors.solve(buffer).is_err()
-            || is_dissipative_response(system, run.alpha, domains, domain, buffer)
+            || is_dissipative_response(system, window.alpha, domains, domain, buffer)
         {
             return true;
         }
@@ -769,7 +773,7 @@ fn check_dissipative_stages(
             continue;
         }
         if !solve_unit(factors, buffer, count, index)
-            || is_dissipative_response(system, run.alpha, domains, domain, buffer)
+            || is_dissipative_response(system, window.alpha, domains, domain, buffer)
         {
             return true;
         }
@@ -785,9 +789,14 @@ fn alternating_tolerance(values: [f64; 4], absolute: f64, options: &Options) -> 
     options.truncation_tolerance * (options.relative_tolerance * largest + absolute)
 }
 
-/// Whether unknown `index`'s derivative over `run` turns back and forth twice beyond tolerance.
-fn unknown_alternates(natures: &[Nature], run: &Run<'_>, index: usize, options: &Options) -> bool {
-    let values = run.derivatives.map(|slice| slice[index]);
+/// Whether unknown `index`'s derivative over `window` turns back and forth twice beyond tolerance.
+fn unknown_alternates(
+    natures: &[Nature],
+    window: &StepWindow<'_>,
+    index: usize,
+    options: &Options,
+) -> bool {
+    let values = window.derivatives.map(|slice| slice[index]);
     let tolerance =
         alternating_tolerance(values, options.equation_tolerance(natures[index]), options);
     turns_alternate(values, tolerance)

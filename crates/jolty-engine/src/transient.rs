@@ -14,10 +14,10 @@ use crate::logic::{Checkpoint, Command, Crossing, crossing};
 use crate::newton::{
     Failure, Mode, NAMED_UNKNOWNS, Workspace, add_product, each_chunk, pieces, step_matrix,
 };
-use crate::options::{Inside, float_count};
+use crate::options::{UnknownGrain, float_count};
 use crate::periodic::Monodromy;
 use crate::profile::Activity;
-use crate::record::{Observer, Read};
+use crate::record::{Read, Recorder};
 use crate::ringing;
 use crate::solver::Factors;
 use crate::{
@@ -39,7 +39,7 @@ const RESTART_FRACTION: f64 = 0.1;
 /// after a corner, such as the benchmarks' buck's switches' internal sources, 10 mΩ to 1 nF,
 /// in 10 ps, and resolving that to SPICE's charge tolerance at a relative tolerance of 1e-5
 /// takes steps of 2e-14 s, below 1e-9 of the buck's longest.
-const SMALLEST_STEP_FRACTION: f64 = 1e-11;
+const MIN_STEP_FRACTION: f64 = 1e-11;
 /// The factor a step shrinks by when Newton iteration fails (`1 / 8 = 0.125`, exact in binary
 /// floating point).
 ///
@@ -122,7 +122,7 @@ pub struct TransientResult {
     /// recorded terminal and the charge it holds, and the recorded devices' derivatives and
     /// variables. A current includes its charge's derivative, by the step's integration
     /// formula.
-    pub observations: RecordedSeries,
+    pub recorded: RecordedSeries,
     /// Each logic net's changes: its level at time zero, then each time it changes, in
     /// seconds, and its new level.
     pub logic: Vec<Vec<(f64, LogicLevel)>>,
@@ -243,9 +243,9 @@ impl LeakAccumulator {
 
     /// Accumulates one accepted step solved with `step.formula` whose converged residual is
     /// `residual`; `step.restarted` clears the previous-step history when integration restarts
-    /// after a corner. Work across unknowns splits as `inside` says.
-    fn accumulate(&mut self, step: StepFormula, residual: &[f64], inside: Option<Inside>) {
-        each_chunk(&mut self.states, inside, |start, chunk| {
+    /// after a corner. Work across unknowns splits as `grain` says.
+    fn accumulate(&mut self, step: StepFormula, residual: &[f64], grain: Option<UnknownGrain>) {
+        each_chunk(&mut self.states, grain, |start, chunk| {
             for (state, &current_residual) in chunk.iter_mut().zip(&residual[start..]) {
                 let increment = step.formula.integral_increment(
                     current_residual,
@@ -301,7 +301,7 @@ pub(crate) struct TangentLinear<'a> {
     pub(crate) pattern: &'a Pattern,
     pub(crate) capacitance: &'a [f64],
     pub(crate) step: StepFormula,
-    pub(crate) inside: Option<Inside>,
+    pub(crate) grain: Option<UnknownGrain>,
 }
 
 /// What a transient carries along its accepted steps besides its solution.
@@ -397,7 +397,7 @@ impl Tangent {
             linear.capacitance,
             &rhs,
             &mut charge,
-            linear.inside,
+            linear.grain,
         );
         self.advance(charge, history, linear.step);
         Ok(rhs)
@@ -776,14 +776,14 @@ impl Stepper {
     /// through the last two accepted points carried on to `end`, or the last point after a
     /// corner.
     ///
-    /// The work on each unknown is split as `inside` says.
-    fn predicted(&self, end: f64, inside: Option<Inside>) -> Vec<f64> {
+    /// The work on each unknown is split as `grain` says.
+    fn predicted(&self, end: f64, grain: Option<UnknownGrain>) -> Vec<f64> {
         let Some((time, before)) = &self.before else {
             return self.x.clone();
         };
         let ratio = (end - self.time) / (self.time - time);
         let mut predicted = vec![0.0; self.x.len()];
-        each_chunk(&mut predicted, inside, |start, chunk| {
+        each_chunk(&mut predicted, grain, |start, chunk| {
             let points = self.x[start..].iter().zip(&before[start..]);
             for (value, (&last, &earlier)) in chunk.iter_mut().zip(points) {
                 *value = last + (last - earlier) * ratio;
@@ -793,8 +793,8 @@ impl Stepper {
     }
 
     /// Chooses the integration formula for a step of `length` and writes each unknown's
-    /// history term into `self.terms`, split as `inside` says.
-    fn prepare_formula(&mut self, length: f64, inside: Option<Inside>) -> (Method, Formula) {
+    /// history term into `self.terms`, split as `grain` says.
+    fn prepare_formula(&mut self, length: f64, grain: Option<UnknownGrain>) -> (Method, Formula) {
         // Backward Euler until the points since the last corner are enough to estimate the
         // error of the transient's own method, so that every step but the first after a
         // corner is judged by its own estimate, and the first by the second's.
@@ -807,7 +807,7 @@ impl Stepper {
         let formula = Formula::new(method, length, self.previous);
         let (last, before) = self.history.last_two();
         let derivative = &self.history.derivative;
-        each_chunk(&mut self.terms, inside, |start, chunk| {
+        each_chunk(&mut self.terms, grain, |start, chunk| {
             for (offset, term) in chunk.iter_mut().enumerate() {
                 let index = start + offset;
                 *term = formula.history([last[index], before[index]], derivative[index]);
@@ -982,7 +982,7 @@ impl Simulator {
     /// recorded terminals' currents and charges and the recorded devices' derivatives and
     /// variables.
     pub(crate) fn point_width(&self) -> f64 {
-        float_count(self.elaborated.unknowns.len() + self.state.observer.width())
+        float_count(self.elaborated.unknowns.len() + self.state.recorder.width())
     }
 
     /// Runs `transient` from `start`, a state of a circuit without logic and how the
@@ -1012,12 +1012,12 @@ impl Simulator {
         let reading = self.read_meter(options.profile);
         self.prepare(options)?;
         let longest = self.longest_step(transient)?;
-        let shortest = longest * SMALLEST_STEP_FRACTION;
+        let shortest = longest * MIN_STEP_FRACTION;
         let width = self.point_width();
         options.hold_points(transient.stop / longest * width, 0.0, longest)?;
         let mut held = width;
-        let mut observations = transient.breakpoints.clone();
-        observations.sort_by(f64::total_cmp);
+        let mut requested = transient.breakpoints.clone();
+        requested.sort_by(f64::total_cmp);
         let (initial, strategy) =
             start.map_or_else(|| self.initial_state(transient, options), Ok)?;
         self.start_carried(&mut carried, &initial, options)?;
@@ -1045,16 +1045,16 @@ impl Simulator {
             strategy,
         );
         let (mut times, mut values) = (vec![0.0], vec![stepper.x.clone()]);
-        let mut observed = RecordedSeries::default();
-        observed.push(&self.record(|observer| observer.start(&start)));
+        let mut recorded = RecordedSeries::default();
+        recorded.push(&self.record(|recorder| recorder.start(&start)));
         while stepper.time < transient.stop {
             if let Some(change) = self.state.events.next_analog_change(&self.elaborated.logic) {
                 breakpoints.insert(change);
             }
             let breakpoint = breakpoints.after(stepper.time);
-            let passed = observations.partition_point(|&time| time < stepper.time + shortest);
-            let observation = observations.get(passed).copied().unwrap_or(f64::INFINITY);
-            match self.step_toward(&mut stepper, breakpoint, observation, options)? {
+            let passed = requested.partition_point(|&time| time < stepper.time + shortest);
+            let requested_time = requested.get(passed).copied().unwrap_or(f64::INFINITY);
+            match self.step_toward(&mut stepper, breakpoint, requested_time, options)? {
                 Step::Accepted(points, settles) => {
                     for point in points {
                         let at = StepPoint {
@@ -1068,7 +1068,7 @@ impl Simulator {
                         self.passed(&mut breakpoints, point.time, point.step, &delays);
                         times.push(point.time);
                         values.push(point.x);
-                        observed.push(&point.found);
+                        recorded.push(&point.found);
                     }
                     for time in settles {
                         breakpoints.insert(time);
@@ -1084,7 +1084,7 @@ impl Simulator {
         Ok(TransientResult {
             times,
             values,
-            observations: observed,
+            recorded,
             logic: self.state.events.traces().to_vec(),
             statistics,
         })
@@ -1134,15 +1134,15 @@ impl Simulator {
     }
 
     /// What `read` reads of the recorded devices, its time counted as recording.
-    fn record(&mut self, read: impl FnOnce(&mut Observer) -> RecordedValues) -> RecordedValues {
+    fn record(&mut self, read: impl FnOnce(&mut Recorder) -> RecordedValues) -> RecordedValues {
         let previous = self.state.workspace.meter.enter(Activity::Recording);
-        let found = read(&mut self.state.observer);
+        let found = read(&mut self.state.recorder);
         self.state.workspace.meter.leave(previous);
         found
     }
 
     /// Tries one step toward `breakpoint`, landing on it when it is within reach. A step
-    /// lands on `observation` too, when it comes first, without restarting the integration
+    /// lands on `requested_time` too, when it comes first, without restarting the integration
     /// there.
     ///
     /// An accepted step moves the logic on to its end, with the detectors' crossings within
@@ -1153,10 +1153,10 @@ impl Simulator {
         &mut self,
         stepper: &mut Stepper,
         breakpoint: NextBreakpoint,
-        observation: f64,
+        requested_time: f64,
         options: &Options,
     ) -> Result<Step, SimulationError> {
-        let target = breakpoint.time.min(observation);
+        let target = breakpoint.time.min(requested_time);
         let remaining = target - stepper.time;
         // The step grows from the last by its error, but never past the longest allowed,
         // whether it lands on its target or not.
@@ -1169,17 +1169,17 @@ impl Simulator {
             stepper.time + length
         };
         // Only a breakpoint is a corner in the waveforms, after which the integration
-        // restarts; an observation is a time like any other.
+        // restarts; a requested time is a time like any other.
         let corner = landing && target >= breakpoint.time;
         // Each unknown's work is its own, spread as Newton iteration spreads its work on
         // each unknown.
-        let inside = options.parallelism.inside(stepper.x.len());
-        let (method, formula) = stepper.prepare_formula(length, inside);
+        let grain = options.parallelism.unknown_grain(stepper.x.len());
+        let (method, formula) = stepper.prepare_formula(length, grain);
 
         let mut candidate = stepper
             .resume
             .take()
-            .unwrap_or_else(|| stepper.predicted(end, inside));
+            .unwrap_or_else(|| stepper.predicted(end, grain));
         let mode = Mode::Step {
             time: end,
             alpha: formula.alpha,
@@ -1204,7 +1204,7 @@ impl Simulator {
         let read = self.read_recorded();
         let charge = self.state.workspace.contributions.charge.clone();
         let mut derivative = vec![0.0; charge.len()];
-        each_chunk(&mut derivative, inside, |start, chunk| {
+        each_chunk(&mut derivative, grain, |start, chunk| {
             let terms = charge[start..].iter().zip(&stepper.terms[start..]);
             for (derivative, (&q, &term)) in chunk.iter_mut().zip(terms) {
                 *derivative = formula.alpha * q + term;
@@ -1342,11 +1342,11 @@ impl Simulator {
             derivative,
             read,
         } = tried;
-        let inside = options.parallelism.inside(stepper.x.len());
+        let grain = options.parallelism.unknown_grain(stepper.x.len());
         let mut points = Vec::with_capacity(2);
         if let Some(pending) = stepper.pending.take() {
             // The first step after the corner, its error now estimated within tolerance.
-            points.push(self.accept_pending(stepper, &pending, inside));
+            points.push(self.accept_pending(stepper, &pending, grain));
         }
         let last = (stepper.time, std::mem::replace(&mut stepper.x, x));
         let settles = self.follow(&transition.commands);
@@ -1377,7 +1377,7 @@ impl Simulator {
             };
             stepper
                 .leak
-                .accumulate(step, &self.state.workspace.contributions.residual, inside);
+                .accumulate(step, &self.state.workspace.contributions.residual, grain);
             points.push(self.accept(
                 stepper,
                 AcceptedStep {
@@ -1425,13 +1425,13 @@ impl Simulator {
         &mut self,
         stepper: &mut Stepper,
         pending: &Pending,
-        inside: Option<Inside>,
+        grain: Option<UnknownGrain>,
     ) -> Point {
         let step = StepFormula {
             formula: pending.formula,
             restarted: false,
         };
-        stepper.leak.accumulate(step, &pending.residual, inside);
+        stepper.leak.accumulate(step, &pending.residual, grain);
         self.accept(
             stepper,
             AcceptedStep {
@@ -1477,7 +1477,7 @@ impl Simulator {
     fn accept(&mut self, stepper: &mut Stepper, accepted: AcceptedStep<'_>) -> Point {
         stepper.statistics.accepted += 1;
         stepper.statistics.iterations += accepted.iterations;
-        let found = self.record(|observer| observer.step(accepted.read, accepted.step));
+        let found = self.record(|recorder| recorder.step(accepted.read, accepted.step));
         Point {
             time: accepted.time,
             x: accepted.x,
@@ -1535,7 +1535,7 @@ impl Simulator {
         if history.ringing.len() < RINGING || history.earlier.len() < RINGING {
             return false;
         }
-        let run = ringing::Run {
+        let window = ringing::StepWindow {
             times: [
                 history.earlier[0].0,
                 history.earlier[1].0,
@@ -1561,7 +1561,7 @@ impl Simulator {
             &self.elaborated.natures,
             &mut self.state.solver,
             &mut self.state.workspace,
-            &run,
+            &window,
             options,
         )
     }
@@ -1724,10 +1724,10 @@ impl Simulator {
         }
         // Each unknown's work is its own, spread as Newton iteration spreads its work on each
         // unknown.
-        let inside = options.parallelism.inside(new.values.len());
+        let grain = options.parallelism.unknown_grain(new.values.len());
         let mut differences = std::mem::take(&mut self.state.workspace.differences);
-        divided_differences(history, new, needed, inside, &mut differences);
-        self.filter(&mut differences, span.alpha, inside);
+        divided_differences(history, new, needed, grain, &mut differences);
+        self.filter(&mut differences, span.alpha, grain);
         let scale = options.truncation_tolerance * method.factorial();
         let natures = &self.elaborated.natures;
         // Each charge's tolerances, on the charge and on the current it carries over the step,
@@ -1762,7 +1762,7 @@ impl Simulator {
         // charge's unit steps, which the pass keeps for it.
         let keep = method.is_multistep();
         let per_difference = method.error_per_difference(span.length, span.previous);
-        let found = pieces(differences.len(), inside, |range| {
+        let found = pieces(differences.len(), grain, |range| {
             let (mut worst, mut found) = none;
             let mut units = Vec::with_capacity(if keep { range.len() } else { 0 });
             for index in range {
@@ -1807,7 +1807,7 @@ impl Simulator {
             span.length
         };
         let longest = method.longest_common_step(previous, shortest_at_constant, |scales| {
-            shortest(&units, scales.0, scales.1, inside)
+            shortest(&units, scales.0, scales.1, grain)
         });
         self.state.workspace.differences = differences;
         Some(Judgement { longest, ..worst })
@@ -1826,9 +1826,9 @@ impl Simulator {
     /// Equations II", section IV.8). Where the matrix cannot be factored, the differences are
     /// left as they are.
     ///
-    /// The work on each unknown and each stored entry is split as `inside` says, the same
+    /// The work on each unknown and each stored entry is split as `grain` says, the same
     /// bits however it is.
-    fn filter(&mut self, differences: &mut [f64], alpha: f64, inside: Option<Inside>) {
+    fn filter(&mut self, differences: &mut [f64], alpha: f64, grain: Option<UnknownGrain>) {
         let Workspace {
             contributions,
             jacobian,
@@ -1836,10 +1836,10 @@ impl Simulator {
             meter,
             ..
         } = &mut self.state.workspace;
-        step_matrix(jacobian, contributions, alpha, inside);
+        step_matrix(jacobian, contributions, alpha, grain);
         moved.clear();
         moved.resize(differences.len(), 0.0);
-        each_chunk(moved, inside, |start, chunk| {
+        each_chunk(moved, grain, |start, chunk| {
             for (moved, &difference) in chunk.iter_mut().zip(&differences[start..]) {
                 *moved = alpha * difference;
             }
@@ -1860,18 +1860,18 @@ impl Simulator {
             capacitance,
             moved,
             differences,
-            inside,
+            grain,
         );
     }
 }
 
 /// Writes into `differences` each charge's divided difference over the last `needed`
-/// points: those of `history`, then `new`, its work on each unknown split as `inside` says.
+/// points: those of `history`, then `new`, its work on each unknown split as `grain` says.
 fn divided_differences(
     history: &History,
     new: StepPoint<'_>,
     needed: usize,
-    inside: Option<Inside>,
+    grain: Option<UnknownGrain>,
     differences: &mut Vec<f64>,
 ) {
     // The times and the charges of the points used, oldest first, then the new one's.
@@ -1891,7 +1891,7 @@ fn divided_differences(
     }
     differences.clear();
     differences.resize(new.values.len(), 0.0);
-    each_chunk(differences, inside, |start, chunk| {
+    each_chunk(differences, grain, |start, chunk| {
         let mut samples = [0.0; HISTORY + 1];
         for (offset, difference) in chunk.iter_mut().enumerate() {
             let index = start + offset;
@@ -1924,17 +1924,17 @@ fn shortest(
     units: &[(f64, f64)],
     charge_scale: f64,
     current_scale: f64,
-    inside: Option<Inside>,
+    grain: Option<UnknownGrain>,
 ) -> StepBound {
     let scales = (charge_scale, current_scale);
     let none = (f64::INFINITY, ErrorBound::Charge);
-    if inside.is_none() {
+    if grain.is_none() {
         return units
             .iter()
             .map(|&unit| longest_at(unit, scales))
             .fold(none, least);
     }
-    pieces(units.len(), inside, |range| {
+    pieces(units.len(), grain, |range| {
         units[range]
             .iter()
             .map(|&unit| longest_at(unit, scales))
@@ -1961,7 +1961,7 @@ mod tests {
     use serde_json::json;
 
     use super::{Breakpoints, LeakAccumulator, NextBreakpoint, StepFormula, neumaier_add};
-    use crate::options::{Inside, NUMBERS_PER_GIB};
+    use crate::options::{NUMBERS_PER_GIB, UnknownGrain};
     use crate::test_helpers::{grounded_simulator, source_resistor_simulator};
     use crate::{Options, SimulationError, Transient};
 
@@ -2018,7 +2018,7 @@ mod tests {
     #[test]
     fn leak_accumulator_matches_serial_and_parallel_bit_for_bit() {
         let unknowns = 2 * reduce::CHUNK + 17;
-        let run = |inside: Option<Inside>| {
+        let run = |grain: Option<UnknownGrain>| {
             let mut accumulator = LeakAccumulator::new(unknowns);
             let steps = [
                 (Method::BackwardEuler, 1e-6, 1e-6, false),
@@ -2039,7 +2039,7 @@ mod tests {
                     })
                     .collect();
                 let step = StepFormula { formula, restarted };
-                accumulator.accumulate(step, &residuals, inside);
+                accumulator.accumulate(step, &residuals, grain);
             }
             accumulator.finish()
         };
@@ -2054,7 +2054,7 @@ mod tests {
             .num_threads(4)
             .build()
             .expect("a pool");
-        let parallel = pool.install(|| run(Some(Inside { chunks: 1 })));
+        let parallel = pool.install(|| run(Some(UnknownGrain { chunks: 1 })));
         assert_eq!(slice_bits(&parallel.signed), slice_bits(&serial.signed));
         assert_eq!(slice_bits(&parallel.absolute), slice_bits(&serial.absolute));
     }

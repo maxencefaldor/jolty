@@ -19,16 +19,16 @@ use crate::elaborated::{Devices, Elaborated, Origin, Origins};
 use crate::logic::Events;
 use crate::newton::Workspace;
 use crate::operating_point::Remembered;
-use crate::record::Observer;
+use crate::record::Recorder;
 use crate::solver::Solver;
 use crate::{ParameterId, Values};
 
 /// What a DC sweep holds away from the run's own values: an independent source, at a
-/// level, or a number of a device's parameters.
+/// value, or a number of a device's parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Held {
     /// The independent source at this index among the devices.
-    Level(usize),
+    Value(usize),
     /// This number of a device's parameters.
     Number(ParameterId),
 }
@@ -68,7 +68,7 @@ pub(crate) struct State {
     pub(crate) events: Events,
     /// What the analyses record of the devices, and the charges a transient carries for
     /// them.
-    pub(crate) observer: Observer,
+    pub(crate) recorder: Recorder,
     /// The last operating point solved, what it was solved under and the state it left,
     /// which an analysis about the same operating point takes instead of solving it again.
     /// Once the devices are made, only what a sweep holds and driving the logic change
@@ -76,7 +76,7 @@ pub(crate) struct State {
     /// operating point starts from the logic reset and leaves the logic and its drivers
     /// as the one remembered left them.
     pub(crate) remembered: Option<Remembered>,
-    /// What a DC sweep holds away from the run's own values, at the level or the number
+    /// What a DC sweep holds away from the run's own values, at the value or the number
     /// each is held at.
     pub(crate) held: BTreeMap<Held, f64>,
     /// The nets a DC solution forces to a voltage while it is solved, each a node's
@@ -88,7 +88,7 @@ pub(crate) struct State {
     /// that starts from zero.
     pub(crate) warm: Option<Warm>,
     /// How many times the run has solved for an operating point, or a DC sweep's first
-    /// level, rather than taken the last one's.
+    /// value, rather than taken the last one's.
     pub(crate) solves: usize,
     /// What the unknowns its delay lines read took at the points the transient being run
     /// accepted, which each evaluation at a time reads: made afresh as a transient starts,
@@ -119,7 +119,7 @@ impl State {
             ),
             workspace: Workspace::new(elaborated),
             events: Events::new(&elaborated.logic),
-            observer: Observer::new(),
+            recorder: Recorder::new(),
             remembered: None,
             held: BTreeMap::new(),
             forced: Vec::new(),
@@ -215,7 +215,7 @@ impl State {
     pub(crate) fn forget(&mut self, elaborated: &Elaborated) {
         self.swept.clear();
         self.events.reset(&elaborated.logic);
-        self.observer.reset();
+        self.recorder.reset();
         self.remembered = None;
         self.held.clear();
         self.forced.clear();
@@ -420,12 +420,12 @@ mod tests {
         let speed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed");
         let text = std::fs::read_to_string(speed.join("circuits/bjt_amp.json")).unwrap();
         let amplifier = Circuit::from_json(&text).unwrap();
-        let device = |id: &str, model: &str, parameters, terminals| {
-            json!({"name": id, "of": {"model": model}, "parameters": parameters,
+        let device = |name: &str, model: &str, parameters, terminals| {
+            json!({"name": name, "of": {"model": model}, "parameters": parameters,
                    "terminals": terminals})
         };
         let ring = json!({
-            "format": "jolty-circuit", "version": 4, "top": "ring",
+            "format": "jolty-circuit", "version": 5, "top": "ring",
             "components": {"ring": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                 device("VDD", "voltage_source", json!({"waveform": {"dc": 1.0}}),
                        json!({"positive": "vdd", "negative": "0"})),

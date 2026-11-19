@@ -181,9 +181,9 @@ fn benchmark(c: &mut Criterion) {
 fn batches(c: &mut Criterion, fixture: &Fixture, samples: &Samples, library: &Library) {
     let circuit = Circuit::from_json(&fixture.text).expect("the fixture reads");
     let elaborated = fixture.elaborated(library).expect("the fixture elaborates");
-    let varied = toleranced(&circuit).expect("its tolerances are of numbers");
+    let toleranced = toleranced(&circuit).expect("its tolerances are of numbers");
     let count = SAMPLES.min(samples.samples);
-    let variants = MonteCarlo::new(&elaborated, samples.seed, count, varied)
+    let variants = MonteCarlo::new(&elaborated, samples.seed, count, toleranced)
         .expect("its tolerances are of its numbers");
     let analyses = fixture
         .plan

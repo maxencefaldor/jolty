@@ -6,7 +6,7 @@
 //! are not among its unknowns. Each device's instance writes its contributions into a block
 //! of its own of the run's slab: a residual and a charge for each of its local unknowns, its
 //! terminals first, and a conductance and a capacitance for each pair of them it claims,
-//! every terminal its own even where two share a net or one joins the reference. So the
+//! every terminal its own even where two share a net or one joins ground. So the
 //! current into a terminal is its block's residual there, alone, the charge the terminal
 //! holds its block's charge, and the derivatives of the device's equations its block's
 //! entries, over its terminals apart and its internal unknowns: the device's own
@@ -128,7 +128,7 @@ impl RecordedSeries {
 /// What a [`Record`] keeps of a circuit's devices, and where every [`RecordedValues`] of an
 /// analysis run with it holds each value.
 ///
-/// An observation's currents and charges hold each terminal of each recorded device, in
+/// A recording's currents and charges hold each terminal of each recorded device, in
 /// order, then each recorded summed terminal, the sum of the device terminals behind it.
 /// Its conductances and capacitances hold, for each recorded device, the derivative of each
 /// of its equations with respect to each of its unknowns, row by row: its terminals, each
@@ -201,7 +201,7 @@ impl Simulator {
     }
 
     /// Checks `options`, gives the solver the ordering and the threads their parallelism
-    /// asks for, and readies the observer to record what they name.
+    /// asks for, and readies the recorder to record what they name.
     ///
     /// # Errors
     ///
@@ -220,7 +220,7 @@ impl Simulator {
         });
         if checked.is_ok() {
             self.state
-                .observer
+                .recorder
                 .select(&self.elaborated, &options.record, options.regions);
         }
         self.state.workspace.meter.leave(previous);
@@ -228,19 +228,19 @@ impl Simulator {
     }
 
     /// What the recorded devices do at the DC solution `x`, every device evaluated there
-    /// first, its steps not limited, when the observer records any.
-    pub(crate) fn observe_dc(&mut self, x: &[f64], options: &Options) -> RecordedValues {
-        if self.state.observer.records() {
+    /// first, its steps not limited, when the recorder records any.
+    pub(crate) fn record_dc(&mut self, x: &[f64], options: &Options) -> RecordedValues {
+        if self.state.recorder.records() {
             self.evaluate(x, None, 1.0, options.gmin, false);
         }
-        self.observe_evaluated()
+        self.record_evaluated()
     }
 
     /// What the recorded devices do at the DC solution every device was last evaluated
     /// at, its steps not limited.
-    pub(crate) fn observe_evaluated(&mut self) -> RecordedValues {
+    pub(crate) fn record_evaluated(&mut self) -> RecordedValues {
         let read = self.read_recorded();
-        self.state.observer.dc(&read)
+        self.state.recorder.dc(&read)
     }
 
     /// What the recorded devices did at the last evaluation, as the slab holds it.
@@ -248,7 +248,7 @@ impl Simulator {
         // The check compares what is read with each device's instance evaluated alone.
         #[cfg(test)]
         if let Some(check) = &mut self.state.check {
-            let devices = self.state.observer.selection.evaluated.iter();
+            let devices = self.state.recorder.selection.evaluated.iter();
             let devices = devices.map(|&(device, _, _)| device);
             check.compare_read(
                 &self.elaborated,
@@ -258,7 +258,7 @@ impl Simulator {
             );
         }
         self.state
-            .observer
+            .recorder
             .read(&self.elaborated.groups, &self.state.runs)
     }
 }
@@ -272,9 +272,9 @@ struct Slot {
     terminals: Range<usize>,
     /// Its local unknowns: its terminals, then its internal unknowns.
     unknowns: usize,
-    /// The index of its first derivative among an observation's.
+    /// The index of its first derivative among a recording's.
     first_derivative: usize,
-    /// Its variables' range among an observation's.
+    /// Its variables' range among a recording's.
     variables: Range<usize>,
 }
 
@@ -287,7 +287,7 @@ struct RegionSlot {
     computed: usize,
     /// Its region variables, by index among those it computes.
     picked: Vec<usize>,
-    /// Their range among an observation's variables.
+    /// Their range among a recording's variables.
     variables: Range<usize>,
 }
 
@@ -311,16 +311,16 @@ struct Selection {
     /// The terminals of each recorded summed terminal, by index among the read devices'
     /// terminals.
     sums: Vec<Vec<usize>>,
-    /// The terminals an observation holds: the recorded devices' and the summed terminals'.
+    /// The terminals a recording holds: the recorded devices' and the summed terminals'.
     terminals: usize,
-    /// The derivatives an observation holds.
+    /// The derivatives a recording holds.
     derivatives: usize,
-    /// The variables an observation holds.
+    /// The variables a recording holds.
     variables: usize,
 }
 
 impl Selection {
-    /// The values of the read terminals' `tracked` that an observation holds: the recorded
+    /// The values of the read terminals' `tracked` that a recording holds: the recorded
     /// devices' terminals, then each recorded summed terminal's sum.
     fn gather<T: Copy + Default + Add<Output = T>>(&self, tracked: &[T]) -> Vec<T> {
         let mut found = Vec::with_capacity(self.terminals);
@@ -363,24 +363,24 @@ struct History {
 /// What the analyses record of the devices, and the history of the charges a transient
 /// carries.
 #[derive(Debug, Default)]
-pub(crate) struct Observer {
+pub(crate) struct Recorder {
     selection: Selection,
     history: History,
 }
 
-impl Observer {
-    /// An observer that records nothing yet.
+impl Recorder {
+    /// A recorder that records nothing yet.
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    /// Forgets what was recorded, as [`Observer::new`] makes it.
+    /// Forgets what was recorded, as [`Recorder::new`] makes it.
     pub(crate) fn reset(&mut self) {
         self.selection = Selection::default();
         self.history = History::default();
     }
 
-    /// Whether the observer reads any device.
+    /// Whether the recorder reads any device.
     pub(crate) fn records(&self) -> bool {
         self.selection.tracked > 0 || !self.selection.transistors.is_empty()
     }
@@ -470,7 +470,7 @@ impl Observer {
         };
     }
 
-    /// The numbers an observation holds: the currents and the charges of the recorded
+    /// The numbers a recording holds: the currents and the charges of the recorded
     /// terminals, and the recorded devices' derivatives and variables.
     pub(crate) fn width(&self) -> usize {
         let selection = &self.selection;
@@ -532,13 +532,13 @@ impl Observer {
     /// What the recorded devices do at a DC solution, as `read` reads them there: each
     /// current without a charge's derivative.
     pub(crate) fn dc(&self, read: &Read) -> RecordedValues {
-        self.observation(read, &read.currents)
+        self.recorded(read, &read.currents)
     }
 
     /// What the recorded devices do at the DC solution that begins a transient, as `read`
     /// reads them there, whose charges stand still.
     pub(crate) fn start(&mut self, read: &Read) -> RecordedValues {
-        let found = self.observation(read, &read.currents);
+        let found = self.recorded(read, &read.currents);
         self.history = History {
             last: read.charges.clone(),
             before: read.charges.clone(),
@@ -574,7 +574,7 @@ impl Observer {
             .zip(&derivative)
             .map(|(current, change)| current + change)
             .collect();
-        let found = self.observation(read, &currents);
+        let found = self.recorded(read, &currents);
         let history = &mut self.history;
         history.before = std::mem::replace(&mut history.last, read.charges.clone());
         history.derivative = derivative;
@@ -584,7 +584,7 @@ impl Observer {
 
     /// What the recorded devices did, as `read` reads them, with the current into each
     /// read terminal `currents`.
-    fn observation(&self, read: &Read, currents: &[f64]) -> RecordedValues {
+    fn recorded(&self, read: &Read, currents: &[f64]) -> RecordedValues {
         let selection = &self.selection;
         RecordedValues {
             currents: selection.gather(currents),
@@ -705,7 +705,7 @@ mod tests {
                             "terminals": {"drain": "d", "gate": "vdd", "source": "gnd",
                                           "bulk": "gnd"}});
         let document = json!({
-            "format": "jolty-circuit", "version": 4, "top": "test",
+            "format": "jolty-circuit", "version": 5, "top": "test",
             "components": {
                 "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                     {"name": "V1", "of": {"model": "voltage_source"},
@@ -735,22 +735,22 @@ mod tests {
         let mut simulator = amplifier();
         let unknowns = simulator.elaborated.unknowns.len();
         simulator.prepare(&Options::default()).unwrap();
-        assert_eq!(simulator.state.observer.width(), 0);
-        assert!(!simulator.state.observer.records(), "nothing is read");
+        assert_eq!(simulator.state.recorder.width(), 0);
+        assert!(!simulator.state.recorder.records(), "nothing is read");
         let everything = recording(Record::All);
         simulator.prepare(&everything).unwrap();
         // V1: 2 terminals and its current, 9 derivatives; R1: 2 terminals, 4 derivatives;
         // M1: 4 terminals, 16 derivatives and 8 variables; X1: 2 ports.
         assert_eq!(
-            simulator.state.observer.width(),
+            simulator.state.recorder.width(),
             2 * (8 + 2) + 2 * (9 + 4 + 16) + 8
         );
         let mosfet = recording(Record::Instances(BTreeSet::from(["X1/M1".to_owned()])));
         simulator.prepare(&mosfet).unwrap();
-        assert_eq!(simulator.state.observer.width(), 2 * 4 + 2 * 16 + 8);
+        assert_eq!(simulator.state.recorder.width(), 2 * 4 + 2 * 16 + 8);
         let ports = recording(Record::Instances(BTreeSet::from(["X1".to_owned()])));
         simulator.prepare(&ports).unwrap();
-        assert_eq!(simulator.state.observer.width(), 2 * 2);
+        assert_eq!(simulator.state.recorder.width(), 2 * 2);
         let width = f64::from(u32::try_from(unknowns + 4).unwrap());
         assert_eq!(simulator.point_width().to_bits(), width.to_bits());
     }
@@ -759,7 +759,7 @@ mod tests {
     fn devices_are_read_only_when_recorded_or_behind_a_recorded_port() {
         let mut simulator = amplifier();
         let read = |simulator: &Simulator| -> Vec<String> {
-            let selection = &simulator.state.observer.selection;
+            let selection = &simulator.state.recorder.selection;
             selection
                 .evaluated
                 .iter()
@@ -768,7 +768,7 @@ mod tests {
         };
         let ports = recording(Record::Instances(BTreeSet::from(["X1".to_owned()])));
         let point = simulator.operating_point(&ports).unwrap();
-        assert_eq!(point.observation.currents.len(), 2);
+        assert_eq!(point.recorded.currents.len(), 2);
         assert_eq!(read(&simulator), ["X1/R1", "X1/M1"]);
         let source = recording(Record::Instances(BTreeSet::from(["V1".to_owned()])));
         simulator.operating_point(&source).unwrap();

@@ -37,7 +37,7 @@
 //! use jolty_models::Library;
 //!
 //! let circuit = Circuit::from_json(r#"{
-//!     "format": "jolty-circuit", "version": 4, "top": "divider",
+//!     "format": "jolty-circuit", "version": 5, "top": "divider",
 //!     "components": {"divider": {
 //!         "ports": [{"name": "ground", "role": "ground"}],
 //!         "instances": [
@@ -108,7 +108,7 @@ use serde::Deserialize;
 
 pub use ac::{Ac, AcResult};
 pub use analysis::{Analysis, AnalysisResult};
-pub use derivative::{Cotangent, Cotangents, Jvp, ParameterCotangents, Pullback};
+pub use derivative::{Cotangent, Cotangents, JvpResult, ParameterCotangents, Pullback};
 pub use elaborate::{ElaborationError, ElaborationProblem, Location, SummedTerminal};
 pub use elaborated::{Elaborated, Partition, Placed, Structure, StructureKey};
 pub use jolty_numerics::integration::Method;
@@ -210,8 +210,8 @@ impl Simulator {
     ///
     /// # Errors
     ///
-    /// Returns every [`ElaborationProblem`] found: an invalid structure, a missing reference
-    /// node, an unknown model, wrongly connected terminals, invalid parameters, or
+    /// Returns every [`ElaborationProblem`] found: an invalid structure, a missing ground,
+    /// an unknown model, wrongly connected terminals, invalid parameters, or
     /// parameters replaced for a device the circuit does not have.
     pub fn new(
         circuit: &Circuit,
@@ -366,7 +366,7 @@ impl Simulator {
     }
 
     /// How many times the simulator has solved for an operating point, or for a DC sweep's
-    /// first level, since it was made. An analysis about the operating point the circuit
+    /// first value, since it was made. An analysis about the operating point the circuit
     /// was last solved at, with the same sources held and under the same options, save
     /// those only a transient reads, takes that solution again instead, and solves for
     /// none.
@@ -479,7 +479,7 @@ impl Simulator {
         &self.elaborated.logic.nets
     }
 
-    /// The name of the reference node, the net of the top component's ground port.
+    /// The name of ground, the net of the top component's ground port.
     #[must_use]
     pub fn reference(&self) -> &str {
         self.elaborated.reference.as_str()
@@ -593,8 +593,8 @@ pub enum SimulationError {
     #[error("`{0}` is not an independent source")]
     NotASource(String),
     /// A stability analysis's probe is not an independent voltage source between two nodes
-    /// other than the reference.
-    #[error("`{0}` is not a voltage source off the reference, as a probe must be")]
+    /// other than ground.
+    #[error("`{0}` is not a voltage source off ground, as a probe must be")]
     NotAProbe(String),
     /// An analysis's settings are out of range.
     #[error("invalid analysis: {0}")]

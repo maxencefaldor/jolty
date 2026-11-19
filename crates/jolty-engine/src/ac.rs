@@ -39,7 +39,7 @@ pub struct AcResult {
 
 impl Simulator {
     /// Linearizes the circuit at its operating point and solves `(G + jωC) x = −∂f/∂s` at each
-    /// frequency, where `s` is the excited source's level.
+    /// frequency, where `s` is the excited source's value.
     ///
     /// # Errors
     ///
@@ -56,7 +56,7 @@ impl Simulator {
             let excitation = self.source_excitation(index);
             let currents =
                 self.state
-                    .observer
+                    .recorder
                     .currents(&self.elaborated.groups, &self.state.runs, index);
             let found = over_frequencies(
                 self.linearization(),
@@ -157,8 +157,8 @@ impl Simulator {
     }
 
     /// The unknown named `output`, and the one named `reference` it is taken over, if
-    /// any, with what the difference is: a voltage over a node, or any unknown alone. The
-    /// reference node's name names no unknown.
+    /// any, with what the difference is: a voltage over a node, or any unknown alone.
+    /// Ground's name names no unknown.
     pub(crate) fn measured(
         &self,
         output: &str,
@@ -197,7 +197,7 @@ impl Simulator {
         excitation
     }
 
-    /// The node or unknown named `name`: none for the reference node.
+    /// The node or unknown named `name`: none for ground.
     fn node(&self, name: &str) -> Result<Option<UnknownIndex>, SimulationError> {
         if name == self.reference() {
             return Ok(None);

@@ -2,7 +2,7 @@
 //! results share with them.
 //!
 //! A measure is made with its signals resolved to the indices of a result's unknowns and its
-//! times, levels and frequencies in SI base units, then reads a result from its arrays. A
+//! times, values and frequencies in SI base units, then reads a result from its arrays. A
 //! measure that cannot read a result raises `MeasureError`, whose arguments are its reason, a
 //! name such as `"outside"`, then the numbers it states; `jolty.specs` says why in words.
 
@@ -29,7 +29,7 @@ create_exception!(
 /// relative to, if any.
 type PySignal = (usize, Option<usize>);
 
-/// A transfer as Python gives it: none for a loop gain, or an output and what it is divided
+/// A transfer as Python gives it: none for a loop gain, or a signal and what it is divided
 /// by, if anything.
 type PyTransfer = Option<(PySignal, Option<PySignal>)>;
 
@@ -47,8 +47,8 @@ fn to_signal((unknown, reference): PySignal) -> Signal {
 fn to_transfer(transfer: PyTransfer) -> Transfer {
     match transfer {
         None => Transfer::Loop,
-        Some((output, over)) => Transfer::Output {
-            output: to_signal(output),
+        Some((signal, over)) => Transfer::Signal {
+            signal: to_signal(signal),
             over: over.map(to_signal),
         },
     }
@@ -138,7 +138,8 @@ macro_rules! measure {
 
 measure! {
     constructors {
-        /// The value of `signal` at an operating point, or interpolated `at` a time or a level.
+        /// The value of `signal` at an operating point, or interpolated `at` a time or a
+        /// swept value.
         value(signal: PySignal, at: Option<f64>) => Value;
         /// The gain of `transfer` at the frequency `at`, in decibels.
         gain(transfer: PyTransfer, at: f64) => Gain;
@@ -162,14 +163,14 @@ measure! {
         mean(signal: PySignal, window: PyWindow) => Mean;
         /// The root mean square of `signal` in `window`.
         rms(signal: PySignal, window: PyWindow) => Rms;
-        /// The time `signal` takes to pass from `low` to `high` of its step across `window`.
-        rise_time(signal: PySignal, window: PyWindow, low: f64, high: f64) => RiseTime;
+        /// The time `signal` takes to pass from `lower` to `upper` of its step across `window`.
+        rise_time(signal: PySignal, window: PyWindow, lower: f64, upper: f64) => RiseTime;
         /// How far `signal` passes its final value, in percent of its step across `window`.
         overshoot(signal: PySignal, window: PyWindow) => Overshoot;
         /// The time until `signal` stays within `band` of its step across `window`.
         settling_time(signal: PySignal, window: PyWindow, band: f64) => SettlingTime;
-        /// How often `signal` rises through `level` in `window`, by default its midpoint.
-        frequency(signal: PySignal, window: PyWindow, level: Option<f64>) => Frequency;
+        /// How often `signal` rises through `threshold` in `window`, by default its midpoint.
+        frequency(signal: PySignal, window: PyWindow, threshold: Option<f64>) => Frequency;
         /// The total harmonic distortion of `signal` at `fundamental`, harmonics 2 to
         /// `harmonics`, in decibels.
         distortion(
@@ -190,7 +191,7 @@ measure! {
         dominant_pole() => DominantPole;
     }
     table_readers {
-        /// What the measure reads of a DC sweep's `levels` and `values`, one row per level.
+        /// What the measure reads of a DC sweep's `swept` values and `values`, one row per point.
         read_dc_sweep(swept, values: f64) => DcSweep;
         /// What the measure reads of a transient's `times` and `values`, one row per time.
         read_transient(times, values: f64) => Transient;
@@ -205,10 +206,15 @@ measure! {
         read_pole_zero(poles: Complex64) => PoleZero;
     }
     methods {
-        /// The first time `signal` crosses `level` in `window` the way `edge` says: `"rising"`,
-        /// `"falling"` or `"either"`.
+        /// The first time `signal` crosses `threshold` in `window` the way `edge` says:
+        /// `"rising"`, `"falling"` or `"either"`.
         #[staticmethod]
-        fn crossing(signal: PySignal, window: PyWindow, level: f64, edge: &str) -> PyResult<Self> {
+        fn crossing(
+            signal: PySignal,
+            window: PyWindow,
+            threshold: f64,
+            edge: &str,
+        ) -> PyResult<Self> {
             let edge = match edge {
                 "rising" => Edge::Rising,
                 "falling" => Edge::Falling,
@@ -222,7 +228,7 @@ measure! {
             Ok(Self(measure::Measure::Crossing {
                 signal: to_signal(signal),
                 window: to_window(window),
-                level,
+                threshold,
                 edge,
             }))
         }
@@ -351,22 +357,22 @@ pub(crate) fn reason(error: Failure) -> (&'static str, Vec<f64>) {
             };
             return (named, vec![first, last]);
         }
-        Failure::Flat(level) => return ("flat", vec![level]),
+        Failure::Flat(value) => return ("flat", vec![value]),
         Failure::Stays(lowest) => return ("stays", vec![lowest]),
-        Failure::Rises(level) => return ("rises", vec![level]),
+        Failure::Rises(value) => return ("rises", vec![value]),
         Failure::Unpositive(lowest) => return ("unpositive", vec![lowest]),
         Failure::Band {
-            low,
-            high,
+            start,
+            stop,
             first,
             last,
-        } => return ("band", vec![low, high, first, last]),
+        } => return ("band", vec![start, stop, first, last]),
         Failure::Sum(SumError::Overflow) => "overflow",
         Failure::Sum(SumError::Indeterminate) => "indeterminate",
         Failure::Memory => "memory",
         Failure::Kind => "kind",
         Failure::Unknown(_) => "unknown",
-        Failure::Mismatch => "mismatch",
+        Failure::LengthMismatch => "mismatch",
         Failure::Empty => "empty",
         Failure::EmptyWindow => "empty_window",
         Failure::Uncrossed => "uncrossed",
@@ -417,7 +423,7 @@ fn referred<'py>(
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     with_slices(densities, gains, |densities, gains| {
         if densities.len() != gains.len() {
-            return Err(failure(Failure::Mismatch));
+            return Err(failure(Failure::LengthMismatch));
         }
         Ok(PyArray1::from_vec(py, measure::referred(densities, gains)))
     })

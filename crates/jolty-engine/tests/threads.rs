@@ -120,7 +120,7 @@ fn ladder() -> Circuit {
          "terminals": {"a": middle, "b": "0"}}
     ));
     let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "ladder",
+        "format": "jolty-circuit", "version": 5, "top": "ladder",
         "components": {"ladder": {"ports": [{"name": "0", "role": "ground"}],
                                   "instances": instances}}
     });
@@ -159,14 +159,14 @@ fn run(options: &Options) -> (Vec<String>, BTreeSet<(u64, u64)>) {
                 .expect("the analysis runs")
             {
                 AnalysisResult::OperatingPoint(mut point) => {
-                    spied(&point.observation.variables);
-                    point.observation = RecordedValues::default();
+                    spied(&point.recorded.variables);
+                    point.recorded = RecordedValues::default();
                     format!("{point:?}")
                 }
                 AnalysisResult::Transient(waveforms) => {
-                    spied(&waveforms.observations.variables);
+                    spied(&waveforms.recorded.variables);
                     let waveforms = TransientResult {
-                        observations: RecordedSeries::default(),
+                        recorded: RecordedSeries::default(),
                         ..waveforms
                     };
                     format!("{waveforms:?}")

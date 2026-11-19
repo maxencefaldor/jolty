@@ -91,7 +91,7 @@ fn tight() -> Options {
     }
 }
 
-/// The names of the values every observation holds under `record`, as [`Recording`] lays
+/// The names of the values every recording holds under `record`, as [`Recording`] lays
 /// them out: each terminal of each recorded device, such as `R1.a`, then each recorded
 /// summed terminal; each pair of each recorded device's unknowns, its terminals then its
 /// internal unknowns, row by row; and each recorded device's variables.
@@ -245,7 +245,7 @@ fn currents_at_an_operating_point_obey_ohm_and_kirchhoff() {
     let point = simulator.operating_point(&everything()).unwrap();
     let RecordedValues {
         currents, charges, ..
-    } = &point.observation;
+    } = &point.recorded;
     let current = |name: &str| currents[terminal(&simulator, name)];
     assert!((current("R1.a") - 1e-3).abs() < 1e-12);
     assert!((current("R1.b") + 1e-3).abs() < 1e-12);
@@ -262,7 +262,7 @@ fn currents_at_an_operating_point_obey_ohm_and_kirchhoff() {
 fn terminals_that_share_a_net_or_join_the_reference_keep_their_own_currents() {
     let mut simulator = simulator(&bench());
     let point = simulator.operating_point(&everything()).unwrap();
-    let currents = &point.observation.currents;
+    let currents = &point.recorded.currents;
     let current = |name: &str| currents[terminal(&simulator, name)];
     // At DC, no current flows into the gate, though it shares its net with the drain.
     assert!(current("M1.gate").abs() < 1e-15);
@@ -281,7 +281,7 @@ fn terminals_that_share_a_net_or_join_the_reference_keep_their_own_currents() {
             &tight(),
         )
         .unwrap();
-    let currents = sweep.observations.point(0).currents;
+    let currents = sweep.recorded.point(0).currents;
     let drain = currents[terminal(&swept, "M1.drain")];
     let source = currents[terminal(&swept, "M1.source")];
     assert!(drain > 1e-5, "{drain}");
@@ -319,7 +319,7 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
         let mut carried = vec![0.0_f64; simulator.unknowns().len()];
         let mut last: Option<(f64, PerNode, PerNode)> = None;
         let points = waveforms.times.iter().zip(&waveforms.values);
-        for ((&time, values), found) in points.zip(waveforms.observations.iter()) {
+        for ((&time, values), found) in points.zip(waveforms.recorded.iter()) {
             let (currents, charges) = (
                 per_node(&simulator, found.currents),
                 per_node(&simulator, found.charges),
@@ -409,7 +409,7 @@ fn each_device_reports_its_own_small_signal_model_and_variables() {
         capacitances,
         variables,
         ..
-    } = &point.observation;
+    } = &point.recorded;
     let columns = Columns::from_record(&simulator, &Record::All);
     let conductance = |row: &str, column: &str| conductances[columns.derivative(row, column)];
     let capacitance = |row: &str, column: &str| capacitances[columns.derivative(row, column)];
@@ -451,13 +451,13 @@ fn each_device_reports_its_own_small_signal_model_and_variables() {
 /// The circuit of a cell, `R1` from `a` to `mid` and `R2` from `mid` to `b`, nested in a
 /// pair whose ports `p` and `q` are the cell's, with `in` driven by `V1`.
 fn nested(outside: (&str, &str)) -> Simulator {
-    let resistor = |id: &str, a: &str, b: &str| {
-        json!({"name": id, "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
+    let resistor = |name: &str, a: &str, b: &str| {
+        json!({"name": name, "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
                "terminals": {"a": a, "b": b}})
     };
     let signal = |name: &str| json!({"name": name, "role": "signal"});
     let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
+        "format": "jolty-circuit", "version": 5, "top": "test",
         "components": {
             "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                 {"name": "V1", "of": {"model": "voltage_source"},
@@ -519,7 +519,7 @@ fn a_component_instance_s_terminals_sum_the_device_terminals_inside_it() {
     assert_eq!(owners, ["X1", "X1", "X1/X2", "X1/X2"]);
     let columns = Columns::from_record(&simulator, &Record::All);
     let point = simulator.operating_point(&tight()).unwrap();
-    let currents = &point.observation.currents;
+    let currents = &point.recorded.currents;
     let current = |name: &str| currents[columns.terminal(name)];
     // Into X1: 3 V across 2 kΩ in parallel with 1 kΩ.
     assert!(
@@ -537,7 +537,7 @@ fn a_component_instance_s_terminals_sum_the_device_terminals_inside_it() {
     // Ports tied together outside keep their own currents: here both join `in`.
     let mut tied = nested(("in", "in"));
     let point = tied.operating_point(&tight()).unwrap();
-    let ports = &point.observation.currents[point.observation.currents.len() - 4..];
+    let ports = &point.recorded.currents[point.recorded.currents.len() - 4..];
     assert!(ports.iter().all(|current| current.abs() < 1e-15));
 }
 
@@ -561,7 +561,7 @@ fn a_component_instance_recorded_alone_keeps_its_terminals_and_none_of_its_devic
         conductances,
         capacitances,
         variables,
-    } = &alone.observation;
+    } = &alone.recorded;
     assert!(conductances.is_empty() && capacitances.is_empty() && variables.is_empty());
     assert_eq!(
         Columns::from_record(&simulator, &record).terminals,
@@ -569,8 +569,8 @@ fn a_component_instance_recorded_alone_keeps_its_terminals_and_none_of_its_devic
     );
     for (index, name) in ["X1.p", "X1.q"].into_iter().enumerate() {
         let column = all.terminal(name);
-        assert_exact(currents[index], everything.observation.currents[column]);
-        assert_exact(charges[index], everything.observation.charges[column]);
+        assert_exact(currents[index], everything.recorded.currents[column]);
+        assert_exact(charges[index], everything.recorded.charges[column]);
     }
 }
 
@@ -616,7 +616,7 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
     let fraction = columns.derivative("U1:y:current", "U1:y.supply");
     let resistor = columns.terminal("R1.a");
     let (mut high, mut low) = (false, false);
-    for (time, found) in waveforms.times.iter().zip(waveforms.observations.iter()) {
+    for (time, found) in waveforms.times.iter().zip(waveforms.recorded.iter()) {
         // The driver takes the resistor's current from its output to the ground.
         assert!((pin(1, found) + found.currents[resistor]).abs() < 1e-12);
         let sum: f64 = (0..4).map(|index| pin(index, found)).sum();
@@ -651,11 +651,11 @@ fn nothing_beyond_the_unknowns_is_recorded_by_default() {
         Recording::default()
     );
     let point = simulator.operating_point(&Options::default()).unwrap();
-    assert_eq!(point.observation, RecordedValues::default());
+    assert_eq!(point.recorded, RecordedValues::default());
     let waveforms = simulator.transient(&pulse(), &Options::default()).unwrap();
-    let observations = &waveforms.observations;
-    assert_eq!(observations.points, waveforms.times.len());
-    assert!(observations.currents.is_empty() && observations.conductances.is_empty());
+    let recorded = &waveforms.recorded;
+    assert_eq!(recorded.points, waveforms.times.len());
+    assert!(recorded.currents.is_empty() && recorded.conductances.is_empty());
     let ac = Ac {
         source: "V1".to_owned(),
         frequencies: vec![1e3, 1e6],
@@ -689,7 +689,7 @@ fn a_device_recorded_alone_reads_as_it_does_among_every_device() {
     let alone = apart.transient(&pulse(), &chosen).unwrap();
     assert_eq!(alone.times, every.times);
     assert_eq!(alone.values, every.values);
-    for (found, expected) in alone.observations.iter().zip(every.observations.iter()) {
+    for (found, expected) in alone.recorded.iter().zip(every.recorded.iter()) {
         for (index, name) in some.terminals.iter().enumerate() {
             let column = all.terminal(name);
             assert_exact(found.currents[index], expected.currents[column]);
@@ -746,14 +746,14 @@ fn a_transistor_s_region_recorded_alone_reads_as_its_variables_recorded_in_full(
     let every = simulator.transient(&pulse(), &tight()).unwrap();
     let alone = apart.transient(&pulse(), &regions).unwrap();
     assert_eq!(alone.values, every.values);
-    for (found, expected) in alone.observations.iter().zip(every.observations.iter()) {
+    for (found, expected) in alone.recorded.iter().zip(every.recorded.iter()) {
         assert!(found.currents.is_empty() && found.conductances.is_empty());
         let variables = &expected.variables[expected.variables.len() - width..];
         let kept: Vec<f64> = picked.iter().map(|&index| variables[index]).collect();
         assert_eq!(found.variables, kept);
     }
     let point = apart.operating_point(&regions).unwrap();
-    assert_eq!(point.observation.variables.len(), picked.len());
+    assert_eq!(point.recorded.variables.len(), picked.len());
 }
 
 #[test]

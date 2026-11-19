@@ -43,7 +43,7 @@ const STEPPED_DIVISOR: f64 = 10.0;
 ///
 /// Source: ngspice 47 (`src/spicelib/analysis/cktop.c`, line 223:
 /// `factor = MAX(sqrt (factor), 1.00005);` and line 234: `if (factor < 1.00005)`).
-const SMALLEST_STEPPED_DIVISOR: f64 = 1.00005;
+const MIN_STEPPED_DIVISOR: f64 = 1.00005;
 /// The first increment of the source scale in source stepping.
 ///
 /// Origin: jolty's own continuation step (`10%` of full source scale; doubles on success and
@@ -58,7 +58,7 @@ const FIRST_SOURCE_INCREMENT: f64 = 0.1;
 /// 10,000 steps across `[0, 1]`). By comparison, ngspice 47's `gillespie_src` stops below
 /// `1e-7` (`src/spicelib/analysis/cktop.c`, line 641) or step diff `< 1e-8` (line 621).
 /// Candidate for a future `Options` knob.
-const SMALLEST_SOURCE_INCREMENT: f64 = 1e-4;
+const MIN_SOURCE_INCREMENT: f64 = 1e-4;
 /// The conductance, in siemens, that first holds each node to its last voltage in
 /// pseudo-transient continuation: a farad's capacitance over a step of a second.
 ///
@@ -72,13 +72,13 @@ const FIRST_HELD: f64 = 1.0;
 /// Source: pseudo-transient continuation (Kelley and Keyes, 1998); jolty's own ceiling
 /// `1 F / 1 ns = 1e9 S`, 9 decades (`9` consecutive `STEPPED_DIVISOR = 10` backoffs) above
 /// `FIRST_HELD`.
-const LARGEST_HELD: f64 = 1e9;
+const MAX_HELD: f64 = 1e9;
 /// The most steps pseudo-transient continuation takes before it gives up.
 ///
 /// Source: pseudo-transient continuation (Kelley and Keyes, 1998); jolty's own iteration cap
 /// bounding runtime while giving ample margin past the ~24 half-decade (`sqrt(10)`) steps
 /// needed to sweep monotonically from `FIRST_HELD = 1 S` to default `gmin = 1e-12 S`.
-const MOST_HELD_STEPS: usize = 1000;
+const MAX_HELD_STEPS: usize = 1000;
 /// The frequency, in hertz, at which a logic driver's load is read: low enough that every
 /// capacitance it drives charges fully.
 ///
@@ -114,7 +114,7 @@ pub struct OperatingPointResult {
     pub values: Vec<f64>,
     /// What the devices its options record did: the current into each recorded terminal
     /// and the charge it holds, and the recorded devices' derivatives and variables.
-    pub observation: RecordedValues,
+    pub recorded: RecordedValues,
     /// The level of every logic net, in the simulator's order.
     pub logic: Vec<LogicLevel>,
     /// The strategy that found the solution.
@@ -163,14 +163,14 @@ pub(crate) struct Forcing {
 /// it left the logic in.
 #[derive(Debug, Clone)]
 pub(crate) struct Remembered {
-    /// What a sweep held away from the run's own values, at the level or the number each
+    /// What a sweep held away from the run's own values, at the value or the number each
     /// was held at.
     held: BTreeMap<Held, f64>,
     /// The options it was solved under, as a DC solution reads them.
     options: Options,
     /// The DC solution from zero, before the logic settled with it.
     solved: Solved,
-    /// The operating point, its observation what the options it was solved under record.
+    /// The operating point, its recorded values what the options it was solved under record.
     point: OperatingPointResult,
     events: Events,
     /// The sparse solver as solving the point left it: its pivots and its factors, which
@@ -284,7 +284,7 @@ impl Strategy {
 }
 
 impl Simulator {
-    /// Finds the DC operating point, with every source at its level at time zero.
+    /// Finds the DC operating point, with every source at its value at time zero.
     ///
     /// The logic settles with the levels its threshold detectors read, its drivers hold the
     /// levels it settles at, and the two settle each other until they agree.
@@ -314,7 +314,7 @@ impl Simulator {
     /// The DC solution from zero and the operating point the logic settled at from it: the
     /// last ones, if they were solved with the same sources held and under the same
     /// options, as a DC solution reads them, with the logic and the devices left as solving
-    /// them would leave them and what `options` record observed there; or else solved,
+    /// them would leave them and what `options` record read there; or else solved,
     /// and remembered.
     fn settled_from_zero(
         &mut self,
@@ -326,7 +326,7 @@ impl Simulator {
             let (solved, mut point) = (remembered.solved.clone(), remembered.point.clone());
             // Restoring it evaluated every device there, its steps not limited.
             self.restore(options);
-            point.observation = self.observe_evaluated();
+            point.recorded = self.record_evaluated();
             return Ok((solved, point));
         }
         self.reset_logic();
@@ -894,7 +894,7 @@ impl Simulator {
         self.measure_loads(&solved.values, options);
         self.watch_supplies(&solved.values, 0.0, options);
         Ok(OperatingPointResult {
-            observation: self.observe_dc(&solved.values, options),
+            recorded: self.record_dc(&solved.values, options),
             values: solved.values,
             logic: self.state.events.levels().to_vec(),
             strategy: solved.strategy,
@@ -980,7 +980,7 @@ impl Simulator {
     /// across its junctions, as ngspice's dynamic and true gmin stepping do: the divisor
     /// grows after a quick success, to at most a decade, shrinks to its square root after a
     /// stage that barely converged and to its fourth root after a failure, which retries
-    /// from the last solution, and gives up below [`SMALLEST_STEPPED_DIVISOR`]. Every solve
+    /// from the last solution, and gives up below [`MIN_STEPPED_DIVISOR`]. Every solve
     /// is deflated by the solutions `deflated`.
     fn gmin_stepping(
         &mut self,
@@ -1017,7 +1017,7 @@ impl Simulator {
                         divisor = divisor.sqrt();
                         // Stage after stage barely converging, the conductance would creep
                         // toward gmin without end: the stepping has stalled.
-                        if divisor < SMALLEST_STEPPED_DIVISOR {
+                        if divisor < MIN_STEPPED_DIVISOR {
                             return Err(Failure::Diverged);
                         }
                     }
@@ -1028,7 +1028,7 @@ impl Simulator {
                     let Some((solved, solution)) = &last else {
                         return Err(failure);
                     };
-                    if divisor < SMALLEST_STEPPED_DIVISOR {
+                    if divisor < MIN_STEPPED_DIVISOR {
                         return Err(failure);
                     }
                     values.copy_from_slice(solution);
@@ -1068,7 +1068,7 @@ impl Simulator {
     ) -> Result<(), Failure> {
         let mut held = FIRST_HELD;
         let mut last = values.to_vec();
-        for _ in 0..MOST_HELD_STEPS {
+        for _ in 0..MAX_HELD_STEPS {
             let mode = Mode::Dc {
                 source_scale: 1.0,
                 shunt: held,
@@ -1103,7 +1103,7 @@ impl Simulator {
                 Err(failure) => {
                     values.copy_from_slice(&last);
                     held *= STEPPED_DIVISOR;
-                    if held > LARGEST_HELD {
+                    if held > MAX_HELD {
                         return Err(failure);
                     }
                 }
@@ -1112,7 +1112,7 @@ impl Simulator {
         Err(Failure::Diverged)
     }
 
-    /// Ramps every source from zero to its level, growing the increment after each success
+    /// Ramps every source from zero to its value, growing the increment after each success
     /// and shrinking it after each failure; every solve is deflated by the solutions
     /// `deflated`.
     fn source_stepping(
@@ -1145,7 +1145,7 @@ impl Simulator {
                 Err(failure) => {
                     values.copy_from_slice(&last);
                     increment /= 4.0;
-                    if increment < SMALLEST_SOURCE_INCREMENT {
+                    if increment < MIN_SOURCE_INCREMENT {
                         return Err(failure);
                     }
                 }

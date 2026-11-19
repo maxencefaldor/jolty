@@ -410,7 +410,7 @@ fn logic_nets_name_what_drives_and_reads_them() {
 /// its output, standing for a circuit with ports `a`, `y`, `vdd` and `gnd`.
 fn hierarchy() -> Circuit {
     let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
+        "format": "jolty-circuit", "version": 5, "top": "test",
         "components": {
             "test": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                 {"name": "VDD", "of": {"model": "voltage_source"},

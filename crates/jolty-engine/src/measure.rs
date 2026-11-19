@@ -3,7 +3,7 @@
 //! A [`Measure`] reads one number from the [`AnalysisResult`] of one analysis: a signal's value, a
 //! statistic of it over a window, the time of an edge, a gain, a margin, a noise density, a
 //! damping ratio. It holds its signals already resolved, each the index of an unknown and of
-//! the unknown it is taken relative to, and its times, levels and frequencies in SI base
+//! the unknown it is taken relative to, and its times, values and frequencies in SI base
 //! units, so it reads a run's results with no names or units; the Python package resolves
 //! them, and says why a measure could not read a result from its [`MeasureError`].
 //!
@@ -61,7 +61,7 @@ pub const SAMPLES_PER_PERIOD: usize = 1024;
 /// Derivation: round power of ten (`20 * log10(1e-300) = -6000 dB`) safely above the smallest
 /// positive IEEE 754 binary64 normal `f64::MIN_POSITIVE` (`~2.225e-308`, margin `~4.5e7`),
 /// avoiding subnormals and `-inf` in `log10`.
-const LEAST_DISTORTION: f64 = 1e-300;
+const MIN_DISTORTION: f64 = 1e-300;
 
 /// An unknown, or a voltage relative to another: their indices among a result's unknowns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,8 +73,8 @@ pub struct Signal {
     pub reference: Option<usize>,
 }
 
-/// From where to where a measure reads a transient's times or a sweep's levels: each end a
-/// time or a level in SI base units, by default the axis's own end.
+/// From where to where a measure reads a transient's times or a sweep's values: each end a
+/// time or a swept value in SI base units, by default the axis's own end.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Window {
     /// Where the window starts.
@@ -83,28 +83,28 @@ pub struct Window {
     pub stop: Option<f64>,
 }
 
-/// Which way a signal crosses a level.
+/// Which way a signal crosses a threshold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
-    /// From below the level to the level or above.
+    /// From below the threshold to the threshold or above.
     Rising,
-    /// From above the level to the level or below.
+    /// From above the threshold to the threshold or below.
     Falling,
     /// Either way.
     Either,
 }
 
-/// What a small-signal measure reads: an output of a small-signal response, over another
+/// What a small-signal measure reads: a signal of a small-signal response, over another
 /// signal or per unit excitation, or the loop gain of a stability analysis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transfer {
     /// The loop gain itself.
     Loop,
-    /// An output of a response.
-    Output {
-        /// The output.
-        output: Signal,
-        /// The signal the output is divided by, if any.
+    /// A signal of a response.
+    Signal {
+        /// The signal.
+        signal: Signal,
+        /// The signal it is divided by, if any.
         over: Option<Signal>,
     },
 }
@@ -118,11 +118,11 @@ pub enum Transfer {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Measure {
     /// The value of `signal` at an operating point, or interpolated `at` a time of a transient
-    /// or a level of a DC sweep.
+    /// or a value of a DC sweep.
     Value {
         /// The signal.
         signal: Signal,
-        /// The time or the level; none at an operating point.
+        /// The time or the swept value; none at an operating point.
         at: Option<f64>,
     },
     /// The gain at the frequency `at`, in decibels.
@@ -200,17 +200,17 @@ pub enum Measure {
         /// The window.
         window: Window,
     },
-    /// The time a transient's `signal` takes to rise or fall from `low` to `high` of its step,
+    /// The time a transient's `signal` takes to rise or fall from `lower` to `upper` of its step,
     /// from its value at the window's start to its value at the window's end.
     RiseTime {
         /// The signal.
         signal: Signal,
         /// The window.
         window: Window,
-        /// The fraction of the step the time starts at.
-        low: f64,
-        /// The fraction of the step the time ends at.
-        high: f64,
+        /// The lower fraction of the step the time starts at.
+        lower: f64,
+        /// The upper fraction of the step the time ends at.
+        upper: f64,
     },
     /// How far a transient's `signal` passes its final value, at the window's end, in percent
     /// of its step from its value at the window's start.
@@ -230,26 +230,26 @@ pub enum Measure {
         /// The band, a fraction of the step.
         band: f64,
     },
-    /// The first time a transient's `signal` crosses `level` the way `edge` says.
+    /// The first time a transient's `signal` crosses `threshold` the way `edge` says.
     Crossing {
         /// The signal.
         signal: Signal,
         /// The window.
         window: Window,
-        /// The level.
-        level: f64,
+        /// The threshold.
+        threshold: f64,
         /// Which way.
         edge: Edge,
     },
-    /// How often a transient's `signal` rises through `level`: the rises less one over the
+    /// How often a transient's `signal` rises through `threshold`: the rises less one over the
     /// time from the first rise to the last.
     Frequency {
         /// The signal.
         signal: Signal,
         /// The window.
         window: Window,
-        /// The level; by default the midpoint of the signal's lowest and highest values.
-        level: Option<f64>,
+        /// The threshold; by default the midpoint of the signal's lowest and highest values.
+        threshold: Option<f64>,
     },
     /// The total harmonic distortion of a transient's `signal`, in decibels: the root sum of
     /// the squares of the amplitudes of harmonics 2 to `harmonics` of the `fundamental` over
@@ -317,11 +317,11 @@ pub enum AnalysisResult<'a> {
     OperatingPoint(&'a [f64]),
     /// A search for operating points: how many it found.
     OperatingPoints(usize),
-    /// A DC sweep: its source's levels, and the unknowns' values at each.
+    /// A DC sweep: its swept values, and the unknowns' values at each.
     DcSweep {
         /// The values swept.
         swept: &'a [f64],
-        /// The values, one row per level.
+        /// The values, one row per swept value.
         values: &'a dyn Table<f64>,
     },
     /// A transient, or one period of a periodic steady state: its times, and the unknowns'
@@ -361,16 +361,16 @@ pub enum AnalysisResult<'a> {
 }
 
 impl<'a> AnalysisResult<'a> {
-    /// The numbers of `outcome`; none for sensitivities and transfer functions, which no
+    /// The numbers of `result`; none for sensitivities and transfer functions, which no
     /// measure reads.
     #[must_use]
-    pub fn from_result(outcome: &'a crate::AnalysisResult) -> Option<Self> {
-        Some(match outcome {
+    pub fn from_result(result: &'a crate::AnalysisResult) -> Option<Self> {
+        Some(match result {
             crate::AnalysisResult::OperatingPoint(point) => point.into(),
             crate::AnalysisResult::DcSweep(sweep) => sweep.into(),
             crate::AnalysisResult::Ac(response) => response.into(),
             crate::AnalysisResult::Transient(waveforms) => waveforms.into(),
-            crate::AnalysisResult::PeriodicSteadyState(found) => (&found.waveforms).into(),
+            crate::AnalysisResult::PeriodicSteadyState(found) => (&found.transient).into(),
             crate::AnalysisResult::Sensitivity(_)
             | crate::AnalysisResult::Mismatch(_)
             | crate::AnalysisResult::TransferFunction(_) => {
@@ -485,7 +485,7 @@ pub enum MeasureError {
     Unknown(usize),
     /// The result's values are not as many as its points.
     #[error("the result's values are not as many as its points")]
-    Mismatch,
+    LengthMismatch,
     /// The result holds no points.
     #[error("the result holds no points")]
     Empty,
@@ -505,14 +505,14 @@ pub enum MeasureError {
     /// The signal ends the window at the value it starts it at.
     #[error("the signal ends the window where it starts it, at {0:?}")]
     Flat(f64),
-    /// The signal never crosses the level the measure looks for, the way it looks for: a
-    /// crossing's level, 0 dB, -180°, or a step's levels.
-    #[error("the signal never crosses the level the measure looks for")]
+    /// The signal never crosses the threshold the measure looks for, the way it looks for: a
+    /// crossing's threshold, 0 dB, -180°, or a step's bounds.
+    #[error("the signal never crosses the threshold the measure looks for")]
     Uncrossed,
     /// The gain stays within a bandwidth's drop of its gain at the lowest frequency.
     #[error("the gain stays within the drop of its gain at {0:?} Hz")]
     Stays(f64),
-    /// The signal rises through the level fewer than twice.
+    /// The signal rises through the threshold fewer than twice.
     #[error("the signal rises through {0:?} fewer than twice")]
     Rises(f64),
     /// The signal a transfer is divided by vanishes.
@@ -533,16 +533,16 @@ pub enum MeasureError {
     /// A band does not start before it stops.
     #[error("the band is empty")]
     EmptyBand,
-    /// A band from `low` to `high` does not lie within the frequencies, from `first` to
+    /// A band from `start` to `stop` does not lie within the frequencies, from `first` to
     /// `last`, or is empty.
     #[error(
-        "a band from {low:?} Hz to {high:?} Hz does not lie within the frequencies, {first:?} Hz to {last:?} Hz"
+        "a band from {start:?} Hz to {stop:?} Hz does not lie within the frequencies, {first:?} Hz to {last:?} Hz"
     )]
     Band {
         /// Where the band starts.
-        low: f64,
+        start: f64,
         /// Where the band stops.
-        high: f64,
+        stop: f64,
         /// The lowest frequency.
         first: f64,
         /// The highest frequency.
@@ -579,8 +579,8 @@ impl Measure {
         let through = |transfer: Transfer| -> Result<Transfer, MeasureError> {
             Ok(match transfer {
                 Transfer::Loop => Transfer::Loop,
-                Transfer::Output { output, over } => Transfer::Output {
-                    output: at(output)?,
+                Transfer::Signal { signal, over } => Transfer::Signal {
+                    signal: at(signal)?,
                     over: over.map(at).transpose()?,
                 },
             })
@@ -655,9 +655,9 @@ impl Measure {
             Self::RiseTime {
                 signal,
                 window,
-                low,
-                high,
-            } => rise_time(signal, window, low, high, results),
+                lower,
+                upper,
+            } => rise_time(signal, window, lower, upper, results),
             Self::Overshoot { signal, window } => overshoot(signal, window, results),
             Self::SettlingTime {
                 signal,
@@ -667,19 +667,19 @@ impl Measure {
             Self::Crossing {
                 signal,
                 window,
-                level,
+                threshold,
                 edge,
             } => {
                 let (times, values) = windowed(signal, window, results, Scope::Transient)?;
-                arithmetic::crossings(&times, &values, level, edge)
+                arithmetic::crossings(&times, &values, threshold, edge)
                     .next()
                     .ok_or(MeasureError::Uncrossed)
             }
             Self::Frequency {
                 signal,
                 window,
-                level,
-            } => frequency(signal, window, level, results),
+                threshold,
+            } => frequency(signal, window, threshold, results),
             Self::Distortion {
                 signal,
                 window,
@@ -769,12 +769,12 @@ fn gain_margin(transfer: Transfer, results: &AnalysisResult<'_>) -> Result<f64, 
     Ok(-interpolated(inverted, &logarithms, &decibels(&transfer)))
 }
 
-/// The time `signal` takes to pass from `low` to `high` of its step.
+/// The time `signal` takes to pass from `lower` to `upper` of its step.
 fn rise_time(
     signal: Signal,
     window: Window,
-    low: f64,
-    high: f64,
+    lower: f64,
+    upper: f64,
     results: &AnalysisResult<'_>,
 ) -> Result<f64, MeasureError> {
     let (times, values, step) = stepped(signal, window, results)?;
@@ -783,13 +783,13 @@ fn rise_time(
     } else {
         Edge::Falling
     };
-    let lower = arithmetic::crossings(&times, &values, values[0] + low * step, edge)
+    let first = arithmetic::crossings(&times, &values, values[0] + lower * step, edge)
         .next()
         .ok_or(MeasureError::Uncrossed)?;
-    let upper = arithmetic::crossings(&times, &values, values[0] + high * step, edge)
-        .find(|&upper| upper >= lower)
+    let second = arithmetic::crossings(&times, &values, values[0] + upper * step, edge)
+        .find(|&crossed| crossed >= first)
         .ok_or(MeasureError::Uncrossed)?;
-    Ok(upper - lower)
+    Ok(second - first)
 }
 
 /// How far `signal` passes its final value, in percent of its step.
@@ -829,18 +829,18 @@ fn settling_time(
     };
     // The last value lies within the band, so the last outside it has one after it.
     let (Some(&next), Some(&after)) = (excess.get(outside + 1), times.get(outside + 1)) else {
-        return Err(MeasureError::Mismatch);
+        return Err(MeasureError::LengthMismatch);
     };
     let fraction = excess[outside] / (excess[outside] - next);
     let settled = times[outside] + fraction * (after - times[outside]);
     Ok(settled - times[0])
 }
 
-/// How often `signal` rises through `level`, by default the midpoint of its range.
+/// How often `signal` rises through `threshold`, by default the midpoint of its range.
 fn frequency(
     signal: Signal,
     window: Window,
-    level: Option<f64>,
+    threshold: Option<f64>,
     results: &AnalysisResult<'_>,
 ) -> Result<f64, MeasureError> {
     let (times, values) = windowed(signal, window, results, Scope::Transient)?;
@@ -848,7 +848,7 @@ fn frequency(
         clippy::manual_midpoint,
         reason = "numpy's `(max + min) / 2`, which overflows where `f64::midpoint` would not"
     )]
-    let middle = level
+    let middle = threshold
         .unwrap_or_else(|| (arithmetic::maximum(&values) + arithmetic::minimum(&values)) / 2.0);
     let rises: Vec<f64> = arithmetic::crossings(&times, &values, middle, Edge::Rising).collect();
     match (rises.first(), rises.last()) {
@@ -963,7 +963,7 @@ fn mean(points: &[f64], values: &[f64]) -> f64 {
     trapezoid(points, values) / (points[points.len() - 1] - points[0])
 }
 
-/// The value of `signal` at an operating point, or `at` a time or a level of the axis of a
+/// The value of `signal` at an operating point, or `at` a time or a swept value of the axis of a
 /// transient or a DC sweep.
 fn value(
     signal: Signal,
@@ -1014,7 +1014,7 @@ fn traced<'a>(
     };
     let mut values = signal.trace(table)?;
     if values.len() != points.len() {
-        return Err(MeasureError::Mismatch);
+        return Err(MeasureError::LengthMismatch);
     }
     let (Some(&first), Some(&last)) = (points.first(), points.last()) else {
         return Err(MeasureError::Empty);
@@ -1074,7 +1074,7 @@ fn stepped(
 }
 
 /// The frequencies of a response or a loop gain, increasing, and its transfer at each: the
-/// loop gain, or the output over the signal it is divided by, if any.
+/// loop gain, or the signal over the signal it is divided by, if any.
 fn read_transfer(
     transfer: Transfer,
     results: &AnalysisResult<'_>,
@@ -1084,13 +1084,13 @@ fn read_transfer(
             (frequencies, gains.to_vec())
         }
         (
-            Transfer::Output { output, over },
+            Transfer::Signal { signal, over },
             AnalysisResult::Ac {
                 frequencies,
                 values,
             },
         ) => {
-            let phasors = output.trace(values)?;
+            let phasors = signal.trace(values)?;
             let values = match over {
                 None => phasors,
                 Some(over) => {
@@ -1113,7 +1113,7 @@ fn read_transfer(
         _ => return Err(MeasureError::Kind),
     };
     if values.len() != frequencies.len() {
-        return Err(MeasureError::Mismatch);
+        return Err(MeasureError::LengthMismatch);
     }
     if frequencies.is_empty() {
         return Err(MeasureError::Empty);
@@ -1152,7 +1152,7 @@ fn noise<'a>(
         (true, Some(gains)) if gains.len() == densities.len() => {
             arithmetic::referred(densities, gains)
         }
-        (true, Some(_)) => return Err(MeasureError::Mismatch),
+        (true, Some(_)) => return Err(MeasureError::LengthMismatch),
         (true, None) => return Err(MeasureError::Unreferred),
     };
     Ok((frequencies, densities))
@@ -1234,8 +1234,8 @@ fn distortion(
     let total = arithmetic::sum(higher.len(), |index| higher[index] * higher[index]).sqrt();
     let ratio = total / fundamental;
     // Python's `max(ratio, 1e-300)`, which keeps the ratio unless the floor exceeds it.
-    let ratio = if LEAST_DISTORTION > ratio {
-        LEAST_DISTORTION
+    let ratio = if MIN_DISTORTION > ratio {
+        MIN_DISTORTION
     } else {
         ratio
     };

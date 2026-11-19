@@ -106,7 +106,7 @@ fn a_sine_through_a_slow_rc_repeats_its_closed_form_at_once() {
         &Options::default(),
     );
     assert_eq!(found.periods, 2);
-    let waveforms = found.waveforms;
+    let waveforms = found.transient;
     let out = index(&simulator, "out");
     let lag = TAU * frequency * resistance * capacitance;
     let amplitude = 1.0 / lag.hypot(1.0);
@@ -136,7 +136,7 @@ fn an_inductor_current_repeats_too() {
         &Options::default(),
     );
     assert_eq!(found.periods, 2);
-    let waveforms = found.waveforms;
+    let waveforms = found.transient;
     let current = index(&simulator, "L1:current");
     let lag = TAU * frequency * inductance / resistance;
     let amplitude = 1.0 / resistance / lag.hypot(1.0);
@@ -174,7 +174,7 @@ fn a_rectifier_repeats_the_last_period_of_a_long_transient() {
     let longest = 5e-3 / frequency;
     let found = steady(&mut shooting, (Some(1.0 / frequency), longest), &options);
     assert!(found.periods <= 5, "{} periods", found.periods);
-    let steady = found.waveforms;
+    let steady = found.transient;
     // Fifteen time constants of the load.
     let settled = 150;
     let mut long = simulator(&built);
@@ -235,7 +235,7 @@ fn a_memristor_its_drive_leaves_alone_keeps_its_state() {
         &Options::default(),
     );
     assert_eq!(found.periods, 2);
-    let waveforms = found.waveforms;
+    let waveforms = found.transient;
     let (state, out) = (index(&simulator, "M1:state"), index(&simulator, "out"));
     let lag = TAU * frequency * 5.5e3 * 1e-7;
     let amplitude = 0.5 / lag.hypot(1.0);
@@ -267,7 +267,7 @@ fn a_memristor_and_a_capacitor_keep_the_charge_they_share() {
         &Options::default(),
     );
     assert!(found.periods <= 4, "{} periods", found.periods);
-    let steady = found.waveforms;
+    let steady = found.transient;
     let (state, out) = (index(&shooting, "M1:state"), index(&shooting, "out"));
     for values in &steady.values {
         let shared = charge * values[state] - capacitance * values[out];
@@ -411,7 +411,7 @@ fn an_oscillating_tank_finds_its_period_and_its_amplitude() {
     // tolerances of the current after the first period and 50 after the second.
     assert_eq!(found.periods, 3);
     let (voltage, current) = (index(&simulator, "t"), index(&simulator, "L1:current"));
-    let (times, values) = (&found.waveforms.times, &found.waveforms.values);
+    let (times, values) = (&found.transient.times, &found.transient.values);
     // A period starts with two steps of backward Euler, until the trapezoidal formula's
     // error estimate has the four points it reads, and each step h of it keeps
     // 1 / (1 + (ωh)²) of the tank's energy, which the conductance makes up over the period
@@ -885,7 +885,7 @@ fn rc_memory_probe(
     let baseline = probe
         .periodic_steady_state(&analysis, &unbounded)
         .expect("baseline periodic steady state");
-    let points = baseline.waveforms.values.len();
+    let points = baseline.transient.values.len();
     let points_float = f64::from(u32::try_from(points).expect("small point count"));
     let tight_memory = (14.0 * 9.0 + (points_float + 2.0) * 3.0) / NUMBERS_PER_GIB;
     let tight = with_memory(&unbounded, tight_memory);
@@ -978,7 +978,7 @@ fn a_periodic_jvp_whose_columns_pass_max_memory_fails_before_shooting() {
     let baseline = plain
         .periodic_steady_state(&analysis, &tight)
         .expect("plain periodic steady state fits in tight memory");
-    let points = baseline.waveforms.values.len();
+    let points = baseline.transient.values.len();
     let points_float = f64::from(u32::try_from(points).expect("small point count"));
 
     let parameters = vec![("R1".to_owned(), "resistance".to_owned())];

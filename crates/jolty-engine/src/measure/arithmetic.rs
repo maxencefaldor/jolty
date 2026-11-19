@@ -430,20 +430,20 @@ pub(crate) fn trapezoid(points: &[f64], values: &[f64]) -> f64 {
     })
 }
 
-/// Where `values`, given at `points`, cross `level` the way `edge` says, in order, each
+/// Where `values`, given at `points`, cross `threshold` the way `edge` says, in order, each
 /// interpolated linearly between the two points around it, as numpy computed it for jolty's
-/// `_crossings`. A value that reaches the level crosses it only once it passes it.
+/// `_crossings`. A value that reaches the threshold crosses it only once it passes it.
 pub(crate) fn crossings<'a>(
     points: &'a [f64],
     values: &'a [f64],
-    level: f64,
+    threshold: f64,
     edge: Edge,
 ) -> impl Iterator<Item = f64> + 'a {
     points
         .windows(2)
         .zip(values.windows(2))
         .filter_map(move |(around, pair)| {
-            let (below, above) = (pair[0] - level, pair[1] - level);
+            let (below, above) = (pair[0] - threshold, pair[1] - threshold);
             let rising = below < 0.0 && above >= 0.0;
             let falling = below > 0.0 && above <= 0.0;
             let crossed = match edge {
@@ -475,10 +475,10 @@ pub(crate) fn order(values: &[f64]) -> Vec<usize> {
 /// # Errors
 ///
 /// Returns [`MeasureError::Empty`] when there is no frequency, and
-/// [`MeasureError::Mismatch`] when the two are not as long as each other.
+/// [`MeasureError::LengthMismatch`] when the two are not as long as each other.
 fn sorted(frequencies: &[f64], densities: &[f64]) -> Result<(Vec<f64>, Vec<f64>), MeasureError> {
     if frequencies.len() != densities.len() {
-        return Err(MeasureError::Mismatch);
+        return Err(MeasureError::LengthMismatch);
     }
     if frequencies.is_empty() {
         return Err(MeasureError::Empty);
@@ -496,7 +496,7 @@ fn sorted(frequencies: &[f64], densities: &[f64]) -> Result<(Vec<f64>, Vec<f64>)
 /// # Errors
 ///
 /// Returns [`MeasureError::Outside`] for the point `at` when it lies outside the frequencies,
-/// [`MeasureError::Empty`] when there are none, and [`MeasureError::Mismatch`] when there are
+/// [`MeasureError::Empty`] when there are none, and [`MeasureError::LengthMismatch`] when there are
 /// not as many densities.
 pub fn density(frequencies: &[f64], densities: &[f64], at: f64) -> Result<f64, MeasureError> {
     let (points, values) = sorted(frequencies, densities)?;
@@ -519,7 +519,7 @@ pub fn density(frequencies: &[f64], densities: &[f64], at: f64) -> Result<f64, M
 ///
 /// Returns [`MeasureError::Band`] when the band does not lie within the frequencies or is
 /// empty, [`MeasureError::Sum`] when `math.fsum` would raise on its segments,
-/// [`MeasureError::Empty`] when there is no frequency, and [`MeasureError::Mismatch`] when
+/// [`MeasureError::Empty`] when there is no frequency, and [`MeasureError::LengthMismatch`] when
 /// there are not as many densities.
 pub fn integrate(
     frequencies: &[f64],
@@ -529,28 +529,28 @@ pub fn integrate(
 ) -> Result<f64, MeasureError> {
     let (points, values) = sorted(frequencies, densities)?;
     let (first, last) = (points[0], points[points.len() - 1]);
-    let low = start.unwrap_or(first);
-    let high = stop.unwrap_or(last);
-    if !(first <= low && low < high && high <= last) {
+    let start = start.unwrap_or(first);
+    let stop = stop.unwrap_or(last);
+    if !(first <= start && start < stop && stop <= last) {
         return Err(MeasureError::Band {
-            low,
-            high,
+            start,
+            stop,
             first,
             last,
         });
     }
-    let inside = (0..points.len()).filter(|&index| points[index] > low && points[index] < high);
-    let mut band = vec![low];
-    let mut levels = vec![power_law(&points, &values, low)];
+    let inside = (0..points.len()).filter(|&index| points[index] > start && points[index] < stop);
+    let mut band = vec![start];
+    let mut densities_in_band = vec![power_law(&points, &values, start)];
     for index in inside {
         band.push(points[index]);
-        levels.push(values[index]);
+        densities_in_band.push(values[index]);
     }
-    band.push(high);
-    levels.push(power_law(&points, &values, high));
+    band.push(stop);
+    densities_in_band.push(power_law(&points, &values, stop));
     exact_sum(
         band.windows(2)
-            .zip(levels.windows(2))
+            .zip(densities_in_band.windows(2))
             .map(|(ends, densities)| segment(ends[0], ends[1], densities[0], densities[1])),
     )
     .map_err(MeasureError::Sum)

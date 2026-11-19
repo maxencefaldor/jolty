@@ -7,7 +7,7 @@
 //! built on it, each column is one parameter, its unit; for a JVP, each is one tangent's
 //! components on one device's parameters, so that a tangent costs a device one seed
 //! however many of its parameters it moves. A device's columns share its twins, up to
-//! [`Seeds::MOST`] to a twin, each prepared once and evaluated once for all its seeds;
+//! [`Seeds::MAX`] to a twin, each prepared once and evaluated once for all its seeds;
 //! each seed's numbers are those of a twin of that seed alone, bit for bit.
 
 use std::collections::BTreeMap;
@@ -71,7 +71,7 @@ pub(crate) struct Twins {
     /// Each column's place.
     places: Vec<Place>,
     /// Whether a sweep holds each column's numbers, which then moves nothing: its device's
-    /// level, or every number of the column.
+    /// value, or every number of the column.
     fixed: Vec<bool>,
 }
 
@@ -230,12 +230,12 @@ impl Twins {
     }
 
     /// Holds the columns of the device a sweep holds, `swept`, as it now is: every one, a
-    /// source held at a level, whose waveform the level replaces; or of a number held, the
+    /// source held at a value, whose waveform the value replaces; or of a number held, the
     /// columns that move it alone, its device's twins made again from what its instance is
     /// made of now, without it.
     pub(crate) fn hold(&mut self, simulator: &Simulator, swept: &Swept, parameter: Option<&str>) {
         let held = match swept.held {
-            Held::Level(_) => None,
+            Held::Value(_) => None,
             Held::Number(_) => parameter,
         };
         for column in 0..self.len() {
@@ -444,7 +444,7 @@ impl Simulator {
         Ok((Twins::new(named, directions, chunked), along))
     }
 
-    /// Each device's twins of `directions`, the columns, up to [`Seeds::MOST`] to a twin,
+    /// Each device's twins of `directions`, the columns, up to [`Seeds::MAX`] to a twin,
     /// each column's place among them, and the columns along a number no model reads as a
     /// real one, which no twin carries.
     fn chunked(&self, directions: &[Direction]) -> Chunked {
@@ -463,7 +463,7 @@ impl Simulator {
             seeds(&along, None).and_then(|seeds| self.twin_of(device, &seeds))
         };
         for (device, columns) in by_device(directions, |direction| direction.device) {
-            for members in columns.chunks(Seeds::MOST) {
+            for members in columns.chunks(Seeds::MAX) {
                 let mut members = members.to_vec();
                 let mut twin = twin_of(device, &members);
                 if twin.is_none() {
@@ -566,14 +566,14 @@ impl Simulator {
         for &device in nonlinear {
             let origin = origins.of(device);
             let instance = (&origin.kernel(), origins.temperature);
-            for (chunk_index, chunk) in shifts.chunks(Seeds::MOST).enumerate() {
+            for (chunk_index, chunk) in shifts.chunks(Seeds::MAX).enumerate() {
                 if let Some(seeds) = Seeds::tangents(chunk.len())
                     && let Some(twin) =
                         self.state
                             .runs
                             .twin(&self.elaborated.groups, device, instance, &seeds)
                 {
-                    tasks.push((chunk_index * Seeds::MOST, chunk, twin));
+                    tasks.push((chunk_index * Seeds::MAX, chunk, twin));
                 }
             }
         }

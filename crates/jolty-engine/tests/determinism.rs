@@ -367,12 +367,12 @@ fn a_run_on_one_thread_finds_what_it_finds_on_many() {
 /// The amplifier's resistors, each within 5%, the benchmark `monte_carlo`'s tolerances.
 fn amplifier_samples(elaborated: &Elaborated, seed: u64, samples: u64) -> MonteCarlo {
     let (circuit, _, _) = benchmark("bjt_amp");
-    let varied = toleranced(&circuit).expect("numbers");
+    let toleranced = toleranced(&circuit).expect("numbers");
     assert!(
-        !varied.is_empty(),
+        !toleranced.is_empty(),
         "the amplifier's resistors are toleranced"
     );
-    MonteCarlo::new(elaborated, seed, samples, varied).expect("the amplifier's numbers")
+    MonteCarlo::new(elaborated, seed, samples, toleranced).expect("the amplifier's numbers")
 }
 
 /// The benchmark `bjt_amp`'s analyses on samples of its resistors find the same at every

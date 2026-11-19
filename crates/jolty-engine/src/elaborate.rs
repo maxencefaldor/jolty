@@ -97,10 +97,10 @@ impl fmt::Display for Location {
 pub enum ElaborationProblem {
     /// The circuit's structure is invalid.
     Structure(Problem),
-    /// The top component has no ground port, so the circuit has no reference node.
-    NoReference(Name),
+    /// The top component has no ground port, so the circuit has no ground.
+    NoGround(Name),
     /// The top component has several ground ports.
-    SeveralReferences {
+    SeveralGrounds {
         /// The top component.
         top: Name,
         /// How many ground ports it declares.
@@ -205,11 +205,11 @@ impl ElaborationProblem {
     pub fn message(&self) -> String {
         match self {
             Self::Structure(problem) => problem.to_string(),
-            Self::NoReference(top) => {
-                format!("the top component `{top}` has no ground port to be the reference node")
+            Self::NoGround(top) => {
+                format!("the top component `{top}` has no ground port")
             }
-            Self::SeveralReferences { top, count } => format!(
-                "the top component `{top}` has {count} ground ports, and the reference is one node"
+            Self::SeveralGrounds { top, count } => format!(
+                "the top component `{top}` has {count} ground ports, and ground is one node"
             ),
             Self::UnknownModel { model, .. } => format!("unknown model `{model}`"),
             Self::UnconnectedTerminal {
@@ -473,7 +473,7 @@ struct LogicPins {
     /// Its pins' and terminals' names, in the order of [`Pins::names`].
     names: Vec<String>,
     /// The net of each pin and terminal, in the same order.
-    nets: Vec<NetRef>,
+    nets: Vec<NetReference>,
     /// The connect element of each pin, inputs then outputs, on an electrical net.
     elements: Vec<Option<usize>>,
 }
@@ -511,13 +511,10 @@ fn reference(circuit: &Circuit) -> (Option<&Name>, Vec<ElaborationProblem>) {
         .collect();
     match grounds.as_slice() {
         [ground] => (Some(*ground), Vec::new()),
-        [] => (
-            None,
-            vec![ElaborationProblem::NoReference(circuit.top.clone())],
-        ),
+        [] => (None, vec![ElaborationProblem::NoGround(circuit.top.clone())]),
         _ => (
             None,
-            vec![ElaborationProblem::SeveralReferences {
+            vec![ElaborationProblem::SeveralGrounds {
                 top: circuit.top.clone(),
                 count: grounds.len(),
             }],
@@ -618,7 +615,7 @@ struct Classes<'a> {
 }
 
 impl Classes<'_> {
-    fn node(&self, net: NetRef) -> Node {
+    fn node(&self, net: NetReference) -> Node {
         net.and_then(|index| self.nodes[index])
     }
 }
@@ -874,8 +871,8 @@ impl Elements<'_> {
     }
 }
 
-/// A net as the walk finds it, by its index in the walk's nets, or `None` for the reference.
-type NetRef = Option<usize>;
+/// A net as the walk finds it, by its index in the walk's nets, or `None` for ground.
+type NetReference = Option<usize>;
 
 /// A net found by the walk.
 struct NetRecord {
@@ -898,7 +895,7 @@ struct Pending<'a> {
     /// The same parameters, as the circuit and the conditions give them.
     parameters: Cow<'a, Parameters>,
     interface: Interface,
-    terminals: Vec<NetRef>,
+    terminals: Vec<NetReference>,
 }
 
 /// A logic device instance found by the walk, made from its parameters.
@@ -909,7 +906,7 @@ struct PendingLogic<'a> {
     device: Arc<dyn Logic>,
     pins: Pins,
     /// The net of each pin and terminal, in the order of [`Pins::names`].
-    nets: Vec<NetRef>,
+    nets: Vec<NetReference>,
 }
 
 /// A device the walk places: the nets its terminals join in their component, its
@@ -956,7 +953,7 @@ struct Scope<'p> {
 /// if it is one.
 #[derive(Debug, Clone, Copy)]
 struct Joined {
-    net: NetRef,
+    net: NetReference,
     port: Option<usize>,
 }
 
@@ -967,7 +964,7 @@ struct PortRecord {
     /// Its instance's path, such as `X1`.
     owner: String,
     /// The net it joins.
-    net: NetRef,
+    net: NetReference,
     /// The port of the enclosing instance that its net is outside, if it is one.
     parent: Option<usize>,
     /// Each device terminal and logic pin inside the instance that joins it.
@@ -1153,7 +1150,7 @@ impl<'a> Walk<'a> {
         for (terminal, joined) in joined.iter().enumerate() {
             self.attach(joined.port, Member::Analog { device, terminal });
         }
-        let terminals: Vec<NetRef> = joined.iter().map(|joined| joined.net).collect();
+        let terminals: Vec<NetReference> = joined.iter().map(|joined| joined.net).collect();
         for (index, net) in terminals.iter().enumerate() {
             let Some(net) = *net else { continue };
             let record = &mut self.nets[net];
@@ -1209,7 +1206,7 @@ impl<'a> Walk<'a> {
         for (pin, joined) in joined.iter().enumerate() {
             self.attach(joined.port, Member::Logic { device: found, pin });
         }
-        let nets: Vec<NetRef> = joined.iter().map(|joined| joined.net).collect();
+        let nets: Vec<NetReference> = joined.iter().map(|joined| joined.net).collect();
         let pin_count = pins.inputs.len() + pins.outputs.len();
         for &net in nets[..pin_count].iter().flatten() {
             self.nets[net].logic = true;
@@ -1315,7 +1312,7 @@ mod tests {
     use crate::elaborated::Placed;
 
     fn elaborate_json(components: &str) -> Result<Elaborated, ElaborationError> {
-        let header = r#""format": "jolty-circuit", "version": 4, "top": "top""#;
+        let header = r#""format": "jolty-circuit", "version": 5, "top": "top""#;
         let text = format!(r#"{{{header}, "components": {components}}}"#);
         let substitutes = BTreeMap::new();
         let overrides = BTreeMap::new();
@@ -1400,7 +1397,7 @@ mod tests {
 
     #[test]
     fn overrides_replace_parameters_by_path() {
-        let text = r#"{"format": "jolty-circuit", "version": 4, "top": "top", "components": {
+        let text = r#"{"format": "jolty-circuit", "version": 5, "top": "top", "components": {
             "top": {"ports": [{"name": "gnd", "role": "ground"}], "instances": [
                 {"name": "X1", "of": {"component": "cell"}, "terminals": {"a": "gnd"}},
                 {"name": "X2", "of": {"component": "cell"}, "terminals": {"a": "gnd"}}
@@ -1469,11 +1466,11 @@ mod tests {
     }
 
     #[test]
-    fn requires_exactly_one_reference() {
+    fn requires_exactly_one_ground() {
         let error = elaborate_json(r#"{"top": {"instances": []}}"#).unwrap_err();
         assert_eq!(
             error.problems(),
-            [ElaborationProblem::NoReference(Name::new("top").unwrap())]
+            [ElaborationProblem::NoGround(Name::new("top").unwrap())]
         );
         let error = elaborate_json(
             r#"{"top": {"ports": [{"name": "a", "role": "ground"}, {"name": "b", "role": "ground"}],
@@ -1482,7 +1479,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error.problems(),
-            [ElaborationProblem::SeveralReferences {
+            [ElaborationProblem::SeveralGrounds {
                 top: Name::new("top").unwrap(),
                 count: 2
             }]
@@ -1490,7 +1487,7 @@ mod tests {
     }
 
     #[test]
-    fn reports_the_instances_problems_without_a_reference() {
+    fn reports_the_instances_problems_without_a_ground() {
         let error = elaborate_json(
             r#"{"top": {"instances": [
                 {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": -1},
@@ -1500,7 +1497,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error.to_string(),
-            "the top component `top` has no ground port to be the reference node\n\
+            "the top component `top` has no ground port\n\
              instance `R1`: resistance must be positive, not -1.0"
         );
     }
@@ -1565,7 +1562,7 @@ mod tests {
         );
         let document = serde_json::json!({
             "format": "jolty-circuit",
-            "version": 4,
+            "version": 5,
             "top": top_name,
             "components": components,
         });

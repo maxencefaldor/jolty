@@ -138,7 +138,7 @@ fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> V
             simulator
                 .periodic_steady_state(analysis, &options(of))
                 .expect("a periodic steady state")
-                .waveforms
+                .transient
                 .values,
         ),
     }

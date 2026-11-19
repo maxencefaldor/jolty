@@ -370,7 +370,7 @@ fn assert_valid_charge_leak(leak: &ChargeLeak, unknown_count: usize) {
     }
 }
 
-/// Locates terminal `a` of every boundary capacitor in `Record::All` observations.
+/// Locates terminal `a` of every boundary capacitor in `Record::All` recorded values.
 fn boundary_charge_slots(simulator: &Simulator, expected: usize) -> Vec<usize> {
     let recording = simulator.recorded(&Record::All, false);
     let mut offset = 0;
@@ -400,7 +400,7 @@ fn sample_island_charges(
     let mut charge_scale = 0.0_f64;
     let mut current_scale = 0.0_f64;
     for (step_index, row) in waveforms.values.iter().enumerate() {
-        let view = waveforms.observations.point(step_index);
+        let view = waveforms.recorded.point(step_index);
         let analytical: f64 = island
             .capacitors
             .iter()
@@ -746,6 +746,6 @@ fn periodic_steady_state_carries_period_charge_leak() {
     let found = simulator
         .periodic_steady_state(&steady_state, &Options::default())
         .expect("periodic steady state finishes");
-    let leak = &found.waveforms.statistics.charge_leak;
+    let leak = &found.transient.statistics.charge_leak;
     assert_valid_charge_leak(leak, simulator.unknowns().len());
 }

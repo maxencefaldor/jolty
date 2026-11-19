@@ -1252,7 +1252,7 @@ fn a_behavioral_jump_is_stepped_onto_and_followed() {
 #[test]
 fn hierarchy_gives_the_flat_answer() {
     let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "top",
+        "format": "jolty-circuit", "version": 5, "top": "top",
         "components": {
             "top": {"ports": [{"name": "0", "role": "ground"}], "instances": [
                 {"name": "V1", "of": {"model": "voltage_source"},

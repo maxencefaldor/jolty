@@ -11,7 +11,7 @@
 //!
 //! - **Chains.** The runs are taken in chains of [`Variants::chain`] runs, each chain on one
 //!   thread, every run of it but the first starting from the operating point of the run
-//!   before it, as a DC sweep does from one level to the next. A range that starts within a
+//!   before it, as a DC sweep does from one value to the next. A range that starts within a
 //!   chain runs the chain from its start, and hands on only the runs within the range.
 //! - **States.** Each thread keeps a run's state for each structure it meets, and resets it
 //!   for every run, so a run never depends on the run its thread ran before, but within
@@ -167,12 +167,12 @@ fn column(structure: Option<&Restructured>, unknown: usize) -> Option<usize> {
 ///
 /// Returns [`BatchError::Range`] when it does not.
 fn within(variants: &dyn Variants, range: &Range<u64>) -> Result<(), BatchError> {
-    let len = variants.len();
-    if range.start > range.end || range.end > len {
+    let length = variants.len();
+    if range.start > range.end || range.end > length {
         return Err(BatchError::Range {
             start: range.start,
-            end: range.end,
-            len,
+            stop: range.end,
+            length,
         });
     }
     Ok(())
@@ -302,14 +302,14 @@ pub enum BatchError {
         analyses: usize,
     },
     /// The range of runs does not lie within the variants.
-    #[error("runs {start} to {end} do not lie within the {len} variants")]
+    #[error("runs {start} to {stop} do not lie within the {length} variants")]
     Range {
         /// Where the range starts.
         start: u64,
-        /// Where the range ends, past its last run.
-        end: u64,
+        /// Where the range stops, past its last run.
+        stop: u64,
         /// How many variants there are.
-        len: u64,
+        length: u64,
     },
 }
 

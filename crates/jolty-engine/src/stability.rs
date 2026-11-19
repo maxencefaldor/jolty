@@ -60,7 +60,7 @@ impl Simulator {
     /// # Errors
     ///
     /// Returns [`SimulationError::UnknownSource`] or [`SimulationError::NotAProbe`] when the
-    /// probe is not an independent voltage source with both terminals off the reference,
+    /// probe is not an independent voltage source with both terminals off ground,
     /// [`SimulationError::InvalidAnalysis`] for
     /// no frequency or a negative one, [`SimulationError::Singular`] when the linearized
     /// circuit is singular at a frequency, and the errors of [`Simulator::operating_point`].

@@ -152,7 +152,7 @@ fn ground_node_and_reference_validation_match_other_small_signal_analyses() {
         "{from_ground:?}"
     );
 
-    // Output taken over itself, whether named node or reference node.
+    // Output taken over itself, whether named node or ground.
     assert!(matches!(
         transfer(&divider, "V1", "out", Some("out")),
         Err(SimulationError::InvalidAnalysis(_))

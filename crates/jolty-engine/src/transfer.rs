@@ -6,7 +6,7 @@
 //! - excited by its input source, `J x = −∂f/∂s`, as a small-signal response is at 0 Hz,
 //!   which gives the gain at the output and the input resistance the source sees;
 //! - excited at its output, which gives the resistance the output sees with the input
-//!   source at its operating level: a unit current injected into the output node and drawn
+//!   source at its operating value: a unit current injected into the output node and drawn
 //!   from its reference, `J x = e_out − e_ref`, for a voltage; a volt in series with the
 //!   voltage source whose current is the output, `J x = −∂f/∂s_out`, for a current.
 //!
@@ -31,7 +31,7 @@ pub struct TransferFunction {
     /// current, such as `V2:current`.
     pub output: String,
     /// The node the output voltage is taken over, for a differential output; by default
-    /// the reference node. A current output has none.
+    /// ground. A current output has none.
     #[serde(default)]
     pub reference: Option<String>,
 }
@@ -41,7 +41,7 @@ pub struct TransferFunction {
 pub struct TransferFunctionResult {
     /// The path of the input source.
     pub source: String,
-    /// What the input source's level is: a voltage, or a current.
+    /// What the input source's value is: a voltage, or a current.
     pub input: Nature,
     /// The output.
     pub output: String,
@@ -49,13 +49,13 @@ pub struct TransferFunctionResult {
     pub reference: Option<String>,
     /// The operating point the circuit was linearized at.
     pub operating_point: OperatingPointResult,
-    /// The output per unit of the source's level: volts or amperes of output per volt or
+    /// The output per unit of the source's value: volts or amperes of output per volt or
     /// ampere of input.
     pub gain: f64,
     /// The resistance the input source sees, in ohms.
     pub input_resistance: f64,
     /// The resistance the output sees, in ohms, with the input source at its operating
-    /// level.
+    /// value.
     pub output_resistance: f64,
 }
 
@@ -148,7 +148,7 @@ impl Simulator {
                             && self
                                 .state
                                 .runs
-                                .level(&self.elaborated.groups, device)
+                                .dc_value(&self.elaborated.groups, device)
                                 .is_some()
                             && self.source_nature(device) == Nature::Voltage
                     })
@@ -184,8 +184,8 @@ impl Simulator {
         excitation
     }
 
-    /// The unknowns of the first two terminals of the device at `device`, none for the
-    /// reference node.
+    /// The unknowns of the first two terminals of the device at `device`, none for
+    /// ground.
     fn terminal_unknowns(&self, device: usize) -> [Option<usize>; 2] {
         let nodes = self.elaborated.devices[device].nodes();
         [0, 1].map(|terminal| {

@@ -29,15 +29,15 @@ pub(crate) struct Check {
     /// The state of the last evaluation: the unknowns, the time, the sources' scale and
     /// gmin.
     pub(crate) last: Option<(Vec<f64>, Option<f64>, f64, f64)>,
-    /// The observer's reads compared, and the values compared over them.
+    /// The recorder's reads compared, and the values compared over them.
     pub(crate) reads: (usize, usize),
 }
 
 impl Check {
-    /// Compares what the observer read of the slab of `runs`, the run of `elaborated`'s
+    /// Compares what the recorder read of the slab of `runs`, the run of `elaborated`'s
     /// groups, for each of the devices `devices`, with the device's instance evaluated
     /// alone, from what it remembers, at the state of the last evaluation, its steps not
-    /// limited, as the observer once evaluated a copy of each device: the residual and
+    /// limited, as the recorder once evaluated a copy of each device: the residual and
     /// the charge of each local unknown, the conductance and the capacitance of each local
     /// entry, and the variables, bit for bit. A transient's evaluations read `past`.
     pub(crate) fn compare_read(
@@ -444,10 +444,10 @@ fn check_corpus_shard(shard: usize, shards: usize) {
 
 // At every evaluation of every run of the corpus's circuits, each run recording every
 // device: the groups' assembly against the instances evaluated alone, in the order of the
-// devices, to within 1e-13 of the magnitudes summed; and what the observer reads of each
+// devices, to within 1e-13 of the magnitudes summed; and what the recorder reads of each
 // device's block of the slab, the currents into its terminals, the charges they hold and
 // the derivatives of its equations, against its instance evaluated alone at the state of
-// the evaluation it reads, bit for bit, as the observer once evaluated a copy of each
+// the evaluation it reads, bit for bit, as the recorder once evaluated a copy of each
 // device it recorded. Sharded across 16 tests so nextest runs the corpus in parallel.
 sharded_tests!(
     check_corpus_shard;
@@ -581,7 +581,7 @@ fn star(arms: usize) -> Circuit {
         );
     }
     let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "star",
+        "format": "jolty-circuit", "version": 5, "top": "star",
         "components": {"star": {
             "ports": [{"name": "ground", "role": "ground"}],
             "instances": instances

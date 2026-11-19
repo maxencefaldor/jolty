@@ -5,7 +5,7 @@ use jolty_numerics::{Pattern, reduce};
 use rayon::prelude::*;
 
 use crate::elaborated::Elaborated;
-use crate::options::Inside;
+use crate::options::UnknownGrain;
 use crate::profile::{Activity, Meter};
 use crate::solver::{Factors, Solver};
 use crate::{Options, SimulationError, Simulator};
@@ -50,21 +50,21 @@ fn step_error(value: f64, step: f64, nature: Nature, options: &Options) -> f64 {
 }
 
 /// Does `each` for every chunk of `values` and the index of its first value: for one chunk
-/// of them all on the calling thread without `inside`, and else for each chunk of
+/// of them all on the calling thread without `grain`, and else for each chunk of
 /// [`reduce::CHUNK`] values, on the threads of the current rayon pool as they take them,
-/// at least [`Inside::chunks`] a task.
+/// at least [`UnknownGrain::chunks`] a task.
 pub(crate) fn each_chunk<T: Send>(
     values: &mut [T],
-    inside: Option<Inside>,
+    grain: Option<UnknownGrain>,
     each: impl Fn(usize, &mut [T]) + Sync,
 ) {
-    let Some(inside) = inside else {
+    let Some(grain) = grain else {
         each(0, values);
         return;
     };
     values
         .par_chunks_mut(reduce::CHUNK)
-        .with_min_len(inside.chunks)
+        .with_min_len(grain.chunks)
         .enumerate()
         .for_each(|(index, chunk)| each(index * reduce::CHUNK, chunk));
 }
@@ -78,16 +78,16 @@ pub(crate) fn each_chunk<T: Send>(
 /// threads.
 fn each_chunk_of<const N: usize, R: Copy + Send + Sync>(
     planes: [&mut [f64]; N],
-    inside: Option<Inside>,
+    grain: Option<UnknownGrain>,
     none: R,
     join: impl Fn(R, R) -> R + Sync + Send,
     each: impl Fn(usize, [&mut [f64]; N]) -> R + Sync,
 ) -> R {
-    let Some(inside) = inside else {
+    let Some(grain) = grain else {
         return each(0, planes);
     };
     let whole = Planes { first: 0, planes };
-    rayon::iter::split(whole, |part| part.halve(inside.chunks))
+    rayon::iter::split(whole, |part| part.halve(grain.chunks))
         .map(|part| each(part.first, part.planes))
         .reduce(|| none, join)
 }
@@ -136,39 +136,39 @@ impl<const N: usize> Planes<'_, N> {
 }
 
 /// Whether `holds` holds of every index below `count`, asked on the calling thread without
-/// `inside`, and else in tasks of at least [`Inside::chunks`] chunks of [`reduce::CHUNK`]
+/// `grain`, and else in tasks of at least [`UnknownGrain::chunks`] chunks of [`reduce::CHUNK`]
 /// indices on the threads of the current rayon pool: the same answer either way.
 pub(crate) fn all(
     count: usize,
-    inside: Option<Inside>,
+    grain: Option<UnknownGrain>,
     holds: impl Fn(usize) -> bool + Sync + Send,
 ) -> bool {
-    match inside {
+    match grain {
         None => (0..count).all(holds),
-        Some(inside) => (0..count)
+        Some(grain) => (0..count)
             .into_par_iter()
-            .with_min_len(inside.chunks * reduce::CHUNK)
+            .with_min_len(grain.chunks * reduce::CHUNK)
             .all(holds),
     }
 }
 
 /// What `each` finds of each of the ranges [`reduce::CHUNK`] long that the indices below
-/// `count` fall into, in their order, on the calling thread without `inside`, and else on
-/// the threads of the current rayon pool, at least [`Inside::chunks`] ranges a task: the
+/// `count` fall into, in their order, on the calling thread without `grain`, and else on
+/// the threads of the current rayon pool, at least [`UnknownGrain::chunks`] ranges a task: the
 /// ranges are the same however many threads take them, so a fold of the findings in their
 /// order is the same bits on any number.
 pub(crate) fn pieces<R: Send>(
     count: usize,
-    inside: Option<Inside>,
+    grain: Option<UnknownGrain>,
     each: impl Fn(std::ops::Range<usize>) -> R + Sync + Send,
 ) -> Vec<R> {
     let range = |piece: usize| piece * reduce::CHUNK..count.min((piece + 1) * reduce::CHUNK);
     let pieces = count.div_ceil(reduce::CHUNK);
-    match inside {
+    match grain {
         None => (0..pieces).map(|piece| each(range(piece))).collect(),
-        Some(inside) => (0..pieces)
+        Some(grain) => (0..pieces)
             .into_par_iter()
-            .with_min_len(inside.chunks)
+            .with_min_len(grain.chunks)
             .map(|piece| each(range(piece)))
             .collect(),
     }
@@ -176,15 +176,15 @@ pub(crate) fn pieces<R: Send>(
 
 /// Writes into `matrix` the matrix `G + αC` of the equations of a time step whose formula
 /// weighs the new charges by `alpha`, from the conductances and capacitances of
-/// `contributions`, its stored entries split as `inside` says.
+/// `contributions`, its stored entries split as `grain` says.
 pub(crate) fn step_matrix(
     matrix: &mut [f64],
     contributions: &Contributions,
     alpha: f64,
-    inside: Option<Inside>,
+    grain: Option<UnknownGrain>,
 ) {
     let (conductance, capacitance) = (&contributions.conductance, &contributions.capacitance);
-    each_chunk(matrix, inside, |start, chunk| {
+    each_chunk(matrix, grain, |start, chunk| {
         let stored = conductance[start..].iter().zip(&capacitance[start..]);
         for (entry, (conductance, capacitance)) in chunk.iter_mut().zip(stored) {
             *entry = conductance + alpha * capacitance;
@@ -198,28 +198,28 @@ pub(crate) fn factor_step_jacobian<'a>(
     solver: &'a mut Solver<f64>,
     workspace: &mut Workspace,
     alpha: f64,
-    inside: Option<Inside>,
+    grain: Option<UnknownGrain>,
 ) -> Result<Factors<'a, f64>, SimulationError> {
     step_matrix(
         &mut workspace.jacobian,
         &workspace.contributions,
         alpha,
-        inside,
+        grain,
     );
     solver.factor(&workspace.jacobian)
 }
 
 /// Adds to `into` the product of the matrix of `pattern` whose stored values are `values`
 /// and the vector `x`, each row's terms in the order of their columns, its rows split as
-/// `inside` says: the same bits however they are.
+/// `grain` says: the same bits however they are.
 pub(crate) fn add_product(
     pattern: &Pattern,
     values: &[f64],
     x: &[f64],
     into: &mut [f64],
-    inside: Option<Inside>,
+    grain: Option<UnknownGrain>,
 ) {
-    each_chunk(into, inside, |start, chunk| {
+    each_chunk(into, grain, |start, chunk| {
         pattern.add_product_from(start, values, x, chunk);
     });
 }
@@ -236,12 +236,12 @@ pub(crate) fn force_row(elaborated: &Elaborated, jacobian: &mut [f64], index: us
 }
 
 /// The sum of the `count` terms `term` gives, by [`reduce::sum`]'s fixed order, on the
-/// calling thread without `inside`, and else on the threads of the current rayon pool, at
-/// least [`Inside::chunks`] chunks a task.
-fn sum(count: usize, term: impl Fn(usize) -> f64 + Sync, inside: Option<Inside>) -> f64 {
-    match inside {
+/// calling thread without `grain`, and else on the threads of the current rayon pool, at
+/// least [`UnknownGrain::chunks`] chunks a task.
+fn sum(count: usize, term: impl Fn(usize) -> f64 + Sync, grain: Option<UnknownGrain>) -> f64 {
+    match grain {
         None => reduce::sum(count, term),
-        Some(inside) => reduce::sum_in_parallel(count, term, inside.chunks),
+        Some(grain) => reduce::sum_in_parallel(count, term, grain.chunks),
     }
 }
 
@@ -467,7 +467,7 @@ impl Simulator {
         // as the options spread them, the same bits either way.
         let instances = self.elaborated.groups.evaluated();
         self.state.tasks = options.parallelism.evaluation(instances);
-        let inside = options.parallelism.inside(x.len());
+        let grain = options.parallelism.unknown_grain(x.len());
         // A DC solution starts afresh from its guess; a time step goes on from the last.
         let afresh = matches!(mode, Mode::Dc { .. });
         let mut stepped_within_tolerance = false;
@@ -485,7 +485,7 @@ impl Simulator {
             // The residuals are judged only once the last step was within tolerance and no
             // device limited its voltage.
             let judged = (stepped_within_tolerance && !limited).then_some(options);
-            if self.combine(x, mode, judged, inside) {
+            if self.combine(x, mode, judged, grain) {
                 return Ok(iteration);
             }
             if iteration == limit {
@@ -509,9 +509,9 @@ impl Simulator {
             meter.leave(previous);
             solved.map_err(Failure::Solver)?;
             if let Mode::Dc { deflated, .. } = mode {
-                self.deflate(x, deflated, inside);
+                self.deflate(x, deflated, grain);
             }
-            let largest = self.take_step(x, options, inside);
+            let largest = self.take_step(x, options, grain);
             iteration += 1;
             // An iteration that contracts by `rate` from one step to the next lies within
             // `rate/(1 − rate)` times its last step of the solution. A DC solution's steps,
@@ -537,7 +537,7 @@ impl Simulator {
     /// leaves it for another (Farrell, Birkisson and Funke, "Deflation techniques for
     /// finding distinct solutions of nonlinear partial differential equations", SIAM
     /// Journal on Scientific Computing 37(4), 2015).
-    fn deflate(&mut self, x: &[f64], known: &[Vec<f64>], inside: Option<Inside>) {
+    fn deflate(&mut self, x: &[f64], known: &[Vec<f64>], grain: Option<UnknownGrain>) {
         let step = &mut self.state.workspace.step;
         let natures = &self.elaborated.natures;
         let mut slope = 0.0;
@@ -547,8 +547,8 @@ impl Simulator {
                 Nature::Voltage => x[index] - root[index],
                 _ => 0.0,
             };
-            let distance = sum(x.len(), |index| apart(index) * apart(index), inside);
-            let along = sum(x.len(), |index| apart(index) * step[index], inside);
+            let distance = sum(x.len(), |index| apart(index) * apart(index), grain);
+            let along = sum(x.len(), |index| apart(index) * step[index], grain);
             if distance > 0.0 {
                 // ∇(1/d² + SHIFT)·δ = −2 (x − r)·δ / d⁴.
                 slope += -2.0 * along / (distance * distance) / (distance.recip() + SHIFT);
@@ -556,7 +556,7 @@ impl Simulator {
         }
         let scale = (1.0 - slope).recip();
         if scale.is_finite() {
-            each_chunk(step, inside, |_, chunk| {
+            each_chunk(step, grain, |_, chunk| {
                 for value in chunk {
                     *value *= scale;
                 }
@@ -566,7 +566,7 @@ impl Simulator {
 
     /// Turns the evaluated device contributions into the residual and Jacobian of `mode`,
     /// and the residual into the right-hand side of the Newton step, its work split as
-    /// `inside` says. Returns whether every residual is within tolerance of the terms it
+    /// `grain` says. Returns whether every residual is within tolerance of the terms it
     /// sums, or within the rounding of the unknowns it depends on, when `judged` gives the
     /// options to judge them by, and else `false`: a node's residual is a current, a
     /// branch's a voltage.
@@ -578,7 +578,7 @@ impl Simulator {
         x: &[f64],
         mode: Mode<'_>,
         judged: Option<&Options>,
-        inside: Option<Inside>,
+        grain: Option<UnknownGrain>,
     ) -> bool {
         let Workspace {
             contributions,
@@ -597,7 +597,7 @@ impl Simulator {
                 ..
             } => {
                 let conductance = &contributions.conductance;
-                each_chunk(jacobian, inside, |start, chunk| {
+                each_chunk(jacobian, grain, |start, chunk| {
                     chunk.copy_from_slice(&conductance[start..start + chunk.len()]);
                 });
                 if shunt > 0.0 {
@@ -623,7 +623,7 @@ impl Simulator {
                 None
             }
             Mode::Step { alpha, history, .. } => {
-                step_matrix(jacobian, contributions, alpha, inside);
+                step_matrix(jacobian, contributions, alpha, grain);
                 Some((alpha, history))
             }
         };
@@ -641,7 +641,7 @@ impl Simulator {
         let charge = &*charge;
         let within = each_chunk_of(
             [residual, scale, resolution, step],
-            inside,
+            grain,
             true,
             |one, other| one && other,
             |start, [residual, scale, resolution, step]| {
@@ -688,10 +688,10 @@ impl Simulator {
 
     /// Moves `x` by the step solved, and returns the largest of its moves of the unknowns,
     /// each as a multiple of its tolerance, or NaN if one is, in one pass over the unknowns
-    /// split as `inside` says: the step is within tolerance when it is at most 1.
-    fn take_step(&self, x: &mut [f64], options: &Options, inside: Option<Inside>) -> f64 {
+    /// split as `grain` says: the step is within tolerance when it is at most 1.
+    fn take_step(&self, x: &mut [f64], options: &Options, grain: Option<UnknownGrain>) -> f64 {
         let (step, natures) = (&self.state.workspace.step, &self.elaborated.natures);
-        each_chunk_of([x], inside, 0.0, largest, |start, [chunk]| {
+        each_chunk_of([x], grain, 0.0, largest, |start, [chunk]| {
             let mut most = 0.0;
             for (offset, value) in chunk.iter_mut().enumerate() {
                 let index = start + offset;

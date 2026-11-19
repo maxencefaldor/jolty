@@ -1,9 +1,9 @@
-//! The DC sweep: operating points while an independent source steps through levels, or a
+//! The DC sweep: operating points while an independent source steps through values, or a
 //! number of a device's parameters through values.
 //!
-//! A sweep makes the swept device again at each level, from the parameters of a source of
-//! that constant level or from its own with the number replaced, and leaves every other
-//! device as the level before left it: each operating point starts from the one before,
+//! A sweep makes the swept device again at each value, from the parameters of a source of
+//! that constant value or from its own with the number replaced, and leaves every other
+//! device as the value before left it: each operating point starts from the one before,
 //! as a chain of runs does from one run to the next.
 
 use jolty_models::{BranchKind, LogicLevel, Nature};
@@ -14,28 +14,28 @@ use crate::operating_point::Solved;
 use crate::state::Held;
 use crate::{OperatingPointResult, Options, RecordedSeries, SimulationError, Simulator, Strategy};
 
-/// The fraction of the way from one level of a sweep to the next below which continuation
+/// The fraction of the way from one value of a sweep to the next below which continuation
 /// gives up, as a divisor.
 ///
 /// Origin: jolty's own natural-parameter continuation floor (`2^10 = 1024`, i.e. 10
 /// consecutive exact power-of-two step halvings on Newton failure). By comparison, ngspice
 /// 47 solves a failed sweep point from scratch as an operating point (`dctrcurv.c`, lines
 /// 306 to 314).
-const SMALLEST_CONTINUATION: f64 = 1024.0;
+const MIN_CONTINUATION: f64 = 1024.0;
 
-/// A DC sweep: the operating point at each level of one independent source, or at each
+/// A DC sweep: the operating point at each value of one independent source, or at each
 /// value of one number of a device's parameters.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DcSweep {
     /// The path of the swept instance, such as `V1` or `bias/I1`: an independent source,
-    /// whose level the sweep sets whatever its waveform, unless a parameter is named.
+    /// whose value the sweep sets whatever its waveform, unless a parameter is named.
     pub source: String,
     /// The number swept, by its path among the instance's parameters, such as
-    /// `resistance`; none for an independent source's level.
+    /// `resistance`; none for an independent source's value.
     #[serde(default)]
     pub parameter: Option<String>,
-    /// The levels, in volts or amperes for a source, or the values of the parameter in SI
+    /// The values, in volts or amperes for a source, or the values of the parameter in SI
     /// base units, in sweep order.
     pub values: Vec<f64>,
 }
@@ -46,24 +46,24 @@ pub struct DcSweepResult {
     /// The path of the swept instance.
     pub source: String,
     /// The number swept, by its path among the instance's parameters; none for a source's
-    /// level.
+    /// value.
     pub parameter: Option<String>,
-    /// Whether the levels of a source are voltages or currents; none for a parameter.
+    /// Whether the values of a source are voltages or currents; none for a parameter.
     pub nature: Option<Nature>,
-    /// The levels, or the values of the parameter.
+    /// The values swept.
     pub swept: Vec<f64>,
-    /// The value of every unknown at each level.
+    /// The value of every unknown at each swept value.
     pub values: Vec<Vec<f64>>,
-    /// What the devices its options record did at each level: the current into each
+    /// What the devices its options record did at each swept value: the current into each
     /// recorded terminal and the charge it holds, and the recorded devices' derivatives and
     /// variables.
-    pub observations: RecordedSeries,
-    /// The level of every logic net at each level.
+    pub recorded: RecordedSeries,
+    /// The logic level of every logic net at each swept value.
     pub logic: Vec<Vec<LogicLevel>>,
-    /// The strategy that found the operating point at each level.
+    /// The strategy that found the operating point at each swept value.
     pub strategies: Vec<Strategy>,
-    /// The Newton iterations that found the operating point at each level, as
-    /// [`OperatingPointResult::iterations`] counts them, from the level before it.
+    /// The Newton iterations that found the operating point at each swept value, as
+    /// [`OperatingPointResult::iterations`] counts them, from the value before it.
     pub iterations: Vec<usize>,
 }
 
@@ -82,11 +82,11 @@ impl Simulator {
     /// # Errors
     ///
     /// Returns [`SimulationError::UnknownSource`] when there is no instance at the swept
-    /// path, [`SimulationError::NotASource`] when a sweep of a level is not of an
-    /// independent source, [`SimulationError::InvalidAnalysis`] when no level is given, a
-    /// level is not finite, the instance writes no such number, or a level puts it out of
+    /// path, [`SimulationError::NotASource`] when a sweep of a source value is not of an
+    /// independent source, [`SimulationError::InvalidAnalysis`] when no value is given, a
+    /// value is not finite, the instance writes no such number, or a value puts it out of
     /// range or changes its unknowns, and the errors of [`Simulator::operating_point`] at
-    /// any level.
+    /// any value.
     pub fn dc_sweep(
         &mut self,
         sweep: &DcSweep,
@@ -97,26 +97,26 @@ impl Simulator {
             self.prepare(options)?;
             if sweep.values.is_empty() {
                 return Err(SimulationError::InvalidAnalysis(
-                    "a DC sweep needs at least one level".to_owned(),
+                    "a DC sweep needs at least one value".to_owned(),
                 ));
             }
-            if let Some(level) = sweep.values.iter().find(|level| !level.is_finite()) {
+            if let Some(value) = sweep.values.iter().find(|value| !value.is_finite()) {
                 return Err(SimulationError::InvalidAnalysis(format!(
-                    "a DC sweep's levels must be finite, not {level:?}"
+                    "a DC sweep's values must be finite, not {value:?}"
                 )));
             }
             let swept = self.swept(sweep)?;
-            let result = self.sweep_levels(swept, &sweep.values, options);
+            let result = self.sweep_values(swept, &sweep.values, options);
             self.hold(swept, None)?;
             let points = result?;
             let mut values = Vec::with_capacity(points.len());
-            let mut observations = RecordedSeries::default();
+            let mut recorded = RecordedSeries::default();
             let mut logic = Vec::with_capacity(points.len());
             let mut strategies = Vec::with_capacity(points.len());
             let mut iterations = Vec::with_capacity(points.len());
             for point in points {
                 values.push(point.values);
-                observations.push(&point.observation);
+                recorded.push(&point.recorded);
                 logic.push(point.logic);
                 strategies.push(point.strategy);
                 iterations.push(point.iterations);
@@ -130,7 +130,7 @@ impl Simulator {
                     .then(|| self.source_nature(swept.device)),
                 swept: sweep.values.clone(),
                 values,
-                observations,
+                recorded,
                 logic,
                 strategies,
                 iterations,
@@ -145,10 +145,10 @@ impl Simulator {
             let own = self
                 .state
                 .runs
-                .level(&self.elaborated.groups, device)
+                .dc_value(&self.elaborated.groups, device)
                 .unwrap_or(0.0);
             return Ok(Swept {
-                held: Held::Level(device),
+                held: Held::Value(device),
                 device,
                 own,
             });
@@ -177,26 +177,26 @@ impl Simulator {
         })
     }
 
-    /// The operating point at each of `levels` of `swept`. The logic settles at each from
+    /// The operating point at each of `swept_values` of `swept`. The logic settles at each from
     /// where it settled at the one before.
-    fn sweep_levels(
+    fn sweep_values(
         &mut self,
         swept: Swept,
-        levels: &[f64],
+        swept_values: &[f64],
         options: &Options,
     ) -> Result<Vec<OperatingPointResult>, SimulationError> {
         self.reset_logic();
         let mut values = vec![0.0; self.elaborated.unknowns.len()];
-        let mut points = Vec::with_capacity(levels.len());
+        let mut points = Vec::with_capacity(swept_values.len());
         let mut previous: Option<f64> = None;
-        for &level in levels {
+        for &target in swept_values {
             let before = self.state.workspace.meter.iterations();
             let continued = previous.is_some_and(|from| {
                 let mut set =
                     |simulator: &mut Self, at: &[f64]| simulator.hold(swept, Some(at[0])).is_ok();
-                self.continue_along(&[(from, level)], &mut set, &mut values, options)
+                self.continue_along(&[(from, target)], &mut set, &mut values, options)
             });
-            // Continuation from the level before, which runs no iteration at the first.
+            // Continuation from the value before, which runs no iteration at the first.
             let continuation = self.iterations_since(before);
             let solved = if continued {
                 Solved {
@@ -206,7 +206,7 @@ impl Simulator {
                     from_guess: false,
                 }
             } else {
-                self.hold(swept, Some(level))?;
+                self.hold(swept, Some(target))?;
                 let found = if previous.is_none() {
                     self.solve_from_zero(options)
                 } else {
@@ -218,10 +218,12 @@ impl Simulator {
                         from_guess: solved.from_guess && continuation == 0,
                         ..solved
                     },
-                    // The first level may lie where no strategy finds the solution from
+                    // The first value may lie where no strategy finds the solution from
                     // scratch: there, continue to it from the circuit's own operating point.
                     Err(error) if previous.is_none() => Solved {
-                        values: self.reach_first_level(swept, level, options).ok_or(error)?,
+                        values: self
+                            .reach_first_value(swept, target, options)
+                            .ok_or(error)?,
                         strategy: Strategy::Direct,
                         iterations: self.iterations_since(before),
                         from_guess: false,
@@ -230,25 +232,25 @@ impl Simulator {
                 }
             };
             let point = self.settle(solved, options)?;
-            previous = Some(level);
+            previous = Some(target);
             values.clone_from(&point.values);
             points.push(point);
         }
         Ok(points)
     }
 
-    /// The solution with `swept` at `level`, continued from the operating point with it at
-    /// its own level, if both are found.
-    fn reach_first_level(
+    /// The solution with `swept` at `value`, continued from the operating point with it at
+    /// its own value, if both are found.
+    fn reach_first_value(
         &mut self,
         swept: Swept,
-        level: f64,
+        value: f64,
         options: &Options,
     ) -> Option<Vec<f64>> {
         self.hold(swept, Some(swept.own)).ok()?;
         let mut values = self.solve_from_zero(options).ok()?.values;
         let mut set = |simulator: &mut Self, at: &[f64]| simulator.hold(swept, Some(at[0])).is_ok();
-        self.continue_along(&[(swept.own, level)], &mut set, &mut values, options)
+        self.continue_along(&[(swept.own, value)], &mut set, &mut values, options)
             .then_some(values)
     }
 
@@ -267,18 +269,18 @@ impl Simulator {
         options: &Options,
     ) -> bool {
         let direct = Mode::direct(&[]);
-        let mut level: Vec<f64> = spans.iter().map(|&(from, _)| from).collect();
+        let mut current: Vec<f64> = spans.iter().map(|&(from, _)| from).collect();
         // Each coordinate's increment is its span times the scale, a power of two, so as
         // exactly as doubling and halving the increment itself.
         let mut scale = 1.0;
-        let mut next = level.clone();
+        let mut next = current.clone();
         let mut solution = values.clone();
         loop {
             let last = spans
                 .iter()
-                .zip(&level)
+                .zip(&current)
                 .all(|(&(from, to), &at)| (to - at).abs() <= ((to - from) * scale).abs());
-            for ((point, &(from, to)), &at) in next.iter_mut().zip(spans).zip(&level) {
+            for ((point, &(from, to)), &at) in next.iter_mut().zip(spans).zip(&current) {
                 *point = if last { to } else { at + (to - from) * scale };
             }
             if !set(self, &next) {
@@ -293,11 +295,11 @@ impl Simulator {
                 if last {
                     break;
                 }
-                level.clone_from(&next);
+                current.clone_from(&next);
                 scale *= 2.0;
             } else {
                 scale /= 2.0;
-                if scale < 1.0 / SMALLEST_CONTINUATION {
+                if scale < 1.0 / MIN_CONTINUATION {
                     return false;
                 }
             }
@@ -315,7 +317,7 @@ impl Simulator {
         if self
             .state
             .runs
-            .level(&self.elaborated.groups, index)
+            .dc_value(&self.elaborated.groups, index)
             .is_none()
         {
             return Err(SimulationError::NotASource(path.to_owned()));
@@ -336,34 +338,34 @@ impl Simulator {
         }
     }
 
-    /// Holds `swept` at `level`, or releases it to the run's own values with `None`:
-    /// prepares its instance again from the parameters of a source of that constant level,
+    /// Holds `swept` at `value`, or releases it to the run's own values with `None`:
+    /// prepares its instance again from the parameters of a source of that constant value,
     /// or from the device's own with the number replaced. Every other instance stays as it
     /// is.
     ///
     /// # Errors
     ///
-    /// Returns [`SimulationError::InvalidAnalysis`] when the level puts the device's numbers
+    /// Returns [`SimulationError::InvalidAnalysis`] when the value puts the device's numbers
     /// out of range, or gives it other unknowns or entries; the device is left as it was.
-    pub(crate) fn hold(&mut self, swept: Swept, level: Option<f64>) -> Result<(), SimulationError> {
+    pub(crate) fn hold(&mut self, swept: Swept, value: Option<f64>) -> Result<(), SimulationError> {
         let index = swept.device;
         let refused = |message: String| {
             SimulationError::InvalidAnalysis(format!(
                 "{} at {}: {message}",
                 self.elaborated.devices[index].location(),
-                level.unwrap_or(swept.own)
+                value.unwrap_or(swept.own)
             ))
         };
-        let origin = match (level, swept.held) {
+        let origin = match (value, swept.held) {
             (None, _) => None,
-            (Some(level), Held::Level(_)) => Some(
+            (Some(value), Held::Value(_)) => Some(
                 self.elaborated
-                    .held_at(index, level)
+                    .held_at(index, value)
                     .map_err(|problem| refused(problem.to_string()))?,
             ),
-            (Some(level), Held::Number(parameter)) => {
+            (Some(value), Held::Number(parameter)) => {
                 let mut values = self.values.clone();
-                values.set(parameter, level);
+                values.set(parameter, value);
                 let patches = self.elaborated.patches_of(&values, index);
                 Some(
                     self.elaborated
@@ -390,9 +392,9 @@ impl Simulator {
                 refused("it would claim other unknowns or entries, which a sweep cannot".to_owned())
             }));
         }
-        // At its own level, a device held leaves the DC equations as they are.
-        match level.filter(|level| level.total_cmp(&swept.own).is_ne()) {
-            Some(level) => self.state.held.insert(swept.held, level),
+        // At its own value, a device held leaves the DC equations as they are.
+        match value.filter(|value| value.total_cmp(&swept.own).is_ne()) {
+            Some(value) => self.state.held.insert(swept.held, value),
             None => self.state.held.remove(&swept.held),
         };
         Ok(())
