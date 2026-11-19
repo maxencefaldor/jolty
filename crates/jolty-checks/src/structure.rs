@@ -103,19 +103,30 @@ pub(crate) fn ends(device: &Placed, branch: Branch) -> (usize, usize) {
 /// Names in backticks, joined as prose: `` `a` ``, `` `a` and `b` ``, `` `a`, `b` and `c` ``;
 /// past `limit` names, the rest are counted.
 pub(crate) fn list<'s>(names: impl IntoIterator<Item = &'s str>, limit: usize) -> String {
-    prose(names.into_iter().map(|name| format!("`{name}`")), limit)
+    prose(names, limit, |name| format!("`{name}`"))
 }
 
-/// `phrases` joined as prose, the first `limit` of them, then a count of the rest.
-pub(crate) fn prose(phrases: impl IntoIterator<Item = String>, limit: usize) -> String {
-    let mut shown: Vec<String> = phrases.into_iter().collect();
-    let hidden = shown.len().saturating_sub(limit);
-    shown.truncate(limit);
-    match (shown.as_slice(), hidden) {
-        ([], _) => String::new(),
-        ([only], 0) => only.clone(),
-        ([first @ .., last], 0) => format!("{} and {last}", first.join(", ")),
-        (_, _) => format!("{} and {hidden} more", shown.join(", ")),
+/// Formats up to the first `limit` items of `items` with `format` and joins them as prose,
+/// counting any remaining items without formatting them.
+pub(crate) fn prose<T>(
+    items: impl IntoIterator<Item = T>,
+    limit: usize,
+    format: impl FnMut(T) -> String,
+) -> String {
+    let mut iter = items.into_iter();
+    let mut shown: Vec<String> = iter.by_ref().take(limit).map(format).collect();
+    let hidden = iter.count();
+    if hidden > 0 {
+        return if shown.is_empty() {
+            String::new()
+        } else {
+            format!("{} and {hidden} more", shown.join(", "))
+        };
+    }
+    match shown.pop() {
+        None => String::new(),
+        Some(only) if shown.is_empty() => only,
+        Some(last) => format!("{} and {last}", shown.join(", ")),
     }
 }
 
@@ -133,5 +144,25 @@ mod tests {
             list(["a", "b", "c", "d", "e"], 3),
             "`a`, `b`, `c` and 2 more"
         );
+        assert_eq!(list(["a", "b"], 0), "");
+    }
+
+    #[test]
+    fn prose_only_formats_shown_items() {
+        let mut calls = 0_usize;
+        let rendered = prose(0..100, 3, |item| {
+            calls += 1;
+            format!("#{item}")
+        });
+        assert_eq!(rendered, "#0, #1, #2 and 97 more");
+        assert_eq!(calls, 3);
+
+        let mut zero_calls = 0_usize;
+        let empty = prose(0..10, 0, |item| {
+            zero_calls += 1;
+            format!("#{item}")
+        });
+        assert_eq!(empty, "");
+        assert_eq!(zero_calls, 0);
     }
 }

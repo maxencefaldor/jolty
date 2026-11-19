@@ -257,13 +257,16 @@ pub(crate) fn shorted_sources(structure: &Structure<'_>, diagnostics: &mut Vec<D
 /// node.
 pub(crate) fn shorted_devices(structure: &Structure<'_>, diagnostics: &mut Vec<Diagnostic>) {
     for device in structure.devices() {
+        let Some(&first) = device.nodes().first() else {
+            continue;
+        };
         let passive = device.branches().iter().any(|branch| {
             matches!(
                 branch.kind,
                 BranchKind::Conductive | BranchKind::Capacitive | BranchKind::Inductive
             )
         });
-        let node = index(device.nodes()[0]);
+        let node = index(first);
         if passive && device.nodes().iter().all(|other| index(*other) == node) {
             diagnostics.push(joined(
                 structure,
@@ -276,6 +279,16 @@ pub(crate) fn shorted_devices(structure: &Structure<'_>, diagnostics: &mut Vec<D
     }
 }
 
+/// Formats `terminals` joined on one node, using `both` for two and `all` for three or more.
+fn format_joined_terminals(terminals: &[String]) -> String {
+    let names = list(terminals.iter().map(String::as_str), terminals.len());
+    match terminals.len() {
+        0 | 1 => names,
+        2 => format!("{names} both"),
+        _ => format!("{names} all"),
+    }
+}
+
 /// The diagnostic of `rule` for `device`, whose `terminals` all sit on `node`.
 fn joined(
     structure: &Structure<'_>,
@@ -284,12 +297,7 @@ fn joined(
     terminals: &[String],
     node: usize,
 ) -> Diagnostic {
-    let named: Vec<String> = terminals.iter().map(|name| format!("`{name}`")).collect();
-    let listed = match named.as_slice() {
-        [first, second] => format!("{first} and {second} both"),
-        [rest @ .., last] => format!("{} and {last} all", rest.join(", ")),
-        [] => String::new(),
-    };
+    let listed = format_joined_terminals(terminals);
     Diagnostic {
         rule: rule.name,
         message: format!(
@@ -564,21 +572,23 @@ pub(crate) fn non_standard_values(simulator: &Simulator, diagnostics: &mut Vec<D
         else {
             continue;
         };
-        let standard = Series::ALL
-            .into_iter()
-            .filter(|series| *series <= densest)
-            .any(|series| series.holds(value));
-        if value > 0.0 && !standard {
-            diagnostics.push(Diagnostic {
-                rule: NON_STANDARD_VALUE.name,
-                message: format!(
-                    "the {parameter} of `{}`, {value:?} {unit}, is in no E series from E3 to \
-                     {densest}",
-                    device.path()
-                ),
-                instances: vec![device.location().clone()],
-                nets: Vec::new(),
-            });
+        if value > 0.0 {
+            // Every IEC 60063 value in E3..=E24 lies in E24, and every value in E48..=E192
+            // lies in E192.
+            let standard = Series::E24.holds(value)
+                || (densest == Series::E192 && Series::E192.holds(value));
+            if !standard {
+                diagnostics.push(Diagnostic {
+                    rule: NON_STANDARD_VALUE.name,
+                    message: format!(
+                        "the {parameter} of `{}`, {value:?} {unit}, is in no E series from E3 to \
+                         {densest}",
+                        device.path()
+                    ),
+                    instances: vec![device.location().clone()],
+                    nets: Vec::new(),
+                });
+            }
         }
     }
 }
@@ -1051,5 +1061,22 @@ mod tests {
             );
             assert!(rule.condition.ends_with('.'));
         }
+    }
+
+    #[test]
+    fn joined_terminals_formats_zero_one_two_and_many_terminals() {
+        let names = |items: &[&str]| -> Vec<String> {
+            items.iter().map(|&item| item.to_owned()).collect()
+        };
+        assert_eq!(format_joined_terminals(&names(&[])), "");
+        assert_eq!(format_joined_terminals(&names(&["a"])), "`a`");
+        assert_eq!(
+            format_joined_terminals(&names(&["a", "b"])),
+            "`a` and `b` both"
+        );
+        assert_eq!(
+            format_joined_terminals(&names(&["collector", "base", "emitter"])),
+            "`collector`, `base` and `emitter` all"
+        );
     }
 }

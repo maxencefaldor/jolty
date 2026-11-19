@@ -144,11 +144,9 @@ fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Opti
         return None;
     }
     nets.sort_by(|a, b| b.2.abs().total_cmp(&a.2.abs()));
-    let named = prose(
-        nets.iter()
-            .map(|(net, value, moved)| format!("`{net}` from {value:?} V by {moved:?} V")),
-        NAMED,
-    );
+    let named = prose(&nets, NAMED, |&(net, value, moved)| {
+        format!("`{net}` from {value:?} V by {moved:?} V")
+    });
     Some(Diagnostic {
         rule: GMIN_DEPENDENCE.name,
         message: format!(
@@ -174,14 +172,15 @@ fn multiple_operating_points(
         .collect();
     let difference = |&(_, value, another): &(&str, f64, f64)| (another - value).abs();
     let largest = nets.iter().map(difference).fold(0.0, f64::max);
-    nets.retain(|net| difference(net) >= LARGEST * largest);
+    if largest == 0.0 {
+        nets.clear();
+    } else {
+        nets.retain(|net| difference(net) >= LARGEST * largest);
+    }
     nets.sort_by(|a, b| difference(b).total_cmp(&difference(a)));
-    let named = prose(
-        nets.iter().map(|(net, value, another)| {
-            format!("`{net}` at {another:?} V rather than {value:?} V")
-        }),
-        NAMED,
-    );
+    let named = prose(&nets, NAMED, |&(net, value, another)| {
+        format!("`{net}` at {another:?} V rather than {value:?} V")
+    });
     let place = if named.is_empty() {
         String::new()
     } else {
@@ -208,7 +207,11 @@ fn unstable_pole(simulator: &Simulator, mode: &Mode) -> Diagnostic {
         .iter()
         .map(|&(amplitude, _)| amplitude)
         .fold(0.0, f64::max);
-    nets.retain(|&(amplitude, _)| amplitude >= LARGEST * largest);
+    if largest == 0.0 {
+        nets.clear();
+    } else {
+        nets.retain(|&(amplitude, _)| amplitude >= LARGEST * largest);
+    }
     nets.sort_by(|a, b| b.0.total_cmp(&a.0));
     let named = list(nets.iter().map(|&(_, net)| net), NAMED);
     let Mode { pole, .. } = mode;
@@ -446,5 +449,63 @@ mod tests {
              "terminals": {"a": "b", "b": "0"}},
         ]));
         assert_eq!(found, []);
+    }
+
+    #[test]
+    fn multiple_operating_points_with_zero_external_voltage_diff_reports_no_nets() {
+        let mut sim = simulator(&tank(5e-5));
+        let point = sim.operating_point(&Options::default()).unwrap();
+        let mut other = point.clone();
+        let mut modified_current = false;
+        for (unknown, value) in sim.unknowns().iter().zip(&mut other.values) {
+            if unknown.nature != Nature::Voltage {
+                *value += 1.0;
+                modified_current = true;
+            }
+        }
+        assert!(modified_current);
+        assert!(
+            sim.unknowns()
+                .iter()
+                .any(|u| u.nature == Nature::Voltage && !u.name.contains(':'))
+        );
+
+        let diagnostic = super::multiple_operating_points(&sim, &point, &other);
+        assert_eq!(diagnostic.rule, "multiple-operating-points");
+        assert!(diagnostic.nets.is_empty(), "{diagnostic:?}");
+        assert_eq!(diagnostic.message, "the circuit has another DC solution");
+    }
+
+    #[test]
+    fn unstable_pole_with_zero_external_voltage_amplitude_reports_no_nets() {
+        let mut sim = simulator(&tank(2e-4));
+        let mut modes = sim.growing_modes(&Options::default()).unwrap();
+        assert!(!modes.is_empty());
+        let mut mode = modes.remove(0);
+        let mut zeroed_net = false;
+        for (unknown, amplitude) in sim.unknowns().iter().zip(&mut mode.shape) {
+            if unknown.nature == Nature::Voltage && !unknown.name.contains(':') {
+                amplitude.re = 0.0;
+                amplitude.im = 0.0;
+                zeroed_net = true;
+            }
+        }
+        assert!(zeroed_net);
+
+        let diagnostic = super::unstable_pole(&sim, &mode);
+        assert_eq!(diagnostic.rule, "unstable-pole");
+        assert!(diagnostic.nets.is_empty(), "{diagnostic:?}");
+        assert!(
+            !diagnostic.message.contains("largest at"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(
+            diagnostic
+                .message
+                .starts_with("the operating point is unstable: "),
+            "{}",
+            diagnostic.message
+        );
     }
 }

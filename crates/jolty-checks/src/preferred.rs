@@ -2,6 +2,61 @@
 //! scale, E24 with 24 a decade for tolerances of 5 %, to E192 for 0.5 % and better.
 
 use std::fmt;
+use std::sync::LazyLock;
+
+/// Relative matching tolerance for comparing a normalized mantissa against an IEC 60063
+/// preferred value.
+///
+/// Origin: IEEE 754 floating-point rounding margin (`1e-9`) covering decimal scaling via
+/// `log10` and `10^k`, well below the tightest E192 step spacing (~1.2%).
+const MATCH_TOLERANCE: f64 = 1e-9;
+
+/// IEC 60063 historical E3 mantissas in `[1, 10)`.
+///
+/// Source: IEC 60063 preferred-number E3 series.
+const E3_VALUES: &[f64] = &[1.0, 2.2, 4.7];
+
+/// IEC 60063 historical E6 mantissas in `[1, 10)`.
+///
+/// Source: IEC 60063 preferred-number E6 series.
+const E6_VALUES: &[f64] = &[1.0, 1.5, 2.2, 3.3, 4.7, 6.8];
+
+/// IEC 60063 historical E12 mantissas in `[1, 10)`.
+///
+/// Source: IEC 60063 preferred-number E12 series.
+const E12_VALUES: &[f64] = &[1.0, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2];
+
+/// IEC 60063 historical E24 mantissas in `[1, 10)`.
+///
+/// Source: IEC 60063 preferred-number E24 series.
+const E24_VALUES: &[f64] = &[
+    1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.7, 3.0, 3.3, 3.6, 3.9, 4.3, 4.7, 5.1, 5.6,
+    6.2, 6.8, 7.5, 8.2, 9.1,
+];
+
+/// Cached IEC 60063 E48 mantissas in `[1, 10)`.
+static E48_VALUES: LazyLock<Vec<f64>> = LazyLock::new(|| compute_mantissas(48, false));
+
+/// Cached IEC 60063 E96 mantissas in `[1, 10)`.
+static E96_VALUES: LazyLock<Vec<f64>> = LazyLock::new(|| compute_mantissas(96, false));
+
+/// Cached IEC 60063 E192 mantissas in `[1, 10)`.
+static E192_VALUES: LazyLock<Vec<f64>> = LazyLock::new(|| compute_mantissas(192, true));
+
+/// Computes the rounded three-digit IEC 60063 mantissas for a geometric series of `count`
+/// steps per decade, overriding step 185 to `9.2` when `patch_185` is set (E192).
+fn compute_mantissas(count: u32, patch_185: bool) -> Vec<f64> {
+    (0..count)
+        .map(|step| {
+            if patch_185 && step == 185 {
+                // Where IEC 60063 departs from rounding: 9.20, not 9.19.
+                9.2
+            } else {
+                (100.0 * 10_f64.powf(f64::from(step) / f64::from(count))).round() / 100.0
+            }
+        })
+        .collect()
+}
 
 /// An E series of preferred values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -53,10 +108,30 @@ impl Series {
 
     /// The series named `name`, such as `E24`.
     #[must_use]
-    pub fn named(name: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|series| series.to_string() == name)
+    pub const fn named(name: &str) -> Option<Self> {
+        match name.as_bytes() {
+            [b'E', b'3'] => Some(Self::E3),
+            [b'E', b'6'] => Some(Self::E6),
+            [b'E', b'1', b'2'] => Some(Self::E12),
+            [b'E', b'2', b'4'] => Some(Self::E24),
+            [b'E', b'4', b'8'] => Some(Self::E48),
+            [b'E', b'9', b'6'] => Some(Self::E96),
+            [b'E', b'1', b'9', b'2'] => Some(Self::E192),
+            _ => None,
+        }
+    }
+
+    /// Returns the cached values of the series in the decade from 1 to 10.
+    fn values(self) -> &'static [f64] {
+        match self {
+            Self::E3 => E3_VALUES,
+            Self::E6 => E6_VALUES,
+            Self::E12 => E12_VALUES,
+            Self::E24 => E24_VALUES,
+            Self::E48 => E48_VALUES.as_slice(),
+            Self::E96 => E96_VALUES.as_slice(),
+            Self::E192 => E192_VALUES.as_slice(),
+        }
     }
 
     /// The values of the series in the decade from 1 to 10.
@@ -65,41 +140,22 @@ impl Series {
     /// each step to three significant digits, but for E192's 9.20.
     #[must_use]
     pub fn mantissas(self) -> Vec<f64> {
-        let historical: &[f64] = match self {
-            Self::E3 => &[1.0, 2.2, 4.7],
-            Self::E6 => &[1.0, 1.5, 2.2, 3.3, 4.7, 6.8],
-            Self::E12 => &[1.0, 1.2, 1.5, 1.8, 2.2, 2.7, 3.3, 3.9, 4.7, 5.6, 6.8, 8.2],
-            Self::E24 => &[
-                1.0, 1.1, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.2, 2.4, 2.7, 3.0, 3.3, 3.6, 3.9, 4.3,
-                4.7, 5.1, 5.6, 6.2, 6.8, 7.5, 8.2, 9.1,
-            ],
-            Self::E48 | Self::E96 | Self::E192 => &[],
-        };
-        if !historical.is_empty() {
-            return historical.to_vec();
-        }
-        let count = self.count();
-        (0..count)
-            .map(|step| {
-                if self == Self::E192 && step == 185 {
-                    // Where IEC 60063 departs from rounding: 9.20, not 9.19.
-                    9.2
-                } else {
-                    (100.0 * 10_f64.powf(f64::from(step) / f64::from(count))).round() / 100.0
-                }
-            })
-            .collect()
+        self.values().to_vec()
     }
 
-    /// Whether `value`, positive, is one of the series' values, but for rounding.
+    /// Whether `value`, finite and positive, is one of the series' values, but for rounding.
     #[must_use]
     pub fn holds(self, value: f64) -> bool {
+        if !value.is_finite() || value <= 0.0 {
+            return false;
+        }
         let decade = value.log10().floor();
         let mantissa = value / 10_f64.powf(decade);
-        self.mantissas()
-            .into_iter()
+        self.values()
+            .iter()
+            .copied()
             .chain([10.0])
-            .any(|preferred| (mantissa - preferred).abs() <= 1e-9 * preferred)
+            .any(|preferred| (mantissa - preferred).abs() <= MATCH_TOLERANCE * preferred)
     }
 }
 
@@ -129,5 +185,57 @@ mod tests {
         assert!(!Series::E24.holds(4.8e3) && Series::E192.holds(4.87e3));
         assert_eq!(Series::named("E12"), Some(Series::E12));
         assert_eq!(Series::named("E13"), None);
+    }
+
+    #[test]
+    fn e24_and_e192_cover_every_series() {
+        for series in [Series::E3, Series::E6, Series::E12, Series::E24] {
+            for value in series.mantissas() {
+                assert!(
+                    Series::E24.holds(value),
+                    "{series} value {value} not in E24"
+                );
+            }
+        }
+        for series in [Series::E48, Series::E96, Series::E192] {
+            for value in series.mantissas() {
+                assert!(
+                    Series::E192.holds(value),
+                    "{series} value {value} not in E192"
+                );
+            }
+        }
+        for series in Series::ALL {
+            for value in series.mantissas() {
+                assert!(
+                    Series::E24.holds(value) || Series::E192.holds(value),
+                    "{series} value {value} missing from E24 union E192"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn holds_rejects_non_positive_and_non_finite_values() {
+        for bad in [0.0, -0.0, -4.7e3, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for series in Series::ALL {
+                assert!(!series.holds(bad), "{series} accepted {bad:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn named_round_trips_every_series_in_const_context() {
+        /// Compile-time check that `Series::named` is usable in `const` evaluation.
+        ///
+        /// Origin: IEC 60063 E24 series name check in unit tests.
+        const CHECK_E24: Option<Series> = Series::named("E24");
+        assert_eq!(CHECK_E24, Some(Series::E24));
+        for series in Series::ALL {
+            assert_eq!(Series::named(&series.to_string()), Some(series));
+        }
+        for unknown in ["", "e24", "E0", "E13", "E192 "] {
+            assert_eq!(Series::named(unknown), None);
+        }
     }
 }
