@@ -9,8 +9,46 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
+const SERIES_FIELDS = ["nets", "logic", "currents", "charges", "conductances"];
+
+function expandSeries(value, count) {
+  return Array.isArray(value) ? value : Array(count).fill(value);
+}
+
+function expandMap(mapping, count) {
+  if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) return mapping;
+  return Object.fromEntries(
+    Object.entries(mapping).map(([name, value]) => [name, expandSeries(value, count)]),
+  );
+}
+
+function expandScene(scene) {
+  if (!Array.isArray(scene?.analyses)) return scene;
+  return {
+    ...scene,
+    analyses: scene.analyses.map((entry) => {
+      if (!Array.isArray(entry?.axis)) return entry;
+      const count = entry.axis.length;
+      const expanded = { ...entry };
+      for (const field of SERIES_FIELDS) {
+        if (field in expanded) expanded[field] = expandMap(expanded[field], count);
+      }
+      if (
+        expanded.variables
+        && typeof expanded.variables === "object"
+        && !Array.isArray(expanded.variables)
+      ) {
+        expanded.variables = Object.fromEntries(
+          Object.entries(expanded.variables).map(([device, values]) => [device, expandMap(values, count)]),
+        );
+      }
+      return expanded;
+    }),
+  };
+}
+
 const root = document.getElementById("jolty");
-const data = JSON.parse(document.getElementById("scene").textContent);
+const data = expandScene(JSON.parse(document.getElementById("scene").textContent));
 
 // Formatting.
 

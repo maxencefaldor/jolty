@@ -31,6 +31,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Final
@@ -62,6 +63,7 @@ ROOT: Final = Path(__file__).resolve().parent.parent
 EXAMPLES: Final = ROOT / "examples"
 DISCOVERY: Final = ROOT / "docs" / "discovery"
 DOCS: Final = ROOT / "docs"
+ASSETS: Final = DOCS / "assets"
 IMAGES: Final = DOCS / "images" / "gallery"
 REPOSITORY: Final = "https://github.com/maxencefaldor/jolty/blob/main"
 SAME: Final = 1e-9
@@ -568,7 +570,7 @@ def build(entry: Entry) -> Built:
     """Simulates an entry, replicates it in ngspice, and writes its images.
 
     A discovery's images take its name in place of its script's, ``design``, and its
-    schematic is drawn inside the instance its bench places, ``X1``, too.
+    schematic is drawn inside the instance its bench places, ``X1``.
     """
     script = entry.script
     sys.path.insert(0, str(script.parent))
@@ -582,6 +584,7 @@ def build(entry: Entry) -> Built:
             plan=recorded,
             output=scratch / f"{entry.name}.jolty.json",
             results=scratch / f"{entry.name}.results.npz",
+            schematic=not entry.discovered,
         )
         simulated = asyncio.run(simulate(request, Settings()))
         if simulated.results is None:
@@ -598,11 +601,13 @@ def build(entry: Entry) -> Built:
             inner = IMAGES / f"{entry.name}.inside.schematic.png"
             schematic.save(schematic.draw(circuit, "X1"), inner)
             images.insert(0, inner.name)
+        viewer_path = DOCS / entry.folder / f"{entry.slug}.view.html"
         viewer.write_viewer(
-            DOCS / entry.folder / f"{entry.slug}.view.html",
+            viewer_path,
             circuit,
             solved,
             title=entry.title,
+            assets=ASSETS.relative_to(viewer_path.parent, walk_up=True).as_posix(),
         )
     plan = namespace["plan"]()
     stated = namespace.get("specs")
@@ -1079,6 +1084,14 @@ def _failures(built: Built) -> int:
     return sum(verdict.status != "passed" for verdict in (*ours, *judged))
 
 
+def _copy_viewer_assets() -> None:
+    """Copies the viewer's shared stylesheet and script into ``docs/assets``."""
+    ASSETS.mkdir(parents=True, exist_ok=True)
+    bundled = files("jolty").joinpath("assets")
+    for name in ("viewer.css", "viewer.js"):
+        (ASSETS / name).write_bytes(bundled.joinpath(name).read_bytes())
+
+
 def main(names: Sequence[str]) -> int:
     """Builds the entries named, or all, and returns the failures."""
     chosen = [
@@ -1087,6 +1100,7 @@ def main(names: Sequence[str]) -> int:
     for folder in {entry.folder for entry in chosen}:
         (DOCS / folder).mkdir(exist_ok=True)
     IMAGES.mkdir(parents=True, exist_ok=True)
+    _copy_viewer_assets()
     # Each entry builds in a process of its own: a discovery imports its modules by
     # name, such as its `candidates`, and a process that built another discovery would
     # hand it that one's.

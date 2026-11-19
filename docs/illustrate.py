@@ -5,7 +5,7 @@ Run from the repository root: ``uv run python docs/illustrate.py``. Each example
 through `jolty.service.simulate`, the same function behind ``jolty simulate``, and the
 component inside each of its instances through `jolty.service.draw`, behind
 ``jolty draw``. The images land in ``docs/images`` under the names the commands give
-them, such as ``rc_filter.step.plot.png`` and ``rc_filter.X1.schematic.png``.
+them, such as ``rc_filter.step.plot.png`` and ``rectifier.X1.schematic.png``.
 """
 
 import asyncio
@@ -29,14 +29,24 @@ class Example(NamedTuple):
     """The unknowns to plot, or none for the defaults."""
     inside: list[str]
     """The instances whose components to draw."""
+    schematic: bool = True
+    """Whether to draw the top component's schematic."""
+    analyses: tuple[str, ...] = ()
+    """The analyses whose plots to keep, or none for every plot."""
 
 
 EXAMPLES: Final = {
-    "rc_filter": Example(traces=[], inside=["X1"]),
-    "rectifier": Example(traces=["in", "out", "V1:current"], inside=["X1"]),
+    "rc_filter": Example(traces=[], inside=[]),
+    "rectifier": Example(
+        traces=["in", "out", "V1:current"],
+        inside=["X1"],
+        schematic=False,
+        analyses=("ripple",),
+    ),
     "full_adder": Example(
         traces=["a", "b", "carry_in", "sum", "carry_out", "adder/half"],
-        inside=["adder", "adder/U1"],
+        inside=["adder"],
+        schematic=False,
     ),
 }
 
@@ -47,13 +57,21 @@ async def illustrate(name: str, example: Example, scratch: Path) -> None:
         script=ROOT / "examples" / f"{name}.py",
         output=scratch / f"{name}.jolty.json",
         results=scratch / f"{name}.results.npz",
+        schematic=example.schematic,
         traces=example.traces,
     )
     simulated = await service.simulate(request, Settings())
     pointed = any(
         isinstance(report, OperatingPointReport) for report in simulated.analyses
     )
-    images = list(simulated.images())
+    images: list[Path] = []
+    if simulated.schematic is not None:
+        images.append(simulated.schematic)
+    images.extend(
+        plot.path
+        for plot in simulated.plots
+        if not example.analyses or plot.analysis in example.analyses
+    )
     for instance in example.inside:
         inside = service.DrawRequest(
             circuit=simulated.circuit.path,

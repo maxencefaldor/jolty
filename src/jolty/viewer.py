@@ -376,6 +376,82 @@ def scene(
     }
 
 
+_SERIES_FIELDS: Final = ("nets", "logic", "currents", "charges", "conductances")
+"""The flat per-point series mappings in an analysis entry."""
+
+
+def _compact_number(value: JsonValue) -> JsonValue:
+    """Shortens an integer-valued float when its integer form writes shorter."""
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        whole = int(value)
+        if len(str(whole)) < len(repr(value)):
+            return whole
+    return value
+
+
+def _is_scalar(value: JsonValue) -> bool:
+    """Whether `value` is a number or null that a series can collapse to."""
+    if value is None:
+        return True
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+def _compact_series(values: JsonValue, length: int) -> JsonValue:
+    """Collapses a constant per-point series to its scalar value."""
+    if not isinstance(values, list) or not values or len(values) != length:
+        return values
+    compacted: list[JsonValue] = [_compact_number(item) for item in values]
+    first = compacted[0]
+    if _is_scalar(first) and all(
+        item == first and type(item) is type(first) for item in compacted
+    ):
+        return first
+    return compacted
+
+
+def _compact_series_map(mapping: JsonValue, length: int) -> JsonValue:
+    """Compacts every series in a flat mapping of names to series."""
+    if not isinstance(mapping, dict):
+        return mapping
+    return {name: _compact_series(values, length) for name, values in mapping.items()}
+
+
+def _compact_analysis(entry: JsonValue) -> JsonValue:
+    """Compacts one analysis entry losslessly for HTML embedding."""
+    if not isinstance(entry, dict):
+        return entry
+    axis = entry.get("axis")
+    if not isinstance(axis, list):
+        return entry
+    compacted: dict[str, JsonValue] = dict(entry)
+    compacted["axis"] = [_compact_number(point) for point in axis]
+    length = len(axis)
+    for field in _SERIES_FIELDS:
+        if field in compacted:
+            compacted[field] = _compact_series_map(compacted[field], length)
+    variables = compacted.get("variables")
+    if isinstance(variables, dict):
+        compacted["variables"] = {
+            device: _compact_series_map(values, length)
+            for device, values in variables.items()
+        }
+    return compacted
+
+
+def _compact_scene(scene_: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """Returns a losslessly compacted copy of `scene_` for HTML serialization.
+
+    Integer-valued floats in analysis axes and series take their shorter integer form,
+    and any constant series collapses to its scalar value; the viewer script expands
+    scalars back to full-length arrays on load.
+    """
+    compacted: dict[str, JsonValue] = dict(scene_)
+    analyses = compacted.get("analyses")
+    if isinstance(analyses, list):
+        compacted["analyses"] = [_compact_analysis(entry) for entry in analyses]
+    return compacted
+
+
 _PAGE: Final = """<!doctype html>
 <html lang="en">
 <head>
@@ -383,9 +459,7 @@ _PAGE: Final = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>{title}</title>
-<style>
 {style}
-</style>
 <script type="importmap">{imports}</script>
 </head>
 <body>
@@ -395,44 +469,73 @@ _PAGE: Final = """<!doctype html>
   </div>
 </div>
 <script type="application/json" id="scene">{scene}</script>
-<script type="module">
 {script}
-</script>
 </body>
 </html>
 """
 
 
-def page(scene_: Mapping[str, JsonValue], three: str = _THREE) -> str:
-    """The standalone HTML page of a scene, loading three.js from `three`."""
-    assets = files("jolty").joinpath("assets")
+def _asset_tags(assets: str | None) -> tuple[str, str]:
+    """The stylesheet and module script tags: inlined, or linked under `assets`."""
+    if assets is None:
+        bundled = files("jolty").joinpath("assets")
+        style = bundled.joinpath("viewer.css").read_text(encoding="utf-8")
+        script = bundled.joinpath("viewer.js").read_text(encoding="utf-8")
+        return (
+            f"<style>\n{style}\n</style>",
+            f'<script type="module">\n{script}\n</script>',
+        )
+    stripped = assets if assets == "/" else assets.rstrip("/")
+    prefix = f"{stripped}/" if stripped and stripped != "/" else stripped
+    escaped = html.escape(prefix, quote=True)
+    return (
+        f'<link rel="stylesheet" href="{escaped}viewer.css">',
+        f'<script type="module" src="{escaped}viewer.js"></script>',
+    )
+
+
+def page(
+    scene_: Mapping[str, JsonValue],
+    three: str = _THREE,
+    assets: str | None = None,
+) -> str:
+    """The HTML page of a scene, loading three.js from `three`.
+
+    When `assets` is omitted, the viewer's stylesheet and script are inlined so the
+    page stands alone. When `assets` names a base URL or relative directory, the page
+    links ``viewer.css`` and ``viewer.js`` beneath it instead.
+    """
     imports = {
         "imports": {
             "three": f"{three}/build/three.module.js",
             "three/addons/": f"{three}/examples/jsm/",
         }
     }
-    text = json.dumps(scene_, separators=(",", ":"), allow_nan=False)
+    text = json.dumps(_compact_scene(scene_), separators=(",", ":"), allow_nan=False)
     title = str(scene_.get("title", "jolty"))
+    style, script = _asset_tags(assets)
     return _PAGE.format(
         title=html.escape(title, quote=True),
-        style=assets.joinpath("viewer.css").read_text(encoding="utf-8"),
+        style=style,
         imports=json.dumps(imports).replace("</", "<\\/"),
         scene=text.replace("</", "<\\/"),
-        script=assets.joinpath("viewer.js").read_text(encoding="utf-8"),
+        script=script,
     )
 
 
-def write_viewer(
+def write_viewer(  # noqa: PLR0913 - path, circuit, analyses, title and asset bases
     path: Path,
     circuit: ir.Circuit,
     analyses: Mapping[str, results.AnalysisResult],
     title: str = "",
     three: str = _THREE,
+    assets: str | None = None,
 ) -> None:
     """Writes the viewer of `circuit` and its `analyses` to `path`.
 
     The page loads three.js from `three`, the package's base URL, jsDelivr's unless
-    given.
+    given. When `assets` is given, the page links ``viewer.css`` and ``viewer.js``
+    beneath that base instead of inlining them.
     """
-    path.write_text(page(scene(circuit, analyses, title), three), encoding="utf-8")
+    rendered = page(scene(circuit, analyses, title), three, assets=assets)
+    path.write_text(rendered, encoding="utf-8")
