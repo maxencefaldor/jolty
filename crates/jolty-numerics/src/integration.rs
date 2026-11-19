@@ -628,7 +628,7 @@ mod tests {
 
     #[test]
     fn gear2_constant_and_elasticity_are_accurate_and_overflow_safe() {
-        for ratio in [0.01, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0] {
+        for ratio in [0.01_f64, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 10.0] {
             let reference_constant = (1.0 + ratio).powi(2) / (6.0 * ratio * (1.0 + 2.0 * ratio));
             let got_constant = gear2_constant(ratio);
             assert!(

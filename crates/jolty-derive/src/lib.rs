@@ -237,20 +237,22 @@ fn holds(field_type: &Type, number: &Ident) -> bool {
 
 /// Returns whether any generic argument in any segment of `path` references `number`.
 fn path_arguments_hold(path: &Path, number: &Ident) -> bool {
-    path.segments.iter().any(|segment| match &segment.arguments {
-        PathArguments::None => false,
-        PathArguments::AngleBracketed(bracketed) => bracketed
-            .args
-            .iter()
-            .any(|arg| generic_argument_holds(arg, number)),
-        PathArguments::Parenthesized(parenthesized) => {
-            parenthesized
-                .inputs
+    path.segments
+        .iter()
+        .any(|segment| match &segment.arguments {
+            PathArguments::None => false,
+            PathArguments::AngleBracketed(bracketed) => bracketed
+                .args
                 .iter()
-                .any(|input| holds(input, number))
-                || return_type_holds(&parenthesized.output, number)
-        }
-    })
+                .any(|arg| generic_argument_holds(arg, number)),
+            PathArguments::Parenthesized(parenthesized) => {
+                parenthesized
+                    .inputs
+                    .iter()
+                    .any(|input| holds(input, number))
+                    || return_type_holds(&parenthesized.output, number)
+            }
+        })
 }
 
 /// Returns whether a generic argument references `number` in a type position, skipping

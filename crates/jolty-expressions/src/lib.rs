@@ -98,10 +98,10 @@ impl Clone for Term {
                     Self::Operation(name, operands) => {
                         let mut remaining = operands.iter();
                         let Some(first) = remaining.next() else {
-                            break Self::Operation(*name, Vec::new());
+                            break Self::Operation(name, Vec::new());
                         };
                         frames.push(CloneFrame::Operation {
-                            name: *name,
+                            name,
                             remaining,
                             cloned: Vec::with_capacity(operands.len()),
                         });
@@ -1206,7 +1206,9 @@ mod tests {
                 assert!(formatted.contains("Voltage(\"a\", None)"));
             })
             .expect("spawn thread");
-        handle.join().expect("thread succeeded without stack overflow");
+        handle
+            .join()
+            .expect("thread succeeded without stack overflow");
     }
 
     #[test]

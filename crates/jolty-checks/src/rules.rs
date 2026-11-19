@@ -575,8 +575,8 @@ pub(crate) fn non_standard_values(simulator: &Simulator, diagnostics: &mut Vec<D
         if value > 0.0 {
             // Every IEC 60063 value in E3..=E24 lies in E24, and every value in E48..=E192
             // lies in E192.
-            let standard = Series::E24.holds(value)
-                || (densest == Series::E192 && Series::E192.holds(value));
+            let standard =
+                Series::E24.holds(value) || (densest == Series::E192 && Series::E192.holds(value));
             if !standard {
                 diagnostics.push(Diagnostic {
                     rule: NON_STANDARD_VALUE.name,
@@ -1065,9 +1065,8 @@ mod tests {
 
     #[test]
     fn joined_terminals_formats_zero_one_two_and_many_terminals() {
-        let names = |items: &[&str]| -> Vec<String> {
-            items.iter().map(|&item| item.to_owned()).collect()
-        };
+        let names =
+            |items: &[&str]| -> Vec<String> { items.iter().map(|&item| item.to_owned()).collect() };
         assert_eq!(format_joined_terminals(&names(&[])), "");
         assert_eq!(format_joined_terminals(&names(&["a"])), "`a`");
         assert_eq!(

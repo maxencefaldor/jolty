@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! The resistor of jolty's library, written in Verilog-A after its hand-written kernel in
-//! `crates/jolty-models/src/passive.rs`, operation for operation: Ohm's law, its
+//! `crates/jolty-models/src/kernel/passive.rs`, operation for operation: Ohm's law, its
 //! resistance drifting with temperature and changing with its voltage, and its thermal
 //! and flicker noise, as ngspice's resistor makes them.
 //! ```

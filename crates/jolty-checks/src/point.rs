@@ -479,9 +479,8 @@ mod tests {
     #[test]
     fn unstable_pole_with_zero_external_voltage_amplitude_reports_no_nets() {
         let mut sim = simulator(&tank(2e-4));
-        let mut modes = sim.growing_modes(&Options::default()).unwrap();
-        assert!(!modes.is_empty());
-        let mut mode = modes.remove(0);
+        let modes = sim.growing_modes(&Options::default()).unwrap();
+        let mut mode = modes.into_iter().next().expect("at least one growing mode");
         let mut zeroed_net = false;
         for (unknown, amplitude) in sim.unknowns().iter().zip(&mut mode.shape) {
             if unknown.nature == Nature::Voltage && !unknown.name.contains(':') {

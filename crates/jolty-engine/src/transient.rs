@@ -796,8 +796,10 @@ impl Simulator {
         } else {
             transient.max_step.unwrap_or(transient.stop / STEPS_PER_RUN)
         };
-        if !(transient.stop > 0.0 && transient.stop.is_finite())
-            || !(longest > 0.0 && longest.is_finite())
+        if !(transient.stop > 0.0
+            && transient.stop.is_finite()
+            && longest > 0.0
+            && longest.is_finite())
         {
             return Err(SimulationError::InvalidAnalysis(format!(
                 "the stop time and longest step must be positive and finite, not {:?} and \
@@ -1891,9 +1893,8 @@ mod tests {
             }"#,
         )
         .expect("a valid circuit");
-        let mut simulator =
-            Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-                .expect("the circuit elaborates");
+        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("the circuit elaborates");
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1e-6] {
             let stop_result = simulator.transient(
                 &Transient {
@@ -1910,7 +1911,7 @@ mod tests {
                 matches!(stop_result, Err(SimulationError::InvalidAnalysis(_))),
                 "expected InvalidAnalysis for stop={bad:?}, got {stop_result:?}"
             );
-            let step_result = simulator.transient(
+            let max_step_result = simulator.transient(
                 &Transient {
                     stop: 1e-6,
                     max_step: Some(bad),
@@ -1922,8 +1923,8 @@ mod tests {
                 &Options::default(),
             );
             assert!(
-                matches!(step_result, Err(SimulationError::InvalidAnalysis(_))),
-                "expected InvalidAnalysis for max_step={bad:?}, got {step_result:?}"
+                matches!(max_step_result, Err(SimulationError::InvalidAnalysis(_))),
+                "expected InvalidAnalysis for max_step={bad:?}, got {max_step_result:?}"
             );
         }
     }
@@ -1956,9 +1957,8 @@ mod tests {
             }"#,
         )
         .expect("a valid circuit");
-        let mut simulator =
-            Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-                .expect("the circuit elaborates");
+        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("the circuit elaborates");
         let width = simulator.point_width();
         let options = Options {
             // Allow the pre-check (`stop / longest * width == width`) to pass so `start_past`

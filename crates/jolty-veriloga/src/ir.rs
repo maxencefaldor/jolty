@@ -3154,7 +3154,7 @@ fn reassigned(module: &mut Module, statements: &[Stmt], dynamic: bool, read: &mu
 
 #[cfg(test)]
 mod tests {
-    use super::{Expr, Module, Stmt, constant, resolve};
+    use super::{Expr, Module, Stmt, constant, probed_currents, resolve};
     use crate::compile;
     use crate::lexer::tokens;
     use crate::parser::parse;
@@ -3538,12 +3538,13 @@ mod tests {
     #[test]
     fn stmt_walk_visits_flicker_noise_exponent() {
         let reassigned_module = resolve_source(
-            "real e;\n\
+            "parameter real flag = 1.0;\n\
+             real e;\n\
              analog begin\n\
                  e = 1.0;\n\
                  I(a, b) <+ V(a, b) / 100.0;\n\
                  I(a, b) <+ flicker_noise(1e-20, e, \"flicker\");\n\
-                 e = 2.0;\n\
+                 if (flag > 0.0) e = 2.0;\n\
              end",
         );
         let e_index = reassigned_module
@@ -3557,10 +3558,11 @@ mod tests {
         );
         assert_eq!(
             refusal(
-                "x = 1.0;\n\
+                "y = 1.0;\n\
+                 x = 1.0;\n\
                  I(a, b) <+ V(a, b) / 100.0;\n\
                  I(a, b) <+ flicker_noise(1e-20, x, \"flicker\");\n\
-                 x = 2.0;"
+                 if (y > 0.0) x = 2.0;"
             ),
             "a flicker exponent that depends on the probes is not compiled yet"
         );

@@ -52,8 +52,6 @@ pub struct PreparedDiode<R: Real> {
     h2: R,
     saturation_current: R,
     h4: R,
-    h5: R,
-    h6: R,
 }
 
 /// Where a [`Diode`]'s contributions go among its local unknowns, and the conditions
@@ -95,7 +93,7 @@ impl Kernel for Diode {
         let mut v = Locals { slope: R::constant(0.0), critical: R::constant(0.0) };
         v.slope = temperature * BOLTZMANN / ELEMENTARY_CHARGE;
         v.critical = v.slope * (v.slope / (parameters.saturation_current * std::f64::consts::SQRT_2)).ln();
-        Ok(PreparedDiode { slope: v.slope, critical: v.critical, h2: -(v.slope * 3.0), saturation_current: parameters.saturation_current, h4: R::constant(1.0) / v.slope, h5: v.slope * 3.0, h6: -parameters.saturation_current })
+        Ok(PreparedDiode { slope: v.slope, critical: v.critical, h2: v.slope * 3.0, saturation_current: parameters.saturation_current, h4: R::constant(1.0) / v.slope })
     }
 
     fn layout<R: Real>(
@@ -135,11 +133,11 @@ impl Kernel for Diode {
         v.limited0 = limited0;
         let [t0000] = Dual::<R, 1>::variables([(at.unknown::<R>(0) - at.unknown::<R>(1)).with_value(limited0)]);
         v.vd = t0000;
-        if v.vd.value.value() >= prepared.h2.value() {
+        if v.vd.value.value() >= -prepared.h2.value() {
             v.id = (v.vd.chain((v.vd.value / prepared.slope, prepared.h4)).exp() - 1.0).scale(prepared.saturation_current);
         } else {
-            v.ratio = Dual::constant(prepared.h5) / (v.vd * std::f64::consts::E);
-            v.id = (v.ratio * v.ratio * v.ratio + 1.0).scale(prepared.h6);
+            v.ratio = Dual::constant(prepared.h2) / (v.vd * std::f64::consts::E);
+            v.id = (v.ratio * v.ratio * v.ratio + 1.0).scale(-prepared.saturation_current);
         }
         v.anode_cathode_flow = v.anode_cathode_flow + (v.id + at.gmin * v.vd);
         let t0001 = v.anode_cathode_flow.extend([v.applied0 - v.limited0]);

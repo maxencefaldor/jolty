@@ -42,7 +42,22 @@ from matplotlib.ticker import EngFormatter
 from jolty import files, results
 from jolty.errors import JoltyError
 from jolty.units import format_si
-from jolty.unknowns import default_traces as default_traces
+from jolty.unknowns import default_traces
+
+__all__ = [
+    "COLORS",
+    "GRID",
+    "INK",
+    "MAX_SERIES",
+    "MUTED",
+    "SURFACE",
+    "Plotted",
+    "default_traces",
+    "envelope",
+    "histograms",
+    "plot",
+    "save",
+]
 
 COLORS: Final = (
     "#2a78d6",
@@ -580,12 +595,9 @@ def _sweep_label(
     source: str | None, parameter: str | None, nature: results.Nature | None
 ) -> str:
     """Formats the horizontal axis label for a DC sweep."""
-    kind = parameter or nature
-    if source and kind:
-        return f"{source} {kind}"
-    if source:
-        return source
-    return kind or "swept"
+    kind = parameter if parameter is not None and parameter != "" else nature
+    parts = [part for part in (source, kind) if part is not None and part != ""]
+    return " ".join(parts) if parts else "swept"
 
 
 def _abscissa_label(result: Plotted) -> str:

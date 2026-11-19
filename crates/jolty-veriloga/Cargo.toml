@@ -36,6 +36,19 @@ serde_json.workspace = true
 [[bench]]
 name = "evaluation"
 harness = false
+required-features = ["kernels"]
+
+[[test]]
+name = "compiled"
+required-features = ["kernels"]
+
+[[test]]
+name = "corpus"
+required-features = ["kernels"]
+
+[[test]]
+name = "twins"
+required-features = ["kernels"]
 
 [[test]]
 name = "fetched"

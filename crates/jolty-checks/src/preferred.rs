@@ -217,7 +217,14 @@ mod tests {
 
     #[test]
     fn holds_rejects_non_positive_and_non_finite_values() {
-        for bad in [0.0, -0.0, -4.7e3, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for bad in [
+            0.0,
+            -0.0,
+            -4.7e3,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
             for series in Series::ALL {
                 assert!(!series.holds(bad), "{series} accepted {bad:?}");
             }

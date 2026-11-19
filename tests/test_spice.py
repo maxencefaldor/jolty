@@ -4650,7 +4650,7 @@ def test_sky130_written_rejects_invalid_and_boolean_parameters(
 
 
 def test_sky130_mosfet_rejects_non_finite_size_and_boolean_counts() -> None:
-    with pytest.raises(ValueError, match="positive"):
+    with pytest.raises(ValueError, match="finite"):
         sky130.mosfet("nfet_01v8", float("inf") * um, 0.15 * um)
     with pytest.raises(ValueError, match="1 or more"):
         sky130.mosfet("nfet_01v8", 1 * um, 0.15 * um, fingers=True)

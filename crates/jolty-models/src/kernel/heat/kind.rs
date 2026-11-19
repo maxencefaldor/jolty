@@ -75,9 +75,9 @@ impl<S> HeatedShape<S> {
 /// as its temperature moves, the ambient temperature it is at when the thermal net is at
 /// zero, and its numbers there.
 pub(crate) struct HeatedPrepared<K: Kernel, R: Heating> {
-    parameters: K::Parameters<R::Warm>,
+    parameters: Box<K::Parameters<R::Warm>>,
     ambient: f64,
-    at_ambient: K::Prepared<R::Warm>,
+    at_ambient: Box<K::Prepared<R::Warm>>,
 }
 
 impl<K: Kernel, R: Heating> Clone for HeatedPrepared<K, R> {
@@ -100,12 +100,13 @@ impl<K: Kernel, R: Heating> fmt::Debug for HeatedPrepared<K, R> {
 }
 
 impl<K: Kernel, R: Heating> HeatedPrepared<K, R> {
-    /// The numbers of an instance with `parameters` at the ambient temperature `ambient`.
-    fn new(parameters: &K::Parameters<R::Warm>, ambient: f64) -> Result<Self, ParameterError> {
+    /// The numbers of an instance with boxed `parameters` at the ambient temperature `ambient`.
+    fn new(parameters: Box<K::Parameters<R::Warm>>, ambient: f64) -> Result<Self, ParameterError> {
+        let at_ambient = Box::new(K::prepare(&parameters, R::seed(ambient))?);
         Ok(Self {
-            at_ambient: K::prepare(parameters, R::seed(ambient))?,
-            parameters: parameters.clone(),
+            parameters,
             ambient,
+            at_ambient,
         })
     }
 }
@@ -114,7 +115,7 @@ impl<K: Kernel, R: Heating> HeatedPrepared<K, R> {
 /// the temperature of its last evaluation, from which the next step is limited, and its
 /// memory, and the room it evaluates in.
 pub(crate) struct HeatedMemory<K: Kernel, R: Heating> {
-    prepared: Option<K::Prepared<R::Warm>>,
+    prepared: Option<Box<K::Prepared<R::Warm>>>,
     inner: K::Memory,
     last: f64,
     /// Whether `prepared` was last prepared with the thermal net seeded by a twin.
@@ -281,7 +282,11 @@ fn heat<K: Kernel, R: Heating>(
             R::seed(temperature)
         };
         if let Ok(heated) = K::prepare(&prepared.parameters, moving) {
-            memory.prepared = Some(heated);
+            if let Some(slot) = &mut memory.prepared {
+                **slot = heated;
+            } else {
+                memory.prepared = Some(Box::new(heated));
+            }
             K::reheat(&mut memory.inner);
             memory.last = temperature;
             memory.seeded = seeding;
@@ -393,7 +398,7 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         parameters: &Self::Parameters,
         temperature: f64,
     ) -> Result<Self::Prepared, ParameterError> {
-        HeatedPrepared::new(&constant(parameters), temperature)
+        HeatedPrepared::new(Box::new(constant(parameters)), temperature)
     }
 
     fn layout(
@@ -433,7 +438,10 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         at: &Local<'_>,
         sources: &mut Vec<NoiseSource>,
     ) {
-        let heated = memory.prepared.as_ref().unwrap_or(&prepared.at_ambient);
+        let heated = memory
+            .prepared
+            .as_deref()
+            .unwrap_or(prepared.at_ambient.as_ref());
         let map = shape.map(at);
         let start = sources.len();
         K::noise(&shape.inner, heated, &at.remapped(&map), sources);
@@ -486,7 +494,10 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         found: &mut Vec<Choice>,
     ) {
         memory.read(shape, at);
-        let heated = memory.prepared.as_ref().unwrap_or(&prepared.at_ambient);
+        let heated = memory
+            .prepared
+            .as_deref()
+            .unwrap_or(prepared.at_ambient.as_ref());
         let HeatedMemory { inner, map, .. } = memory;
         K::choices(
             &shape.inner,
@@ -532,10 +543,10 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         K::sense(&shape.inner, &prepared.at_ambient, &at.remapped(&map))
     }
 
-    type Twin<const SEEDS: usize> = (
+    type Twin<const SEEDS: usize> = Box<(
         HeatedPrepared<K, Gradient<SEEDS>>,
         HeatedMemory<K, Gradient<SEEDS>>,
-    );
+    )>;
 
     fn twin<const SEEDS: usize>(
         shape: &Self::Shape,
@@ -543,18 +554,20 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         seeds: &[(&str, [f64; SEEDS])],
         temperature: f64,
     ) -> Option<Self::Twin<SEEDS>> {
-        let lifted: K::Parameters<Hyper<SEEDS>> = lift(parameters, seeds, Hyper::new).ok()?;
-        let prepared = HeatedPrepared::<K, Gradient<SEEDS>>::new(&lifted, temperature).ok()?;
+        let lifted: Box<K::Parameters<Hyper<SEEDS>>> =
+            Box::new(lift(parameters, seeds, Hyper::new).ok()?);
+        let prepared = HeatedPrepared::<K, Gradient<SEEDS>>::new(lifted, temperature).ok()?;
         let memory = HeatedMemory::new(shape, &prepared);
-        Some((prepared, memory))
+        Some(Box::new((prepared, memory)))
     }
 
     fn evaluate_twin<const SEEDS: usize>(
         shape: &Self::Shape,
-        (prepared, memory): &mut Self::Twin<SEEDS>,
+        twin: &mut Self::Twin<SEEDS>,
         at: &Local<'_>,
         stamp: &mut Stamp<'_, Gradient<SEEDS>>,
     ) {
+        let (prepared, memory) = &mut **twin;
         evaluate::<K, Gradient<SEEDS>>(shape, prepared, memory, at, stamp);
     }
 

@@ -150,7 +150,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let examples_directory = repository_root.join("examples");
     let mut examples = BTreeMap::new();
-    collect_tree(&examples_directory, &examples_directory, "py", &mut examples)?;
+    collect_tree(
+        &examples_directory,
+        &examples_directory,
+        "py",
+        &mut examples,
+    )?;
 
     let mut payload = String::from("{\"examples\":");
     write_json_map(&mut payload, &examples);

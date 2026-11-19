@@ -479,12 +479,10 @@ mod tests {
             Err(ReadError::Version(version)) if version == VERSION + 1
         ));
 
-        let wrong_format_with_unknown = divider()
-            .replace("jolty-circuit", "other-tool")
-            .replace(
-                &format!(r#""version": {VERSION}"#),
-                &format!(r#""version": {}, "extra": 123"#, VERSION + 5),
-            );
+        let wrong_format_with_unknown = divider().replace("jolty-circuit", "other-tool").replace(
+            &format!(r#""version": {VERSION}"#),
+            &format!(r#""version": {}, "extra": 123"#, VERSION + 5),
+        );
         assert!(matches!(
             Circuit::from_json(&wrong_format_with_unknown),
             Err(ReadError::Format(format)) if format == "other-tool"

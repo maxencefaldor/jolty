@@ -217,8 +217,7 @@ impl Kernel for Networks {
         v.inner_b_flow = v.inner_b_flow + v.voltage_inner_b.chain((v.voltage_inner_b.value / prepared.r, prepared.h1));
         v.joined_b_flow = v.joined_b_flow + v.voltage_joined_b.chain((v.voltage_joined_b.value / prepared.r, prepared.h1));
         v.shorted = v.current_short;
-        if shape.conditions[0] {
-        } else {
+        if !shape.conditions[0] {
             v.lower_ground_flow = v.lower_ground_flow + v.voltage_lower_ground.chain((v.voltage_lower_ground.value / prepared.r, prepared.h1));
         }
         v.a_upper_flow = v.a_upper_flow + v.voltage_a_upper.chain((v.voltage_a_upper.value / prepared.r, prepared.h1));

@@ -208,85 +208,76 @@ pub struct PreparedDiode<R: Real> {
     breakdown_slope: R,
     h7: bool,
     h8: R,
-    h9: R,
+    saturation: R,
     h10: R,
     h11: R,
-    h12: R,
-    saturation: R,
-    h14: R,
-    h15: R,
     recombination_saturation_current_given: bool,
-    h17: R,
     potential: R,
-    h19: R,
+    h14: R,
     recombination: R,
     recombination_slope: R,
-    h22: R,
+    h17: R,
     half_grading: R,
-    h24: bool,
+    h19: bool,
     tunneling: R,
     tunneling_slope: R,
-    h27: R,
+    h22: R,
     forward_knee_current_given: bool,
     forward_knee_current: R,
-    h30: R,
+    h25: R,
     reverse_knee_current_given: bool,
     reverse_knee_current: R,
-    h33: R,
-    h34: bool,
+    h28: R,
+    h29: bool,
     threshold: R,
-    h36: R,
-    h37: R,
-    h38: R,
+    h31: R,
+    h32: R,
+    h33: R,
     capacitance: R,
     charge_at_threshold: R,
     offset: R,
-    h42: R,
-    h43: R,
+    h37: R,
+    h38: R,
     divisor: R,
-    h45: R,
+    h40: R,
     sidewall_slope: R,
     sidewall_critical: R,
-    h48: bool,
-    h49: bool,
-    h50: R,
-    h51: R,
-    h52: R,
+    h43: bool,
+    h44: bool,
+    h45: R,
     sidewall_saturation: R,
-    h54: R,
-    h55: R,
-    h56: bool,
+    h47: R,
+    h48: bool,
     sidewall_tunneling: R,
     sidewall_forward_knee_current_given: bool,
     sidewall_forward_knee_current: R,
-    h60: R,
-    h61: bool,
+    h52: R,
+    h53: bool,
     sidewall_threshold: R,
-    h63: R,
-    h64: R,
+    h55: R,
+    h56: R,
     sidewall_potential: R,
-    h66: R,
-    h67: R,
+    h58: R,
+    h59: R,
     sidewall_capacitance: R,
     sidewall_charge_at_threshold: R,
     sidewall_offset: R,
-    h71: R,
-    h72: R,
+    h63: R,
+    h64: R,
     sidewall_divisor: R,
-    h74: R,
-    h75: R,
+    h66: R,
+    h67: R,
     sidewall_resistance: R,
-    h77: R,
-    h78: R,
-    h79: R,
-    h80: f64,
-    h81: bool,
+    h69: R,
+    h70: R,
+    h71: R,
+    h72: bool,
     flicker_coefficient: R,
     flicker_exponent: R,
-    h84: R,
-    h85: R,
+    h75: R,
+    h76: R,
     /// The conditions that shape the kernel.
-    conditions: [bool; 6],
+    conditions: [bool; 5],
 }
 
 /// Where a [`Diode`]'s contributions go among its local unknowns, and the conditions
@@ -321,7 +312,7 @@ pub struct DiodeShape {
     sidewall_current_by_anode: usize,
     sidewall_current_by_sidewall: usize,
     sidewall_current_by_sidewall_current: usize,
-    conditions: [bool; 6],
+    conditions: [bool; 5],
     active: [bool; 9],
 }
 
@@ -601,7 +592,7 @@ impl Kernel for Diode {
             }
         }
         v.sidewall_breaks = i32::from(v.breaks != 0 && v.separate == 0);
-        Ok(PreparedDiode { resistance: v.resistance, h1: R::constant(1.0) / v.resistance, slope: v.slope, critical: v.critical, breaks: v.breaks, matched: v.matched, breakdown_slope: v.breakdown_slope, h7: v.breaks != 0, h8: v.slope * -3.0, h9: -v.matched, h10: -v.saturation, h11: R::constant(1.0) / v.breakdown_slope, h12: -(v.slope * 3.0), saturation: v.saturation, h14: R::constant(1.0) / v.slope, h15: v.slope * 3.0, recombination_saturation_current_given: parameters.recombination_saturation_current.is_some(), h17: v.slope * -3.0, potential: v.potential, h19: R::constant(1.0) / v.potential, recombination: v.recombination, recombination_slope: v.recombination_slope, h22: R::constant(1.0) / v.recombination_slope, half_grading: v.half_grading, h24: v.tunneling.value() > 0.0, tunneling: v.tunneling, tunneling_slope: v.tunneling_slope, h27: R::constant(1.0) / v.tunneling_slope, forward_knee_current_given: parameters.forward_knee_current.is_some(), forward_knee_current: parameters.forward_knee_current.unwrap_or(R::constant(1.0)), h30: R::constant(1.0) / parameters.forward_knee_current.unwrap_or(R::constant(1.0)), reverse_knee_current_given: parameters.reverse_knee_current.is_some(), reverse_knee_current: parameters.reverse_knee_current.unwrap_or(R::constant(1.0)), h33: R::constant(1.0) / parameters.reverse_knee_current.unwrap_or(R::constant(1.0)), h34: v.capacitance.value() > 0.0, threshold: v.threshold, h36: v.capacitance * v.potential, h37: R::constant(1.0) - v.grading, h38: R::constant(1.0) / (R::constant(1.0) - v.grading), capacitance: v.capacitance, charge_at_threshold: v.charge_at_threshold, offset: v.offset, h42: v.grading / (v.potential * 2.0), h43: v.threshold * v.threshold, divisor: v.divisor, h45: R::constant(1.0) / v.divisor, sidewall_slope: v.sidewall_slope, sidewall_critical: v.sidewall_critical, h48: v.sidewall_saturation.value() > 0.0, h49: v.sidewall_breaks != 0, h50: v.sidewall_slope * -3.0, h51: -v.sidewall_saturation, h52: -(v.sidewall_slope * 3.0), sidewall_saturation: v.sidewall_saturation, h54: R::constant(1.0) / v.sidewall_slope, h55: v.sidewall_slope * 3.0, h56: v.sidewall_tunneling.value() > 0.0, sidewall_tunneling: v.sidewall_tunneling, sidewall_forward_knee_current_given: parameters.sidewall_forward_knee_current.is_some(), sidewall_forward_knee_current: parameters.sidewall_forward_knee_current.unwrap_or(R::constant(1.0)), h60: R::constant(1.0) / parameters.sidewall_forward_knee_current.unwrap_or(R::constant(1.0)), h61: v.sidewall_capacitance.value() > 0.0, sidewall_threshold: v.sidewall_threshold, h63: v.sidewall_capacitance * v.sidewall_potential, h64: R::constant(1.0) - parameters.sidewall_grading_coefficient, sidewall_potential: v.sidewall_potential, h66: R::constant(1.0) / v.sidewall_potential, h67: R::constant(1.0) / (R::constant(1.0) - parameters.sidewall_grading_coefficient), sidewall_capacitance: v.sidewall_capacitance, sidewall_charge_at_threshold: v.sidewall_charge_at_threshold, sidewall_offset: v.sidewall_offset, h71: parameters.sidewall_grading_coefficient / (v.sidewall_potential * 2.0), h72: v.sidewall_threshold * v.sidewall_threshold, sidewall_divisor: v.sidewall_divisor, h74: R::constant(1.0) / v.sidewall_divisor, h75: parameters.transit_time * v.transit, sidewall_resistance: v.sidewall_resistance, h77: R::constant(1.0) / v.sidewall_resistance, h78: temperature * 5.522_596e-23 * v.resistance.abs(), h79: temperature * 5.522_596e-23 * (R::constant(1.0) / v.resistance).abs(), h80: 3.204_353_268e-19, h81: parameters.flicker_coefficient.value() > 0.0, flicker_coefficient: parameters.flicker_coefficient, flicker_exponent: parameters.flicker_exponent, h84: temperature * 5.522_596e-23 * v.sidewall_resistance.abs(), h85: temperature * 5.522_596e-23 * (R::constant(1.0) / v.sidewall_resistance).abs(), conditions: [parameters.series_resistance.value() == 0.0, parameters.series_resistance.value() < SMALL_RESISTANCE, v.separate != 0, v.separate != 0, parameters.sidewall_series_resistance.unwrap_or(R::constant(0.0)).value() == 0.0, parameters.sidewall_series_resistance.unwrap_or(R::constant(0.0)).value() < SMALL_RESISTANCE] })
+        Ok(PreparedDiode { resistance: v.resistance, h1: R::constant(1.0) / v.resistance, slope: v.slope, critical: v.critical, breaks: v.breaks, matched: v.matched, breakdown_slope: v.breakdown_slope, h7: v.breaks != 0, h8: v.slope * 3.0, saturation: v.saturation, h10: R::constant(1.0) / v.breakdown_slope, h11: R::constant(1.0) / v.slope, recombination_saturation_current_given: parameters.recombination_saturation_current.is_some(), potential: v.potential, h14: R::constant(1.0) / v.potential, recombination: v.recombination, recombination_slope: v.recombination_slope, h17: R::constant(1.0) / v.recombination_slope, half_grading: v.half_grading, h19: v.tunneling.value() > 0.0, tunneling: v.tunneling, tunneling_slope: v.tunneling_slope, h22: R::constant(1.0) / v.tunneling_slope, forward_knee_current_given: parameters.forward_knee_current.is_some(), forward_knee_current: parameters.forward_knee_current.unwrap_or(R::constant(1.0)), h25: R::constant(1.0) / parameters.forward_knee_current.unwrap_or(R::constant(1.0)), reverse_knee_current_given: parameters.reverse_knee_current.is_some(), reverse_knee_current: parameters.reverse_knee_current.unwrap_or(R::constant(1.0)), h28: R::constant(1.0) / parameters.reverse_knee_current.unwrap_or(R::constant(1.0)), h29: v.capacitance.value() > 0.0, threshold: v.threshold, h31: v.capacitance * v.potential, h32: R::constant(1.0) - v.grading, h33: R::constant(1.0) / (R::constant(1.0) - v.grading), capacitance: v.capacitance, charge_at_threshold: v.charge_at_threshold, offset: v.offset, h37: v.grading / (v.potential * 2.0), h38: v.threshold * v.threshold, divisor: v.divisor, h40: R::constant(1.0) / v.divisor, sidewall_slope: v.sidewall_slope, sidewall_critical: v.sidewall_critical, h43: v.sidewall_saturation.value() > 0.0, h44: v.sidewall_breaks != 0, h45: v.sidewall_slope * 3.0, sidewall_saturation: v.sidewall_saturation, h47: R::constant(1.0) / v.sidewall_slope, h48: v.sidewall_tunneling.value() > 0.0, sidewall_tunneling: v.sidewall_tunneling, sidewall_forward_knee_current_given: parameters.sidewall_forward_knee_current.is_some(), sidewall_forward_knee_current: parameters.sidewall_forward_knee_current.unwrap_or(R::constant(1.0)), h52: R::constant(1.0) / parameters.sidewall_forward_knee_current.unwrap_or(R::constant(1.0)), h53: v.sidewall_capacitance.value() > 0.0, sidewall_threshold: v.sidewall_threshold, h55: v.sidewall_capacitance * v.sidewall_potential, h56: R::constant(1.0) - parameters.sidewall_grading_coefficient, sidewall_potential: v.sidewall_potential, h58: R::constant(1.0) / v.sidewall_potential, h59: R::constant(1.0) / (R::constant(1.0) - parameters.sidewall_grading_coefficient), sidewall_capacitance: v.sidewall_capacitance, sidewall_charge_at_threshold: v.sidewall_charge_at_threshold, sidewall_offset: v.sidewall_offset, h63: parameters.sidewall_grading_coefficient / (v.sidewall_potential * 2.0), h64: v.sidewall_threshold * v.sidewall_threshold, sidewall_divisor: v.sidewall_divisor, h66: R::constant(1.0) / v.sidewall_divisor, h67: parameters.transit_time * v.transit, sidewall_resistance: v.sidewall_resistance, h69: R::constant(1.0) / v.sidewall_resistance, h70: temperature * 5.522_596e-23 * v.resistance.abs(), h71: temperature * 5.522_596e-23 * (R::constant(1.0) / v.resistance).abs(), h72: parameters.flicker_coefficient.value() > 0.0, flicker_coefficient: parameters.flicker_coefficient, flicker_exponent: parameters.flicker_exponent, h75: temperature * 5.522_596e-23 * v.sidewall_resistance.abs(), h76: temperature * 5.522_596e-23 * (R::constant(1.0) / v.sidewall_resistance).abs(), conditions: [parameters.series_resistance.value() == 0.0, parameters.series_resistance.value() < SMALL_RESISTANCE, v.separate != 0, parameters.sidewall_series_resistance.unwrap_or(R::constant(0.0)).value() == 0.0, parameters.sidewall_series_resistance.unwrap_or(R::constant(0.0)).value() < SMALL_RESISTANCE] })
     }
 
     fn layout<R: Real>(
@@ -617,24 +608,20 @@ impl Kernel for Diode {
         } else {
             active[2] = true;
         }
-        if prepared.conditions[2] {
-        } else {
+        if !prepared.conditions[2] {
             active[6] = true;
         }
-        if prepared.conditions[3] {
+        if prepared.conditions[2] {
             active[4] = true;
-            active[4] = true;
-            if prepared.conditions[4] {
+            if prepared.conditions[3] {
                 active[8] = true;
-            } else if prepared.conditions[5] {
+            } else if prepared.conditions[4] {
                 active[1] = true;
             } else {
                 active[7] = true;
             }
             active[5] = true;
-            active[5] = true;
         } else {
-            active[4] = true;
             active[4] = true;
         }
         // The leader of each node's group, the ground first, then the nodes in order.
@@ -702,11 +689,12 @@ impl Kernel for Diode {
         v.voltage_anode_sidewall = Dual { value: at.unknown::<R>(0) - at.unknown::<R>(shape.sidewall), gradient: [R::constant(1.0)] };
         v.current_junction_current = Dual { value: at.unknown::<R>(shape.junction_current), gradient: [R::constant(1.0)] };
         v.current_sidewall_current = Dual { value: at.unknown::<R>(shape.sidewall_current), gradient: [R::constant(1.0)] };
-        if shape.conditions[0] {
-        } else if shape.conditions[1] {
-            v.junction_current_potential = v.junction_current_potential + v.current_junction_current.scale(prepared.resistance);
-        } else {
-            v.anode_junction_flow = v.anode_junction_flow + v.voltage_anode_junction.scale(prepared.h1);
+        if !shape.conditions[0] {
+            if shape.conditions[1] {
+                v.junction_current_potential = v.junction_current_potential + v.current_junction_current.scale(prepared.resistance);
+            } else {
+                v.anode_junction_flow = v.anode_junction_flow + v.voltage_anode_junction.scale(prepared.h1);
+            }
         }
         let applied0 = at.value(shape.junction) - at.value(1);
         let limited0 = if at.limiting { junction_limit(applied0, memory.limited0, prepared.slope.value(), prepared.critical.value(), f64::from(prepared.breaks), prepared.matched.value(), prepared.breakdown_slope.value()) } else { applied0 };
@@ -718,67 +706,67 @@ impl Kernel for Diode {
         v.limited0 = limited0;
         let [t0000] = Dual::<R, 1>::variables([(at.unknown::<R>(shape.junction) - at.unknown::<R>(1)).with_value(limited0)]);
         v.vd = t0000;
-        if prepared.h7 && v.vd.value.value() < prepared.h8.value() && v.vd.value.value() < prepared.h9.value() {
+        if prepared.h7 && v.vd.value.value() < -prepared.h8.value() && v.vd.value.value() < -prepared.matched.value() {
             let t0001 = -v.vd.plus(prepared.matched);
-            let t0002 = t0001.chain((t0001.value / prepared.breakdown_slope, prepared.h11)).exp().scale(prepared.h10);
+            let t0002 = t0001.chain((t0001.value / prepared.breakdown_slope, prepared.h10)).exp().scale(-prepared.saturation);
             let [t0003] = t0002.gradient;
             let t0004 = Dual { value: t0002.value, gradient: [t0003, R::constant(0.0)] };
             v.id = t0004;
-        } else if v.vd.value.value() >= prepared.h12.value() {
-            let t0005 = (v.vd.chain((v.vd.value / prepared.slope, prepared.h14)).exp() - 1.0).scale(prepared.saturation);
+        } else if v.vd.value.value() >= -prepared.h8.value() {
+            let t0005 = (v.vd.chain((v.vd.value / prepared.slope, prepared.h11)).exp() - 1.0).scale(prepared.saturation);
             let [t0006] = t0005.gradient;
             let t0007 = Dual { value: t0005.value, gradient: [t0006, R::constant(0.0)] };
             v.id = t0007;
         } else {
-            let t0008: Dual<R, 1> = Dual::constant(prepared.h15) / (v.vd * std::f64::consts::E);
+            let t0008: Dual<R, 1> = Dual::constant(prepared.h8) / (v.vd * std::f64::consts::E);
             let [t0009] = t0008.gradient;
             let t0010 = Dual { value: t0008.value, gradient: [t0009, R::constant(0.0)] };
             v.cube = t0010;
-            v.id = (v.cube * v.cube * v.cube + 1.0).scale(prepared.h10);
+            v.id = (v.cube * v.cube * v.cube + 1.0).scale(-prepared.saturation);
         }
         if prepared.recombination_saturation_current_given {
-            if v.vd.value.value() >= prepared.h17.value() {
+            if v.vd.value.value() >= -prepared.h8.value() {
                 v.vr = v.vd;
             } else {
-                v.vr = Dual::constant(prepared.h17);
+                v.vr = Dual::constant(-prepared.h8);
             }
-            v.remaining = -(v.vr.chain((v.vr.value / prepared.potential, prepared.h19)) - 1.0);
+            v.remaining = -(v.vr.chain((v.vr.value / prepared.potential, prepared.h14)) - 1.0);
             let t0011 = v.remaining * v.remaining + 0.005;
             let t0012 = t0011.value.pow(prepared.half_grading);
             let t0013 = if t0011.value.value() == 0.0 { prepared.half_grading * t0011.value.pow(prepared.half_grading - 1.0) } else { prepared.half_grading * t0012 / t0011.value };
-            let t0014 = (v.vr.chain((v.vr.value / prepared.recombination_slope, prepared.h22)).exp() - 1.0).scale(prepared.recombination) * t0011.chain((t0012, t0013));
+            let t0014 = (v.vr.chain((v.vr.value / prepared.recombination_slope, prepared.h17)).exp() - 1.0).scale(prepared.recombination) * t0011.chain((t0012, t0013));
             let [t0015] = t0014.gradient;
             let t0016 = Dual { value: t0014.value, gradient: [t0015, R::constant(0.0)] };
             v.id = v.id + t0016;
         }
-        if prepared.h24 {
+        if prepared.h19 {
             let t0017 = -v.vd;
-            let t0018 = (t0017.chain((t0017.value / prepared.tunneling_slope, prepared.h27)).exp() - 1.0).scale(prepared.tunneling);
+            let t0018 = (t0017.chain((t0017.value / prepared.tunneling_slope, prepared.h22)).exp() - 1.0).scale(prepared.tunneling);
             let [t0019] = t0018.gradient;
             let t0020 = Dual { value: t0018.value, gradient: [t0019, R::constant(0.0)] };
             v.id = v.id - t0020;
         }
-        if v.vd.value.value() >= prepared.h8.value() {
+        if v.vd.value.value() >= -prepared.h8.value() {
             if prepared.forward_knee_current_given && v.id.value.value() > 1e-18 {
-                v.id = v.id / (v.id.chain((v.id.value / prepared.forward_knee_current, prepared.h30)).sqrt() + 1.0);
+                v.id = v.id / (v.id.chain((v.id.value / prepared.forward_knee_current, prepared.h25)).sqrt() + 1.0);
             }
         } else if prepared.reverse_knee_current_given && v.id.value.value() < -1e-18 {
             let t0021 = -v.id;
-            v.id = v.id / (t0021.chain((t0021.value / prepared.reverse_knee_current, prepared.h33)).sqrt() + 1.0);
+            v.id = v.id / (t0021.chain((t0021.value / prepared.reverse_knee_current, prepared.h28)).sqrt() + 1.0);
         }
-        if prepared.h34 {
+        if prepared.h29 {
             if v.vd.value.value() < prepared.threshold.value() {
-                let t0022 = -v.vd.chain((v.vd.value / prepared.potential, prepared.h19));
+                let t0022 = -v.vd.chain((v.vd.value / prepared.potential, prepared.h14));
                 let t0023 = t0022.value.value();
                 let t0024 = t0022.value.chain((t0023.ln_1p(), (t0023 + 1.0).recip(), -((t0023 + 1.0) * (t0023 + 1.0)).recip()));
-                let t0025 = t0022.chain((t0024, (t0022.value + 1.0).recip())).scale(prepared.h37);
+                let t0025 = t0022.chain((t0024, (t0022.value + 1.0).recip())).scale(prepared.h32);
                 let t0026 = t0025.value.value();
                 let t0027 = t0025.value.chain((t0026.exp_m1(), t0026.exp(), t0026.exp()));
-                let t0028 = (-t0025.chain((t0027, t0025.value.exp()))).scale(prepared.h36);
-                v.qd = t0028.chain((t0028.value / prepared.h37, prepared.h38));
+                let t0028 = (-t0025.chain((t0027, t0025.value.exp()))).scale(prepared.h31);
+                v.qd = t0028.chain((t0028.value / prepared.h32, prepared.h33));
             } else {
-                let t0029 = v.vd.plus(-prepared.threshold).scale(prepared.offset) + (v.vd * v.vd).plus(-prepared.h43).scale(prepared.h42);
-                v.qd = t0029.chain((t0029.value / prepared.divisor, prepared.h45)).plus(prepared.charge_at_threshold).scale(prepared.capacitance);
+                let t0029 = v.vd.plus(-prepared.threshold).scale(prepared.offset) + (v.vd * v.vd).plus(-prepared.h38).scale(prepared.h37);
+                v.qd = t0029.chain((t0029.value / prepared.divisor, prepared.h40)).plus(prepared.charge_at_threshold).scale(prepared.capacitance);
             }
         }
         if shape.conditions[2] {
@@ -800,52 +788,53 @@ impl Kernel for Diode {
             v.vs = t0034;
         }
         v.isw = Dual::number(0.0);
-        if prepared.h48 {
-            if prepared.h49 && v.vs.value.value() < prepared.h50.value() && v.vs.value.value() < prepared.h9.value() {
+        if prepared.h43 {
+            if prepared.h44 && v.vs.value.value() < -prepared.h45.value() && v.vs.value.value() < -prepared.matched.value() {
                 let t0035 = -v.vs.plus(prepared.matched);
-                v.isw = t0035.chain((t0035.value / prepared.breakdown_slope, prepared.h11)).exp().scale(prepared.h51);
-            } else if v.vs.value.value() >= prepared.h52.value() {
-                v.isw = (v.vs.chain((v.vs.value / prepared.sidewall_slope, prepared.h54)).exp() - 1.0).scale(prepared.sidewall_saturation);
+                v.isw = t0035.chain((t0035.value / prepared.breakdown_slope, prepared.h10)).exp().scale(-prepared.sidewall_saturation);
+            } else if v.vs.value.value() >= -prepared.h45.value() {
+                v.isw = (v.vs.chain((v.vs.value / prepared.sidewall_slope, prepared.h47)).exp() - 1.0).scale(prepared.sidewall_saturation);
             } else {
-                v.cube = Dual::constant(prepared.h55) / (v.vs * std::f64::consts::E);
-                v.isw = (v.cube * v.cube * v.cube + 1.0).scale(prepared.h51);
+                v.cube = Dual::constant(prepared.h45) / (v.vs * std::f64::consts::E);
+                v.isw = (v.cube * v.cube * v.cube + 1.0).scale(-prepared.sidewall_saturation);
             }
         }
-        if prepared.h56 {
+        if prepared.h48 {
             let t0036 = -v.vs;
-            v.isw = v.isw - (t0036.chain((t0036.value / prepared.tunneling_slope, prepared.h27)).exp() - 1.0).scale(prepared.sidewall_tunneling);
+            v.isw = v.isw - (t0036.chain((t0036.value / prepared.tunneling_slope, prepared.h22)).exp() - 1.0).scale(prepared.sidewall_tunneling);
         }
         if prepared.sidewall_forward_knee_current_given && v.isw.value.value() > 1e-18 {
-            v.isw = v.isw / (v.isw.chain((v.isw.value / prepared.sidewall_forward_knee_current, prepared.h60)).sqrt() + 1.0);
+            v.isw = v.isw / (v.isw.chain((v.isw.value / prepared.sidewall_forward_knee_current, prepared.h52)).sqrt() + 1.0);
         }
-        if prepared.h61 {
+        if prepared.h53 {
             if v.vs.value.value() < prepared.sidewall_threshold.value() {
-                let t0037 = -v.vs.chain((v.vs.value / prepared.sidewall_potential, prepared.h66));
+                let t0037 = -v.vs.chain((v.vs.value / prepared.sidewall_potential, prepared.h58));
                 let t0038 = t0037.value.value();
                 let t0039 = t0037.value.chain((t0038.ln_1p(), (t0038 + 1.0).recip(), -((t0038 + 1.0) * (t0038 + 1.0)).recip()));
-                let t0040 = t0037.chain((t0039, (t0037.value + 1.0).recip())).scale(prepared.h64);
+                let t0040 = t0037.chain((t0039, (t0037.value + 1.0).recip())).scale(prepared.h56);
                 let t0041 = t0040.value.value();
                 let t0042 = t0040.value.chain((t0041.exp_m1(), t0041.exp(), t0041.exp()));
-                let t0043 = (-t0040.chain((t0042, t0040.value.exp()))).scale(prepared.h63);
-                v.qs = t0043.chain((t0043.value / prepared.h64, prepared.h67));
+                let t0043 = (-t0040.chain((t0042, t0040.value.exp()))).scale(prepared.h55);
+                v.qs = t0043.chain((t0043.value / prepared.h56, prepared.h59));
             } else {
-                let t0044 = v.vs.plus(-prepared.sidewall_threshold).scale(prepared.sidewall_offset) + (v.vs * v.vs).plus(-prepared.h72).scale(prepared.h71);
-                v.qs = t0044.chain((t0044.value / prepared.sidewall_divisor, prepared.h74)).plus(prepared.sidewall_charge_at_threshold).scale(prepared.sidewall_capacitance);
+                let t0044 = v.vs.plus(-prepared.sidewall_threshold).scale(prepared.sidewall_offset) + (v.vs * v.vs).plus(-prepared.h64).scale(prepared.h63);
+                v.qs = t0044.chain((t0044.value / prepared.sidewall_divisor, prepared.h66)).plus(prepared.sidewall_charge_at_threshold).scale(prepared.sidewall_capacitance);
             }
         }
-        if shape.conditions[3] {
+        if shape.conditions[2] {
             let t0045 = at.gmin * v.vd;
             let [t0046] = t0045.gradient;
             let t0047 = Dual { value: t0045.value, gradient: [t0046, R::constant(0.0)] };
             v.junction_cathode_flow = v.junction_cathode_flow + (v.id + t0047);
             let [t0048] = v.qd.gradient;
             let t0049 = Dual { value: v.qd.value, gradient: [t0048, R::constant(0.0)] };
-            v.junction_cathode_charge = v.junction_cathode_charge + (t0049 + v.id.scale(prepared.h75));
-            if shape.conditions[4] {
-            } else if shape.conditions[5] {
-                v.sidewall_current_potential = v.sidewall_current_potential + v.current_sidewall_current.scale(prepared.sidewall_resistance);
-            } else {
-                v.anode_sidewall_flow = v.anode_sidewall_flow + v.voltage_anode_sidewall.scale(prepared.h77);
+            v.junction_cathode_charge = v.junction_cathode_charge + (t0049 + v.id.scale(prepared.h67));
+            if !shape.conditions[3] {
+                if shape.conditions[4] {
+                    v.sidewall_current_potential = v.sidewall_current_potential + v.current_sidewall_current.scale(prepared.sidewall_resistance);
+                } else {
+                    v.anode_sidewall_flow = v.anode_sidewall_flow + v.voltage_anode_sidewall.scale(prepared.h69);
+                }
             }
             v.sidewall_cathode_flow = v.sidewall_cathode_flow + (v.isw + at.gmin * v.vs);
             v.sidewall_cathode_charge = v.sidewall_cathode_charge + v.qs;
@@ -856,7 +845,7 @@ impl Kernel for Diode {
             v.junction_cathode_flow = v.junction_cathode_flow + (v.id + v.isw + t0052);
             let [t0053] = v.qd.gradient;
             let t0054 = Dual { value: v.qd.value, gradient: [t0053, R::constant(0.0)] };
-            v.junction_cathode_charge = v.junction_cathode_charge + (t0054 + v.qs + (v.id + v.isw).scale(prepared.h75));
+            v.junction_cathode_charge = v.junction_cathode_charge + (t0054 + v.qs + (v.id + v.isw).scale(prepared.h67));
         }
         if shape.active[0] {
             let current = at.unknown::<R>(shape.junction_current);
@@ -976,35 +965,36 @@ impl Kernel for Diode {
             remaining: R,
         }
         let mut v = Locals { vd: R::constant(0.0), vs: R::constant(0.0), vr: R::constant(0.0), id: R::constant(0.0), isw: R::constant(0.0), cube: R::constant(0.0), remaining: R::constant(0.0) };
-        if shape.conditions[0] {
-        } else if shape.conditions[1] {
-            sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(shape.junction_current)), None], prepared.h78.value()));
-        } else {
-            sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(shape.junction))], prepared.h79.value()));
+        if !shape.conditions[0] {
+            if shape.conditions[1] {
+                sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(shape.junction_current)), None], prepared.h70.value()));
+            } else {
+                sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(shape.junction))], prepared.h71.value()));
+            }
         }
         let t0000 = R::constant(at.value(shape.junction) - at.value(1));
         v.vd = t0000;
-        if prepared.h7 && v.vd.value() < prepared.h8.value() && v.vd.value() < prepared.h9.value() {
-            v.id = prepared.h10 * (-(prepared.matched + v.vd) / prepared.breakdown_slope).exp();
-        } else if v.vd.value() >= prepared.h12.value() {
+        if prepared.h7 && v.vd.value() < -prepared.h8.value() && v.vd.value() < -prepared.matched.value() {
+            v.id = -prepared.saturation * (-(prepared.matched + v.vd) / prepared.breakdown_slope).exp();
+        } else if v.vd.value() >= -prepared.h8.value() {
             v.id = prepared.saturation * ((v.vd / prepared.slope).exp() - 1.0);
         } else {
-            v.cube = prepared.h15 / (v.vd * std::f64::consts::E);
-            v.id = prepared.h10 * (v.cube * v.cube * v.cube + 1.0);
+            v.cube = prepared.h8 / (v.vd * std::f64::consts::E);
+            v.id = -prepared.saturation * (v.cube * v.cube * v.cube + 1.0);
         }
         if prepared.recombination_saturation_current_given {
-            if v.vd.value() >= prepared.h17.value() {
+            if v.vd.value() >= -prepared.h8.value() {
                 v.vr = v.vd;
             } else {
-                v.vr = prepared.h17;
+                v.vr = -prepared.h8;
             }
             v.remaining = -(v.vr / prepared.potential - 1.0);
             v.id += prepared.recombination * ((v.vr / prepared.recombination_slope).exp() - 1.0) * (v.remaining * v.remaining + 0.005).pow(prepared.half_grading);
         }
-        if prepared.h24 {
+        if prepared.h19 {
             v.id -= prepared.tunneling * ((-v.vd / prepared.tunneling_slope).exp() - 1.0);
         }
-        if v.vd.value() >= prepared.h8.value() {
+        if v.vd.value() >= -prepared.h8.value() {
             if prepared.forward_knee_current_given && v.id.value() > 1e-18 {
                 v.id = v.id / ((v.id / prepared.forward_knee_current).sqrt() + 1.0);
             }
@@ -1018,25 +1008,25 @@ impl Kernel for Diode {
             v.vs = v.vd;
         }
         v.isw = R::constant(0.0);
-        if prepared.h48 {
-            if prepared.h49 && v.vs.value() < prepared.h50.value() && v.vs.value() < prepared.h9.value() {
-                v.isw = prepared.h51 * (-(prepared.matched + v.vs) / prepared.breakdown_slope).exp();
-            } else if v.vs.value() >= prepared.h52.value() {
+        if prepared.h43 {
+            if prepared.h44 && v.vs.value() < -prepared.h45.value() && v.vs.value() < -prepared.matched.value() {
+                v.isw = -prepared.sidewall_saturation * (-(prepared.matched + v.vs) / prepared.breakdown_slope).exp();
+            } else if v.vs.value() >= -prepared.h45.value() {
                 v.isw = prepared.sidewall_saturation * ((v.vs / prepared.sidewall_slope).exp() - 1.0);
             } else {
-                v.cube = prepared.h55 / (v.vs * std::f64::consts::E);
-                v.isw = prepared.h51 * (v.cube * v.cube * v.cube + 1.0);
+                v.cube = prepared.h45 / (v.vs * std::f64::consts::E);
+                v.isw = -prepared.sidewall_saturation * (v.cube * v.cube * v.cube + 1.0);
             }
         }
-        if prepared.h56 {
+        if prepared.h48 {
             v.isw -= prepared.sidewall_tunneling * ((-v.vs / prepared.tunneling_slope).exp() - 1.0);
         }
         if prepared.sidewall_forward_knee_current_given && v.isw.value() > 1e-18 {
             v.isw = v.isw / ((v.isw / prepared.sidewall_forward_knee_current).sqrt() + 1.0);
         }
-        if shape.conditions[3] {
-            sources.push(NoiseSource::white("shot", [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))], (v.id.abs() * prepared.h80).value()));
-            if prepared.h81 {
+        if shape.conditions[2] {
+            sources.push(NoiseSource::white("shot", [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))], (v.id.abs() * 3.204_353_268e-19).value()));
+            if prepared.h72 {
                 sources.push(NoiseSource {
                     name: "flicker",
                     equations: [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))],
@@ -1045,14 +1035,15 @@ impl Kernel for Diode {
                     exponent: 1.0,
                 });
             }
-            if shape.conditions[4] {
-            } else if shape.conditions[5] {
-                sources.push(NoiseSource::white("sidewall series thermal", [Some(UnknownIndex::new(shape.sidewall_current)), None], prepared.h84.value()));
-            } else {
-                sources.push(NoiseSource::white("sidewall series thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(shape.sidewall))], prepared.h85.value()));
+            if !shape.conditions[3] {
+                if shape.conditions[4] {
+                    sources.push(NoiseSource::white("sidewall series thermal", [Some(UnknownIndex::new(shape.sidewall_current)), None], prepared.h75.value()));
+                } else {
+                    sources.push(NoiseSource::white("sidewall series thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(shape.sidewall))], prepared.h76.value()));
+                }
             }
-            sources.push(NoiseSource::white("sidewall shot", [Some(UnknownIndex::new(shape.sidewall)), Some(UnknownIndex::new(1))], (v.isw.abs() * prepared.h80).value()));
-            if prepared.h81 {
+            sources.push(NoiseSource::white("sidewall shot", [Some(UnknownIndex::new(shape.sidewall)), Some(UnknownIndex::new(1))], (v.isw.abs() * 3.204_353_268e-19).value()));
+            if prepared.h72 {
                 sources.push(NoiseSource {
                     name: "sidewall flicker",
                     equations: [Some(UnknownIndex::new(shape.sidewall)), Some(UnknownIndex::new(1))],
@@ -1062,8 +1053,8 @@ impl Kernel for Diode {
                 });
             }
         } else {
-            sources.push(NoiseSource::white("shot", [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))], ((v.id + v.isw).abs() * prepared.h80).value()));
-            if prepared.h81 {
+            sources.push(NoiseSource::white("shot", [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))], ((v.id + v.isw).abs() * 3.204_353_268e-19).value()));
+            if prepared.h72 {
                 sources.push(NoiseSource {
                     name: "flicker",
                     equations: [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))],

@@ -229,7 +229,7 @@ def test_schematic_labels_integer_parameters_and_exponential_waveforms() -> None
 
     assert label("resistor", {"resistance": 1000}) == "1 kΩ"
     assert label("resistor", {"resistance": True}) == ""
-    assert label("voltage_controlled_voltage_source", {"gain": 2}) == "×2"
+    assert label("voltage_controlled_voltage_source", {"gain": 2}) == "\u00d72"
     assert label("voltage_controlled_voltage_source", {"gain": True}) == ""
     assert label("voltage_source", {"waveform": {"dc": 5}}) == "5 V"
     assert label("voltage_source", {"waveform": {"dc": True}}) == ""

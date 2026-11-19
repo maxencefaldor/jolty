@@ -462,7 +462,8 @@ pub struct Options {
     /// How many times the tolerances a step's truncation error may reach, as SPICE estimates
     /// the error, before the step is rejected; default 7, SPICE's `TRTOL`. SPICE's estimate
     /// leaves out a factorial, so the error itself may reach twice as many after a step of
-    /// backward Euler, and six times as many after one of the second-order formulas.
+    /// backward Euler, and six times as many after one of the second-order formulas. Set to
+    /// `f64::INFINITY` to disable truncation error rejection and take fixed steps.
     pub truncation_tolerance: f64,
     /// The gibibytes of numbers an analysis may hold at once: a transient's results, every
     /// unknown's and every device's at each point, and the dense matrices of a pole-zero
@@ -561,7 +562,7 @@ impl Options {
         Ok(())
     }
 
-    /// Checks that every tolerance is positive and finite and every limit allows an iteration.
+    /// Checks that tolerances and limits lie in range and every limit allows an iteration.
     ///
     /// # Errors
     ///
@@ -572,7 +573,6 @@ impl Options {
             ("voltage_tolerance", self.voltage_tolerance),
             ("current_tolerance", self.current_tolerance),
             ("charge_tolerance", self.charge_tolerance),
-            ("truncation_tolerance", self.truncation_tolerance),
             ("max_memory", self.max_memory),
         ];
         if let Some((name, value)) = tolerances
@@ -581,6 +581,12 @@ impl Options {
         {
             return Err(SimulationError::InvalidOptions(format!(
                 "{name} must be positive and finite, not {value:?}"
+            )));
+        }
+        if self.truncation_tolerance.is_nan() || self.truncation_tolerance <= 0.0 {
+            return Err(SimulationError::InvalidOptions(format!(
+                "truncation_tolerance must be positive, not {:?}",
+                self.truncation_tolerance
             )));
         }
         if !(self.gmin >= 0.0 && self.gmin.is_finite()) {
@@ -621,26 +627,24 @@ mod tests {
 
     #[test]
     fn check_rejects_non_finite_tolerances_and_gmin() {
+        type OptionSetter = fn(&mut Options, f64);
+        let finite_cases: [(&str, OptionSetter); 5] = [
+            ("relative_tolerance", |options, value| {
+                options.relative_tolerance = value;
+            }),
+            ("voltage_tolerance", |options, value| {
+                options.voltage_tolerance = value;
+            }),
+            ("current_tolerance", |options, value| {
+                options.current_tolerance = value;
+            }),
+            ("charge_tolerance", |options, value| {
+                options.charge_tolerance = value;
+            }),
+            ("max_memory", |options, value| options.max_memory = value),
+        ];
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
-            let cases: [(&str, fn(&mut Options, f64)); 6] = [
-                ("relative_tolerance", |options, value| {
-                    options.relative_tolerance = value;
-                }),
-                ("voltage_tolerance", |options, value| {
-                    options.voltage_tolerance = value;
-                }),
-                ("current_tolerance", |options, value| {
-                    options.current_tolerance = value;
-                }),
-                ("charge_tolerance", |options, value| {
-                    options.charge_tolerance = value;
-                }),
-                ("truncation_tolerance", |options, value| {
-                    options.truncation_tolerance = value;
-                }),
-                ("max_memory", |options, value| options.max_memory = value),
-            ];
-            for (name, setter) in cases {
+            for (name, setter) in finite_cases {
                 let mut options = Options::default();
                 setter(&mut options, bad);
                 let result = options.check();
@@ -653,6 +657,26 @@ mod tests {
                 );
             }
         }
+        for bad in [f64::NAN, f64::NEG_INFINITY, 0.0, -1.0] {
+            let options = Options {
+                truncation_tolerance: bad,
+                ..Options::default()
+            };
+            let result = options.check();
+            assert!(
+                matches!(
+                    &result,
+                    Err(SimulationError::InvalidOptions(message))
+                        if message.contains("truncation_tolerance")
+                ),
+                "expected InvalidOptions for truncation_tolerance={bad:?}, got {result:?}"
+            );
+        }
+        let fixed_step = Options {
+            truncation_tolerance: f64::INFINITY,
+            ..Options::default()
+        };
+        assert!(fixed_step.check().is_ok());
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e-12] {
             let options = Options {
                 gmin: bad,

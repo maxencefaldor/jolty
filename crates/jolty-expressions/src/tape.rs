@@ -756,6 +756,6 @@ mod tests {
             let (value, slope, curvature) = points.interpolate(x);
             assert!(value.is_finite() && slope.is_finite() && curvature.is_finite());
         }
-        assert!(std::mem::size_of::<Instruction>() <= 32);
+        assert!(size_of::<Instruction>() <= 32);
     }
 }

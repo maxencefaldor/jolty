@@ -891,6 +891,8 @@ mod tests {
                 assert_eq!(cycle.last(), Some(&name("c0000")));
             })
             .expect("spawn thread");
-        handle.join().expect("thread succeeded without stack overflow");
+        handle
+            .join()
+            .expect("thread succeeded without stack overflow");
     }
 }

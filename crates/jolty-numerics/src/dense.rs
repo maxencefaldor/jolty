@@ -1,8 +1,8 @@
 //! Dense linear solves, for the small systems whose every entry is filled.
 
+use faer::MatRef;
 use faer::linalg::solvers::Svd;
 use faer::linalg::svd::SvdError;
-use faer::MatRef;
 
 use crate::LinearError;
 use crate::lu::finite;

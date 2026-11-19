@@ -500,7 +500,7 @@ mod tests {
         );
 
         let zero_points: Vec<Vec<f64>> = Vec::new();
-        assert!(by_point(zero_points, 0, 2).is_empty());
+        assert_eq!(by_point(zero_points, 0, 2), Vec::<Vec<Vec<f64>>>::new());
     }
 
     #[test]
@@ -522,9 +522,8 @@ mod tests {
             }"#,
         )
         .expect("a valid circuit");
-        let mut simulator =
-            Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-                .expect("the circuit elaborates");
+        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("the circuit elaborates");
         let result = simulator
             .sensitivity(
                 &Sensitivity {

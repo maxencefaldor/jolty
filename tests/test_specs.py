@@ -934,4 +934,4 @@ def test_temperature_dc_sweep_uses_temperature_axis_dimension() -> None:
     assert unread(value("sweep", "out", at=1 * A) >= 0 * V, sweep) == (
         "at takes a quantity in K, not 1 A"
     )
-    assert TEMPERATURE == K.dimension
+    assert K.dimension == TEMPERATURE

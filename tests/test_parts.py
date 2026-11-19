@@ -255,4 +255,4 @@ def test_a_logic_device_is_held_to_its_ratings_at_its_terminals() -> None:
 
 def test_thermal_voltage_uses_core_physical_constants() -> None:
     expected = _core.BOLTZMANN * _core.REFERENCE_TEMPERATURE / _core.ELEMENTARY_CHARGE
-    assert parts.THERMAL_VOLTAGE == expected
+    assert expected == parts.THERMAL_VOLTAGE

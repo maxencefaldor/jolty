@@ -456,9 +456,8 @@ mod tests {
             }"#,
         )
         .expect("a valid circuit");
-        let mut simulator =
-            Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-                .expect("the circuit elaborates");
+        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("the circuit elaborates");
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
             let result = simulator.ac(
                 &Ac {

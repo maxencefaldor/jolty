@@ -1074,6 +1074,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `tcjswg` | `0` | The temperature coefficient of cjswg, `tcjswg`, in per kelvin; default 0. |
 | `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
 | `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
 | `thermal_noise_model` | `0` | The channel's thermal noise model, `tnoimod`, 0 or 1; default 0. |
 | `threshold_adjustment` | `0` | A shift of the zero-bias threshold, `delvto`, in volts; default 0. |
 | `tku0` | `0` | The temperature coefficient of KU0, `tku0`; default 0. |

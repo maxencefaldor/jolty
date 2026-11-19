@@ -1255,7 +1255,10 @@ impl<'m> Facts<'m> {
             out.push(format!("    {}: usize,\n", self.entry_name(*key)));
         }
         if !self.conditions.is_empty() {
-            out.push(format!("    conditions: [bool; {}],\n", self.conditions.len()));
+            out.push(format!(
+                "    conditions: [bool; {}],\n",
+                self.conditions.len()
+            ));
         }
         if self.flag_count() > 0 {
             out.push(format!("    active: [bool; {}],\n", self.flag_count()));
@@ -1652,8 +1655,8 @@ impl<'m> Facts<'m> {
                         out.push(Rust::Line(format!("active[{index}] = true;")));
                     }
                 }
-                Stmt::If(id, _, then, otherwise) => match self.shaped.get(id) {
-                    Some(index) => {
+                Stmt::If(id, _, then, otherwise) => {
+                    if let Some(index) = self.shaped.get(id) {
                         let (mut inner_then, mut inner_otherwise) = (Vec::new(), Vec::new());
                         let mut then_active = active.clone();
                         let mut otherwise_active = active.clone();
@@ -1666,12 +1669,11 @@ impl<'m> Facts<'m> {
                                 inner_otherwise,
                             ));
                         }
-                    }
-                    None => {
+                    } else {
                         self.walk_layout(then, out, active);
                         self.walk_layout(otherwise, out, active);
                     }
-                },
+                }
                 Stmt::While(_, body) => self.walk_layout(body, out, active),
                 Stmt::Assign(..) | Stmt::Contribute { .. } | Stmt::Fail(..) | Stmt::Warn(..) => {}
             }
@@ -2882,16 +2884,14 @@ impl Emitter<'_, '_> {
                 };
                 match (self.static_kind(left), self.static_kind(right)) {
                     (Kind::Float(Some(left)), Kind::Float(Some(right))) => fold_finite(left, right),
-                    (Kind::Float(Some(value)), Kind::Integer) => {
-                        integer_constant(right).map_or(Kind::Float(None), |right| {
+                    (Kind::Float(Some(value)), Kind::Integer) => integer_constant(right)
+                        .map_or(Kind::Float(None), |right| {
                             fold_finite(value, f64::from(right))
-                        })
-                    }
-                    (Kind::Integer, Kind::Float(Some(value))) => {
-                        integer_constant(left).map_or(Kind::Float(None), |left| {
+                        }),
+                    (Kind::Integer, Kind::Float(Some(value))) => integer_constant(left)
+                        .map_or(Kind::Float(None), |left| {
                             fold_finite(f64::from(left), value)
-                        })
-                    }
+                        }),
                     (left, right) => join(&left, &right),
                 }
             }
