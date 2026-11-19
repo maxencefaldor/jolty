@@ -136,6 +136,16 @@ _TRANSISTORS: Final = tuple(
 """The corners of the transistors, typical, slow and fast, the n-channel first where
 they differ, each with its mismatch after it."""
 
+
+def _corner_triplet(prefix: str) -> tuple[str, ...]:
+    """Typical, best-case, and worst-case sections for `prefix`, each with mismatch."""
+    return tuple(
+        f"{prefix}_{corner}{mismatch}"
+        for corner in ("typ", "bcs", "wcs")
+        for mismatch in ("", "_mismatch")
+    )
+
+
 KIT: Final = Kit(
     name="sg13g2",
     version=VERSION,
@@ -147,27 +157,9 @@ KIT: Final = Kit(
     corners=(
         Corners(DIRECTORY / "cornerMOSlv.lib", _TRANSISTORS),
         Corners(DIRECTORY / "cornerMOShv.lib", _TRANSISTORS),
-        Corners(
-            DIRECTORY / "cornerHBT.lib",
-            (
-                *("hbt_typ", "hbt_typ_mismatch", "hbt_bcs", "hbt_bcs_mismatch"),
-                *("hbt_wcs", "hbt_wcs_mismatch"),
-            ),
-        ),
-        Corners(
-            DIRECTORY / "cornerRES.lib",
-            (
-                *("res_typ", "res_typ_mismatch", "res_bcs", "res_bcs_mismatch"),
-                *("res_wcs", "res_wcs_mismatch"),
-            ),
-        ),
-        Corners(
-            DIRECTORY / "cornerCAP.lib",
-            (
-                *("cap_typ", "cap_typ_mismatch", "cap_bcs", "cap_bcs_mismatch"),
-                *("cap_wcs", "cap_wcs_mismatch"),
-            ),
-        ),
+        Corners(DIRECTORY / "cornerHBT.lib", _corner_triplet("hbt")),
+        Corners(DIRECTORY / "cornerRES.lib", _corner_triplet("res")),
+        Corners(DIRECTORY / "cornerCAP.lib", _corner_triplet("cap")),
         Corners(DIRECTORY / "cornerDIO.lib", ("dio_tt", "dio_ss", "dio_ff")),
         Corners(DIRECTORY / "cornerMOSCAP.lib", ("moscap_tt", "moscap_tt_mismatch")),
     ),

@@ -22,12 +22,8 @@ import csv
 import functools
 import re
 import shutil
-import subprocess
-import tempfile
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Final
 
 import numpy as np
@@ -35,19 +31,14 @@ import numpy.typing as npt
 
 from jolty import _core
 from jolty.errors import JoltyError
+from jolty.spice import _process
 
 EXECUTABLE: Final = shutil.which("Xyce")
 """The Xyce executable on the path, or None when it is not installed."""
 
-_XYCE_BOLTZMANN: Final = 1.3806226e-23
-"""Xyce's Boltzmann constant, in joules per kelvin: ``CONSTboltz`` in Xyce 7.10.0's
-``src/DeviceModelPKG/Core/N_DEV_Const.h``, line 45, SPICE3's value."""
-
-_XYCE_CHARGE: Final = 1.6021918e-19
-"""Xyce's elementary charge, in coulombs: ``CONSTQ`` in the same file, line 43."""
-
-_ZERO_CELSIUS: Final = 273.15
-"""Zero degrees Celsius in kelvins, as Xyce takes it: ``CONSTCtoK``, line 44."""
+_XYCE_THERMAL_VOLTAGE_PER_KELVIN: Final = 1.3806226e-23 / 1.6021918e-19
+"""Xyce's Boltzmann constant over elementary charge: ``CONSTboltz`` / ``CONSTQ`` in
+Xyce 7.10.0's ``src/DeviceModelPKG/Core/N_DEV_Const.h``, lines 45 and 43 (SPICE3)."""
 
 RELATIVE_TOLERANCE: Final = 1e-6
 """The relative tolerance of Xyce's Newton iterations and of its time steps' error, as
@@ -88,7 +79,7 @@ its update and of its residual, and its time steps' error is judged on the unkno
 not on the charges. These make each as tight as jolty's tightest makes its own.
 """
 
-TIMEOUT: Final = 300
+TIMEOUT: Final = _process.TIMEOUT
 """The seconds Xyce may run an analysis."""
 
 _ANALYSIS_SECONDS: Final = re.compile(
@@ -124,10 +115,7 @@ def version() -> str | None:
     """
     if EXECUTABLE is None:
         return None
-    done = subprocess.run(  # noqa: S603 - Xyce states its version
-        [EXECUTABLE, "-v"], capture_output=True, check=False, text=True
-    )
-    lines = done.stdout.strip().splitlines()
+    lines = _process.probe_version(EXECUTABLE, "-v").strip().splitlines()
     return lines[0] if lines else ""
 
 
@@ -143,8 +131,9 @@ def option_temperature(temperature: float) -> float:
         >>> round(option_temperature(300.15), 3)
         27.009
     """
-    thermal_voltage = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
-    return thermal_voltage * _XYCE_CHARGE / _XYCE_BOLTZMANN - _ZERO_CELSIUS
+    return _process.thermal_option_temperature(
+        temperature, _XYCE_THERMAL_VOLTAGE_PER_KELVIN
+    )
 
 
 type Values = npt.NDArray[np.complex128]
@@ -243,19 +232,8 @@ class XyceTimeoutError(JoltyError):
 
 
 @dataclass(frozen=True, slots=True)
-class Executed:
+class Executed(_process.Executed[str]):
     """What one run of Xyce on a deck left, and how long it took."""
-
-    printed: str
-    """Its standard output, then its standard error."""
-    code: int
-    """Its exit status."""
-    seconds: float
-    """Its time from its start to its exit, by the wall clock, writing the deck left
-    out."""
-    values: str | None
-    """The file of values the deck's ``.print`` writes, `VALUES`, as text, or None if
-    it wrote none."""
 
 
 VALUES: Final = "result.csv"
@@ -291,31 +269,16 @@ def execute(
             message = "Xyce is not installed"
             raise JoltyError(message)
         launch = (EXECUTABLE,)
-    with tempfile.TemporaryDirectory() as name:
-        directory = Path(name)
-        (directory / "circuit.cir").write_text("\n".join(deck) + "\n", encoding="utf-8")
-        started = time.perf_counter()
-        try:
-            done = subprocess.run(  # noqa: S603 - Xyce runs the deck written here
-                [*launch, "circuit.cir"],
-                capture_output=True,
-                check=False,
-                text=True,
-                timeout=timeout,
-                cwd=directory,
-            )
-        except subprocess.TimeoutExpired as expired:
-            # The output so far: bytes on POSIX, text where communicate gathered it.
-            printed = "".join(
-                part.decode(errors="replace") if isinstance(part, bytes) else part or ""
-                for part in (expired.stdout, expired.stderr)
-            )
-            message = f"Xyce ran for more than {timeout:g} s:\n{printed}"
-            raise XyceTimeoutError(message) from None
-        seconds = time.perf_counter() - started
-        values = directory / VALUES
-        written = values.read_text(encoding="utf-8") if values.is_file() else None
-    return Executed(done.stdout + done.stderr, done.returncode, seconds, written)
+    ran = _process.run_deck(
+        "Xyce",
+        launch,
+        deck,
+        VALUES,
+        _process.read_text_utf8,
+        timeout=timeout,
+        timeout_error=XyceTimeoutError,
+    )
+    return Executed(ran.printed, ran.code, ran.seconds, ran.values)
 
 
 _SCALES: Final = {"time": "time", "freq": "frequency"}

@@ -13,9 +13,6 @@ differ by their devices rather than their physical constants.
 import functools
 import re
 import shutil
-import subprocess
-import tempfile
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -26,6 +23,7 @@ import numpy.typing as npt
 
 from jolty import _core
 from jolty.errors import JoltyError
+from jolty.spice import _process
 
 EXECUTABLE: Final = shutil.which("ngspice")
 """The ngspice executable on the path, or None when it is not installed."""
@@ -62,8 +60,9 @@ def option_temperature(temperature: float) -> float:
     temperature where it is jolty's, compares the devices rather than the physical
     constants.
     """
-    thermal_voltage = temperature * _core.BOLTZMANN / _core.ELEMENTARY_CHARGE
-    return thermal_voltage / _SPICE_THERMAL_VOLTAGE_PER_KELVIN - 273.15
+    return _process.thermal_option_temperature(
+        temperature, _SPICE_THERMAL_VOLTAGE_PER_KELVIN
+    )
 
 
 def same_kelvins(temperature: float) -> float:
@@ -116,7 +115,7 @@ the transient it falls back to a single nanosecond: its end is refused anyway, a
 default 10 µs can take minutes on a circuit that defeats the others."""
 
 
-TIMEOUT: Final = 300
+TIMEOUT: Final = _process.TIMEOUT
 """The seconds ngspice may run an analysis."""
 
 
@@ -152,19 +151,8 @@ class NgspiceTimeoutError(JoltyError):
 
 
 @dataclass(frozen=True, slots=True)
-class Executed:
+class Executed(_process.Executed[bytes]):
     """What one run of ngspice on a deck left, and how long it took."""
-
-    printed: str
-    """Its standard output, then its standard error."""
-    code: int
-    """Its exit status, 0 on most errors too: what it printed tells them."""
-    seconds: float
-    """Its time from its start to its exit, by the wall clock, writing the deck left
-    out."""
-    values: bytes | None
-    """The file of values the deck writes, `VALUES`, ASCII or binary, or None if it
-    wrote none."""
 
 
 VALUES: Final = "result.raw"
@@ -182,10 +170,10 @@ def version() -> str | None:
     """
     if EXECUTABLE is None:
         return None
-    done = subprocess.run(  # noqa: S603 - ngspice states its version
-        [EXECUTABLE, "--version"], capture_output=True, check=False, text=True
-    )
-    lines = [line.strip("* ") for line in done.stdout.splitlines()]
+    lines = [
+        line.strip("* ")
+        for line in _process.probe_version(EXECUTABLE, "--version").splitlines()
+    ]
     return "; ".join(line for line in lines if line.startswith(("ngspice", "Compiled")))
 
 
@@ -215,35 +203,22 @@ def execute(
     if EXECUTABLE is None:
         message = "ngspice is not installed"
         raise JoltyError(message)
-    with tempfile.TemporaryDirectory() as name:
-        directory = Path(name)
-        if compatibility is not None:
-            settings = directory / ".spiceinit"
-            settings.write_text(f"set ngbehavior={compatibility}\n", encoding="utf-8")
-        (directory / "circuit.cir").write_text("\n".join(deck) + "\n", encoding="utf-8")
-        started = time.perf_counter()
-        try:
-            done = subprocess.run(  # noqa: S603 - ngspice runs the deck written here
-                [EXECUTABLE, "-b", "circuit.cir"],
-                capture_output=True,
-                # ngspice exits with 0 on most errors: what it printed tells them.
-                check=False,
-                text=True,
-                timeout=timeout,
-                cwd=directory,
-            )
-        except subprocess.TimeoutExpired as expired:
-            # The output so far: bytes on POSIX, text where communicate gathered it.
-            printed = "".join(
-                part.decode(errors="replace") if isinstance(part, bytes) else part or ""
-                for part in (expired.stdout, expired.stderr)
-            )
-            message = f"ngspice ran for more than {timeout:g} s:\n{printed}"
-            raise NgspiceTimeoutError(message) from None
-        seconds = time.perf_counter() - started
-        values = directory / VALUES
-        written = values.read_bytes() if values.is_file() else None
-    return Executed(done.stdout + done.stderr, done.returncode, seconds, written)
+    extra = (
+        {".spiceinit": f"set ngbehavior={compatibility}\n"}
+        if compatibility is not None
+        else {}
+    )
+    ran = _process.run_deck(
+        "ngspice",
+        (EXECUTABLE, "-b"),
+        deck,
+        VALUES,
+        Path.read_bytes,
+        timeout=timeout,
+        timeout_error=NgspiceTimeoutError,
+        extra_files=extra,
+    )
+    return Executed(ran.printed, ran.code, ran.seconds, ran.values)
 
 
 def run(
@@ -542,12 +517,16 @@ _VALUES: Final = re.compile(rb"^(Values|Binary):[ \t]*(?:\r?\n|$)", re.MULTILINE
 """The line that ends a raw file's plot's header, saying how its values are written."""
 
 
-def _parse_count(value: str, label: str, plot: str) -> int:
-    """Parses a non-negative integer header field, or raises `JoltyError`."""
+def _parse_count(fields: dict[str, str], key: str, label: str, plot: str) -> int:
+    """Parses a required non-negative integer header field, or raises `JoltyError`."""
+    if key not in fields:
+        message = f"a raw file's plot `{plot}` states no `{label}`"
+        raise JoltyError(message)
+    value = fields[key].strip()
     try:
-        count = int(value.strip())
+        count = int(value)
     except ValueError:
-        message = f"a raw file's plot `{plot}` has invalid `{label}`: `{value.strip()}`"
+        message = f"a raw file's plot `{plot}` has invalid `{label}`: `{value}`"
         raise JoltyError(message) from None
     if count < 0:
         message = f"a raw file's plot `{plot}` has negative `{label}`: {count}"
@@ -603,14 +582,8 @@ def _header(header: str) -> _ParsedHeader:
             "exclusively in `Flags:`"
         )
         raise JoltyError(message)
-    if "no. variables" not in fields:
-        message = f"a raw file's plot `{plot}` states no `No. Variables:`"
-        raise JoltyError(message)
-    expected_variables = _parse_count(fields["no. variables"], "No. Variables:", plot)
-    if "no. points" not in fields:
-        message = f"a raw file's plot `{plot}` states no `No. Points:`"
-        raise JoltyError(message)
-    points = _parse_count(fields["no. points"], "No. Points:", plot)
+    expected_variables = _parse_count(fields, "no. variables", "No. Variables:", plot)
+    points = _parse_count(fields, "no. points", "No. Points:", plot)
     parsed_variables = tuple(
         _parse_variable(line, plot, index) for index, line in enumerate(variables)
     )

@@ -1,0 +1,232 @@
+# Copyright 2026 Maxence Faldor
+"""SPICE preprocessing: ``.include``, ``.lib``, and ``.if`` conditional blocks."""
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from types import MappingProxyType
+from typing import Final
+
+from jolty.errors import SpiceError
+from jolty.spice.expressions import Function, evaluate, inlined, parse
+from jolty.spice.netlist import Statement, statements, tokens
+
+CONDITIONS: Final = frozenset({".if", ".elseif", ".else", ".endif"})
+"""The statements of a subcircuit's ``.if`` blocks."""
+
+_INCLUDES: Final = frozenset({".include", ".inc"})
+"""The statements that include a file whole."""
+
+_EXPAND_PREFIXES: Final = (".lib", ".endl", ".inc", ".subckt", ".ends")
+"""Case-folded directive prefixes handled during `.include`/`.lib` expansion."""
+
+_NO_FUNCTIONS: Final[Mapping[str, Function]] = MappingProxyType({})
+
+
+def letter(statement: Statement) -> str:
+    """The letter of an element's statement, which says what kind of element it is."""
+    return statement.text[0].casefold()
+
+
+def keyword(statement: Statement) -> str:
+    """A statement's first word, case-folded, such as ``.param``."""
+    return statement.text.split(maxsplit=1)[0].casefold()
+
+
+def expanded(
+    path: Path, section: str | None, within: tuple[tuple[Path, str | None], ...]
+) -> list[Statement]:
+    """The statements of the file at `path`, or of its section `section`, expanded.
+
+    As ngspice reads them, each ``.include`` is replaced by its file's statements and
+    each ``.lib file section`` by that section's, both outside and inside subcircuits,
+    a file's path read from the directory of the file that names it; a file read whole
+    holds its statements outside its sections, which ``.lib name`` and ``.endl``
+    enclose. `within` lists the files and sections being read already, which include
+    this one.
+
+    Raises:
+        SpiceError: When the file is missing, has no such section, or files include one
+            another in a cycle.
+    """
+    reading = (path.resolve(), None if section is None else section.casefold())
+    if reading in within:
+        message = f"{path} includes itself, through {len(within)} files"
+        raise SpiceError(message)
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        message = f"cannot read {path}: {error.strerror}"
+        raise SpiceError(message) from None
+    found, seen = expanded_text(
+        text, path.parent, path.name, section, (*within, reading)
+    )
+    if section is not None and not seen:
+        message = f"{path} has no section `{section}`"
+        raise SpiceError(message)
+    return found
+
+
+def _update_subcircuit_depth(
+    expanded_statements: Sequence[Statement], subcircuit_depth: int
+) -> int:
+    """Updates `.subckt`/`.ends` nesting depth across `expanded_statements`."""
+    for inner in expanded_statements:
+        if not inner.text.startswith("."):
+            continue
+        inner_keyword = keyword(inner)
+        if inner_keyword == ".subckt":
+            subcircuit_depth += 1
+        elif inner_keyword == ".ends":
+            subcircuit_depth = max(subcircuit_depth - 1, 0)
+    return subcircuit_depth
+
+
+def expanded_text(
+    text: str,
+    directory: Path,
+    label: str,
+    section: str | None,
+    within: tuple[tuple[Path, str | None], ...],
+) -> tuple[list[Statement], bool]:
+    """Expands ``.include`` and ``.lib`` directives in `text` relative to `directory`.
+
+    Returns the expanded statements of `section` (or outside sections when `section` is
+    None) and whether `section` was seen. Inside a ``.subckt ... .ends`` body, a
+    two-word ``.lib`` is never treated as opening a library section; it reaches
+    `_included` and fails with the malformed directive error.
+    """
+    target = None if section is None else section.casefold()
+    found: list[Statement] = []
+    opened: str | None = None
+    subcircuit_depth = 0
+    seen = False
+    for statement in statements(text, label):
+        line = statement.text
+        if not line.startswith(".") or not line[:7].casefold().startswith(
+            _EXPAND_PREFIXES
+        ):
+            if opened == target:
+                found.append(statement)
+            continue
+        words = [word.strip("'\"") for word in tokens(line)]
+        directive = words[0].casefold() if words else ""
+        if (
+            subcircuit_depth == 0
+            and directive == ".lib"
+            and len(words) == 2  # noqa: PLR2004 - `.lib` and a name
+        ):
+            if opened is not None:
+                message = f"a section opens within section `{opened}`"
+                raise statement.fail(message)
+            opened = words[1].casefold()
+            seen |= opened == target
+        elif subcircuit_depth == 0 and directive == ".endl":
+            opened = None
+        elif opened == target:
+            included = _included(statement, words, directory, within)
+            subcircuit_depth = _update_subcircuit_depth(included, subcircuit_depth)
+            found.extend(included)
+    return found, seen
+
+
+def _included(
+    statement: Statement,
+    words: Sequence[str],
+    directory: Path,
+    within: tuple[tuple[Path, str | None], ...],
+) -> list[Statement]:
+    """`statement` in `directory`, of `words`, or what it includes, expanded.
+
+    Raises:
+        SpiceError: When it includes a file amiss.
+    """
+    if not words:
+        return [statement]
+    directive = words[0].casefold()
+    if directive == ".lib" and len(words) == 3:  # noqa: PLR2004 - a file and a section
+        return expanded(directory / words[1], words[2], within)
+    if directive in _INCLUDES and len(words) == 2:  # noqa: PLR2004 - and a file
+        return expanded(directory / words[1], None, within)
+    if directive in _INCLUDES or directive == ".lib":
+        message = "a file is included by its path, a section by the file's and name"
+        raise statement.fail(message)
+    return [statement]
+
+
+def unconditional(body: Sequence[Statement]) -> list[Statement]:
+    """The statements of `body` outside its ``.if`` blocks."""
+    depth = 0
+    found: list[Statement] = []
+    for statement in body:
+        directive = keyword(statement)
+        if directive == ".if":
+            depth += 1
+        elif directive == ".endif":
+            depth = max(0, depth - 1)
+        elif depth == 0 and directive not in CONDITIONS:
+            found.append(statement)
+    return found
+
+
+@dataclass(slots=True)
+class _Block:
+    """An ``.if`` block being read: whether its branch is chosen, whether one was."""
+
+    chosen: bool
+    taken: bool
+
+
+def chosen(
+    body: Sequence[Statement],
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
+) -> list[Statement]:
+    """The statements of `body` its ``.if`` blocks choose, with `scope`'s values.
+
+    Raises:
+        SpiceError: When a branch or an end opens no block, or a block never ends.
+    """
+    blocks: list[_Block] = []
+    found: list[Statement] = []
+    for statement in body:
+        directive = keyword(statement)
+        within = all(block.chosen for block in blocks)
+        if directive in CONDITIONS - {".if"} and not blocks:
+            message = f"`{directive}` within no `.if` block"
+            raise statement.fail(message)
+        match directive:
+            case ".if":
+                held = within and _condition(statement, scope, functions)
+                blocks.append(_Block(chosen=held, taken=held))
+            case ".elseif" | ".else":
+                block = blocks[-1]
+                outer = all(each.chosen for each in blocks[:-1])
+                held = (
+                    outer
+                    and not block.taken
+                    and (
+                        directive == ".else"
+                        or _condition(statement, scope, functions)
+                    )
+                )
+                block.chosen, block.taken = held, block.taken or held
+            case ".endif":
+                blocks.pop()
+            case _ if within:
+                found.append(statement)
+    if blocks:
+        message = "an `.if` block never ends"
+        raise body[-1].fail(message)
+    return found
+
+
+def _condition(
+    statement: Statement,
+    scope: Mapping[str, float],
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
+) -> bool:
+    """Whether the condition of an ``.if`` or ``.elseif`` statement holds in `scope`."""
+    parts = statement.text.split(maxsplit=1)
+    condition = parts[1] if len(parts) > 1 else ""
+    return evaluate(inlined(parse(condition), functions), scope) != 0

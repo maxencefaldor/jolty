@@ -15,7 +15,7 @@ import functools
 import json
 import math
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Final
@@ -42,6 +42,49 @@ from jolty.units import celsius
 type Table = Mapping[str, tuple[str, float]]
 """Each SPICE parameter's jolty name, and the factor to SI base units."""
 
+_EMPTY_STRINGS: Final[Mapping[str, str]] = MappingProxyType({})
+_EMPTY_SCALES: Final[Mapping[str, float]] = MappingProxyType({})
+_EMPTY_TABLE: Final[Table] = MappingProxyType({})
+
+
+def _table(  # noqa: PLR0913 - parameter table builder options
+    names: Mapping[str, str],
+    *,
+    drifts: Sequence[str] = (),
+    exponents: Sequence[str] = (),
+    temperature_pairs: Mapping[str, str] = _EMPTY_STRINGS,
+    scales: Mapping[str, float] = _EMPTY_SCALES,
+    extra: Table = _EMPTY_TABLE,
+) -> dict[str, tuple[str, float]]:
+    """Builds a SPICE-to-jolty parameter `Table`, keeping canonical names first.
+
+    Keys in `names` list the canonical SPICE name followed by space-separated aliases.
+    `drifts` and `exponents` expand ``t{base}1``/``t{base}2`` and ``x{base}`` (plus
+    optional space-separated aliases) from `names`; `temperature_pairs` expands custom
+    prefixes; `scales` supplies non-unit SI factors; and `extra` appends entries last.
+    """
+    built: dict[str, tuple[str, float]] = {
+        spice: (jolty, scales.get(spice, 1.0))
+        for keys, jolty in names.items()
+        for spice in keys.split()
+    }
+    for entry in drifts:
+        base, *aliases = entry.split()
+        parameter = built[base][0]
+        built[f"t{base}1"] = (f"{parameter}_temperature_coefficient", 1.0)
+        built[f"t{base}2"] = (f"{parameter}_quadratic_temperature_coefficient", 1.0)
+        built |= dict.fromkeys(aliases, (f"{parameter}_temperature_coefficient", 1.0))
+    for entry in exponents:
+        base, *aliases = entry.split()
+        target = (f"{built[base][0]}_temperature_exponent", 1.0)
+        built |= dict.fromkeys((f"x{base}", *aliases), target)
+    for prefix, parameter in temperature_pairs.items():
+        built[f"{prefix}1"] = (f"{parameter}_temperature_coefficient", 1.0)
+        built[f"{prefix}2"] = (f"{parameter}_quadratic_temperature_coefficient", 1.0)
+    built |= extra
+    return built
+
+
 FLICKER: Final[Table] = {
     "kf": ("flicker_coefficient", 1.0),
     "af": ("flicker_exponent", 1.0),
@@ -49,87 +92,72 @@ FLICKER: Final[Table] = {
 """The flicker noise of a diode's or a transistor's current: SPICE's ``KF`` and
 ``AF``."""
 
-DIODE: Final[Table] = {
-    "is": ("saturation_current", 1.0),
-    "js": ("saturation_current", 1.0),
-    "n": ("emission_coefficient", 1.0),
-    "rs": ("series_resistance", 1.0),
-    "cjo": ("junction_capacitance", 1.0),
-    "cj0": ("junction_capacitance", 1.0),
-    "cj": ("junction_capacitance", 1.0),
-    "vj": ("junction_potential", 1.0),
-    "pb": ("junction_potential", 1.0),
-    "m": ("grading_coefficient", 1.0),
-    "mj": ("grading_coefficient", 1.0),
-    "fc": ("depletion_coefficient", 1.0),
-    "tt": ("transit_time", 1.0),
-    "ikf": ("forward_knee_current", 1.0),
-    "ik": ("forward_knee_current", 1.0),
-    "ikr": ("reverse_knee_current", 1.0),
-    "isr": ("recombination_saturation_current", 1.0),
-    "nr": ("recombination_emission_coefficient", 1.0),
-    "jsw": ("sidewall_saturation_current", 1.0),
-    "isw": ("sidewall_saturation_current", 1.0),
-    "ns": ("sidewall_emission_coefficient", 1.0),
-    "rsw": ("sidewall_series_resistance", 1.0),
-    "cjp": ("sidewall_junction_capacitance", 1.0),
-    "cjsw": ("sidewall_junction_capacitance", 1.0),
-    "php": ("sidewall_junction_potential", 1.0),
-    "vjsw": ("sidewall_junction_potential", 1.0),
-    "mjsw": ("sidewall_grading_coefficient", 1.0),
-    "fcs": ("sidewall_depletion_coefficient", 1.0),
-    "ikp": ("sidewall_forward_knee_current", 1.0),
-    "jtun": ("tunneling_saturation_current", 1.0),
-    "jtunsw": ("sidewall_tunneling_saturation_current", 1.0),
-    "ntun": ("tunneling_emission_coefficient", 1.0),
-    "xtitun": ("tunneling_saturation_current_temperature_exponent", 1.0),
-    "keg": ("tunneling_energy_gap_factor", 1.0),
-    "bv": ("breakdown_voltage", 1.0),
-    "vb": ("breakdown_voltage", 1.0),
-    "vrb": ("breakdown_voltage", 1.0),
-    "var": ("breakdown_voltage", 1.0),
-    "ibv": ("breakdown_current", 1.0),
-    "ib": ("breakdown_current", 1.0),
-    "nbv": ("breakdown_emission_coefficient", 1.0),
-    "nz": ("breakdown_emission_coefficient", 1.0),
-    "tcv": ("breakdown_temperature_coefficient", 1.0),
-    "tbv1": ("breakdown_temperature_coefficient", 1.0),
-    "tlev": ("temperature_model", 1.0),
-    "tlevc": ("capacitance_temperature_model", 1.0),
-    "eg": ("energy_gap", 1.0),
-    "gap1": ("energy_gap_alpha", 1.0),
-    "gap2": ("energy_gap_beta", 1.0),
-    "xti": ("saturation_current_temperature_exponent", 1.0),
-    "cta": ("junction_capacitance_temperature_coefficient", 1.0),
-    "ctc": ("junction_capacitance_temperature_coefficient", 1.0),
-    "ctp": ("sidewall_junction_capacitance_temperature_coefficient", 1.0),
-    "tpb": ("junction_potential_temperature_coefficient", 1.0),
-    "tvj": ("junction_potential_temperature_coefficient", 1.0),
-    "tphp": ("sidewall_junction_potential_temperature_coefficient", 1.0),
-    "trs": ("series_resistance_temperature_coefficient", 1.0),
-    "trs1": ("series_resistance_temperature_coefficient", 1.0),
-    "trs2": ("series_resistance_quadratic_temperature_coefficient", 1.0),
-    "ttt1": ("transit_time_temperature_coefficient", 1.0),
-    "ttt2": ("transit_time_quadratic_temperature_coefficient", 1.0),
-    "tm1": ("grading_coefficient_temperature_coefficient", 1.0),
-    "tm2": ("grading_coefficient_quadratic_temperature_coefficient", 1.0),
-    **FLICKER,
+PASSIVE_DRIFT: Final = {
+    "tc1": "temperature_coefficient",
+    "tc2": "quadratic_temperature_coefficient",
+    "tce": "exponential_temperature_coefficient",
 }
+"""The temperature coefficients of a resistor, capacitor or inductor, by SPICE name."""
+
+PASSIVE_CURVATURE: Final = {
+    "vc1": "voltage_coefficient",
+    "vc2": "quadratic_voltage_coefficient",
+}
+"""The voltage coefficients of a resistor or capacitor, by HSPICE's name."""
+
+DIODE: Final[Table] = _table(
+    {
+        "is js": "saturation_current",
+        "n": "emission_coefficient",
+        "rs": "series_resistance",
+        "cjo cj0 cj": "junction_capacitance",
+        "vj pb": "junction_potential",
+        "m mj": "grading_coefficient",
+        "fc": "depletion_coefficient",
+        "tt": "transit_time",
+        "ikf ik": "forward_knee_current",
+        "ikr": "reverse_knee_current",
+        "isr": "recombination_saturation_current",
+        "nr": "recombination_emission_coefficient",
+        "jsw isw": "sidewall_saturation_current",
+        "ns": "sidewall_emission_coefficient",
+        "rsw": "sidewall_series_resistance",
+        "cjp cjsw": "sidewall_junction_capacitance",
+        "php vjsw": "sidewall_junction_potential",
+        "mjsw": "sidewall_grading_coefficient",
+        "fcs": "sidewall_depletion_coefficient",
+        "ikp": "sidewall_forward_knee_current",
+        "jtun": "tunneling_saturation_current",
+        "jtunsw": "sidewall_tunneling_saturation_current",
+        "ntun": "tunneling_emission_coefficient",
+        "xtitun": "tunneling_saturation_current_temperature_exponent",
+        "keg": "tunneling_energy_gap_factor",
+        "bv vb vrb var": "breakdown_voltage",
+        "ibv ib": "breakdown_current",
+        "nbv nz": "breakdown_emission_coefficient",
+        "tcv tbv1": "breakdown_temperature_coefficient",
+        "tlev": "temperature_model",
+        "tlevc": "capacitance_temperature_model",
+        "eg": "energy_gap",
+        "gap1": "energy_gap_alpha",
+        "gap2": "energy_gap_beta",
+        "xti": "saturation_current_temperature_exponent",
+        "cta ctc": "junction_capacitance_temperature_coefficient",
+        "ctp": "sidewall_junction_capacitance_temperature_coefficient",
+        "tpb tvj": "junction_potential_temperature_coefficient",
+        "tphp": "sidewall_junction_potential_temperature_coefficient",
+        "trs": "series_resistance_temperature_coefficient",
+    },
+    drifts=("rs", "tt", "m"),
+    extra=FLICKER,
+)
 """ngspice 47's diode, by every name it reads (``dio.c``, lines 48 to 147), but its
 geometry and its safe operating area, which `DIODE_GEOMETRY` and `DIODE_IGNORED`
 name."""
 
 DIODE_BY_AREA: Final = (
-    "is",
-    "js",
-    "cjo",
-    "cj0",
-    "cj",
-    "ikf",
-    "ik",
-    "ikr",
-    "isr",
-    "jtun",
+    *("is", "js", "cjo", "cj0", "cj"),
+    *("ikf", "ik", "ikr", "isr", "jtun"),
 )
 """A diode card's parameters of its bottom junction that its element's area and copies
 multiply (``diosetup.c``, lines 362 to 365; ``diotemp.c``, lines 120, 136 and 147); its
@@ -151,16 +179,8 @@ DIODE_SELECTORS: Final = frozenset({"tlev", "tlevc"})
 
 DIODE_GEOMETRY: Final = {
     "area": 1.0,
-    "pj": 0.0,
-    "lm": 0.0,
-    "lp": 0.0,
-    "wm": 0.0,
-    "wp": 0.0,
-    "xom": 1e4,
-    "xoi": 1e4,
-    "xm": 0.0,
-    "xp": 0.0,
-    "xw": 0.0,
+    **dict.fromkeys(("pj", "lm", "lp", "wm", "wp", "xm", "xp", "xw"), 0.0),
+    **dict.fromkeys(("xom", "xoi"), 1e4),
 }
 """A diode card's geometry and its defaults (``diosetup.c``, lines 183 to 188 and 281 to
 307): the area and perimeter factors its elements take unless they give their own, and
@@ -184,252 +204,187 @@ SMALLEST_CURRENT: Final = 1e-28
 takes, and below which it turns a knee current off (``diosetup.c``, lines 110 to 130 and
 230)."""
 
-JFET: Final[Table] = {
-    "vto": ("threshold_voltage", 1.0),
-    "beta": ("transconductance_parameter", 1.0),
-    "lambda": ("channel_length_modulation", 1.0),
-    "rd": ("drain_resistance", 1.0),
-    "rs": ("source_resistance", 1.0),
-    "cgs": ("gate_source_capacitance", 1.0),
-    "cgd": ("gate_drain_capacitance", 1.0),
-    "pb": ("junction_potential", 1.0),
-    "is": ("saturation_current", 1.0),
-    "fc": ("depletion_coefficient", 1.0),
-    "b": ("doping_tail", 1.0),
-    "vtotc": ("threshold_voltage_temperature_coefficient", 1.0),
-    "tcv": ("threshold_voltage_temperature_coefficient", -1.0),
-    "bex": ("transconductance_parameter_temperature_exponent", 1.0),
-    "eg": ("energy_gap", 1.0),
-    "xti": ("saturation_current_temperature_exponent", 1.0),
-    **FLICKER,
-}
+JFET: Final[Table] = _table(
+    {
+        "vto": "threshold_voltage",
+        "beta": "transconductance_parameter",
+        "lambda": "channel_length_modulation",
+        "rd": "drain_resistance",
+        "rs": "source_resistance",
+        "cgs": "gate_source_capacitance",
+        "cgd": "gate_drain_capacitance",
+        "pb": "junction_potential",
+        "is": "saturation_current",
+        "fc": "depletion_coefficient",
+        "b": "doping_tail",
+        "vtotc tcv": "threshold_voltage_temperature_coefficient",
+        "bex": "transconductance_parameter_temperature_exponent",
+        "eg": "energy_gap",
+        "xti": "saturation_current_temperature_exponent",
+    },
+    scales={"tcv": -1.0},
+    extra=FLICKER,
+)
 
-BIPOLAR: Final[Table] = {
-    "is": ("saturation_current", 1.0),
-    "bf": ("forward_beta", 1.0),
-    "br": ("reverse_beta", 1.0),
-    "nf": ("forward_emission_coefficient", 1.0),
-    "nr": ("reverse_emission_coefficient", 1.0),
-    "vaf": ("forward_early_voltage", 1.0),
-    "va": ("forward_early_voltage", 1.0),
-    "var": ("reverse_early_voltage", 1.0),
-    "vb": ("reverse_early_voltage", 1.0),
-    "ikf": ("forward_knee_current", 1.0),
-    "ik": ("forward_knee_current", 1.0),
-    "ikr": ("reverse_knee_current", 1.0),
-    "ise": ("base_emitter_leakage_current", 1.0),
-    "ne": ("base_emitter_leakage_emission_coefficient", 1.0),
-    "isc": ("base_collector_leakage_current", 1.0),
-    "nc": ("base_collector_leakage_emission_coefficient", 1.0),
-    "rb": ("base_resistance", 1.0),
-    "rbm": ("min_base_resistance", 1.0),
-    "irb": ("base_resistance_current", 1.0),
-    "re": ("emitter_resistance", 1.0),
-    "rc": ("collector_resistance", 1.0),
-    "cje": ("base_emitter_capacitance", 1.0),
-    "vje": ("base_emitter_potential", 1.0),
-    "pe": ("base_emitter_potential", 1.0),
-    "mje": ("base_emitter_grading", 1.0),
-    "me": ("base_emitter_grading", 1.0),
-    "tf": ("forward_transit_time", 1.0),
-    "xtf": ("transit_time_bias_coefficient", 1.0),
-    "vtf": ("transit_time_voltage", 1.0),
-    "itf": ("transit_time_current", 1.0),
-    "cjc": ("base_collector_capacitance", 1.0),
-    "vjc": ("base_collector_potential", 1.0),
-    "pc": ("base_collector_potential", 1.0),
-    "mjc": ("base_collector_grading", 1.0),
-    "mc": ("base_collector_grading", 1.0),
-    "xcjc": ("internal_base_fraction", 1.0),
-    "tr": ("reverse_transit_time", 1.0),
-    "fc": ("depletion_coefficient", 1.0),
-    "ptf": ("excess_phase", 1.0),
-    "iss": ("substrate_saturation_current", 1.0),
-    "ns": ("substrate_emission_coefficient", 1.0),
-    "cjs": ("substrate_capacitance", 1.0),
-    "csub": ("substrate_capacitance", 1.0),
-    "ccs": ("substrate_capacitance", 1.0),
-    "vjs": ("substrate_potential", 1.0),
-    "ps": ("substrate_potential", 1.0),
-    "mjs": ("substrate_grading", 1.0),
-    "ms": ("substrate_grading", 1.0),
-    "eg": ("energy_gap", 1.0),
-    "xti": ("saturation_current_temperature_exponent", 1.0),
-    "xtb": ("beta_temperature_exponent", 1.0),
-    "nkf": ("high_injection_exponent", 1.0),
-    "nk": ("high_injection_exponent", 1.0),
-    "tbf1": ("forward_beta_temperature_coefficient", 1.0),
-    "tbf2": ("forward_beta_quadratic_temperature_coefficient", 1.0),
-    "tbr1": ("reverse_beta_temperature_coefficient", 1.0),
-    "tbr2": ("reverse_beta_quadratic_temperature_coefficient", 1.0),
-    "tikf1": ("forward_knee_current_temperature_coefficient", 1.0),
-    "tikf2": ("forward_knee_current_quadratic_temperature_coefficient", 1.0),
-    "tikr1": ("reverse_knee_current_temperature_coefficient", 1.0),
-    "tikr2": ("reverse_knee_current_quadratic_temperature_coefficient", 1.0),
-    "tvaf1": ("forward_early_voltage_temperature_coefficient", 1.0),
-    "tvaf2": ("forward_early_voltage_quadratic_temperature_coefficient", 1.0),
-    "tvar1": ("reverse_early_voltage_temperature_coefficient", 1.0),
-    "tvar2": ("reverse_early_voltage_quadratic_temperature_coefficient", 1.0),
-    "trb1": ("base_resistance_temperature_coefficient", 1.0),
-    "trb2": ("base_resistance_quadratic_temperature_coefficient", 1.0),
-    "trm1": ("min_base_resistance_temperature_coefficient", 1.0),
-    "trm2": ("min_base_resistance_quadratic_temperature_coefficient", 1.0),
-    "tirb1": ("base_resistance_current_temperature_coefficient", 1.0),
-    "tirb2": ("base_resistance_current_quadratic_temperature_coefficient", 1.0),
-    "trc1": ("collector_resistance_temperature_coefficient", 1.0),
-    "trc2": ("collector_resistance_quadratic_temperature_coefficient", 1.0),
-    "tre1": ("emitter_resistance_temperature_coefficient", 1.0),
-    "tre2": ("emitter_resistance_quadratic_temperature_coefficient", 1.0),
-    "tnf1": ("forward_emission_coefficient_temperature_coefficient", 1.0),
-    "tnf2": ("forward_emission_coefficient_quadratic_temperature_coefficient", 1.0),
-    "tnr1": ("reverse_emission_coefficient_temperature_coefficient", 1.0),
-    "tnr2": ("reverse_emission_coefficient_quadratic_temperature_coefficient", 1.0),
-    "tne1": ("base_emitter_leakage_emission_coefficient_temperature_coefficient", 1.0),
-    "tne2": (
-        "base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient",
-        1.0,
+BIPOLAR: Final[Table] = _table(
+    {
+        "is": "saturation_current",
+        "bf": "forward_beta",
+        "br": "reverse_beta",
+        "nf": "forward_emission_coefficient",
+        "nr": "reverse_emission_coefficient",
+        "vaf va": "forward_early_voltage",
+        "var vb": "reverse_early_voltage",
+        "ikf ik": "forward_knee_current",
+        "ikr": "reverse_knee_current",
+        "ise": "base_emitter_leakage_current",
+        "ne": "base_emitter_leakage_emission_coefficient",
+        "isc": "base_collector_leakage_current",
+        "nc": "base_collector_leakage_emission_coefficient",
+        "rb": "base_resistance",
+        "rbm": "min_base_resistance",
+        "irb": "base_resistance_current",
+        "re": "emitter_resistance",
+        "rc": "collector_resistance",
+        "cje": "base_emitter_capacitance",
+        "vje pe": "base_emitter_potential",
+        "mje me": "base_emitter_grading",
+        "tf": "forward_transit_time",
+        "xtf": "transit_time_bias_coefficient",
+        "vtf": "transit_time_voltage",
+        "itf": "transit_time_current",
+        "cjc": "base_collector_capacitance",
+        "vjc pc": "base_collector_potential",
+        "mjc mc": "base_collector_grading",
+        "xcjc": "internal_base_fraction",
+        "tr": "reverse_transit_time",
+        "fc": "depletion_coefficient",
+        "ptf": "excess_phase",
+        "iss": "substrate_saturation_current",
+        "ns": "substrate_emission_coefficient",
+        "cjs csub ccs": "substrate_capacitance",
+        "vjs ps": "substrate_potential",
+        "mjs ms": "substrate_grading",
+        "eg": "energy_gap",
+        "xti": "saturation_current_temperature_exponent",
+        "xtb": "beta_temperature_exponent",
+        "nkf nk": "high_injection_exponent",
+        "cte": "base_emitter_capacitance_temperature_coefficient",
+        "ctc": "base_collector_capacitance_temperature_coefficient",
+        "cts": "substrate_capacitance_temperature_coefficient",
+        "tvje": "base_emitter_potential_temperature_coefficient",
+        "tvjc": "base_collector_potential_temperature_coefficient",
+        "tvjs": "substrate_potential_temperature_coefficient",
+    },
+    drifts=(
+        *("bf", "br", "ikf", "ikr", "vaf", "var", "rb trb", "irb", "rc trc", "re tre"),
+        *("nf", "nr", "ne", "nc", "ns", "itf", "tf", "tr", "mje", "mjc", "mjs"),
     ),
-    "tnc1": (
-        "base_collector_leakage_emission_coefficient_temperature_coefficient",
-        1.0,
-    ),
-    "tnc2": (
-        "base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient",
-        1.0,
-    ),
-    "tns1": ("substrate_emission_coefficient_temperature_coefficient", 1.0),
-    "tns2": ("substrate_emission_coefficient_quadratic_temperature_coefficient", 1.0),
-    "titf1": ("transit_time_current_temperature_coefficient", 1.0),
-    "titf2": ("transit_time_current_quadratic_temperature_coefficient", 1.0),
-    "ttf1": ("forward_transit_time_temperature_coefficient", 1.0),
-    "ttf2": ("forward_transit_time_quadratic_temperature_coefficient", 1.0),
-    "ttr1": ("reverse_transit_time_temperature_coefficient", 1.0),
-    "ttr2": ("reverse_transit_time_quadratic_temperature_coefficient", 1.0),
-    "tmje1": ("base_emitter_grading_temperature_coefficient", 1.0),
-    "tmje2": ("base_emitter_grading_quadratic_temperature_coefficient", 1.0),
-    "tmjc1": ("base_collector_grading_temperature_coefficient", 1.0),
-    "tmjc2": ("base_collector_grading_quadratic_temperature_coefficient", 1.0),
-    "tmjs1": ("substrate_grading_temperature_coefficient", 1.0),
-    "tmjs2": ("substrate_grading_quadratic_temperature_coefficient", 1.0),
-    "cte": ("base_emitter_capacitance_temperature_coefficient", 1.0),
-    "ctc": ("base_collector_capacitance_temperature_coefficient", 1.0),
-    "cts": ("substrate_capacitance_temperature_coefficient", 1.0),
-    "tvje": ("base_emitter_potential_temperature_coefficient", 1.0),
-    "tvjc": ("base_collector_potential_temperature_coefficient", 1.0),
-    "tvjs": ("substrate_potential_temperature_coefficient", 1.0),
-    "trb": ("base_resistance_temperature_coefficient", 1.0),
-    "trc": ("collector_resistance_temperature_coefficient", 1.0),
-    "tre": ("emitter_resistance_temperature_coefficient", 1.0),
-    **FLICKER,
-}
+    temperature_pairs={"trm": "min_base_resistance"},
+    extra=FLICKER,
+)
 
-MOSFET: Final[Table] = {
-    "vto": ("threshold_voltage", 1.0),
-    "kp": ("transconductance_parameter", 1.0),
-    "gamma": ("body_effect", 1.0),
-    "phi": ("surface_potential", 1.0),
-    "lambda": ("channel_length_modulation", 1.0),
-    "ld": ("lateral_diffusion", 1.0),
-    "tox": ("oxide_thickness", 1.0),
-    "uo": ("surface_mobility", 1e-4),
-    "nsub": ("substrate_doping", 1e6),
-    "nss": ("surface_state_density", 1e4),
-    "rd": ("drain_resistance", 1.0),
-    "rs": ("source_resistance", 1.0),
-    "rsh": ("sheet_resistance", 1.0),
-    "is": ("saturation_current", 1.0),
-    "js": ("saturation_current_density", 1.0),
-    "pb": ("junction_potential", 1.0),
-    "cbd": ("bulk_drain_capacitance", 1.0),
-    "cbs": ("bulk_source_capacitance", 1.0),
-    "cj": ("bottom_capacitance", 1.0),
-    "cjsw": ("sidewall_capacitance", 1.0),
-    "mj": ("bottom_grading", 1.0),
-    "mjsw": ("sidewall_grading", 1.0),
-    "fc": ("depletion_coefficient", 1.0),
-    "cgso": ("gate_source_overlap", 1.0),
-    "cgdo": ("gate_drain_overlap", 1.0),
-    "cgbo": ("gate_bulk_overlap", 1.0),
-    "vmax": ("max_drift_velocity", 1.0),
-    "xj": ("junction_depth", 1.0),
-    "nfs": ("fast_surface_state_density", 1e4),
-    "eta": ("static_feedback", 1.0),
-    "delta": ("narrow_width_factor", 1.0),
-    "theta": ("mobility_modulation", 1.0),
-    "kappa": ("saturation_field_factor", 1.0),
-    "wd": ("width_narrowing", 1.0),
-    "xl": ("length_adjustment", 1.0),
-    "xw": ("width_adjustment", 1.0),
-    "delvto": ("threshold_adjustment", 1.0),
-    "delvt0": ("threshold_adjustment", 1.0),
-    **FLICKER,
-}
+MOSFET: Final[Table] = _table(
+    {
+        "vto": "threshold_voltage",
+        "kp": "transconductance_parameter",
+        "gamma": "body_effect",
+        "phi": "surface_potential",
+        "lambda": "channel_length_modulation",
+        "ld": "lateral_diffusion",
+        "tox": "oxide_thickness",
+        "uo": "surface_mobility",
+        "nsub": "substrate_doping",
+        "nss": "surface_state_density",
+        "rd": "drain_resistance",
+        "rs": "source_resistance",
+        "rsh": "sheet_resistance",
+        "is": "saturation_current",
+        "js": "saturation_current_density",
+        "pb": "junction_potential",
+        "cbd": "bulk_drain_capacitance",
+        "cbs": "bulk_source_capacitance",
+        "cj": "bottom_capacitance",
+        "cjsw": "sidewall_capacitance",
+        "mj": "bottom_grading",
+        "mjsw": "sidewall_grading",
+        "fc": "depletion_coefficient",
+        "cgso": "gate_source_overlap",
+        "cgdo": "gate_drain_overlap",
+        "cgbo": "gate_bulk_overlap",
+        "vmax": "max_drift_velocity",
+        "xj": "junction_depth",
+        "nfs": "fast_surface_state_density",
+        "eta": "static_feedback",
+        "delta": "narrow_width_factor",
+        "theta": "mobility_modulation",
+        "kappa": "saturation_field_factor",
+        "wd": "width_narrowing",
+        "xl": "length_adjustment",
+        "xw": "width_adjustment",
+        "delvto delvt0": "threshold_adjustment",
+    },
+    scales={"uo": 1e-4, "nsub": 1e6, "nss": 1e4, "nfs": 1e4},
+    extra=FLICKER,
+)
 
-MOSFET_INSTANCE: Final[Table] = {
-    "w": ("width", 1.0),
-    "l": ("length", 1.0),
-    "m": ("multiplier", 1.0),
-    "nrd": ("drain_squares", 1.0),
-    "nrs": ("source_squares", 1.0),
-    "ad": ("drain_area", 1.0),
-    "as": ("source_area", 1.0),
-    "pd": ("drain_perimeter", 1.0),
-    "ps": ("source_perimeter", 1.0),
-}
+MOSFET_INSTANCE: Final[Table] = _table(
+    {
+        "w": "width",
+        "l": "length",
+        "m": "multiplier",
+        "nrd": "drain_squares",
+        "nrs": "source_squares",
+        "ad": "drain_area",
+        "as": "source_area",
+        "pd": "drain_perimeter",
+        "ps": "source_perimeter",
+    }
+)
 
-VDMOS: Final[Table] = {
-    "vto": ("threshold_voltage", 1.0),
-    "vth0": ("threshold_voltage", 1.0),
-    "kp": ("transconductance_parameter", 1.0),
-    "lambda": ("channel_length_modulation", 1.0),
-    "theta": ("mobility_modulation", 1.0),
-    "mtriode": ("triode_conductance_multiplier", 1.0),
-    "ksubthres": ("subthreshold_slope", 1.0),
-    "subshift": ("subthreshold_shift", 1.0),
-    "rd": ("drain_resistance", 1.0),
-    "rs": ("source_resistance", 1.0),
-    "rg": ("gate_resistance", 1.0),
-    "rq": ("quasi_saturation_resistance", 1.0),
-    "vq": ("quasi_saturation_voltage", 1.0),
-    "rds": ("drain_source_resistance", 1.0),
-    "cgs": ("gate_source_capacitance", 1.0),
-    "cgdmax": ("max_gate_drain_capacitance", 1.0),
-    "cgdmin": ("min_gate_drain_capacitance", 1.0),
-    "a": ("gate_drain_capacitance_coefficient", 1.0),
-    "is": ("saturation_current", 1.0),
-    "n": ("emission_coefficient", 1.0),
-    "rb": ("body_resistance", 1.0),
-    "cjo": ("junction_capacitance", 1.0),
-    "vj": ("junction_potential", 1.0),
-    "m": ("grading_coefficient", 1.0),
-    "fc": ("depletion_coefficient", 1.0),
-    "tt": ("transit_time", 1.0),
-    "bv": ("breakdown_voltage", 1.0),
-    "ibv": ("breakdown_current", 1.0),
-    "nbv": ("breakdown_emission_coefficient", 1.0),
-    "eg": ("energy_gap", 1.0),
-    "xti": ("saturation_current_temperature_exponent", 1.0),
-    "tcvth": ("threshold_voltage_temperature_coefficient", 1.0),
-    "vtotc": ("threshold_voltage_temperature_coefficient", 1.0),
-    "mu": ("transconductance_parameter_temperature_exponent", 1.0),
-    "bex": ("transconductance_parameter_temperature_exponent", 1.0),
-    "tksubthres1": ("subthreshold_slope_temperature_coefficient", 1.0),
-    "tksubthres2": ("subthreshold_slope_quadratic_temperature_coefficient", 1.0),
-    "texp0": ("drain_resistance_temperature_exponent", 1.0),
-    "trd1": ("drain_resistance_temperature_coefficient", 1.0),
-    "trd2": ("drain_resistance_quadratic_temperature_coefficient", 1.0),
-    "texp1": ("quasi_saturation_temperature_exponent", 1.0),
-    "trs1": ("source_resistance_temperature_coefficient", 1.0),
-    "trs2": ("source_resistance_quadratic_temperature_coefficient", 1.0),
-    "trg1": ("gate_resistance_temperature_coefficient", 1.0),
-    "trg2": ("gate_resistance_quadratic_temperature_coefficient", 1.0),
-    "trb1": ("body_resistance_temperature_coefficient", 1.0),
-    "trb2": ("body_resistance_quadratic_temperature_coefficient", 1.0),
-    **FLICKER,
-}
+VDMOS: Final[Table] = _table(
+    {
+        "vto vth0": "threshold_voltage",
+        "kp": "transconductance_parameter",
+        "lambda": "channel_length_modulation",
+        "theta": "mobility_modulation",
+        "mtriode": "triode_conductance_multiplier",
+        "ksubthres": "subthreshold_slope",
+        "subshift": "subthreshold_shift",
+        "rd": "drain_resistance",
+        "rs": "source_resistance",
+        "rg": "gate_resistance",
+        "rq": "quasi_saturation_resistance",
+        "vq": "quasi_saturation_voltage",
+        "rds": "drain_source_resistance",
+        "cgs": "gate_source_capacitance",
+        "cgdmax": "max_gate_drain_capacitance",
+        "cgdmin": "min_gate_drain_capacitance",
+        "a": "gate_drain_capacitance_coefficient",
+        "is": "saturation_current",
+        "n": "emission_coefficient",
+        "rb": "body_resistance",
+        "cjo": "junction_capacitance",
+        "vj": "junction_potential",
+        "m": "grading_coefficient",
+        "fc": "depletion_coefficient",
+        "tt": "transit_time",
+        "bv": "breakdown_voltage",
+        "ibv": "breakdown_current",
+        "nbv": "breakdown_emission_coefficient",
+        "eg": "energy_gap",
+        "xti": "saturation_current_temperature_exponent",
+        "tcvth vtotc": "threshold_voltage_temperature_coefficient",
+        "mu bex": "transconductance_parameter_temperature_exponent",
+        "texp0": "drain_resistance_temperature_exponent",
+        "texp1": "quasi_saturation_temperature_exponent",
+    },
+    drifts=("ksubthres", "rd", "rs", "rg", "rb"),
+    extra=FLICKER,
+)
 """ngspice's VDMOS, the power MOSFETs' model of LTspice's cards."""
 
-VDMOS_INSTANCE: Final[Table] = {"m": ("multiplier", 1.0)}
+VDMOS_INSTANCE: Final[Table] = _table({"m": "multiplier"})
 """A VDMOS's own parameters: the number of transistors in parallel."""
 
 VDMOS_KINDS: Final = frozenset({"vdmosn", "vdmosp"})
@@ -470,11 +425,10 @@ _LEADING_WORD: Final = re.compile(r"\w*")
 BSIM3_LEVELS: Final = frozenset({8, 49})
 """The levels of a BSIM3 card, ngspice's 8 and HSPICE's 49."""
 
-BSIM3_INSTANCE: Final[Table] = {
-    **MOSFET_INSTANCE,
-    "delvto": ("threshold_adjustment", 1.0),
-    "mulu0": ("mobility_multiplier", 1.0),
-}
+BSIM3_INSTANCE: Final[Table] = _table(
+    {"delvto": "threshold_adjustment", "mulu0": "mobility_multiplier"},
+    extra=MOSFET_INSTANCE,
+)
 """A BSIM3 instance's own parameters: a MOSFET's, a shift of its threshold and a factor
 of its mobility."""
 
@@ -495,13 +449,20 @@ BSIM3_OFF: Final = ("nqsmod", "acnqsmod", "acm")
 HSPICE's area calculation method, which jolty does not model: a card or an instance
 reads only with each off."""
 
-BSIM3_UNREAD: Final = frozenset(
+BSIM4_UNREAD: Final = frozenset(
     {
         *("lmin", "lmax", "wmin", "wmax"),
-        *("elm", "lelm", "welm", "pelm", "calcacm", "geo"),
-        *("hdif", "ldif", "ld", "rd", "rs", "rdc", "rsc", "wmlt"),
         *("vgs_max", "vgd_max", "vgb_max", "vds_max", "vbs_max", "vbd_max"),
         *("vgsr_max", "vgdr_max", "vgbr_max", "vbsr_max", "vbdr_max"),
+    }
+)
+"""What a BSIM4 card says that changes nothing ngspice computes: its bin's ranges, which
+only select it, and the safe operating area, which only ngspice's checks read."""
+
+BSIM3_UNREAD: Final = BSIM4_UNREAD | frozenset(
+    {
+        *("elm", "lelm", "welm", "pelm", "calcacm", "geo"),
+        *("hdif", "ldif", "ld", "rd", "rs", "rdc", "rsc", "wmlt"),
     }
 )
 """What a BSIM3 card says that changes nothing ngspice computes with the
@@ -513,20 +474,19 @@ BSIM3_DENSITIES: Final = {"nch": 1e20, "ngate": 1.000001e24}
 """The concentrations of a BSIM3 card that ngspice reads per cubic meter above a bound,
 and per cubic centimeter below it, as its ``b3mpar.c`` reads each."""
 
-BSIM4_INSTANCE: Final[Table] = {
-    **MOSFET_INSTANCE,
-    "nf": ("fingers", 1.0),
-    "sa": ("diffusion_edge_a", 1.0),
-    "sb": ("diffusion_edge_b", 1.0),
-    "sd": ("finger_spacing", 1.0),
-    "delvto": ("threshold_adjustment", 1.0),
-    "delvt0": ("threshold_adjustment", 1.0),
-    "mulu0": ("mobility_multiplier", 1.0),
-    **{
-        name: (name, 1.0)
-        for name in ("rbdb", "rbsb", "rbpb", "rbps", "rbpd", "xgw", "ngcon")
+BSIM4_INSTANCE: Final[Table] = _table(
+    {
+        "nf": "fingers",
+        "sa": "diffusion_edge_a",
+        "sb": "diffusion_edge_b",
+        "sd": "finger_spacing",
+        "delvto delvt0": "threshold_adjustment",
+        "mulu0": "mobility_multiplier",
+        **{name: name for name in ("rbdb", "rbsb", "rbpb", "rbps", "rbpd", "xgw")},
+        "ngcon": "ngcon",
     },
-}
+    extra=MOSFET_INSTANCE,
+)
 """A BSIM4 instance's own parameters: a MOSFET's, its fingers, the distances that set
 the stress of its length of diffusion, a shift of its threshold, a factor of its
 mobility, and the body resistances and the gate's contacts it takes over from its
@@ -543,7 +503,7 @@ BSIM4_SELECTORS: Final = {
 """A BSIM4 card's choices among its equations that jolty models more than one value
 of, each a whole number, by their SPICE names: jolty's name of each."""
 
-BSIM4_SETTINGS: Final = {"paramchk": "check_parameters", "xpart": "charge_partition"}
+BSIM4_SETTINGS: Final = BSIM3_SETTINGS
 """A BSIM4 card's check of its parameters and its drain's share of the channel's
 charge, by their SPICE names: jolty's name of each."""
 
@@ -566,16 +526,6 @@ SKY130's and GF180MCU's cards select, each ngspice's default too, by their SPICE
 names: a card or an instance reads only with each at it. ``min`` is an instance's
 choice of the drains or the sources an even number of fingers has fewer of."""
 
-BSIM4_UNREAD: Final = frozenset(
-    {
-        *("lmin", "lmax", "wmin", "wmax"),
-        *("vgs_max", "vgd_max", "vgb_max", "vds_max", "vbs_max", "vbd_max"),
-        *("vgsr_max", "vgdr_max", "vgbr_max", "vbsr_max", "vbdr_max"),
-    }
-)
-"""What a BSIM4 card says that changes nothing ngspice computes: its bin's ranges, which
-only select it, and the safe operating area, which only ngspice's checks read."""
-
 BSIM4_INSTANCE_UNREAD: Final = frozenset({"sca", "scb", "scc", "sc"})
 """What a BSIM4 instance says that changes nothing ngspice computes with `BSIM4_MODES`:
 its distances to the well's edge, which only the well proximity effect reads."""
@@ -593,116 +543,104 @@ BSIM4_ALIASES: Final = {
 """The other names ngspice reads some of a BSIM4 card's parameters by."""
 
 
-VBIC: Final[Table] = {
-    "rcx": ("extrinsic_collector_resistance", 1.0),
-    "rci": ("intrinsic_collector_resistance", 1.0),
-    "vo": ("epi_saturation_voltage", 1.0),
-    "v0": ("epi_saturation_voltage", 1.0),
-    "gamm": ("epi_doping_parameter", 1.0),
-    "hrcf": ("high_current_collector_factor", 1.0),
-    "rbx": ("extrinsic_base_resistance", 1.0),
-    "rbi": ("intrinsic_base_resistance", 1.0),
-    "re": ("emitter_resistance", 1.0),
-    "rs": ("substrate_resistance", 1.0),
-    "rbp": ("parasitic_base_resistance", 1.0),
-    "is": ("saturation_current", 1.0),
-    "nf": ("forward_emission_coefficient", 1.0),
-    "nr": ("reverse_emission_coefficient", 1.0),
-    "fc": ("depletion_coefficient", 1.0),
-    "cbeo": ("base_emitter_overlap_capacitance", 1.0),
-    "cbe0": ("base_emitter_overlap_capacitance", 1.0),
-    "cje": ("base_emitter_capacitance", 1.0),
-    "pe": ("base_emitter_potential", 1.0),
-    "me": ("base_emitter_grading", 1.0),
-    "aje": ("base_emitter_smoothing", 1.0),
-    "cbco": ("base_collector_overlap_capacitance", 1.0),
-    "cbc0": ("base_collector_overlap_capacitance", 1.0),
-    "cjc": ("base_collector_capacitance", 1.0),
-    "qco": ("epi_charge", 1.0),
-    "qc0": ("epi_charge", 1.0),
-    "cjep": ("extrinsic_base_collector_capacitance", 1.0),
-    "pc": ("base_collector_potential", 1.0),
-    "mc": ("base_collector_grading", 1.0),
-    "ajc": ("base_collector_smoothing", 1.0),
-    "cjcp": ("collector_substrate_capacitance", 1.0),
-    "ps": ("collector_substrate_potential", 1.0),
-    "ms": ("collector_substrate_grading", 1.0),
-    "ajs": ("collector_substrate_smoothing", 1.0),
-    "ccso": ("collector_substrate_fixed_capacitance", 1.0),
-    "ibei": ("ideal_base_emitter_current", 1.0),
-    "wbe": ("intrinsic_base_emitter_fraction", 1.0),
-    "nei": ("ideal_base_emitter_emission_coefficient", 1.0),
-    "iben": ("nonideal_base_emitter_current", 1.0),
-    "nen": ("nonideal_base_emitter_emission_coefficient", 1.0),
-    "ibci": ("ideal_base_collector_current", 1.0),
-    "nci": ("ideal_base_collector_emission_coefficient", 1.0),
-    "ibcn": ("nonideal_base_collector_current", 1.0),
-    "ncn": ("nonideal_base_collector_emission_coefficient", 1.0),
-    "avc1": ("avalanche_coefficient", 1.0),
-    "avc2": ("avalanche_exponent_coefficient", 1.0),
-    "isp": ("parasitic_saturation_current", 1.0),
-    "wsp": ("parasitic_extrinsic_fraction", 1.0),
-    "nfp": ("parasitic_forward_emission_coefficient", 1.0),
-    "ibeip": ("parasitic_ideal_base_emitter_current", 1.0),
-    "ibenp": ("parasitic_nonideal_base_emitter_current", 1.0),
-    "ibcip": ("parasitic_ideal_base_collector_current", 1.0),
-    "ncip": ("parasitic_ideal_base_collector_emission_coefficient", 1.0),
-    "ibcnp": ("parasitic_nonideal_base_collector_current", 1.0),
-    "ncnp": ("parasitic_nonideal_base_collector_emission_coefficient", 1.0),
-    "vef": ("forward_early_voltage", 1.0),
-    "ver": ("reverse_early_voltage", 1.0),
-    "ikf": ("forward_knee_current", 1.0),
-    "ikr": ("reverse_knee_current", 1.0),
-    "ikp": ("parasitic_knee_current", 1.0),
-    "nkf": ("knee_rolloff", 1.0),
-    "tf": ("forward_transit_time", 1.0),
-    "qtf": ("transit_time_base_width_coefficient", 1.0),
-    "xtf": ("transit_time_bias_coefficient", 1.0),
-    "vtf": ("transit_time_voltage", 1.0),
-    "itf": ("transit_time_current", 1.0),
-    "tr": ("reverse_transit_time", 1.0),
-    "td": ("excess_phase_delay", 1.0),
-    "kfn": ("flicker_coefficient", 1.0),
-    "afn": ("flicker_exponent", 1.0),
-    "bfn": ("flicker_frequency_exponent", 1.0),
-    "vrt": ("reach_through_voltage", 1.0),
-    "art": ("reach_through_smoothing", 1.0),
-    "vbbe": ("base_emitter_breakdown_voltage", 1.0),
-    "nbbe": ("base_emitter_breakdown_emission_coefficient", 1.0),
-    "ibbe": ("base_emitter_breakdown_current", 1.0),
-    "isrr": ("reverse_saturation_current_ratio", 1.0),
-    "ea": ("activation_energy", 1.0),
-    "eaie": ("ideal_base_emitter_activation_energy", 1.0),
-    "eaic": ("ideal_base_collector_activation_energy", 1.0),
-    "eais": ("ideal_collector_substrate_activation_energy", 1.0),
-    "eane": ("nonideal_base_emitter_activation_energy", 1.0),
-    "eanc": ("nonideal_base_collector_activation_energy", 1.0),
-    "eans": ("nonideal_collector_substrate_activation_energy", 1.0),
-    "eap": ("parasitic_activation_energy", 1.0),
-    "dear": ("reverse_activation_energy_shift", 1.0),
-    "xis": ("saturation_current_temperature_exponent", 1.0),
-    "xii": ("ideal_base_current_temperature_exponent", 1.0),
-    "xin": ("nonideal_base_current_temperature_exponent", 1.0),
-    "xisr": ("reverse_saturation_current_temperature_exponent", 1.0),
-    "tnf": ("emission_coefficient_temperature_coefficient", 1.0),
-    "tavc": ("avalanche_temperature_coefficient", 1.0),
-    "xikf": ("forward_knee_current_temperature_exponent", 1.0),
-    "xrcx": ("extrinsic_collector_resistance_temperature_exponent", 1.0),
-    "xrc": ("extrinsic_collector_resistance_temperature_exponent", 1.0),
-    "xrci": ("intrinsic_collector_resistance_temperature_exponent", 1.0),
-    "xrbx": ("extrinsic_base_resistance_temperature_exponent", 1.0),
-    "xrb": ("extrinsic_base_resistance_temperature_exponent", 1.0),
-    "xrbi": ("intrinsic_base_resistance_temperature_exponent", 1.0),
-    "xre": ("emitter_resistance_temperature_exponent", 1.0),
-    "xrs": ("substrate_resistance_temperature_exponent", 1.0),
-    "xrbp": ("parasitic_base_resistance_temperature_exponent", 1.0),
-    "xvo": ("epi_saturation_voltage_temperature_exponent", 1.0),
-    "xv0": ("epi_saturation_voltage_temperature_exponent", 1.0),
-    "tvbbe1": ("breakdown_voltage_temperature_coefficient", 1.0),
-    "tvbbe2": ("breakdown_voltage_quadratic_temperature_coefficient", 1.0),
-    "tnbbe": ("breakdown_emission_temperature_coefficient", 1.0),
-    **FLICKER,
-}
+VBIC: Final[Table] = _table(
+    {
+        "rcx": "extrinsic_collector_resistance",
+        "rci": "intrinsic_collector_resistance",
+        "vo v0": "epi_saturation_voltage",
+        "gamm": "epi_doping_parameter",
+        "hrcf": "high_current_collector_factor",
+        "rbx": "extrinsic_base_resistance",
+        "rbi": "intrinsic_base_resistance",
+        "re": "emitter_resistance",
+        "rs": "substrate_resistance",
+        "rbp": "parasitic_base_resistance",
+        "is": "saturation_current",
+        "nf": "forward_emission_coefficient",
+        "nr": "reverse_emission_coefficient",
+        "fc": "depletion_coefficient",
+        "cbeo cbe0": "base_emitter_overlap_capacitance",
+        "cje": "base_emitter_capacitance",
+        "pe": "base_emitter_potential",
+        "me": "base_emitter_grading",
+        "aje": "base_emitter_smoothing",
+        "cbco cbc0": "base_collector_overlap_capacitance",
+        "cjc": "base_collector_capacitance",
+        "qco qc0": "epi_charge",
+        "cjep": "extrinsic_base_collector_capacitance",
+        "pc": "base_collector_potential",
+        "mc": "base_collector_grading",
+        "ajc": "base_collector_smoothing",
+        "cjcp": "collector_substrate_capacitance",
+        "ps": "collector_substrate_potential",
+        "ms": "collector_substrate_grading",
+        "ajs": "collector_substrate_smoothing",
+        "ccso": "collector_substrate_fixed_capacitance",
+        "ibei": "ideal_base_emitter_current",
+        "wbe": "intrinsic_base_emitter_fraction",
+        "nei": "ideal_base_emitter_emission_coefficient",
+        "iben": "nonideal_base_emitter_current",
+        "nen": "nonideal_base_emitter_emission_coefficient",
+        "ibci": "ideal_base_collector_current",
+        "nci": "ideal_base_collector_emission_coefficient",
+        "ibcn": "nonideal_base_collector_current",
+        "ncn": "nonideal_base_collector_emission_coefficient",
+        "avc1": "avalanche_coefficient",
+        "avc2": "avalanche_exponent_coefficient",
+        "isp": "parasitic_saturation_current",
+        "wsp": "parasitic_extrinsic_fraction",
+        "nfp": "parasitic_forward_emission_coefficient",
+        "ibeip": "parasitic_ideal_base_emitter_current",
+        "ibenp": "parasitic_nonideal_base_emitter_current",
+        "ibcip": "parasitic_ideal_base_collector_current",
+        "ncip": "parasitic_ideal_base_collector_emission_coefficient",
+        "ibcnp": "parasitic_nonideal_base_collector_current",
+        "ncnp": "parasitic_nonideal_base_collector_emission_coefficient",
+        "vef": "forward_early_voltage",
+        "ver": "reverse_early_voltage",
+        "ikf": "forward_knee_current",
+        "ikr": "reverse_knee_current",
+        "ikp": "parasitic_knee_current",
+        "nkf": "knee_rolloff",
+        "tf": "forward_transit_time",
+        "qtf": "transit_time_base_width_coefficient",
+        "xtf": "transit_time_bias_coefficient",
+        "vtf": "transit_time_voltage",
+        "itf": "transit_time_current",
+        "tr": "reverse_transit_time",
+        "td": "excess_phase_delay",
+        "kfn": "flicker_coefficient",
+        "afn": "flicker_exponent",
+        "bfn": "flicker_frequency_exponent",
+        "vrt": "reach_through_voltage",
+        "art": "reach_through_smoothing",
+        "vbbe": "base_emitter_breakdown_voltage",
+        "nbbe": "base_emitter_breakdown_emission_coefficient",
+        "ibbe": "base_emitter_breakdown_current",
+        "isrr": "reverse_saturation_current_ratio",
+        "ea": "activation_energy",
+        "eaie": "ideal_base_emitter_activation_energy",
+        "eaic": "ideal_base_collector_activation_energy",
+        "eais": "ideal_collector_substrate_activation_energy",
+        "eane": "nonideal_base_emitter_activation_energy",
+        "eanc": "nonideal_base_collector_activation_energy",
+        "eans": "nonideal_collector_substrate_activation_energy",
+        "eap": "parasitic_activation_energy",
+        "dear": "reverse_activation_energy_shift",
+        "xii": "ideal_base_current_temperature_exponent",
+        "xin": "nonideal_base_current_temperature_exponent",
+        "xisr": "reverse_saturation_current_temperature_exponent",
+        "tnf": "emission_coefficient_temperature_coefficient",
+        "tavc": "avalanche_temperature_coefficient",
+        "tnbbe": "breakdown_emission_temperature_coefficient",
+    },
+    exponents=(
+        *("is", "ikf", "rcx xrc", "rci", "rbx xrb", "rbi"),
+        *("re", "rs", "rbp", "vo xv0"),
+    ),
+    temperature_pairs={"tvbbe": "breakdown_voltage"},
+    extra=FLICKER,
+)
 """ngspice's VBIC, its bipolar transistor of level 4 or 9, by every name ngspice reads,
 its aliases among them: SPICE's ``KF`` and ``AF``, which no VBIC card gives, read as
 ``KFN`` and ``AFN``."""
@@ -810,20 +748,24 @@ CONSTRUCTIONS: Final = {1.0: "vertical", -1.0: "lateral"}
 GATE_TYPES: Final = {1.0: "opposite_doping", -1.0: "same_doping", 0.0: "aluminum"}
 """The gate material of each value of SPICE's ``TPG``."""
 
-SWITCH: Final[Table] = {
-    "ron": ("on_resistance", 1.0),
-    "roff": ("off_resistance", 1.0),
-    "von": ("on_voltage", 1.0),
-    "voff": ("off_voltage", 1.0),
-}
+SWITCH: Final[Table] = _table(
+    {
+        "ron": "on_resistance",
+        "roff": "off_resistance",
+        "von": "on_voltage",
+        "voff": "off_voltage",
+    }
+)
 """PSpice's ``VSWITCH`` parameters, as a voltage-controlled switch takes them."""
 
-CURRENT_SWITCH: Final[Table] = {
-    "ron": ("on_resistance", 1.0),
-    "roff": ("off_resistance", 1.0),
-    "ion": ("on_current", 1.0),
-    "ioff": ("off_current", 1.0),
-}
+CURRENT_SWITCH: Final[Table] = _table(
+    {
+        "ron": "on_resistance",
+        "roff": "off_resistance",
+        "ion": "on_current",
+        "ioff": "off_current",
+    }
+)
 """PSpice's ``ISWITCH`` parameters, as a current-controlled switch takes them."""
 
 NOMINAL_TEMPERATURES: Final = frozenset({"tnom", "t_measured"})
@@ -1425,9 +1367,6 @@ def _diode(
     values = {
         name: value for name, value in values.items() if name not in DIODE_IGNORED
     }
-    if "tref" in values:
-        # ngspice's other name for the nominal temperature (`dio.c`, line 56).
-        values["tnom"] = values.pop("tref")
     selectors = {
         DIODE[name][0]: _whole(card, name, values.pop(name), statement)
         for name in DIODE_SELECTORS & values.keys()
@@ -1481,7 +1420,7 @@ def _diode(
     breakdown = copies * (area if geometric else 1.0)
     values = _area_scaled("diode", values, breakdown, ("ibv", "ib"), ())
     parameters: dict[str, JsonValue] = {
-        **_mapped(card, values, DIODE, statement),
+        **_mapped(card, values, DIODE, statement, allow_tref=True),
         **selectors,
     }
     return parameters
@@ -1571,12 +1510,37 @@ def _area_scaled(
     return _scaled(filled, area, multiplied, divided)
 
 
-def _mapped(
+def scale_flicker_coefficient(
+    coefficient: float,
+    exponent: float,
+    copies: float,
+    statement: Statement,
+    label: str,
+) -> float:
+    """Scales a flicker noise coefficient across `copies` parallel elements.
+
+    Raises:
+        SpiceError: When scaling overflows or produces a non-finite value.
+    """
+    try:
+        scaled = coefficient * math.pow(copies, 1 - exponent)
+    except OverflowError, ValueError:
+        message = f"flicker noise scaling {label} overflows"
+        raise statement.fail(message) from None
+    if not math.isfinite(scaled):
+        message = f"flicker noise scaling {label} overflows"
+        raise statement.fail(message)
+    return scaled
+
+
+def _mapped(  # noqa: PLR0913 - card, values, table, statement, skipped and TREF flag
     card: ModelCard,
     values: Mapping[str, float],
     table: Table,
     statement: Statement,
     skipped: frozenset[str] = frozenset(),
+    *,
+    allow_tref: bool = False,
 ) -> dict[str, JsonValue]:
     """`values` by their jolty names, in SI units.
 
@@ -1587,7 +1551,7 @@ def _mapped(
     for name, value in values.items():
         if name in skipped:
             continue
-        if name in NOMINAL_TEMPERATURES:
+        if name in NOMINAL_TEMPERATURES or (allow_tref and name == "tref"):
             parameters["nominal_temperature"] = celsius(value).value
             continue
         if name not in table:
@@ -1635,9 +1599,8 @@ def _bipolar(
     for name in ("nkf", "nk"):
         if name in values:
             values[name] = min(values[name], BIPOLAR_MAX_HIGH_INJECTION_EXPONENT)
-    # ngspice reads `TREF` as `TNOM`, the later of the two given (`bjt.c`, line 83).
     values = {
-        "tnom" if name == "tref" else name: value
+        name: value
         for name, value in values.items()
         if (name not in BIPOLAR_ABSENT_AT_ZERO or value != 0)
         and name not in {*BIPOLAR_UNDEFINED, *BIPOLAR_POWER_COEFFICIENTS, *given}
@@ -1649,7 +1612,7 @@ def _bipolar(
     )
     divided = ("rb", "rbm", "re", "rc")
     values = _area_scaled("bipolar_transistor", values, area, multiplied, divided)
-    parameters = _mapped(card, values, BIPOLAR, statement)
+    parameters = _mapped(card, values, BIPOLAR, statement, allow_tref=True)
     return {
         "polarity": card.kind,
         "substrate": CONSTRUCTIONS[construction],
@@ -1859,6 +1822,21 @@ BSIMS: Final = {
 """How ngspice reads each BSIM model's card, by jolty's name of the model."""
 
 
+def _check_bsim_modes(
+    values: dict[str, float],
+    instance: dict[str, float],
+    modes: Mapping[str, int],
+    family: str,
+    statement: Statement,
+) -> None:
+    """Checks that fixed BSIM mode switches match `modes` on card and instance."""
+    for name, modeled in modes.items():
+        for given in (values, instance):
+            if given.pop(name, modeled) != modeled:
+                message = f"jolty models {family} with `{name.upper()}` {modeled} alone"
+                raise statement.fail(message)
+
+
 def _bsim3(
     card: ModelCard,
     values: dict[str, float],
@@ -1881,42 +1859,19 @@ def _bsim3(
             or a parameter has no jolty counterpart.
     """
     values.pop("level")
-    own = _bsim3_off(card, values, dict(instance), statement)
-    channel = card.kind[0]
-    parameters: dict[str, JsonValue] = {"channel": channel}
-    parameters |= _bsim_card(BSIMS["bsim3"], card, values, statement)
-    parameters |= _mapped(card, own, BSIM3_INSTANCE, statement)
-    return parameters
-
-
-def _bsim3_off(
-    card: ModelCard,
-    values: dict[str, float],
-    instance: dict[str, float],
-    statement: Statement,
-) -> dict[str, float]:
-    """A BSIM3 instance's parameters, once its card is checked of version 3.3.
-
-    The models jolty has not, `BSIM3_OFF`, must be off in both: the card's are taken
-    from `values`, the instance's from what it returns.
-
-    Raises:
-        SpiceError: When the card's version or one of the models is not.
-    """
-    version = card.version
-    if version is not None and not version.startswith("3.3"):
+    if card.version is not None and not card.version.startswith("3.3"):
         message = (
-            f"`{card.name}` is a BSIM3 card of version {version}, whose equations "
+            f"`{card.name}` is a BSIM3 card of version {card.version}, whose equations "
             "ngspice runs another model for; jolty models version 3.3"
         )
         raise statement.fail(message)
-    for name in BSIM3_OFF:
-        for given in (values, instance):
-            if given.pop(name, 0.0) != 0:
-                message = f"jolty models BSIM3 with `{name.upper()}` 0 alone"
-                raise statement.fail(message)
-    instance.pop("geo", None)
-    return instance
+    own = dict(instance)
+    _check_bsim_modes(values, own, dict.fromkeys(BSIM3_OFF, 0), "BSIM3", statement)
+    own.pop("geo", None)
+    parameters: dict[str, JsonValue] = {"channel": card.kind[0]}
+    parameters |= _bsim_card(BSIMS["bsim3"], card, values, statement)
+    parameters |= _mapped(card, own, BSIM3_INSTANCE, statement)
+    return parameters
 
 
 def _bsim4(
@@ -1941,19 +1896,14 @@ def _bsim4(
             or a parameter has no jolty counterpart.
     """
     values.pop("level")
-    version = card.version
-    if version is None or not version.startswith("4.5"):
+    if card.version is None or not card.version.startswith("4.5"):
         message = (
-            f"`{card.name}` is a BSIM4 card of version {version or '4.8'}, whose "
+            f"`{card.name}` is a BSIM4 card of version {card.version or '4.8'}, whose "
             "equations ngspice runs another model for; jolty models version 4.5"
         )
         raise statement.fail(message)
     own = dict(instance)
-    for name, modeled in BSIM4_MODES.items():
-        for given in (values, own):
-            if given.pop(name, modeled) != modeled:
-                message = f"jolty models BSIM4 with `{name.upper()}` {modeled} alone"
-                raise statement.fail(message)
+    _check_bsim_modes(values, own, BSIM4_MODES, "BSIM4", statement)
     for name in BSIM4_INSTANCE_UNREAD:
         own.pop(name, None)
     parameters: dict[str, JsonValue] = {"channel": card.kind[0]}
@@ -2082,13 +2032,14 @@ def _vbic(
     values = _area_scaled("vbic", values, area, VBIC_MULTIPLIED, VBIC_RESISTANCES)
     for coefficient, exponent in (("kfn", "afn"), ("kf", "af")):
         if coefficient in values:
-            try:
-                scale = math.pow(copies, 1 - values.get(exponent, 1.0))
-            except OverflowError, ValueError:
-                message = f"flicker noise scaling of `{card.name}` overflows"
-                raise statement.fail(message) from None
-            values[coefficient] *= scale
-    parameters = _mapped(card, values, VBIC, statement)
+            values[coefficient] = scale_flicker_coefficient(
+                values[coefficient],
+                values.get(exponent, 1.0),
+                copies,
+                statement,
+                f"of `{card.name}`",
+            )
+    parameters = _mapped(card, values, VBIC, statement, allow_tref=True)
     parameters["polarity"] = card.kind
     if charge is not None:
         threshold = 0.5  # ngspice's, below which QBM chooses VBIC's own form
@@ -2099,17 +2050,14 @@ def _vbic(
 def _vbic_read(values: Mapping[str, float]) -> dict[str, float]:
     """A VBIC card's `values` as ngspice reads them.
 
-    That is without what changes nothing it computes, ``TREF`` as ``TNOM``, each
-    resistance at least 10 mΩ, and without the parameters infinite where they are not
-    positive.
+    That is without what changes nothing it computes, each resistance at least 10 mΩ,
+    and without the parameters infinite where they are not positive.
     """
     read = {
         name: value
         for name, value in values.items()
         if name not in VBIC_IGNORED | VBIC_SELF_HEATING | {"level"}
     }
-    if "tref" in read:
-        read["tnom"] = read.pop("tref")
     for name in VBIC_RESISTANCES:
         if name in read:
             read[name] = max(read[name], VBIC_LEAST_RESISTANCE)

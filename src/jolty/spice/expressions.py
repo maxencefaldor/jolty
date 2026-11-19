@@ -14,11 +14,12 @@ Examples:
     'limit(1000.0 * v(vc+, vc-), -0.001, 0.001)'
 """
 
+import contextlib
 import functools
 import itertools
 import math
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Final, override
 
@@ -104,88 +105,66 @@ class Current:
     source: str
 
 
+class _Compound:
+    """Mixin giving compound expression nodes iterative equality, hash, and repr."""
+
+    __slots__ = ()
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        if (
+            type(self) is type(other)
+            and isinstance(self, Call | Unary | Binary | Conditional)
+            and isinstance(other, Call | Unary | Binary | Conditional)
+        ):
+            return _equal(self, other)
+        return NotImplemented
+
+    @override
+    def __hash__(self) -> int:
+        if isinstance(self, Call | Unary | Binary | Conditional):
+            return _hash(self)
+        return super().__hash__()
+
+    @override
+    def __repr__(self) -> str:
+        if isinstance(self, Call | Unary | Binary | Conditional):
+            return _repr(self)
+        return super().__repr__()
+
+
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
-class Call:
+class Call(_Compound):
     """A function, by its case-folded name, of its arguments."""
 
     function: str
     arguments: tuple[Expression, ...]
 
-    @override
-    def __eq__(self, other: object) -> bool:
-        return _equal(self, other) if isinstance(other, Call) else NotImplemented
-
-    @override
-    def __hash__(self) -> int:
-        return _hash(self)
-
-    @override
-    def __repr__(self) -> str:
-        return _repr(self)
-
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
-class Unary:
+class Unary(_Compound):
     """A sign or a negation of an operand."""
 
     operator: str
     operand: Expression
 
-    @override
-    def __eq__(self, other: object) -> bool:
-        return _equal(self, other) if isinstance(other, Unary) else NotImplemented
-
-    @override
-    def __hash__(self) -> int:
-        return _hash(self)
-
-    @override
-    def __repr__(self) -> str:
-        return _repr(self)
-
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
-class Binary:
+class Binary(_Compound):
     """An operator between two operands."""
 
     operator: str
     left: Expression
     right: Expression
 
-    @override
-    def __eq__(self, other: object) -> bool:
-        return _equal(self, other) if isinstance(other, Binary) else NotImplemented
-
-    @override
-    def __hash__(self) -> int:
-        return _hash(self)
-
-    @override
-    def __repr__(self) -> str:
-        return _repr(self)
-
 
 @dataclass(frozen=True, slots=True, eq=False, repr=False)
-class Conditional:
+class Conditional(_Compound):
     """``c ? a : b``."""
 
     condition: Expression
     then: Expression
     otherwise: Expression
-
-    @override
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, Conditional):
-            return _equal(self, other)
-        return NotImplemented
-
-    @override
-    def __hash__(self) -> int:
-        return _hash(self)
-
-    @override
-    def __repr__(self) -> str:
-        return _repr(self)
 
 
 type Expression = (
@@ -370,13 +349,15 @@ class _Parser:
         message = f"expression exceeds maximum nesting depth of {_MAX_DEPTH}"
         return SpiceError(message)
 
-    def _enter(self) -> None:
+    @contextlib.contextmanager
+    def _nested(self) -> Iterator[None]:
         self.depth += 1
         if self.depth > _MAX_DEPTH:
             raise self._too_deep()
-
-    def _leave(self) -> None:
-        self.depth -= 1
+        try:
+            yield
+        finally:
+            self.depth -= 1
 
     def scan(self) -> tuple[str, str, int] | None:
         """The next token's kind and text, and where it ends, if one is left."""
@@ -388,10 +369,7 @@ class _Parser:
 
     def peek(self) -> tuple[str, str] | None:
         scanned = self.scan()
-        if scanned is None:
-            return None
-        kind, text, _ = scanned
-        return kind, text
+        return None if scanned is None else (scanned[0], scanned[1])
 
     def take(self) -> tuple[str, str] | None:
         scanned = self.scan()
@@ -415,18 +393,21 @@ class _Parser:
         condition = self.binary()
         if not self.accept("?"):
             return condition
-        self._enter()
-        try:
+        with self._nested():
             then = self.conditional()
             self.expect(":")
             otherwise = self.conditional()
-        finally:
-            self._leave()
         return Conditional(condition, then, otherwise)
 
     def binary(self) -> Expression:
         operands: list[Expression] = [self.unary()]
         operators: list[tuple[int, str]] = []
+
+        def reduce_top() -> None:
+            _, pending = operators.pop()
+            right = operands.pop()
+            operands.append(Binary(pending, operands.pop(), right))
+
         while (token := self.peek()) is not None and token[0] == "symbol":
             entry = _BINARY.get(token[1])
             if entry is None:
@@ -434,17 +415,11 @@ class _Parser:
             precedence, operator = entry
             self.take()
             while operators and operators[-1][0] >= precedence:
-                _, pending = operators.pop()
-                right = operands.pop()
-                left = operands.pop()
-                operands.append(Binary(pending, left, right))
+                reduce_top()
             operators.append((precedence, operator))
             operands.append(self.unary())
         while operators:
-            _, pending = operators.pop()
-            right = operands.pop()
-            left = operands.pop()
-            operands.append(Binary(pending, left, right))
+            reduce_top()
         return operands[0]
 
     def unary(self) -> Expression:
@@ -465,12 +440,8 @@ class _Parser:
     def power(self) -> Expression:
         base = self.primary()
         if self.accept("**") or self.accept("^"):
-            self._enter()
-            try:
-                exponent = self.unary()
-            finally:
-                self._leave()
-            return Binary("^", base, exponent)
+            with self._nested():
+                return Binary("^", base, self.unary())
         return base
 
     def primary(self) -> Expression:
@@ -484,12 +455,9 @@ class _Parser:
                 return Number(value)
             # A parameter in braces within an expression, as in PSpice: `{VTHRES} + 1`.
             case ("symbol", "(" | "{" as opening):
-                self._enter()
-                try:
+                with self._nested():
                     inner = self.conditional()
                     self.expect(")" if opening == "(" else "}")
-                finally:
-                    self._leave()
                 return inner
             case ("name", name) if self.peek() == ("symbol", "("):
                 return self.call(name.casefold())
@@ -519,15 +487,12 @@ class _Parser:
                         return Current(source)
             expected = f"one or two nodes in `{function}(…)`"
             raise self.fail(expected)
-        self._enter()
-        try:
+        with self._nested():
             arguments = [self.conditional()]
             while self.accept(","):
                 arguments.append(self.conditional())
             self.expect(")")
             return Call(function, tuple(arguments))
-        finally:
-            self._leave()
 
 
 def children(expression: Expression) -> tuple[Expression, ...]:
@@ -578,85 +543,53 @@ def _equal(first: Expression, second: Expression) -> bool:
     return True
 
 
-def _hash(expression: Expression) -> int:
-    """Iterative structural hash that never hits Python's recursion limit."""
+def walk(expression: Expression) -> Iterator[Expression]:
+    """Yields every node of `expression` iteratively without recursion."""
+    stack: list[Expression] = [expression]
+    while stack:
+        current = stack.pop()
+        yield current
+        stack.extend(children(current))
+
+
+def fold[Result](
+    expression: Expression,
+    leaf: Callable[[Expression], Result | None],
+    combine: Callable[[Expression, list[Result]], Result],
+    *,
+    before: Callable[[Expression], None] | None = None,
+) -> Result:
+    """Iteratively folds `expression` bottom-up without recursion.
+
+    When `leaf(node)` returns a non-`None` value, that value is used directly
+    without descending into `node`'s children. Otherwise `before(node)` (if given)
+    runs before descending left-to-right, and `combine(node, built)` combines the
+    children's folded results.
+    """
     frames: list[tuple[Expression, bool]] = [(expression, False)]
-    hashes: list[int] = []
+    results: list[Result] = []
     while frames:
         current, ready = frames.pop()
         if not ready:
-            if isinstance(current, Number | Name | Voltage | Current):
-                hashes.append(hash(current))
+            direct = leaf(current)
+            if direct is not None:
+                results.append(direct)
                 continue
+            if before is not None:
+                before(current)
             subexpressions = children(current)
+            if not subexpressions:
+                results.append(combine(current, []))
+                continue
             frames.append((current, True))
             frames.extend((child, False) for child in reversed(subexpressions))
             continue
         arity = len(children(current))
+        built = results[-arity:] if arity else []
         if arity:
-            child_hashes = tuple(hashes[-arity:])
-            del hashes[-arity:]
-        else:
-            child_hashes = ()
-        hashes.append(hash((type(current), _label(current), child_hashes)))
-    return hashes[0]
-
-
-def _push_call_repr(
-    parts: list[str],
-    stack: list[Expression | str],
-    function: str,
-    arguments: tuple[Expression, ...],
-) -> None:
-    """Appends a `Call` header and schedules its arguments for iterative `repr`."""
-    parts.append(f"Call(function={function!r}, arguments=(")
-    if not arguments:
-        parts.append("))")
-        return
-    if len(arguments) == 1:
-        stack.append(",))")
-        stack.append(arguments[0])
-        return
-    stack.append("))")
-    for index in range(len(arguments) - 1, -1, -1):
-        stack.append(arguments[index])
-        if index > 0:
-            stack.append(", ")
-
-
-def _repr(expression: Expression) -> str:
-    """Iterative structural representation that never hits Python's recursion limit."""
-    parts: list[str] = []
-    stack: list[Expression | str] = [expression]
-    while stack:
-        item = stack.pop()
-        if isinstance(item, str):
-            parts.append(item)
-            continue
-        match item:
-            case Number() | Name() | Voltage() | Current():
-                parts.append(repr(item))
-            case Unary(operator, operand):
-                parts.append(f"Unary(operator={operator!r}, operand=")
-                stack.append(")")
-                stack.append(operand)
-            case Binary(operator, left, right):
-                parts.append(f"Binary(operator={operator!r}, left=")
-                stack.append(")")
-                stack.append(right)
-                stack.append(", right=")
-                stack.append(left)
-            case Conditional(condition, then, otherwise):
-                parts.append("Conditional(condition=")
-                stack.append(")")
-                stack.append(otherwise)
-                stack.append(", otherwise=")
-                stack.append(then)
-                stack.append(", then=")
-                stack.append(condition)
-            case Call(function, arguments):
-                _push_call_repr(parts, stack, function, arguments)
-    return "".join(parts)
+            del results[-arity:]
+        results.append(combine(current, built))
+    return results[0]
 
 
 def rebuild(expression: Expression, subexpressions: list[Expression]) -> Expression:
@@ -678,6 +611,88 @@ def rebuild(expression: Expression, subexpressions: list[Expression]) -> Express
     return expression
 
 
+def _no_replace(_node: Expression) -> Expression | None:
+    """Default replacement hook that leaves every node to be rebuilt bottom-up."""
+    return None
+
+
+def rewrite(
+    expression: Expression,
+    replace: Callable[[Expression], Expression | None] | None = None,
+    *,
+    before: Callable[[Expression], None] | None = None,
+    combine: Callable[[Expression, list[Expression]], Expression] = rebuild,
+) -> Expression:
+    """Iteratively rewrites `expression` bottom-up without recursion."""
+    leaf = _no_replace if replace is None else replace
+    return fold(expression, leaf, combine, before=before)
+
+
+def _hash_leaf(node: Expression) -> int | None:
+    """Hashes atomic expression nodes directly; returns None for compound nodes."""
+    if isinstance(node, Number | Name | Voltage | Current):
+        return hash(node)
+    return None
+
+
+def _hash_combine(node: Expression, child_hashes: list[int]) -> int:
+    """Combines child hashes into the structural hash of a compound node."""
+    return hash((type(node), _label(node), tuple(child_hashes)))
+
+
+def _hash(expression: Expression) -> int:
+    """Iterative structural hash that never hits Python's recursion limit."""
+    return fold(expression, _hash_leaf, _hash_combine)
+
+
+def _push_call_repr(
+    parts: list[str],
+    stack: list[Expression | str],
+    function: str,
+    arguments: tuple[Expression, ...],
+) -> None:
+    """Appends a `Call` header and schedules its arguments for iterative `repr`."""
+    parts.append(f"Call(function={function!r}, arguments=(")
+    if not arguments:
+        parts.append("))")
+    elif len(arguments) == 1:
+        stack.extend((",))", arguments[0]))
+    else:
+        stack.append("))")
+        for index in range(len(arguments) - 1, -1, -1):
+            stack.append(arguments[index])
+            if index > 0:
+                stack.append(", ")
+
+
+def _repr(expression: Expression) -> str:
+    """Iterative structural representation that never hits Python's recursion limit."""
+    parts: list[str] = []
+    stack: list[Expression | str] = [expression]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            parts.append(item)
+            continue
+        match item:
+            case Number() | Name() | Voltage() | Current():
+                parts.append(repr(item))
+            case Unary(operator, operand):
+                parts.append(f"Unary(operator={operator!r}, operand=")
+                stack.extend((")", operand))
+            case Binary(operator, left, right):
+                parts.append(f"Binary(operator={operator!r}, left=")
+                stack.extend((")", right, ", right=", left))
+            case Conditional(condition, then, otherwise):
+                parts.append("Conditional(condition=")
+                stack.extend(
+                    (")", otherwise, ", otherwise=", then, ", then=", condition)
+                )
+            case Call(function, arguments):
+                _push_call_repr(parts, stack, function, arguments)
+    return "".join(parts)
+
+
 def _check_budget(count: int) -> int:
     """Increments the node count and fails when it passes `_MAX_INLINED_NODES`."""
     next_count = count + 1
@@ -695,10 +710,16 @@ def _inline_call(
     functions: Mapping[str, Function],
     calling: tuple[str, ...],
 ) -> tuple[Expression, tuple[str, ...]]:
-    """Checks cycle and arity for `function` and returns its substituted body."""
+    """Substitutes `arguments` into `function`'s body and extends `calling`."""
     defined = functions[function]
     given = dict(zip(defined.parameters, arguments, strict=True))
-    return _substituted(defined.body, given), (*calling, function)
+    if not given:
+        return defined.body, (*calling, function)
+
+    def replace(node: Expression) -> Expression | None:
+        return given.get(node.name) if isinstance(node, Name) else None
+
+    return rewrite(defined.body, replace), (*calling, function)
 
 
 def _check_call(
@@ -783,32 +804,6 @@ right=Number(value=1.0))
     return results[0]
 
 
-def _substituted(expression: Expression, given: Mapping[str, Expression]) -> Expression:
-    """`expression` with each name `given` replaced by the expression it is given."""
-    if not given:
-        return expression
-    frames: list[tuple[Expression, bool]] = [(expression, False)]
-    results: list[Expression] = []
-    while frames:
-        current, ready = frames.pop()
-        if not ready:
-            if isinstance(current, Name) and current.name in given:
-                results.append(given[current.name])
-                continue
-            subexpressions = children(current)
-            if not subexpressions:
-                results.append(current)
-                continue
-            frames.append((current, True))
-            frames.extend((child, False) for child in reversed(subexpressions))
-            continue
-        arity = len(children(current))
-        built = results[-arity:]
-        del results[-arity:]
-        results.append(rebuild(current, built))
-    return results[0]
-
-
 _CONSTANTS: Final = {
     "pi": math.pi,
     "e": math.e,
@@ -868,26 +863,11 @@ def substituted(
     expression: Expression, variable: Expression, replacement: Expression
 ) -> Expression:
     """`expression` with each occurrence of `variable` replaced by `replacement`."""
-    frames: list[tuple[Expression, bool]] = [(expression, False)]
-    results: list[Expression] = []
-    while frames:
-        current, ready = frames.pop()
-        if not ready:
-            if current == variable:
-                results.append(replacement)
-                continue
-            subexpressions = children(current)
-            if not subexpressions:
-                results.append(current)
-                continue
-            frames.append((current, True))
-            frames.extend((child, False) for child in reversed(subexpressions))
-            continue
-        arity = len(children(current))
-        built = results[-arity:]
-        del results[-arity:]
-        results.append(rebuild(current, built))
-    return results[0]
+
+    def replace(node: Expression) -> Expression | None:
+        return replacement if node == variable else None
+
+    return rewrite(expression, replace)
 
 
 type Polynomial = dict[int, float]
@@ -922,34 +902,6 @@ def _combine_polynomial(
     return result
 
 
-def _push_polynomial_children(
-    current: Expression,
-    frames: list[tuple[Expression, bool]],
-    computed: dict[int, Polynomial | None],
-) -> None:
-    """Schedules polynomial child subtrees or marks non-polynomial nodes `None`."""
-    node_id = id(current)
-    match current:
-        case Unary("-" | "+", operand):
-            frames.append((current, True))
-            frames.append((operand, False))
-        case Binary("+" | "-" | "*", left, right):
-            frames.append((current, True))
-            frames.append((right, False))
-            frames.append((left, False))
-        case Binary("/", left, Number(divisor)) if divisor != 0:
-            frames.append((current, True))
-            frames.append((left, False))
-        case Binary("^", base, Number()) | Call("pow", (base, Number())):
-            frames.append((current, True))
-            frames.append((base, False))
-        case Call(function, (argument,)) if function in _ANTIDERIVATIVES:
-            computed[node_id] = None
-            frames.append((argument, False))
-        case _:
-            computed[node_id] = None
-
-
 def _polynomial_map(
     expression: Expression, variable: Expression
 ) -> dict[int, Polynomial | None]:
@@ -960,21 +912,27 @@ def _polynomial_map(
     Runs iteratively in a single `O(N)` pass with no recursion or repeated rescans.
     """
     computed: dict[int, Polynomial | None] = {}
-    frames: list[tuple[Expression, bool]] = [(expression, False)]
-    while frames:
-        current, ready = frames.pop()
+
+    def leaf(current: Expression) -> bool | None:
         node_id = id(current)
         if node_id in computed:
-            continue
-        if not ready:
-            if isinstance(current, Number):
-                computed[node_id] = {0: current.value}
-            elif current == variable:
-                computed[node_id] = {1: 1.0}
-            else:
-                _push_polynomial_children(current, frames, computed)
-            continue
-        computed[node_id] = _combine_polynomial(current, computed)
+            return True
+        if isinstance(current, Number):
+            computed[node_id] = {0: current.value}
+            return True
+        if current == variable:
+            computed[node_id] = {1: 1.0}
+            return True
+        if isinstance(current, Name | Voltage | Current):
+            computed[node_id] = None
+            return True
+        return None
+
+    def combine(current: Expression, _built: list[bool]) -> bool:
+        computed[id(current)] = _combine_polynomial(current, computed)
+        return True
+
+    fold(expression, leaf, combine)
     return computed
 
 
@@ -1044,56 +1002,39 @@ _ANTIDERIVATIVES: Final[dict[str, Callable[[Expression], Expression]]] = {
 for every argument, of its argument."""
 
 
-def _rebuild_integral(expression: Expression, results: list[Expression]) -> Expression:
-    """Builds the integrated parent node from already-integrated child `results`."""
+class _NotIntegrableError(Exception):
+    """Internal control-flow signal when a subtree has no closed-form integral."""
+
+
+def _check_integrable(current: Expression) -> None:
+    """Raises `_NotIntegrableError` when a non-leaf node cannot be integrated."""
+    match current:
+        case (
+            Unary("-" | "+", _)
+            | Binary("+" | "-", _, _)
+            | Binary("*", Number(), _)
+            | Binary("*", _, Number())
+        ):
+            return
+        case Binary("/", _, Number(divisor)) if divisor != 0:
+            return
+    raise _NotIntegrableError
+
+
+def _combine_integral(expression: Expression, built: list[Expression]) -> Expression:
+    """Builds the integrated parent node from already-integrated child results."""
     match expression:
         case Unary(operator, _):
-            return Unary(operator, results.pop())
+            return Unary(operator, built[0])
         case Binary("+" | "-" as operator, _, _):
-            right = results.pop()
-            left = results.pop()
-            return Binary(operator, left, right)
-        case Binary("*", Number() as factor, _) | Binary("*", _, Number() as factor):
-            return Binary("*", factor, results.pop())
+            return Binary(operator, built[0], built[1])
+        case Binary("*", Number() as factor, _):
+            return Binary("*", factor, built[1])
+        case Binary("*", _, Number() as factor):
+            return Binary("*", factor, built[0])
         case Binary("/", _, Number() as divisor):
-            return Binary("/", results.pop(), divisor)
-    message = f"unexpected expression node: {type(expression).__name__}"
-    raise SpiceError(message)
-
-
-def _step_integral(
-    current: Expression,
-    polynomials: Mapping[int, Polynomial | None],
-    frames: list[tuple[Expression, bool]],
-    results: list[Expression],
-) -> bool:
-    """Expands one non-polynomial node during iterative integration.
-
-    Returns True when `current` admits closed-form integration, False otherwise.
-    """
-    match current:
-        case Unary("-" | "+", operand):
-            frames.append((current, True))
-            frames.append((operand, False))
-        case Binary("+" | "-", left, right):
-            frames.append((current, True))
-            frames.append((right, False))
-            frames.append((left, False))
-        case Binary("*", Number(), other) | Binary("*", other, Number()):
-            frames.append((current, True))
-            frames.append((other, False))
-        case Binary("/", other, Number(divisor)) if divisor != 0:
-            frames.append((current, True))
-            frames.append((other, False))
-        case Call(function, (argument,)) if function in _ANTIDERIVATIVES:
-            line = polynomials.get(id(argument))
-            if line is None or not set(line) <= {0, 1} or line.get(1, 0.0) == 0:
-                return False
-            antiderivative = _ANTIDERIVATIVES[function](argument)
-            results.append(Binary("/", antiderivative, Number(line[1])))
-        case _:
-            return False
-    return True
+            return Binary("/", built[0], divisor)
+    raise _NotIntegrableError
 
 
 def integral(
@@ -1111,33 +1052,33 @@ def integral(
     if depth > _MAX_DEPTH:
         return None
     polynomials = _polynomial_map(expression, variable)
-    frames: list[tuple[Expression, bool]] = [(expression, False)]
-    results: list[Expression] = []
-    while frames:
-        current, ready = frames.pop()
-        if ready:
-            results.append(_rebuild_integral(current, results))
-            continue
+
+    def leaf(current: Expression) -> Expression | None:
         polynomial = polynomials.get(id(current))
         if polynomial is not None:
-            results.append(_polynomial_integral(polynomial, variable))
-            continue
-        if not _step_integral(current, polynomials, frames, results):
-            return None
-    return results[0]
+            return _polynomial_integral(polynomial, variable)
+        if (
+            isinstance(current, Call)
+            and current.function in _ANTIDERIVATIVES
+            and len(current.arguments) == 1
+        ):
+            argument = current.arguments[0]
+            line = polynomials.get(id(argument))
+            if line is None or not set(line) <= {0, 1} or line.get(1, 0.0) == 0:
+                raise _NotIntegrableError
+            antiderivative = _ANTIDERIVATIVES[current.function](argument)
+            return Binary("/", antiderivative, Number(line[1]))
+        return None
+
+    try:
+        return fold(expression, leaf, _combine_integral, before=_check_integrable)
+    except _NotIntegrableError:
+        return None
 
 
 def names(expression: Expression) -> set[str]:
     """The names `expression` reads, of parameters or constants."""
-    found: set[str] = set()
-    stack: list[Expression] = [expression]
-    while stack:
-        current = stack.pop()
-        if isinstance(current, Name):
-            found.add(current.name)
-        else:
-            stack.extend(children(current))
-    return found
+    return {node.name for node in walk(expression) if isinstance(node, Name)}
 
 
 STATISTICAL: Final = {"agauss": 3, "gauss": 3, "aunif": 2, "unif": 2, "limit": 2}
@@ -1193,7 +1134,7 @@ def evaluate(
         raise SpiceError(str(error)) from None
 
 
-def _is_statistical(expression: Expression) -> bool:
+def is_statistical(expression: Expression) -> bool:
     """Whether `expression` is a call to one of SPICE's statistical functions."""
     if not isinstance(expression, Call):
         return False
@@ -1211,35 +1152,24 @@ def _drawn(
     Raises:
         SpiceError: When a statistical function takes the wrong number of arguments.
     """
-    frames: list[tuple[Expression, bool]] = [(expression, False)]
-    results: list[Expression] = []
-    while frames:
-        current, ready = frames.pop()
-        if not ready:
-            if _is_statistical(current) and isinstance(current, Call):
-                expected = STATISTICAL[current.function]
-                if len(current.arguments) != expected:
-                    message = (
-                        f"`{current.function}` takes {expected} arguments, not "
-                        f"{len(current.arguments)}"
-                    )
-                    raise SpiceError(message)
-            subexpressions = children(current)
-            if not subexpressions:
-                results.append(current)
-                continue
-            frames.append((current, True))
-            frames.extend((child, False) for child in reversed(subexpressions))
-            continue
-        arity = len(children(current))
-        built = results[-arity:]
-        del results[-arity:]
-        if _is_statistical(current) and isinstance(current, Call):
+
+    def check(node: Expression) -> None:
+        if is_statistical(node) and isinstance(node, Call):
+            expected = STATISTICAL[node.function]
+            if len(node.arguments) != expected:
+                message = (
+                    f"`{node.function}` takes {expected} arguments, not "
+                    f"{len(node.arguments)}"
+                )
+                raise SpiceError(message)
+
+    def combine(node: Expression, built: list[Expression]) -> Expression:
+        if is_statistical(node) and isinstance(node, Call):
             values = tuple(evaluate(argument, parameters, draw) for argument in built)
-            results.append(Number(draw(current.function, values)))
-        else:
-            results.append(rebuild(current, built))
-    return results[0]
+            return Number(draw(node.function, values))
+        return rebuild(node, built)
+
+    return rewrite(expression, before=check, combine=combine)
 
 
 def _check_translated_length(length: int) -> None:
@@ -1268,46 +1198,31 @@ def translate(
         SpiceError: When the expression names an unknown parameter or function, or
             the translated text exceeds `_MAX_TRANSLATED_LENGTH`.
     """
-    frames: list[tuple[Expression, bool]] = [(expression, False)]
-    results: list[tuple[str, int]] = []
-    while frames:
-        part, ready = frames.pop()
-        if not ready:
-            if isinstance(part, Number | Name | Voltage | Current):
-                leaf_text = _leaf(part, parameters, node, current)
-                _check_translated_length(len(leaf_text))
-                results.append((leaf_text, _ATOM_PRECEDENCE))
-                continue
-            subexpressions = children(part)
-            if not subexpressions:
-                if isinstance(part, Call):
-                    results.append((_call(part.function, []), _ATOM_PRECEDENCE))
-                    continue
-                message = f"unexpected expression node: {type(part).__name__}"
-                raise SpiceError(message)
-            frames.append((part, True))
-            frames.extend((child, False) for child in reversed(subexpressions))
-            continue
-        arity = len(children(part))
-        built = results[-arity:]
-        del results[-arity:]
+
+    def leaf(part: Expression) -> tuple[str, int] | None:
+        if isinstance(part, Number | Name | Voltage | Current):
+            leaf_text = _leaf(part, parameters, node, current)
+            _check_translated_length(len(leaf_text))
+            return leaf_text, _ATOM_PRECEDENCE
+        return None
+
+    def combine(part: Expression, built: list[tuple[str, int]]) -> tuple[str, int]:
         formatted = _format_node(part, built)
         _check_translated_length(len(formatted[0]))
-        results.append(formatted)
-    return results[0][0]
+        return formatted
+
+    return fold(expression, leaf, combine)[0]
 
 
 def _format_unary(operator: str, operand: tuple[str, int]) -> tuple[str, int]:
     """Formats a unary operation with minimal parentheses and space separation."""
-    operand_text, operand_prec = operand
-    if operand_prec < _UNARY_PRECEDENCE:
+    operand_text, operand_precedence = operand
+    if operand_precedence < _UNARY_PRECEDENCE:
         _check_translated_length(len(operator) + len(operand_text) + 2)
         return f"{operator}({operand_text})", _UNARY_PRECEDENCE
-    if operand_prec == _UNARY_PRECEDENCE:
-        _check_translated_length(len(operator) + len(operand_text) + 1)
-        return f"{operator} {operand_text}", _UNARY_PRECEDENCE
-    _check_translated_length(len(operator) + len(operand_text))
-    return f"{operator}{operand_text}", _UNARY_PRECEDENCE
+    spacer = " " if operand_precedence == _UNARY_PRECEDENCE else ""
+    _check_translated_length(len(operator) + len(spacer) + len(operand_text))
+    return f"{operator}{spacer}{operand_text}", _UNARY_PRECEDENCE
 
 
 def _format_binary(
@@ -1315,11 +1230,11 @@ def _format_binary(
 ) -> tuple[str, int]:
     """Formats a left-associative binary operation with minimal parentheses."""
     precedence = _BIN_PRECEDENCE[operator]
-    left_text, left_prec = left
-    right_text, right_prec = right
-    wrap_left = left_prec < precedence
-    wrap_right = right_prec <= precedence or (
-        right_prec == _UNARY_PRECEDENCE and right_text.startswith(("+", "-"))
+    left_text, left_precedence = left
+    right_text, right_precedence = right
+    wrap_left = left_precedence < precedence
+    wrap_right = right_precedence <= precedence or (
+        right_precedence == _UNARY_PRECEDENCE and right_text.startswith(("+", "-"))
     )
     predicted = (
         len(left_text)

@@ -1406,6 +1406,75 @@ def test_compact_model_and_switch_tables_match_engine_schema(
     assert named == set(schema["properties"]) - unread
 
 
+@pytest.mark.parametrize(
+    ("model", "named"),
+    [
+        (
+            "resistor",
+            {
+                "resistance",
+                "nominal_temperature",
+                *models.PASSIVE_DRIFT.values(),
+                *models.PASSIVE_CURVATURE.values(),
+                *(jolty for jolty, _ in models.FLICKER.values()),
+            },
+        ),
+        (
+            "capacitor",
+            {
+                "capacitance",
+                "nominal_temperature",
+                models.PASSIVE_DRIFT["tc1"],
+                models.PASSIVE_DRIFT["tc2"],
+                *models.PASSIVE_CURVATURE.values(),
+            },
+        ),
+        (
+            "inductor",
+            {
+                "inductance",
+                "nominal_temperature",
+                models.PASSIVE_DRIFT["tc1"],
+                models.PASSIVE_DRIFT["tc2"],
+            },
+        ),
+    ],
+)
+def test_passive_tables_match_engine_schema(model: str, named: set[str]) -> None:
+    """Shared passive drift, curvature, and flicker tables match the engine schema."""
+    schema = json.loads(_core.schema(model))
+    unread = {"temperature", "temperature_offset", "thermal"}
+    assert named == set(schema["properties"]) - unread
+
+
+def test_model_tables_have_canonical_entries_and_valid_scaling_subsets() -> None:
+    """Every model table holds valid SI factors and consistent scaling subsets."""
+    tables = (
+        models.DIODE,
+        models.JFET,
+        models.BIPOLAR,
+        models.MOSFET,
+        models.MOSFET_INSTANCE,
+        models.VDMOS,
+        models.VDMOS_INSTANCE,
+        models.VBIC,
+        models.SWITCH,
+        models.CURRENT_SWITCH,
+    )
+    for table in tables:
+        assert table
+        for spice_name, (jolty_name, factor) in table.items():
+            assert spice_name == spice_name.casefold()
+            assert spice_name
+            assert jolty_name
+            assert factor != 0.0
+            assert math.isfinite(factor)
+    assert set(models.DIODE_BY_AREA) <= set(models.DIODE)
+    assert set(models.DIODE_BY_PERIMETER) <= set(models.DIODE)
+    assert set(models.VBIC_MULTIPLIED) <= set(models.VBIC)
+    assert set(models.VBIC_RESISTANCES) <= set(models.VBIC)
+
+
 def test_an_element_takes_the_bin_of_its_length_and_width() -> None:
     """As ngspice's INPgetModBin takes a bin, the last defined that holds them.
 

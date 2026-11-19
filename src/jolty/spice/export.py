@@ -373,40 +373,35 @@ def _spice(table: models.Table) -> dict[str, tuple[str, float]]:
     return names
 
 
-_SPICE_DIODE: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
-    _spice(models.DIODE)
-)
-_SPICE_JFET: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
-    _spice(models.JFET)
-)
-_SPICE_BIPOLAR: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
-    _spice(models.BIPOLAR)
-    | {"substrate": ("subs", 1.0)}
-    | {
-        jolty: (spice, 1.0)
-        for spice, jolty in models.BIPOLAR_TEMPERATURE_MODELS.items()
+_SPICE_CARDS: Final[Mapping[str, Mapping[str, tuple[str, float]]]] = MappingProxyType(
+    {
+        "diode": MappingProxyType(_spice(models.DIODE)),
+        "jfet": MappingProxyType(_spice(models.JFET)),
+        "bipolar_transistor": MappingProxyType(
+            _spice(models.BIPOLAR)
+            | {"substrate": ("subs", 1.0)}
+            | {
+                jolty: (spice, 1.0)
+                for spice, jolty in models.BIPOLAR_TEMPERATURE_MODELS.items()
+            }
+        ),
+        "mosfet": MappingProxyType(
+            _spice(models.MOSFET)
+            | {"gate_material": ("tpg", 1.0), "level": ("level", 1.0)}
+        ),
+        "vdmos": MappingProxyType(_spice(models.VDMOS)),
+        "vbic": MappingProxyType(_spice(models.VBIC) | {"base_charge": ("qbm", 1.0)}),
     }
 )
-_SPICE_MOSFET: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
-    _spice(models.MOSFET) | {"gate_material": ("tpg", 1.0), "level": ("level", 1.0)}
-)
-_SPICE_MOSFET_INSTANCE: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
-    _spice(models.MOSFET_INSTANCE)
-)
-_SPICE_VDMOS: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
-    _spice(models.VDMOS)
-)
-_SPICE_VDMOS_INSTANCE: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
-    _spice(models.VDMOS_INSTANCE)
-)
-_SPICE_VBIC: Final[Mapping[str, tuple[str, float]]] = MappingProxyType(
-    _spice(models.VBIC) | {"base_charge": ("qbm", 1.0)}
-)
-_SPICE_BSIM_INSTANCE: Final[Mapping[str, Mapping[str, tuple[str, float]]]] = (
+_SPICE_INSTANCES: Final[Mapping[str, Mapping[str, tuple[str, float]]]] = (
     MappingProxyType(
         {
-            name: MappingProxyType(_spice(bsim.instance))
-            for name, bsim in models.BSIMS.items()
+            "mosfet": MappingProxyType(_spice(models.MOSFET_INSTANCE)),
+            "vdmos": MappingProxyType(_spice(models.VDMOS_INSTANCE)),
+            **{
+                name: MappingProxyType(_spice(bsim.instance))
+                for name, bsim in models.BSIMS.items()
+            },
         }
     )
 )
@@ -461,31 +456,26 @@ def _card_names(
         JoltyError: When the device has no model card, or a VBIC's resistance is too
             small.
     """
-    instance: Mapping[str, tuple[str, float]] = _EMPTY_SPICE_TABLE
+    if model not in _SPICE_CARDS:
+        message = f"a {model} has no model card"
+        raise _unwritable(message)
+    names = dict(_SPICE_CARDS[model])
+    instance = _SPICE_INSTANCES.get(model, _EMPTY_SPICE_TABLE)
     match model:
         case "diode":
-            kind, names = "D", dict(_SPICE_DIODE)
+            kind = "D"
             values, instance = _diode_sidewall(_diode_capacitances(values))
         case "jfet":
-            channel = _defaulted(model, values)["channel"]
-            kind, names = f"{channel}jf".upper(), dict(_SPICE_JFET)
+            kind = f"{_defaulted(model, values)['channel']}jf".upper()
         case "bipolar_transistor":
             kind = str(_defaulted(model, values)["polarity"]).upper()
-            names = dict(_SPICE_BIPOLAR)
         case "mosfet":
             kind = f"{_defaulted(model, values)['channel']}mos".upper()
-            names = dict(_SPICE_MOSFET)
-            instance = _SPICE_MOSFET_INSTANCE
         case "vdmos":
-            kind, names = "VDMOS", dict(_SPICE_VDMOS)
-            instance = _SPICE_VDMOS_INSTANCE
-        case "vbic":
-            kind = str(_defaulted(model, values)["polarity"]).upper()
-            names = dict(_SPICE_VBIC)
-            values = _vbic_resistances(values)
+            kind = "VDMOS"
         case _:
-            message = f"a {model} has no model card"
-            raise _unwritable(message)
+            kind = str(_defaulted(model, values)["polarity"]).upper()
+            values = _vbic_resistances(values)
     return kind, names, instance, values
 
 
@@ -684,7 +674,7 @@ def _bsim_card(model: str, values: dict[str, JsonValue]) -> tuple[str, str, str]
     bsim = models.BSIMS[model]
     defaulted = _defaulted(model, values)
     kind = f"{defaulted['channel']}mos".upper()
-    element = _SPICE_BSIM_INSTANCE[model]
+    element = _SPICE_INSTANCES[model]
     names = _SPICE_BSIM_NAMES[model]
     nominal = _number(model, defaulted, "nominal_temperature")
     card = [*bsim.written, "binunit=2", f"tnom={nominal - ZERO_CELSIUS!r}"]
@@ -1242,18 +1232,13 @@ _PASSIVE_PRIMARY: Final = {
 }
 """Each passive device's primary parameter name."""
 
-_PASSIVE_DRIFT = {
-    "temperature_coefficient": "tc1",
-    "quadratic_temperature_coefficient": "tc2",
-    "exponential_temperature_coefficient": "tce",
-}
+_PASSIVE_DRIFT: Final = {jolty: spice for spice, jolty in models.PASSIVE_DRIFT.items()}
 """The SPICE name of each temperature coefficient of a passive device."""
 
-_CURVATURE = ("voltage_coefficient", "quadratic_voltage_coefficient")
+_CURVATURE: Final = tuple(models.PASSIVE_CURVATURE.values())
 """A resistor's or a capacitor's voltage coefficients, linear then quadratic."""
 
-
-_FLICKER: Final = {"flicker_coefficient": "kf", "flicker_exponent": "af"}
+_FLICKER: Final = {jolty: spice for spice, (jolty, _) in models.FLICKER.items()}
 """A resistor's flicker noise parameters, as ngspice's model card names them."""
 
 
@@ -1699,6 +1684,16 @@ def _sense(instance: ir.Instance) -> str:
     return f"V{element(instance)}SENSE"
 
 
+def _voltage_vector(
+    name: str, subcircuit_names: Collection[str], dialect: Dialect
+) -> str:
+    """Formats a net path as a simulator ``v(...)`` vector name."""
+    first, *rest = name.split("/")
+    if rest and first in subcircuit_names:
+        return f"v({dialect.separator.join([f'x{first}', *rest]).lower()})"
+    return f"v({_node(name).lower()})"
+
+
 def vector(
     circuit: ir.Circuit,
     unknown: Unknown,
@@ -1722,11 +1717,14 @@ def vector(
     flat = flatten(circuit, subcircuits)
     top = flat.components[flat.top]
     if unknown.nature == "voltage":
-        first, *rest = unknown.name.split("/")
+        first = unknown.name.partition("/")[0]
         kept = top.instance(first)
-        if rest and kept is not None and isinstance(kept.of, ir.ComponentOf):
-            return f"v({dialect.separator.join([f'x{first}', *rest]).lower()})"
-        return f"v({_node(unknown.name).lower()})"
+        names = (
+            (first,)
+            if kept is not None and isinstance(kept.of, ir.ComponentOf)
+            else ()
+        )
+        return _voltage_vector(unknown.name, names, dialect)
     path, _, label = unknown.name.rpartition(":")
     id = _node(path)
     found = [instance for instance in top.instances if instance.name == id]
@@ -1777,14 +1775,10 @@ def node_voltages(
         for instance in top.instances
         if isinstance(instance.of, ir.ComponentOf)
     )
-    parts: list[str] = []
-    for net, volts in voltages.items():
-        first, *rest = net.split("/")
-        if rest and first in subcircuit_names:
-            name = f"v({dialect.separator.join([f'x{first}', *rest]).lower()})"
-        else:
-            name = f"v({_node(net).lower()})"
-        parts.append(f"{name}={volts!r}")
+    parts = [
+        f"{_voltage_vector(net, subcircuit_names, dialect)}={volts!r}"
+        for net, volts in voltages.items()
+    ]
     return [f"{keyword} {' '.join(parts)}"]
 
 
