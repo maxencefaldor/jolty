@@ -58,322 +58,231 @@ fn to_window((start, stop): PyWindow) -> Window {
     Window { start, stop }
 }
 
-#[pymethods]
-impl Measure {
-    /// The value of `signal` at an operating point, or interpolated `at` a time or a level.
-    #[staticmethod]
-    fn value(signal: PySignal, at: Option<f64>) -> Self {
-        Self(measure::Measure::Value {
-            signal: to_signal(signal),
-            at,
+/// Generates `#[pymethods] impl Measure` with uniform `#[staticmethod]` constructors and
+/// array readers preserving each method's docstrings, followed by custom methods.
+macro_rules! measure {
+    (@val signal $value:ident) => {
+        to_signal($value)
+    };
+    (@val transfer $value:ident) => {
+        to_transfer($value)
+    };
+    (@val window $value:ident) => {
+        to_window($value)
+    };
+    (@val $_:ident $value:ident) => {
+        $value
+    };
+    (@body $variant:ident) => {
+        Self(measure::Measure::$variant)
+    };
+    (@body $variant:ident $($param:ident)+) => {
+        Self(measure::Measure::$variant {
+            $($param: measure!(@val $param $param)),+
         })
-    }
+    };
+    (
+        constructors {
+            $(
+                $(#[$doc:meta])*
+                $name:ident($($param:ident: $ty:ty),* $(,)?) => $variant:ident;
+            )*
+        }
+        table_readers {
+            $(
+                $(#[$reader_doc:meta])*
+                $reader:ident($axis:ident, $values:ident: $element:ty) => $kind:ident;
+            )*
+        }
+        slice_readers {
+            $(
+                $(#[$single_doc:meta])*
+                $single:ident($arg:ident: $arg_ty:ty) => $single_kind:ident;
+            )*
+        }
+        methods {
+            $($custom:tt)*
+        }
+    ) => {
+        #[pymethods]
+        impl Measure {
+            $(
+                $(#[$doc])*
+                #[staticmethod]
+                fn $name($($param: $ty),*) -> Self {
+                    measure!(@body $variant $($param)*)
+                }
+            )*
+            $(
+                $(#[$reader_doc])*
+                fn $reader(
+                    &self,
+                    $axis: &Bound<'_, PyArray1<f64>>,
+                    $values: &Bound<'_, PyArray2<$element>>,
+                ) -> PyResult<f64> {
+                    self.read_table($axis, $values, |$axis, $values| {
+                        AnalysisResult::$kind { $axis, $values }
+                    })
+                }
+            )*
+            $(
+                $(#[$single_doc])*
+                fn $single(&self, $arg: &Bound<'_, PyArray1<$arg_ty>>) -> PyResult<f64> {
+                    with_slice($arg, |$arg| self.read(&AnalysisResult::$single_kind($arg)))
+                }
+            )*
+            $($custom)*
+        }
+    };
+}
 
-    /// The gain of `transfer` at the frequency `at`, in decibels.
-    #[staticmethod]
-    fn gain(transfer: PyTransfer, at: f64) -> Self {
-        Self(measure::Measure::Gain {
-            transfer: to_transfer(transfer),
-            at,
-        })
+measure! {
+    constructors {
+        /// The value of `signal` at an operating point, or interpolated `at` a time or a level.
+        value(signal: PySignal, at: Option<f64>) => Value;
+        /// The gain of `transfer` at the frequency `at`, in decibels.
+        gain(transfer: PyTransfer, at: f64) => Gain;
+        /// The phase of `transfer` at the frequency `at`, in degrees.
+        phase(transfer: PyTransfer, at: f64) => Phase;
+        /// The frequency where the gain of `transfer` first falls `drop` decibels.
+        bandwidth(transfer: PyTransfer, drop: f64) => Bandwidth;
+        /// The frequency where the gain of `transfer` first falls through 0 dB.
+        crossover(transfer: PyTransfer) => Crossover;
+        /// 180° plus the phase of `transfer` where its gain first falls through 0 dB.
+        phase_margin(transfer: PyTransfer) => PhaseMargin;
+        /// Minus the gain of `transfer` where its phase first falls through -180°, in decibels.
+        gain_margin(transfer: PyTransfer) => GainMargin;
+        /// The highest value of `signal` in `window`.
+        maximum(signal: PySignal, window: PyWindow) => Maximum;
+        /// The lowest value of `signal` in `window`.
+        minimum(signal: PySignal, window: PyWindow) => Minimum;
+        /// The highest less the lowest value of `signal` in `window`.
+        peak_to_peak(signal: PySignal, window: PyWindow) => PeakToPeak;
+        /// The mean of `signal` in `window`, by the trapezoidal rule.
+        mean(signal: PySignal, window: PyWindow) => Mean;
+        /// The root mean square of `signal` in `window`.
+        rms(signal: PySignal, window: PyWindow) => Rms;
+        /// The time `signal` takes to pass from `low` to `high` of its step across `window`.
+        rise_time(signal: PySignal, window: PyWindow, low: f64, high: f64) => RiseTime;
+        /// How far `signal` passes its final value, in percent of its step across `window`.
+        overshoot(signal: PySignal, window: PyWindow) => Overshoot;
+        /// The time until `signal` stays within `band` of its step across `window`.
+        settling_time(signal: PySignal, window: PyWindow, band: f64) => SettlingTime;
+        /// How often `signal` rises through `level` in `window`, by default its midpoint.
+        frequency(signal: PySignal, window: PyWindow, level: Option<f64>) => Frequency;
+        /// The total harmonic distortion of `signal` at `fundamental`, harmonics 2 to
+        /// `harmonics`, in decibels.
+        distortion(
+            signal: PySignal,
+            window: PyWindow,
+            fundamental: f64,
+            harmonics: usize,
+        ) => Distortion;
+        /// The noise density at the frequency `at`, referred to the input if `referred`.
+        noise_density(at: f64, referred: bool) => NoiseDensity;
+        /// The RMS noise from `start` to `stop`, referred to the input if `referred`.
+        integrated_noise(start: Option<f64>, stop: Option<f64>, referred: bool) => IntegratedNoise;
+        /// How many DC solutions a search found.
+        solutions() => Solutions;
+        /// The least damping ratio of the poles.
+        damping() => Damping;
+        /// The least natural frequency of the poles, in hertz.
+        dominant_pole() => DominantPole;
     }
-
-    /// The phase of `transfer` at the frequency `at`, in degrees.
-    #[staticmethod]
-    fn phase(transfer: PyTransfer, at: f64) -> Self {
-        Self(measure::Measure::Phase {
-            transfer: to_transfer(transfer),
-            at,
-        })
+    table_readers {
+        /// What the measure reads of a DC sweep's `levels` and `values`, one row per level.
+        read_dc_sweep(swept, values: f64) => DcSweep;
+        /// What the measure reads of a transient's `times` and `values`, one row per time.
+        read_transient(times, values: f64) => Transient;
+        /// What the measure reads of a small-signal response's `frequencies` and phasors,
+        /// `values`, one row per frequency.
+        read_ac(frequencies, values: Complex64) => Ac;
     }
-
-    /// The frequency where the gain of `transfer` first falls `drop` decibels.
-    #[staticmethod]
-    fn bandwidth(transfer: PyTransfer, drop: f64) -> Self {
-        Self(measure::Measure::Bandwidth {
-            transfer: to_transfer(transfer),
-            drop,
-        })
+    slice_readers {
+        /// What the measure reads of an operating point's `values`.
+        read_operating_point(values: f64) => OperatingPoint;
+        /// What the measure reads of a pole-zero analysis's `poles`.
+        read_pole_zero(poles: Complex64) => PoleZero;
     }
+    methods {
+        /// The first time `signal` crosses `level` in `window` the way `edge` says: `"rising"`,
+        /// `"falling"` or `"either"`.
+        #[staticmethod]
+        fn crossing(signal: PySignal, window: PyWindow, level: f64, edge: &str) -> PyResult<Self> {
+            let edge = match edge {
+                "rising" => Edge::Rising,
+                "falling" => Edge::Falling,
+                "either" => Edge::Either,
+                _ => {
+                    return Err(PyValueError::new_err(format!(
+                        "an edge is rising, falling or either, not {edge}"
+                    )));
+                }
+            };
+            Ok(Self(measure::Measure::Crossing {
+                signal: to_signal(signal),
+                window: to_window(window),
+                level,
+                edge,
+            }))
+        }
 
-    /// The frequency where the gain of `transfer` first falls through 0 dB.
-    #[staticmethod]
-    fn crossover(transfer: PyTransfer) -> Self {
-        Self(measure::Measure::Crossover {
-            transfer: to_transfer(transfer),
-        })
-    }
+        /// What the measure reads of a loop gain's `frequencies` and `gains`.
+        fn read_stability(
+            &self,
+            frequencies: &Bound<'_, PyArray1<f64>>,
+            gains: &Bound<'_, PyArray1<Complex64>>,
+        ) -> PyResult<f64> {
+            with_slices(frequencies, gains, |frequencies, gains| {
+                self.read(&AnalysisResult::Stability { frequencies, gains })
+            })
+        }
 
-    /// 180° plus the phase of `transfer` where its gain first falls through 0 dB.
-    #[staticmethod]
-    fn phase_margin(transfer: PyTransfer) -> Self {
-        Self(measure::Measure::PhaseMargin {
-            transfer: to_transfer(transfer),
-        })
-    }
+        /// What the measure reads of a noise analysis's `frequencies`, `densities`, and `gains`
+        /// from its source, if it names one.
+        fn read_noise(
+            &self,
+            frequencies: &Bound<'_, PyArray1<f64>>,
+            densities: &Bound<'_, PyArray1<f64>>,
+            gains: Option<&Bound<'_, PyArray1<Complex64>>>,
+        ) -> PyResult<f64> {
+            with_slices(frequencies, densities, |frequencies, densities| {
+                let gains = gains.map(PyArrayMethods::readonly);
+                let gains = gains.as_ref().map(slice);
+                self.read(&AnalysisResult::Noise {
+                    frequencies,
+                    densities,
+                    gains: gains.as_deref(),
+                })
+            })
+        }
 
-    /// Minus the gain of `transfer` where its phase first falls through -180°, in decibels.
-    #[staticmethod]
-    fn gain_margin(transfer: PyTransfer) -> Self {
-        Self(measure::Measure::GainMargin {
-            transfer: to_transfer(transfer),
-        })
-    }
+        /// What the measure reads of a search that found `count` DC solutions.
+        fn read_operating_points(&self, count: usize) -> PyResult<f64> {
+            self.read(&AnalysisResult::OperatingPoints(count))
+        }
 
-    /// The highest value of `signal` in `window`.
-    #[staticmethod]
-    fn maximum(signal: PySignal, window: PyWindow) -> Self {
-        Self(measure::Measure::Maximum {
-            signal: to_signal(signal),
-            window: to_window(window),
-        })
-    }
-
-    /// The lowest value of `signal` in `window`.
-    #[staticmethod]
-    fn minimum(signal: PySignal, window: PyWindow) -> Self {
-        Self(measure::Measure::Minimum {
-            signal: to_signal(signal),
-            window: to_window(window),
-        })
-    }
-
-    /// The highest less the lowest value of `signal` in `window`.
-    #[staticmethod]
-    fn peak_to_peak(signal: PySignal, window: PyWindow) -> Self {
-        Self(measure::Measure::PeakToPeak {
-            signal: to_signal(signal),
-            window: to_window(window),
-        })
-    }
-
-    /// The mean of `signal` in `window`, by the trapezoidal rule.
-    #[staticmethod]
-    fn mean(signal: PySignal, window: PyWindow) -> Self {
-        Self(measure::Measure::Mean {
-            signal: to_signal(signal),
-            window: to_window(window),
-        })
-    }
-
-    /// The root mean square of `signal` in `window`.
-    #[staticmethod]
-    fn rms(signal: PySignal, window: PyWindow) -> Self {
-        Self(measure::Measure::Rms {
-            signal: to_signal(signal),
-            window: to_window(window),
-        })
-    }
-
-    /// The time `signal` takes to pass from `low` to `high` of its step across `window`.
-    #[staticmethod]
-    fn rise_time(signal: PySignal, window: PyWindow, low: f64, high: f64) -> Self {
-        Self(measure::Measure::RiseTime {
-            signal: to_signal(signal),
-            window: to_window(window),
-            low,
-            high,
-        })
-    }
-
-    /// How far `signal` passes its final value, in percent of its step across `window`.
-    #[staticmethod]
-    fn overshoot(signal: PySignal, window: PyWindow) -> Self {
-        Self(measure::Measure::Overshoot {
-            signal: to_signal(signal),
-            window: to_window(window),
-        })
-    }
-
-    /// The time until `signal` stays within `band` of its step across `window`.
-    #[staticmethod]
-    fn settling_time(signal: PySignal, window: PyWindow, band: f64) -> Self {
-        Self(measure::Measure::SettlingTime {
-            signal: to_signal(signal),
-            window: to_window(window),
-            band,
-        })
-    }
-
-    /// The first time `signal` crosses `level` in `window` the way `edge` says: `"rising"`,
-    /// `"falling"` or `"either"`.
-    #[staticmethod]
-    fn crossing(signal: PySignal, window: PyWindow, level: f64, edge: &str) -> PyResult<Self> {
-        let edge = match edge {
-            "rising" => Edge::Rising,
-            "falling" => Edge::Falling,
-            "either" => Edge::Either,
-            _ => {
-                return Err(PyValueError::new_err(format!(
-                    "an edge is rising, falling or either, not {edge}"
-                )));
-            }
-        };
-        Ok(Self(measure::Measure::Crossing {
-            signal: to_signal(signal),
-            window: to_window(window),
-            level,
-            edge,
-        }))
-    }
-
-    /// How often `signal` rises through `level` in `window`, by default its midpoint.
-    #[staticmethod]
-    fn frequency(signal: PySignal, window: PyWindow, level: Option<f64>) -> Self {
-        Self(measure::Measure::Frequency {
-            signal: to_signal(signal),
-            window: to_window(window),
-            level,
-        })
-    }
-
-    /// The total harmonic distortion of `signal` at `fundamental`, harmonics 2 to
-    /// `harmonics`, in decibels.
-    #[staticmethod]
-    fn distortion(signal: PySignal, window: PyWindow, fundamental: f64, harmonics: usize) -> Self {
-        Self(measure::Measure::Distortion {
-            signal: to_signal(signal),
-            window: to_window(window),
-            fundamental,
-            harmonics,
-        })
-    }
-
-    /// The noise density at the frequency `at`, referred to the input if `referred`.
-    #[staticmethod]
-    fn noise_density(at: f64, referred: bool) -> Self {
-        Self(measure::Measure::NoiseDensity { at, referred })
-    }
-
-    /// The RMS noise from `start` to `stop`, referred to the input if `referred`.
-    #[staticmethod]
-    fn integrated_noise(start: Option<f64>, stop: Option<f64>, referred: bool) -> Self {
-        Self(measure::Measure::IntegratedNoise {
-            start,
-            stop,
-            referred,
-        })
-    }
-
-    /// How many DC solutions a search found.
-    #[staticmethod]
-    fn solutions() -> Self {
-        Self(measure::Measure::Solutions)
-    }
-
-    /// The least damping ratio of the poles.
-    #[staticmethod]
-    fn damping() -> Self {
-        Self(measure::Measure::Damping)
-    }
-
-    /// The least natural frequency of the poles, in hertz.
-    #[staticmethod]
-    fn dominant_pole() -> Self {
-        Self(measure::Measure::DominantPole)
-    }
-
-    /// What the measure reads of an operating point's `values`.
-    fn read_operating_point(&self, values: &Bound<'_, PyArray1<f64>>) -> PyResult<f64> {
-        let values = values.readonly();
-        self.read(&AnalysisResult::OperatingPoint(&slice(&values)))
-    }
-
-    /// What the measure reads of a DC sweep's `levels` and `values`, one row per level.
-    fn read_dc_sweep(
-        &self,
-        swept: &Bound<'_, PyArray1<f64>>,
-        values: &Bound<'_, PyArray2<f64>>,
-    ) -> PyResult<f64> {
-        let swept = swept.readonly();
-        let values = values.readonly();
-        self.read(&AnalysisResult::DcSweep {
-            swept: &slice(&swept),
-            values: &Rows(values.as_array()),
-        })
-    }
-
-    /// What the measure reads of a transient's `times` and `values`, one row per time.
-    fn read_transient(
-        &self,
-        times: &Bound<'_, PyArray1<f64>>,
-        values: &Bound<'_, PyArray2<f64>>,
-    ) -> PyResult<f64> {
-        let times = times.readonly();
-        let values = values.readonly();
-        self.read(&AnalysisResult::Transient {
-            times: &slice(&times),
-            values: &Rows(values.as_array()),
-        })
-    }
-
-    /// What the measure reads of a small-signal response's `frequencies` and phasors,
-    /// `values`, one row per frequency.
-    fn read_ac(
-        &self,
-        frequencies: &Bound<'_, PyArray1<f64>>,
-        values: &Bound<'_, PyArray2<Complex64>>,
-    ) -> PyResult<f64> {
-        let frequencies = frequencies.readonly();
-        let values = values.readonly();
-        self.read(&AnalysisResult::Ac {
-            frequencies: &slice(&frequencies),
-            values: &Rows(values.as_array()),
-        })
-    }
-
-    /// What the measure reads of a loop gain's `frequencies` and `gains`.
-    fn read_stability(
-        &self,
-        frequencies: &Bound<'_, PyArray1<f64>>,
-        gains: &Bound<'_, PyArray1<Complex64>>,
-    ) -> PyResult<f64> {
-        let frequencies = frequencies.readonly();
-        let gains = gains.readonly();
-        self.read(&AnalysisResult::Stability {
-            frequencies: &slice(&frequencies),
-            gains: &slice(&gains),
-        })
-    }
-
-    /// What the measure reads of a noise analysis's `frequencies`, `densities`, and `gains`
-    /// from its source, if it names one.
-    fn read_noise(
-        &self,
-        frequencies: &Bound<'_, PyArray1<f64>>,
-        densities: &Bound<'_, PyArray1<f64>>,
-        gains: Option<&Bound<'_, PyArray1<Complex64>>>,
-    ) -> PyResult<f64> {
-        let frequencies = frequencies.readonly();
-        let densities = densities.readonly();
-        let gains = gains.map(PyArrayMethods::readonly);
-        let gains = gains.as_ref().map(slice);
-        self.read(&AnalysisResult::Noise {
-            frequencies: &slice(&frequencies),
-            densities: &slice(&densities),
-            gains: gains.as_deref(),
-        })
-    }
-
-    /// What the measure reads of a pole-zero analysis's `poles`.
-    fn read_pole_zero(&self, poles: &Bound<'_, PyArray1<Complex64>>) -> PyResult<f64> {
-        let poles = poles.readonly();
-        self.read(&AnalysisResult::PoleZero(&slice(&poles)))
-    }
-
-    /// What the measure reads of a search that found `count` DC solutions.
-    fn read_operating_points(&self, count: usize) -> PyResult<f64> {
-        self.read(&AnalysisResult::OperatingPoints(count))
-    }
-
-    fn __repr__(&self) -> String {
-        format!("{:?}", self.0)
+        fn __repr__(&self) -> String {
+            format!("{:?}", self.0)
+        }
     }
 }
 
 impl Measure {
     fn read(&self, results: &AnalysisResult<'_>) -> PyResult<f64> {
         self.0.measure(results).map_err(failure)
+    }
+
+    fn read_table<T: Element + Copy>(
+        &self,
+        axis: &Bound<'_, PyArray1<f64>>,
+        values: &Bound<'_, PyArray2<T>>,
+        build: impl for<'a> FnOnce(&'a [f64], &'a dyn Table<T>) -> AnalysisResult<'a>,
+    ) -> PyResult<f64> {
+        let (axis, values) = (axis.readonly(), values.readonly());
+        let rows = Rows(values.as_array());
+        let table: &dyn Table<T> = &rows;
+        self.read(&build(&slice(&axis), table))
     }
 }
 
@@ -398,14 +307,33 @@ fn slice<'a, T: Element + Copy>(array: &'a PyReadonlyArray1<'_, T>) -> Cow<'a, [
     }
 }
 
+/// Runs `work` on a contiguous slice of `array`, borrowing in place when contiguous.
+fn with_slice<T: Element + Copy, R>(
+    array: &Bound<'_, PyArray1<T>>,
+    work: impl FnOnce(&[T]) -> R,
+) -> R {
+    let guard = array.readonly();
+    work(&slice(&guard))
+}
+
+/// Runs `work` on contiguous slices of `first` and `second`.
+fn with_slices<A: Element + Copy, B: Element + Copy, R>(
+    first: &Bound<'_, PyArray1<A>>,
+    second: &Bound<'_, PyArray1<B>>,
+    work: impl FnOnce(&[A], &[B]) -> R,
+) -> R {
+    let (first, second) = (first.readonly(), second.readonly());
+    work(&slice(&first), &slice(&second))
+}
+
 /// `error` as a Python exception: the one Python's `math.fsum` or the allocation of a
 /// distortion's samples would raise, or a `MeasureError` of its reason and numbers.
 pub(crate) fn failure(error: Failure) -> PyErr {
-    match reason(error) {
-        ("overflow", _) => PyOverflowError::new_err(error.to_string()),
-        ("indeterminate", _) => PyValueError::new_err(error.to_string()),
-        ("memory", _) => PyMemoryError::new_err(error.to_string()),
-        (reason, numbers) => MeasureError::new_err((reason, numbers)),
+    match error {
+        Failure::Sum(SumError::Overflow) => PyOverflowError::new_err(error.to_string()),
+        Failure::Sum(SumError::Indeterminate) => PyValueError::new_err(error.to_string()),
+        Failure::Memory => PyMemoryError::new_err(error.to_string()),
+        other => MeasureError::new_err(reason(other)),
     }
 }
 
@@ -414,41 +342,42 @@ pub(crate) fn failure(error: Failure) -> PyErr {
 /// `"memory"` where Python raises `OverflowError`, `ValueError` or `MemoryError`, as its
 /// `math.fsum` or its allocation of a distortion's samples would.
 pub(crate) fn reason(error: Failure) -> (&'static str, Vec<f64>) {
-    match error {
-        Failure::Sum(SumError::Overflow) => ("overflow", vec![]),
-        Failure::Sum(SumError::Indeterminate) => ("indeterminate", vec![]),
-        Failure::Memory => ("memory", vec![]),
-        Failure::Kind => ("kind", vec![]),
-        Failure::Unknown(_) => ("unknown", vec![]),
-        Failure::Mismatch => ("mismatch", vec![]),
-        Failure::Empty => ("empty", vec![]),
+    let name = match error {
         Failure::Outside { point, first, last } => {
             let named = match point {
                 measure::Point::At => "outside_at",
                 measure::Point::Start => "outside_start",
                 measure::Point::Stop => "outside_stop",
             };
-            (named, vec![first, last])
+            return (named, vec![first, last]);
         }
-        Failure::EmptyWindow => ("empty_window", vec![]),
-        Failure::Flat(level) => ("flat", vec![level]),
-        Failure::Uncrossed => ("uncrossed", vec![]),
-        Failure::Stays(lowest) => ("stays", vec![lowest]),
-        Failure::Rises(level) => ("rises", vec![level]),
-        Failure::Vanishes => ("vanishes", vec![]),
-        Failure::Unpositive(lowest) => ("unpositive", vec![lowest]),
-        Failure::Short => ("short", vec![]),
-        Failure::Silent => ("silent", vec![]),
-        Failure::EmptyBand => ("empty_band", vec![]),
+        Failure::Flat(level) => return ("flat", vec![level]),
+        Failure::Stays(lowest) => return ("stays", vec![lowest]),
+        Failure::Rises(level) => return ("rises", vec![level]),
+        Failure::Unpositive(lowest) => return ("unpositive", vec![lowest]),
         Failure::Band {
             low,
             high,
             first,
             last,
-        } => ("band", vec![low, high, first, last]),
-        Failure::NoPoles => ("no_poles", vec![]),
-        Failure::Unreferred => ("unreferred", vec![]),
-    }
+        } => return ("band", vec![low, high, first, last]),
+        Failure::Sum(SumError::Overflow) => "overflow",
+        Failure::Sum(SumError::Indeterminate) => "indeterminate",
+        Failure::Memory => "memory",
+        Failure::Kind => "kind",
+        Failure::Unknown(_) => "unknown",
+        Failure::Mismatch => "mismatch",
+        Failure::Empty => "empty",
+        Failure::EmptyWindow => "empty_window",
+        Failure::Uncrossed => "uncrossed",
+        Failure::Vanishes => "vanishes",
+        Failure::Short => "short",
+        Failure::Silent => "silent",
+        Failure::EmptyBand => "empty_band",
+        Failure::NoPoles => "no_poles",
+        Failure::Unreferred => "unreferred",
+    };
+    (name, Vec::new())
 }
 
 /// The integral of `densities` over `frequencies` from `start` to `stop`, by default the
@@ -461,9 +390,9 @@ fn integrate(
     start: Option<f64>,
     stop: Option<f64>,
 ) -> PyResult<f64> {
-    let frequencies = frequencies.readonly();
-    let densities = densities.readonly();
-    measure::integrate(&slice(&frequencies), &slice(&densities), start, stop).map_err(failure)
+    with_slices(frequencies, densities, |frequencies, densities| {
+        measure::integrate(frequencies, densities, start, stop).map_err(failure)
+    })
 }
 
 /// The density at the frequency `at`, a power law between the frequencies around it.
@@ -473,9 +402,9 @@ fn density(
     densities: &Bound<'_, PyArray1<f64>>,
     at: f64,
 ) -> PyResult<f64> {
-    let frequencies = frequencies.readonly();
-    let densities = densities.readonly();
-    measure::density(&slice(&frequencies), &slice(&densities), at).map_err(failure)
+    with_slices(frequencies, densities, |frequencies, densities| {
+        measure::density(frequencies, densities, at).map_err(failure)
+    })
 }
 
 /// The noise `densities` referred to an input through `gains`, each over the gain's
@@ -486,16 +415,12 @@ fn referred<'py>(
     densities: &Bound<'py, PyArray1<f64>>,
     gains: &Bound<'py, PyArray1<Complex64>>,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    let densities = densities.readonly();
-    let gains = gains.readonly();
-    let (densities, gains) = (slice(&densities), slice(&gains));
-    if densities.len() != gains.len() {
-        return Err(failure(Failure::Mismatch));
-    }
-    Ok(PyArray1::from_vec(
-        py,
-        measure::referred(&densities, &gains),
-    ))
+    with_slices(densities, gains, |densities, gains| {
+        if densities.len() != gains.len() {
+            return Err(failure(Failure::Mismatch));
+        }
+        Ok(PyArray1::from_vec(py, measure::referred(densities, gains)))
+    })
 }
 
 /// The damping ratio of each of `roots`, minus its real part over its magnitude.
@@ -504,8 +429,7 @@ fn dampings<'py>(
     py: Python<'py>,
     roots: &Bound<'py, PyArray1<Complex64>>,
 ) -> Bound<'py, PyArray1<f64>> {
-    let roots = roots.readonly();
-    PyArray1::from_vec(py, measure::dampings(&slice(&roots)))
+    PyArray1::from_vec(py, with_slice(roots, measure::dampings))
 }
 
 /// The natural frequency of each of `roots`, its magnitude over 2π, in hertz.
@@ -514,8 +438,7 @@ fn natural_frequencies<'py>(
     py: Python<'py>,
     roots: &Bound<'py, PyArray1<Complex64>>,
 ) -> Bound<'py, PyArray1<f64>> {
-    let roots = roots.readonly();
-    PyArray1::from_vec(py, measure::natural_frequencies(&slice(&roots)))
+    PyArray1::from_vec(py, with_slice(roots, measure::natural_frequencies))
 }
 
 /// Adds the measures, their error and the arithmetic results share with them to `module`.

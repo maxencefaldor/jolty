@@ -31,15 +31,15 @@ type Window = tuple[float | None, float | None]
 type Nature = Literal["voltage", "current", "temperature", "state"]
 
 class RecordedValues(TypedDict):
-    currents: npt.NDArray[np.float64]
-    charges: npt.NDArray[np.float64]
-    conductances: npt.NDArray[np.float64]
-    capacitances: npt.NDArray[np.float64]
-    variables: npt.NDArray[np.float64]
+    currents: Real
+    charges: Real
+    conductances: Real
+    capacitances: Real
+    variables: Real
 
 class SolvedPoint(RecordedValues):
-    values: npt.NDArray[np.float64]
-    logic: npt.NDArray[np.float64]
+    values: Real
+    logic: Real
     strategy: str
     iterations: int
 
@@ -55,18 +55,18 @@ class DcSweepResult(RecordedValues):
     source: str
     parameter: str | None
     nature: Nature | None
-    swept: npt.NDArray[np.float64]
-    values: npt.NDArray[np.float64]
-    logic: npt.NDArray[np.float64]
+    swept: Real
+    values: Real
+    logic: Real
     strategies: list[str]
     iterations: list[int]
 
 class AcResult(TypedDict):
     kind: Literal["ac"]
     source: str
-    frequencies: npt.NDArray[np.float64]
-    values: npt.NDArray[np.complex128]
-    currents: npt.NDArray[np.complex128]
+    frequencies: Real
+    values: Complex
+    currents: Complex
     operating_point: SolvedPoint
 
 class Work(TypedDict):
@@ -87,8 +87,8 @@ class Profile(TypedDict):
     other: float
 
 class ChargeLeak(TypedDict):
-    signed: npt.NDArray[np.float64]
-    absolute: npt.NDArray[np.float64]
+    signed: Real
+    absolute: Real
 
 class Statistics(TypedDict):
     initial: str | None
@@ -101,9 +101,9 @@ class Statistics(TypedDict):
     charge_leak: ChargeLeak
 
 class Waveforms(RecordedValues):
-    times: npt.NDArray[np.float64]
-    values: npt.NDArray[np.float64]
-    logic: list[tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]
+    times: Real
+    values: Real
+    logic: list[tuple[Real, Real]]
     statistics: Statistics
 
 class TransientResult(Waveforms):
@@ -118,9 +118,9 @@ class SensitivityResult(TypedDict):
     kind: Literal["sensitivity"]
     outputs: list[str]
     parameters: list[tuple[str, str]]
-    values: npt.NDArray[np.float64]
-    derivatives: npt.NDArray[np.float64] | npt.NDArray[np.complex128]
-    period_derivatives: npt.NDArray[np.float64] | None
+    values: Real
+    derivatives: Real | Complex
+    period_derivatives: Real | None
     result: AnalysisResult
 
 class MismatchResult(TypedDict):
@@ -129,32 +129,32 @@ class MismatchResult(TypedDict):
     random_variables: list[
         tuple[str | None, str | None, str, float, float, dict[str, dict[str, float]]]
     ]
-    derivatives: npt.NDArray[np.float64] | npt.NDArray[np.complex128]
-    period_derivatives: npt.NDArray[np.float64] | None
+    derivatives: Real | Complex
+    period_derivatives: Real | None
     result: AnalysisResult
 
 class StabilityResult(TypedDict):
     kind: Literal["stability"]
     probe: str
-    frequencies: npt.NDArray[np.float64]
-    gains: npt.NDArray[np.complex128]
+    frequencies: Real
+    gains: Complex
     operating_point: SolvedPoint
 
 class NoiseInput(TypedDict):
     source: str
     nature: Nature
-    gains: npt.NDArray[np.complex128]
+    gains: Complex
 
 class NoiseResult(TypedDict):
     kind: Literal["noise"]
     output: str
     reference: str | None
     nature: Nature
-    frequencies: npt.NDArray[np.float64]
-    densities: npt.NDArray[np.float64]
+    frequencies: Real
+    densities: Real
     input: NoiseInput | None
     sources: list[tuple[str, str]]
-    contributions: npt.NDArray[np.float64]
+    contributions: Real
     operating_point: SolvedPoint
 
 class PoleZeroResult(TypedDict):
@@ -162,8 +162,8 @@ class PoleZeroResult(TypedDict):
     source: str | None
     output: str | None
     reference: str | None
-    poles: npt.NDArray[np.complex128]
-    zeros: npt.NDArray[np.complex128] | None
+    poles: Complex
+    zeros: Complex | None
     operating_point: SolvedPoint
 
 class TransferFunctionResult(TypedDict):
@@ -193,8 +193,8 @@ type AnalysisResult = (
 )
 
 class JvpResult(TypedDict):
-    tangents: npt.NDArray[np.float64] | npt.NDArray[np.complex128]
-    period: npt.NDArray[np.float64] | None
+    tangents: Real | Complex
+    period: Real | None
     result: AnalysisResult
 
 @final
@@ -367,15 +367,15 @@ class Simulator:
     ) -> BatchResult: ...
 
 class BatchResult(TypedDict):
-    values: npt.NDArray[np.float64]
+    values: Real
     parameters: list[tuple[str, str] | None]
-    measured: npt.NDArray[np.float64]
+    measured: Real
     causes: npt.NDArray[np.int32]
     reasons: list[tuple[str, list[float], str]]
     ended: npt.NDArray[np.bool_]
     problems: dict[int, list[Problem]]
     errors: dict[int, list[tuple[int, str]]]
-    traces: list[npt.NDArray[np.float64] | npt.NDArray[np.complex128]]
+    traces: list[Real | Complex]
 
 @final
 class Variants:

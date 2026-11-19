@@ -10,25 +10,31 @@
 //! it in Python.
 
 mod batch;
+mod convert;
+mod helpers;
 mod measure;
+mod variants;
 
-use std::sync::{Arc, Mutex};
-
-use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use jolty_engine::{
-    Analysis, AnalysisResult, ChargeLeak, Cotangent, Cotangents, DcSweepResult, Derivatives,
-    Differentiated, Location, MismatchResult, NoiseResult, OperatingPointResult, Options,
-    ParameterCotangents, PoleZeroResult, Record, RecordedSeries, RecordedValues, Sensitivity,
-    Statistics, Strategy, TransientResult,
+    Analysis, Cotangents, Differentiated, Options, ParameterCotangents, Record, Sensitivity,
+    SimulationError as EngineError,
 };
 use jolty_ir::Circuit;
-use jolty_models::{Library, LogicLevel, Model, Nature, ParameterError};
-use numpy::{Complex64, Element, PyArray1, PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray2};
+use jolty_models::{Library, Model, ParameterError};
+use numpy::{Complex64, PyArray1, PyReadonlyArray2};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+
+use crate::convert::{
+    diagnostics_to_python, excursions_to_python, jvp_to_python, outcome_to_python, quantity_name,
+};
+use crate::helpers::{
+    cotangent, elaboration_result, lock_unpoisoned, parse_json, simulation_result, value_result,
+};
 
 /// Every allocation of the engine's runs, which many threads make at once in a batch,
 /// goes to mimalloc and its heaps of each thread: the system's allocator, shared by the
@@ -66,10 +72,11 @@ impl Pool {
                 "a pool holds a thread or more, not 0",
             ));
         }
-        let inner = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads.unwrap_or(0))
-            .build()
-            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        let inner = value_result(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads.unwrap_or(0))
+                .build(),
+        )?;
         Ok(Self { inner })
     }
 
@@ -81,11 +88,6 @@ impl Pool {
 }
 
 impl Pool {
-    /// `work`, a run under `options` that `spreads` its work over threads or not, as
-    /// `jolty_engine::Simulator::spreads` says: inside the pool, on its threads, when it
-    /// spreads and the pool has two or more, and else on the calling thread, which a run
-    /// that spreads nothing never leaves, so that it waits on no thread of the pool, under
-    /// `options` capped at that one thread, as its parallelism's defaults then read.
     fn run<T: Send>(
         &self,
         (options, spreads): (&Options, bool),
@@ -131,13 +133,14 @@ impl Elaborated {
     /// [`Simulator`]'s constructor does.
     #[new]
     fn new(py: Python<'_>, circuit: &str, substitutes: &str) -> PyResult<Self> {
-        let circuit = Circuit::from_json(circuit).map_err(|error| unreadable(&error))?;
+        let circuit = value_result(Circuit::from_json(circuit))?;
         let structure = jolty_engine::Structure {
-            substitutes: serde_json::from_str(substitutes).map_err(|error| unreadable(&error))?,
+            substitutes: parse_json!(substitutes)?,
         };
-        let inner = py
-            .detach(|| jolty_engine::Elaborated::new(&circuit, &Library::standard(), &structure))
-            .map_err(|error| elaboration_error(py, &error))?;
+        let inner = elaboration_result(
+            py,
+            py.detach(|| jolty_engine::Elaborated::new(&circuit, &Library::standard(), &structure)),
+        )?;
         Ok(Self { inner })
     }
 
@@ -146,11 +149,8 @@ impl Elaborated {
     ///
     /// Raises `ElaborationError` naming every number the circuit's devices do not write.
     fn values(&self, py: Python<'_>, overrides: &str, temperature: f64) -> PyResult<Values> {
-        let overrides = serde_json::from_str(overrides).map_err(|error| unreadable(&error))?;
-        let inner = self
-            .inner
-            .values(&overrides, Some(temperature))
-            .map_err(|error| elaboration_error(py, &error))?;
+        let overrides = parse_json!(overrides)?;
+        let inner = elaboration_result(py, self.inner.values(&overrides, Some(temperature)))?;
         Ok(Values { inner })
     }
 
@@ -158,9 +158,7 @@ impl Elaborated {
     ///
     /// Raises `ElaborationError` naming every device whose numbers they put out of range.
     fn structure_of(&self, py: Python<'_>, values: &Values) -> PyResult<StructureKey> {
-        let inner = py
-            .detach(|| self.inner.structure_of(&values.inner))
-            .map_err(|error| elaboration_error(py, &error))?;
+        let inner = elaboration_result(py, py.detach(|| self.inner.structure_of(&values.inner)))?;
         Ok(StructureKey { inner })
     }
 
@@ -169,9 +167,7 @@ impl Elaborated {
     ///
     /// Raises `ElaborationError` as [`Elaborated::structure_of`] does.
     fn restructured(&self, py: Python<'_>, values: &Values) -> PyResult<Self> {
-        let inner = py
-            .detach(|| self.inner.restructured(&values.inner))
-            .map_err(|error| elaboration_error(py, &error))?;
+        let inner = elaboration_result(py, py.detach(|| self.inner.restructured(&values.inner)))?;
         Ok(Self { inner })
     }
 }
@@ -202,9 +198,6 @@ struct Pullback {
     inner: jolty_engine::Pullback,
 }
 
-/// A device a recording keeps: its path, its terminals' names, whether each is thermal, the
-/// index of its first internal unknown and their number, its variables' names, and the
-/// names of the regions its variable `region` numbers and of its margins.
 type RecordedDevice = (
     String,
     Vec<String>,
@@ -216,8 +209,6 @@ type RecordedDevice = (
     Vec<&'static str>,
 );
 
-/// What a recording keeps: each device, then each terminal of a component instance or a
-/// logic device, its name and whether it is thermal.
 type Recording = (Vec<RecordedDevice>, Vec<(String, bool)>);
 
 impl Simulator {
@@ -267,15 +258,16 @@ impl Simulator {
         overrides: &str,
         substitutes: &str,
     ) -> PyResult<Self> {
-        let circuit = Circuit::from_json(circuit).map_err(|error| unreadable(&error))?;
+        let circuit = value_result(Circuit::from_json(circuit))?;
         let conditions = jolty_engine::Conditions {
             temperature,
-            overrides: serde_json::from_str(overrides).map_err(|error| unreadable(&error))?,
-            substitutes: serde_json::from_str(substitutes).map_err(|error| unreadable(&error))?,
+            overrides: parse_json!(overrides)?,
+            substitutes: parse_json!(substitutes)?,
         };
-        let inner = py
-            .detach(|| jolty_engine::Simulator::new(&circuit, &Library::standard(), &conditions))
-            .map_err(|error| elaboration_error(py, &error))?;
+        let inner = elaboration_result(
+            py,
+            py.detach(|| jolty_engine::Simulator::new(&circuit, &Library::standard(), &conditions)),
+        )?;
         Ok(Self::wrapping(inner))
     }
 
@@ -286,9 +278,10 @@ impl Simulator {
     #[staticmethod]
     fn from_elaborated(py: Python<'_>, elaborated: &Elaborated, values: &Values) -> PyResult<Self> {
         let shared = Arc::clone(&elaborated.inner);
-        let inner = py
-            .detach(|| jolty_engine::Simulator::from_elaborated(shared, values.inner.clone()))
-            .map_err(|error| elaboration_error(py, &error))?;
+        let inner = elaboration_result(
+            py,
+            py.detach(|| jolty_engine::Simulator::from_elaborated(shared, values.inner.clone())),
+        )?;
         Ok(Self::wrapping(inner))
     }
 
@@ -337,20 +330,14 @@ impl Simulator {
         &self,
         py: Python<'py>,
         analyses: Vec<(String, String)>,
-        variants: &batch::Variants,
+        variants: &variants::Variants,
         runs: (u64, u64),
         measures: Vec<(usize, Py<measure::Measure>)>,
         traces: Vec<(usize, Vec<usize>)>,
         pool: &Pool,
         each: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let (elaborated, base) = {
-            let simulator = self.lock();
-            (
-                Arc::clone(simulator.elaborated()),
-                simulator.values().clone(),
-            )
-        };
+        let (elaborated, base) = self.snapshot();
         let request = batch::Request {
             analyses,
             runs: runs.0..runs.1,
@@ -382,18 +369,12 @@ impl Simulator {
         analysis: String,
         options: String,
         parameters: Vec<(String, String)>,
-        variants: &batch::Variants,
+        variants: &variants::Variants,
         runs: (u64, u64),
         unknowns: Vec<usize>,
         pool: &Pool,
     ) -> PyResult<(Bound<'py, PyDict>, batch::BatchPullback)> {
-        let (elaborated, base) = {
-            let simulator = self.lock();
-            (
-                Arc::clone(simulator.elaborated()),
-                simulator.values().clone(),
-            )
-        };
+        let (elaborated, base) = self.snapshot();
         let request = batch::Differentiating {
             analysis,
             options,
@@ -449,7 +430,7 @@ impl Simulator {
     /// terminal of a component instance or a logic device, as its name, such as `X1.vdd`,
     /// and whether it is thermal.
     fn recording(&self, record: &str, regions: bool) -> PyResult<Recording> {
-        let record: Record = serde_json::from_str(record).map_err(|error| unreadable(&error))?;
+        let record: Record = parse_json!(record)?;
         let simulator = self.lock();
         let recorded = simulator.recorded(&record, regions);
         let in_full = recorded.devices.iter().map(|&index| {
@@ -544,20 +525,15 @@ impl Simulator {
         options: &str,
         pool: &Pool,
     ) -> PyResult<Bound<'py, PyList>> {
-        let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
-        let found = py.detach(|| {
-            let spreads = self
-                .lock()
-                .spreads(&Analysis::OperatingPoint, &options, pool.threads());
-            pool.run((&options, spreads), |options| {
-                let mut simulator = self.lock();
-                jolty_checks::check_operating_point(&mut simulator, options)
-            })
-        });
-        diagnostics_to_python(
+        let options: Options = parse_json!(options)?;
+        let found = self.simulate(
             py,
-            found.map_err(|error| SimulationError::new_err(error.to_string()))?,
-        )
+            pool,
+            &options,
+            |simulator| simulator.spreads(&Analysis::OperatingPoint, &options, pool.threads()),
+            jolty_checks::check_operating_point,
+        )?;
+        diagnostics_to_python(py, found)
     }
 
     /// Where the last analysis used logic devices outside their domains, each a dictionary
@@ -565,23 +541,7 @@ impl Simulator {
     /// `minimum` and `maximum`, the `value` furthest outside, the `time` it first left, and
     /// the `count` of times it was read outside.
     fn excursions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let simulator = self.lock();
-        let found = PyList::empty(py);
-        for excursion in simulator.excursions() {
-            let item = PyDict::new(py);
-            item.set_item(
-                "instance",
-                simulator.logic_devices()[excursion.device].path(),
-            )?;
-            item.set_item("bound", excursion.bound.name())?;
-            item.set_item("minimum", excursion.minimum)?;
-            item.set_item("maximum", excursion.maximum)?;
-            item.set_item("value", excursion.value)?;
-            item.set_item("time", excursion.time)?;
-            item.set_item("count", excursion.count)?;
-            found.append(item)?;
-        }
-        Ok(found)
+        excursions_to_python(py, &self.lock())
     }
 
     /// The JVP of the analysis whose JSON text is `analysis`, as a sensitivity's `of` names
@@ -599,24 +559,14 @@ impl Simulator {
         pool: &Pool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let (analysis, options) = differentiated(analysis, options)?;
-        let found = py.detach(move || {
-            let spreads = self.spreads_differentiating(&analysis, &options, pool);
-            pool.run((&options, spreads), |options| {
-                self.lock().jvp(&analysis, &parameters, &tangents, options)
-            })
-        });
-        let found = found.map_err(|error| SimulationError::new_err(error.to_string()))?;
-        let result = PyDict::new(py);
-        match &found.tangents {
-            Derivatives::Real(points) => result.set_item("tangents", cube(py, points)?)?,
-            Derivatives::Complex(points) => result.set_item("tangents", cube(py, points)?)?,
-        }
-        result.set_item(
-            "period",
-            found.period.map(|period| PyArray1::from_vec(py, period)),
+        let found = self.simulate(
+            py,
+            pool,
+            &options,
+            |simulator| spreads_differentiating(simulator, &analysis, &options, pool),
+            |simulator, options| simulator.jvp(&analysis, &parameters, &tangents, options),
         )?;
-        result.set_item("result", outcome_to_python(py, found.result)?)?;
-        Ok(result)
+        jvp_to_python(py, found)
     }
 
     /// The VJP of the analysis whose JSON text is `analysis`, as a sensitivity's `of` names
@@ -631,13 +581,13 @@ impl Simulator {
         pool: &Pool,
     ) -> PyResult<(Bound<'py, PyDict>, Pullback)> {
         let (analysis, options) = differentiated(analysis, options)?;
-        let found = py.detach(move || {
-            let spreads = self.spreads_differentiating(&analysis, &options, pool);
-            pool.run((&options, spreads), |options| {
-                self.lock().vjp(&analysis, &parameters, options)
-            })
-        });
-        let inner = found.map_err(|error| SimulationError::new_err(error.to_string()))?;
+        let inner = self.simulate(
+            py,
+            pool,
+            &options,
+            |simulator| spreads_differentiating(simulator, &analysis, &options, pool),
+            |simulator, options| simulator.vjp(&analysis, &parameters, options),
+        )?;
         let result = outcome_to_python(py, inner.result.clone())?;
         Ok((result, Pullback { inner }))
     }
@@ -654,19 +604,21 @@ impl Simulator {
         options: &str,
         pool: &Pool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
+        let options: Options = parse_json!(options)?;
         let cotangents = if let Ok(real) = values.extract::<PyReadonlyArray2<'py, f64>>() {
             Cotangents::Real(vec![cotangent(&real, period)])
         } else {
             let phasors = values.extract::<PyReadonlyArray2<'py, Complex64>>()?;
             Cotangents::Complex(vec![cotangent(&phasors, period)])
         };
-        let found = py.detach(|| {
-            pool.run((&options, true), |options| {
-                self.lock().pull_back(&pullback.inner, &cotangents, options)
-            })
-        });
-        match found.map_err(|error| SimulationError::new_err(error.to_string()))? {
+        let found = self.simulate(
+            py,
+            pool,
+            &options,
+            |_| true,
+            |simulator, options| simulator.pull_back(&pullback.inner, &cotangents, options),
+        )?;
+        match found {
             ParameterCotangents::Real(mut rows) => {
                 Ok(PyArray1::from_vec(py, rows.pop().unwrap_or_default()).into_any())
             }
@@ -686,550 +638,78 @@ impl Simulator {
         options: &str,
         pool: &Pool,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let analysis: Analysis =
-            serde_json::from_str(analysis).map_err(|error| unreadable(&error))?;
-        let options: Options = serde_json::from_str(options).map_err(|error| unreadable(&error))?;
-        let outcome = py.detach(|| {
-            let spreads = self.lock().spreads(&analysis, &options, pool.threads());
-            pool.run((&options, spreads), |options| {
-                let mut simulator = self.lock();
-                simulator.run(&analysis, options)
-            })
-        });
-        outcome_to_python(
+        let analysis: Analysis = parse_json!(analysis)?;
+        let options: Options = parse_json!(options)?;
+        let outcome = self.simulate(
             py,
-            outcome.map_err(|error| SimulationError::new_err(error.to_string()))?,
-        )
+            pool,
+            &options,
+            |simulator| simulator.spreads(&analysis, &options, pool.threads()),
+            |simulator, options| simulator.run(&analysis, options),
+        )?;
+        outcome_to_python(py, outcome)
     }
 }
 
 impl Simulator {
-    /// Whether a derivative of `analysis` with `options` may spread its work over the
-    /// threads of `pool`, as a sensitivity of it may.
-    fn spreads_differentiating(
+    fn snapshot(&self) -> (Arc<jolty_engine::Elaborated>, jolty_engine::Values) {
+        let simulator = self.lock();
+        (
+            Arc::clone(simulator.elaborated()),
+            simulator.values().clone(),
+        )
+    }
+
+    fn simulate<T, S, W>(
         &self,
-        analysis: &Differentiated,
-        options: &Options,
+        py: Python<'_>,
         pool: &Pool,
-    ) -> bool {
-        let sensitivity = Analysis::Sensitivity(Sensitivity {
-            outputs: Vec::new(),
-            of: analysis.clone(),
-        });
-        self.lock().spreads(&sensitivity, options, pool.threads())
+        options: &Options,
+        spreads: S,
+        work: W,
+    ) -> PyResult<T>
+    where
+        T: Send,
+        S: FnOnce(&jolty_engine::Simulator) -> bool + Send,
+        W: FnOnce(&mut jolty_engine::Simulator, &Options) -> Result<T, EngineError> + Send,
+    {
+        simulation_result(py.detach(|| {
+            let spreads = spreads(&self.lock());
+            pool.run((options, spreads), |options| {
+                let mut simulator = self.lock();
+                work(&mut simulator, options)
+            })
+        }))
     }
 
-    /// The engine's simulator, which an analysis on another thread may hold.
-    fn lock(&self) -> std::sync::MutexGuard<'_, jolty_engine::Simulator> {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock(&self) -> MutexGuard<'_, jolty_engine::Simulator> {
+        lock_unpoisoned(&self.inner)
     }
 }
 
-/// The analysis differentiated whose JSON text is `analysis`, and the options whose JSON
-/// text is `options`.
+fn spreads_differentiating(
+    simulator: &jolty_engine::Simulator,
+    analysis: &Differentiated,
+    options: &Options,
+    pool: &Pool,
+) -> bool {
+    let sensitivity = Analysis::Sensitivity(Sensitivity {
+        outputs: Vec::new(),
+        of: analysis.clone(),
+    });
+    simulator.spreads(&sensitivity, options, pool.threads())
+}
+
 fn differentiated(analysis: &str, options: &str) -> PyResult<(Differentiated, Options)> {
-    Ok((
-        serde_json::from_str(analysis).map_err(|error| unreadable(&error))?,
-        serde_json::from_str(options).map_err(|error| unreadable(&error))?,
-    ))
+    Ok((parse_json!(analysis)?, parse_json!(options)?))
 }
 
-/// The cotangent of `values`, by point then unknown, each point's row left out where it is
-/// zero, and of `period` on an oscillator's period.
-fn cotangent<T: Element + Copy + Default + PartialEq>(
-    values: &PyReadonlyArray2<'_, T>,
-    period: f64,
-) -> Cotangent<T> {
-    let array = values.as_array();
-    let zero = T::default();
-    let points: BTreeMap<usize, Vec<T>> = array
-        .rows()
-        .into_iter()
-        .enumerate()
-        .filter(|(_, row)| row.iter().any(|value| *value != zero))
-        .map(|(point, row)| (point, row.to_vec()))
-        .collect();
-    Cotangent { points, period }
-}
-
-/// A `ValueError` for input the engine cannot read.
-pub(crate) fn unreadable(error: &impl std::fmt::Display) -> PyErr {
-    PyValueError::new_err(error.to_string())
-}
-
-/// The name of a quantity: `"voltage"`, `"current"`, `"temperature"` or `"state"`.
-fn quantity_name(nature: Nature) -> &'static str {
-    match nature {
-        Nature::Temperature => "temperature",
-        Nature::State => "state",
-        _ if nature.is_current() => "current",
-        _ => "voltage",
-    }
-}
-
-/// Adds what a mismatch analysis found to `result`: its outputs, its random variables, each
-/// its instance, lot, name, mean, standard deviation and derivatives, the outputs'
-/// derivatives with respect to them, and the result of the analysis it differentiated.
-fn add_mismatch<'py>(
-    py: Python<'py>,
-    result: &Bound<'py, PyDict>,
-    mismatch: MismatchResult,
-) -> PyResult<()> {
-    result.set_item("kind", "mismatch")?;
-    result.set_item("outputs", mismatch.outputs)?;
-    let random_variables: Vec<_> = mismatch
-        .random_variables
-        .into_iter()
-        .map(|variable| {
-            (
-                variable.instance,
-                variable.lot,
-                variable.name,
-                variable.mean,
-                variable.standard_deviation,
-                variable.derivatives,
-            )
-        })
-        .collect();
-    result.set_item("random_variables", random_variables)?;
-    match &mismatch.derivatives {
-        Derivatives::Real(points) => result.set_item("derivatives", cube(py, points)?)?,
-        Derivatives::Complex(points) => result.set_item("derivatives", cube(py, points)?)?,
-    }
-    result.set_item(
-        "period_derivatives",
-        mismatch
-            .period_derivatives
-            .map(|derivatives| PyArray1::from_vec(py, derivatives)),
-    )?;
-    result.set_item("result", outcome_to_python(py, *mismatch.result)?)
-}
-
-/// The outcome of an analysis as a dictionary whose `kind` names the analysis.
-pub(crate) fn outcome_to_python(
-    py: Python<'_>,
-    outcome: AnalysisResult,
-) -> PyResult<Bound<'_, PyDict>> {
-    let result = PyDict::new(py);
-    match outcome {
-        AnalysisResult::OperatingPoint(operating_point) => {
-            result.set_item("kind", "operating_point")?;
-            add_operating_point(&result, operating_point)?;
-        }
-        AnalysisResult::DcSweep(sweep) => {
-            result.set_item("kind", "dc_sweep")?;
-            add_dc_sweep(&result, sweep)?;
-        }
-        AnalysisResult::Ac(response) => {
-            result.set_item("kind", "ac")?;
-            result.set_item("source", response.source)?;
-            result.set_item("frequencies", PyArray1::from_vec(py, response.frequencies))?;
-            result.set_item("values", PyArray2::from_vec2(py, &response.values)?)?;
-            result.set_item("currents", matrix(py, &response.currents)?)?;
-            let operating_point = PyDict::new(py);
-            add_operating_point(&operating_point, response.operating_point)?;
-            result.set_item("operating_point", operating_point)?;
-        }
-        AnalysisResult::Transient(waveforms) => {
-            result.set_item("kind", "transient")?;
-            add_waveforms(&result, waveforms)?;
-        }
-        AnalysisResult::PeriodicSteadyState(found) => {
-            result.set_item("kind", "periodic_steady_state")?;
-            result.set_item("period", found.period)?;
-            result.set_item("periods", found.periods)?;
-            add_waveforms(&result, found.waveforms)?;
-        }
-        AnalysisResult::Sensitivity(sensitivities) => {
-            result.set_item("kind", "sensitivity")?;
-            result.set_item("outputs", sensitivities.outputs)?;
-            let (parameters, values): (Vec<(String, String)>, Vec<f64>) = sensitivities
-                .parameters
-                .into_iter()
-                .map(|parameter| ((parameter.instance, parameter.name), parameter.value))
-                .unzip();
-            result.set_item("parameters", parameters)?;
-            result.set_item("values", PyArray1::from_vec(py, values))?;
-            match &sensitivities.derivatives {
-                Derivatives::Real(points) => result.set_item("derivatives", cube(py, points)?)?,
-                Derivatives::Complex(points) => {
-                    result.set_item("derivatives", cube(py, points)?)?;
-                }
-            }
-            result.set_item(
-                "period_derivatives",
-                sensitivities
-                    .period_derivatives
-                    .map(|derivatives| PyArray1::from_vec(py, derivatives)),
-            )?;
-            result.set_item("result", outcome_to_python(py, *sensitivities.result)?)?;
-        }
-        AnalysisResult::Mismatch(mismatch) => add_mismatch(py, &result, mismatch)?,
-        AnalysisResult::Stability(loop_gain) => {
-            result.set_item("kind", "stability")?;
-            result.set_item("probe", loop_gain.probe)?;
-            result.set_item("frequencies", PyArray1::from_vec(py, loop_gain.frequencies))?;
-            result.set_item("gains", PyArray1::from_vec(py, loop_gain.gains))?;
-            let operating_point = PyDict::new(py);
-            add_operating_point(&operating_point, loop_gain.operating_point)?;
-            result.set_item("operating_point", operating_point)?;
-        }
-        AnalysisResult::Noise(spectrum) => {
-            result.set_item("kind", "noise")?;
-            add_noise(&result, spectrum)?;
-        }
-        AnalysisResult::OperatingPoints(points) => {
-            result.set_item("kind", "operating_points")?;
-            add_operating_points(&result, points)?;
-        }
-        AnalysisResult::PoleZero(found) => {
-            result.set_item("kind", "pole_zero")?;
-            add_poles_zeros(&result, found)?;
-        }
-        AnalysisResult::TransferFunction(transfer) => {
-            result.set_item("kind", "transfer_function")?;
-            result.set_item("source", transfer.source)?;
-            result.set_item("input", quantity_name(transfer.input))?;
-            result.set_item("output", transfer.output)?;
-            result.set_item("reference", transfer.reference)?;
-            result.set_item("gain", transfer.gain)?;
-            result.set_item("input_resistance", transfer.input_resistance)?;
-            result.set_item("output_resistance", transfer.output_resistance)?;
-            let operating_point = PyDict::new(py);
-            add_operating_point(&operating_point, transfer.operating_point)?;
-            result.set_item("operating_point", operating_point)?;
-        }
-    }
-    Ok(result)
-}
-
-/// The waveforms of a transient, or of a periodic steady state's period: the times, the
-/// values one row per time, what it recorded, each logic net's changes and how it went.
-fn add_waveforms(result: &Bound<'_, PyDict>, waveforms: TransientResult) -> PyResult<()> {
-    let py = result.py();
-    result.set_item("times", PyArray1::from_vec(py, waveforms.times))?;
-    result.set_item("values", stacked(py, waveforms.values)?)?;
-    add_observations(result, waveforms.observations)?;
-    let traces = PyList::empty(py);
-    for trace in waveforms.logic {
-        let (times, levels): (Vec<f64>, Vec<LogicLevel>) = trace.into_iter().unzip();
-        traces.append((
-            PyArray1::from_vec(py, times),
-            PyArray1::from_vec(py, numbers(&levels)),
-        ))?;
-    }
-    result.set_item("logic", traces)?;
-    result.set_item(
-        "statistics",
-        statistics_to_python(py, waveforms.statistics)?,
-    )
-}
-
-/// The operating points of a DC sweep, one row per level, and how each was found.
-fn add_dc_sweep(result: &Bound<'_, PyDict>, sweep: DcSweepResult) -> PyResult<()> {
-    let py = result.py();
-    result.set_item("source", sweep.source)?;
-    result.set_item("parameter", sweep.parameter)?;
-    result.set_item("nature", sweep.nature.map(quantity_name))?;
-    result.set_item("swept", PyArray1::from_vec(py, sweep.swept))?;
-    result.set_item("values", stacked(py, sweep.values)?)?;
-    add_observations(result, sweep.observations)?;
-    let logic: Vec<Vec<f64>> = sweep.logic.iter().map(|levels| numbers(levels)).collect();
-    result.set_item("logic", matrix(py, &logic)?)?;
-    let strategies: Vec<&str> = sweep.strategies.iter().map(|found| found.name()).collect();
-    result.set_item("strategies", strategies)?;
-    result.set_item("iterations", sweep.iterations)
-}
-
-/// The noise at an output, at each frequency, with each device noise source's share: the
-/// sources as `(device, name)` pairs, and their contributions one row per source; and the
-/// source it is referred to, if any, with the gains from it.
-fn add_noise(result: &Bound<'_, PyDict>, spectrum: NoiseResult) -> PyResult<()> {
-    let py = result.py();
-    result.set_item("output", spectrum.output)?;
-    result.set_item("reference", spectrum.reference)?;
-    result.set_item("nature", quantity_name(spectrum.nature))?;
-    let count = spectrum.frequencies.len();
-    result.set_item("frequencies", PyArray1::from_vec(py, spectrum.frequencies))?;
-    result.set_item("densities", PyArray1::from_vec(py, spectrum.densities))?;
-    let input = match spectrum.input {
-        Some(input) => {
-            let found = PyDict::new(py);
-            found.set_item("source", input.source)?;
-            found.set_item("nature", quantity_name(input.nature))?;
-            found.set_item("gains", PyArray1::from_vec(py, input.gains))?;
-            Some(found)
-        }
-        None => None,
-    };
-    result.set_item("input", input)?;
-    let sources: Vec<(String, &str)> = spectrum
-        .contributions
-        .iter()
-        .map(|contribution| (contribution.instance.clone(), contribution.name))
-        .collect();
-    let rows = sources.len();
-    let flat: Vec<f64> = spectrum
-        .contributions
-        .into_iter()
-        .flat_map(|contribution| contribution.densities)
-        .collect();
-    result.set_item("sources", sources)?;
-    result.set_item(
-        "contributions",
-        PyArray1::from_vec(py, flat).reshape([rows, count])?,
-    )?;
-    let operating_point = PyDict::new(py);
-    add_operating_point(&operating_point, spectrum.operating_point)?;
-    result.set_item("operating_point", operating_point)
-}
-
-/// The DC solutions, each a dictionary of an operating point's own, under `points`.
-fn add_operating_points(
-    result: &Bound<'_, PyDict>,
-    points: Vec<OperatingPointResult>,
-) -> PyResult<()> {
-    let solutions = PyList::empty(result.py());
-    for point in points {
-        let solution = PyDict::new(result.py());
-        add_operating_point(&solution, point)?;
-        solutions.append(solution)?;
-    }
-    result.set_item("points", solutions)
-}
-
-/// The poles, and the zeros of the transfer function between the source and the output
-/// echoed, if any, with the operating point the circuit was linearized at.
-fn add_poles_zeros(result: &Bound<'_, PyDict>, found: PoleZeroResult) -> PyResult<()> {
-    let py = result.py();
-    result.set_item("source", found.source)?;
-    result.set_item("output", found.output)?;
-    result.set_item("reference", found.reference)?;
-    result.set_item("poles", PyArray1::from_vec(py, found.poles))?;
-    result.set_item(
-        "zeros",
-        found.zeros.map(|zeros| PyArray1::from_vec(py, zeros)),
-    )?;
-    let operating_point = PyDict::new(py);
-    add_operating_point(&operating_point, found.operating_point)?;
-    result.set_item("operating_point", operating_point)
-}
-
-fn add_operating_point(
-    result: &Bound<'_, PyDict>,
-    operating_point: OperatingPointResult,
-) -> PyResult<()> {
-    result.set_item(
-        "values",
-        PyArray1::from_vec(result.py(), operating_point.values),
-    )?;
-    result.set_item(
-        "logic",
-        PyArray1::from_vec(result.py(), numbers(&operating_point.logic)),
-    )?;
-    let RecordedValues {
-        currents,
-        charges,
-        conductances,
-        capacitances,
-        variables,
-    } = operating_point.observation;
-    let py = result.py();
-    result.set_item("currents", PyArray1::from_vec(py, currents))?;
-    result.set_item("charges", PyArray1::from_vec(py, charges))?;
-    result.set_item("conductances", PyArray1::from_vec(py, conductances))?;
-    result.set_item("capacitances", PyArray1::from_vec(py, capacitances))?;
-    result.set_item("variables", PyArray1::from_vec(py, variables))?;
-    result.set_item("strategy", operating_point.strategy.name())?;
-    result.set_item("iterations", operating_point.iterations)
-}
-
-/// Adds what the recorded devices did at each point to `result`: the terminals' `currents`
-/// and `charges`, the derivatives' `conductances` and `capacitances`, and the `variables`,
-/// one row per point.
-fn add_observations(result: &Bound<'_, PyDict>, observations: RecordedSeries) -> PyResult<()> {
-    let py = result.py();
-    let points = observations.points;
-    // Each quantity's rows already lie end to end, so the arrays take them without a copy.
-    let rows = |values: Vec<f64>| {
-        let width = values.len().checked_div(points).unwrap_or(0);
-        PyArray1::from_vec(py, values).reshape([points, width])
-    };
-    result.set_item("currents", rows(observations.currents)?)?;
-    result.set_item("charges", rows(observations.charges)?)?;
-    result.set_item("conductances", rows(observations.conductances)?)?;
-    result.set_item("capacitances", rows(observations.capacitances)?)?;
-    result.set_item("variables", rows(observations.variables)?)
-}
-
-/// `rows`, all of one length, as a two-dimensional array with as many rows even when
-/// they are empty; each row is freed once copied, so the values are held about once.
-fn stacked(py: Python<'_>, rows: Vec<Vec<f64>>) -> PyResult<Bound<'_, PyArray2<f64>>> {
-    let (count, columns) = (rows.len(), rows.first().map_or(0, Vec::len));
-    let mut flat = Vec::with_capacity(count * columns);
-    for row in rows {
-        flat.extend_from_slice(&row);
-    }
-    PyArray1::from_vec(py, flat).reshape([count, columns])
-}
-
-/// Logic levels as numbers: 0, 1, and NaN for an unknown level.
-fn numbers(levels: &[LogicLevel]) -> Vec<f64> {
-    levels
-        .iter()
-        .map(|level| match level {
-            LogicLevel::Low => 0.0,
-            LogicLevel::High => 1.0,
-            LogicLevel::Unknown => f64::NAN,
-        })
-        .collect()
-}
-
-/// `rows` as a two-dimensional array, with as many rows even when they are empty.
-fn matrix<'py, T: Element + Copy>(
-    py: Python<'py>,
-    rows: &[Vec<T>],
-) -> PyResult<Bound<'py, PyArray2<T>>> {
-    let columns = rows.first().map_or(0, Vec::len);
-    let flat: Vec<T> = rows.iter().flatten().copied().collect();
-    PyArray1::from_vec(py, flat).reshape([rows.len(), columns])
-}
-
-/// `points` as a three-dimensional array, with as many points even when they are empty.
-fn cube<'py, T: Element + Copy>(
-    py: Python<'py>,
-    points: &[Vec<Vec<T>>],
-) -> PyResult<Bound<'py, PyArray3<T>>> {
-    let rows = points.first().map_or(0, Vec::len);
-    let columns = points
-        .first()
-        .and_then(|first| first.first())
-        .map_or(0, Vec::len);
-    let flat: Vec<T> = points.iter().flatten().flatten().copied().collect();
-    PyArray1::from_vec(py, flat).reshape([points.len(), rows, columns])
-}
-
-/// Each of `found` as a dictionary of its `rule`, its `message`, its `instances` and its
-/// `nets`.
-fn diagnostics_to_python(
-    py: Python<'_>,
-    found: Vec<jolty_checks::Diagnostic>,
-) -> PyResult<Bound<'_, PyList>> {
-    let diagnostics = PyList::empty(py);
-    for diagnostic in found {
-        let item = PyDict::new(py);
-        item.set_item("rule", diagnostic.rule)?;
-        item.set_item("message", diagnostic.message)?;
-        let instances = PyList::empty(py);
-        for location in &diagnostic.instances {
-            instances.append(location_to_python(py, location)?)?;
-        }
-        item.set_item("instances", instances)?;
-        item.set_item("nets", diagnostic.nets)?;
-        diagnostics.append(item)?;
-    }
-    Ok(diagnostics)
-}
-
-/// Each problem of `error`, a dictionary of its `message` and its `instance` or `None`.
-pub(crate) fn problems_to_python<'py>(
-    py: Python<'py>,
-    error: &jolty_engine::ElaborationError,
-) -> PyResult<Bound<'py, PyList>> {
-    let problems = PyList::empty(py);
-    for problem in error.problems() {
-        let item = PyDict::new(py);
-        item.set_item("message", problem.message())?;
-        let instance = problem
-            .location()
-            .map(|location| location_to_python(py, location))
-            .transpose()?;
-        item.set_item("instance", instance)?;
-        problems.append(item)?;
-    }
-    Ok(problems)
-}
-
-/// An instance as a dictionary of its `path` and its `source_location`, the script line that placed
-/// it, as a dictionary of its `file`, `line` and `function`, or `None`.
-fn location_to_python<'py>(py: Python<'py>, location: &Location) -> PyResult<Bound<'py, PyDict>> {
-    let instance = PyDict::new(py);
-    instance.set_item("path", &location.path)?;
-    let source = match &location.source_location {
-        Some(source) => {
-            let line = PyDict::new(py);
-            line.set_item("file", &source.file)?;
-            line.set_item("line", source.line)?;
-            line.set_item("function", &source.function)?;
-            Some(line)
-        }
-        None => None,
-    };
-    instance.set_item("source_location", source)?;
-    Ok(instance)
-}
-
-fn statistics_to_python(py: Python<'_>, statistics: Statistics) -> PyResult<Bound<'_, PyDict>> {
-    let result = PyDict::new(py);
-    result.set_item("initial", statistics.initial.map(Strategy::name))?;
-    result.set_item("accepted", statistics.accepted)?;
-    result.set_item("rejected", statistics.rejected)?;
-    result.set_item("landed", statistics.landed)?;
-    result.set_item("iterations", statistics.iterations)?;
-    let work = statistics.work;
-    let counts = PyDict::new(py);
-    counts.set_item("iterations", work.iterations)?;
-    counts.set_item("factorizations", work.factorizations)?;
-    counts.set_item("refactorizations", work.refactorizations)?;
-    counts.set_item("fallbacks", work.fallbacks)?;
-    counts.set_item("reuses", work.reuses)?;
-    result.set_item("work", counts)?;
-    let profile = match statistics.profile {
-        Some(profile) => {
-            let seconds = PyDict::new(py);
-            for (name, spent) in [
-                ("preparing", profile.preparing),
-                ("evaluating", profile.evaluating),
-                ("assembling", profile.assembling),
-                ("factoring", profile.factoring),
-                ("solving", profile.solving),
-                ("step_control", profile.step_control),
-                ("recording", profile.recording),
-                ("other", profile.other),
-            ] {
-                seconds.set_item(name, spent.as_secs_f64())?;
-            }
-            Some(seconds)
-        }
-        None => None,
-    };
-    result.set_item("profile", profile)?;
-    let ChargeLeak { signed, absolute } = statistics.charge_leak;
-    let charge_leak = PyDict::new(py);
-    charge_leak.set_item("signed", PyArray1::from_vec(py, signed))?;
-    charge_leak.set_item("absolute", PyArray1::from_vec(py, absolute))?;
-    result.set_item("charge_leak", charge_leak)?;
-    Ok(result)
-}
-
-/// The error of a circuit that does not elaborate: `ElaborationError` with a list of its
-/// problems, each a dictionary of its `message` and its `instance`.
-pub(crate) fn elaboration_error(py: Python<'_>, error: &jolty_engine::ElaborationError) -> PyErr {
-    match problems_to_python(py, error) {
-        Ok(problems) => ElaborationError::new_err((problems.unbind(),)),
-        Err(error) => error,
-    }
-}
-
-/// The Rust core of jolty.
 /// The terminals of a device of `model` with `parameters`, a JSON object, in the order
 /// the model declares them.
 #[pyfunction]
 fn terminals(model: &str, parameters: &str) -> PyResult<Vec<String>> {
     let library = Library::standard();
-    let parameters = serde_json::from_str(parameters).map_err(|error| unreadable(&error))?;
+    let parameters = parse_json!(parameters)?;
     let invalid = |error: ParameterError| PyValueError::new_err(error.0);
     if let Some(logic) = library.logic(model) {
         let device = logic.instantiate(&parameters).map_err(invalid)?;
@@ -1241,7 +721,6 @@ fn terminals(model: &str, parameters: &str) -> PyResult<Vec<String>> {
     Ok(specification.interface().terminals)
 }
 
-/// The analog model of `library` named `name`.
 fn analog<'a>(library: &'a Library, name: &str) -> PyResult<&'a Arc<dyn Model>> {
     library
         .get(name)
@@ -1249,11 +728,10 @@ fn analog<'a>(library: &'a Library, name: &str) -> PyResult<&'a Arc<dyn Model>> 
 }
 
 /// The engine's default options, SPICE's, as the JSON object its runs read their options
-/// from: every option jolty.plan.Options sets has its default here alone.
+/// from: every option `jolty.plan.Options` sets has its default here alone.
 #[pyfunction]
 fn default_options() -> PyResult<String> {
-    serde_json::to_string(&Options::default())
-        .map_err(|error| PyValueError::new_err(error.to_string()))
+    value_result(serde_json::to_string(&Options::default()))
 }
 
 /// The break-evens each threshold of the engine's parallelism left unset takes, on each
@@ -1261,8 +739,7 @@ fn default_options() -> PyResult<String> {
 /// threshold's break-evens, none where no size measured paid.
 #[pyfunction]
 fn break_evens() -> PyResult<String> {
-    serde_json::to_string(&jolty_engine::BREAK_EVENS)
-        .map_err(|error| PyValueError::new_err(error.to_string()))
+    value_result(serde_json::to_string(&jolty_engine::BREAK_EVENS))
 }
 
 /// The name of every model, analog and logic, in alphabetical order.
@@ -1308,15 +785,14 @@ fn expression_tree(expression: &str) -> PyResult<String> {
     let parsed: jolty_expressions::Expression = expression
         .parse()
         .map_err(|error| PyValueError::new_err(format!("`{expression}`: {error}")))?;
-    term_to_json_string(&parsed.tree()).map_err(|error| unreadable(&error))
+    value_result(term_to_json_string(&parsed.tree()))
 }
 
 /// The level of `waveform`, a source's waveform as JSON, at `time` in seconds: at time
 /// zero, the level every analysis but a transient one reads.
 #[pyfunction]
 fn level(waveform: &str, time: f64) -> PyResult<f64> {
-    let waveform: jolty_models::waveform::Waveform =
-        serde_json::from_str(waveform).map_err(|error| unreadable(&error))?;
+    let waveform: jolty_models::waveform::Waveform = parse_json!(waveform)?;
     Ok(waveform.value(time))
 }
 
@@ -1326,7 +802,7 @@ fn level(waveform: &str, time: f64) -> PyResult<f64> {
 #[pyfunction]
 fn defaulted(model: &str, parameters: &str) -> PyResult<String> {
     let library = Library::standard();
-    let parameters = serde_json::from_str(parameters).map_err(|error| unreadable(&error))?;
+    let parameters = parse_json!(parameters)?;
     let defaulted = match library.logic(model) {
         Some(logic) => logic.defaulted(&parameters),
         None => analog(&library, model)?.defaulted(&parameters),
@@ -1360,9 +836,7 @@ fn term_to_json_string(root: &jolty_expressions::Term) -> serde_json::Result<Str
             Segment::Term(Term::Constant(value)) => {
                 output.push_str(&serde_json::to_string(value)?);
             }
-            Segment::Term(Term::Variable(Variable::Time)) => {
-                output.push_str("\"time\"");
-            }
+            Segment::Term(Term::Variable(Variable::Time)) => output.push_str("\"time\""),
             Segment::Term(Term::Variable(Variable::Voltage(positive, negative))) => {
                 output.push_str("{\"voltage\":");
                 output.push_str(&serde_json::to_string(&(positive, negative))?);
@@ -1430,8 +904,7 @@ fn mantissas(series: &str) -> PyResult<Vec<f64>> {
 /// Raises `ValueError` for a list the engine cannot read.
 #[pyfunction]
 fn sample(varied: &str, seed: u64, index: u64) -> PyResult<Vec<f64>> {
-    let varied: Vec<jolty_engine::variants::Toleranced> =
-        serde_json::from_str(varied).map_err(|error| unreadable(&error))?;
+    let varied: Vec<jolty_engine::variants::Toleranced> = parse_json!(varied)?;
     Ok(varied
         .iter()
         .map(|varied| varied.drawn(seed, index))
@@ -1467,13 +940,12 @@ fn variate(variate: &str, seed: u64, index: u64, scope: &str, call: &str) -> PyR
 /// component cycle.
 #[pyfunction]
 fn toleranced(circuit: &str) -> PyResult<Vec<(String, String, f64, String)>> {
-    let circuit = Circuit::from_json(circuit).map_err(|error| unreadable(&error))?;
-    let found = jolty_engine::variants::toleranced(&circuit).map_err(|error| unreadable(&error))?;
+    let circuit = value_result(Circuit::from_json(circuit))?;
+    let found = value_result(jolty_engine::variants::toleranced(&circuit))?;
     found
         .into_iter()
         .map(|varied| {
-            let tolerance =
-                serde_json::to_string(&varied.tolerance).map_err(|error| unreadable(&error))?;
+            let tolerance = value_result(serde_json::to_string(&varied.tolerance))?;
             Ok((varied.instance, varied.parameter, varied.nominal, tolerance))
         })
         .collect()
@@ -1492,7 +964,7 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Elaborated>()?;
     module.add_class::<Values>()?;
     module.add_class::<StructureKey>()?;
-    module.add_class::<batch::Variants>()?;
+    module.add_class::<variants::Variants>()?;
     module.add_class::<batch::BatchPullback>()?;
     module.add_function(wrap_pyfunction!(rules, module)?)?;
     module.add_function(wrap_pyfunction!(terminals, module)?)?;
