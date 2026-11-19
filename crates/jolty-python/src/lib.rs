@@ -41,7 +41,8 @@ create_exception!(
     _core,
     ElaborationError,
     PyException,
-    "A circuit cannot be elaborated. Its only argument lists every problem as a string."
+    "A circuit cannot be elaborated; the single argument lists every problem as a dictionary \
+     of `message` and `instance`."
 );
 create_exception!(_core, SimulationError, PyException, "An analysis failed.");
 
@@ -403,8 +404,8 @@ impl Simulator {
         batch::vjp(py, (&elaborated, &base), variants, request, pool)
     }
 
-    /// Each unknown's name and quantity, `"voltage"` or `"current"`, in the order of every
-    /// solution's values.
+    /// Each unknown's name and quantity, `"voltage"`, `"current"`, `"temperature"` or
+    /// `"state"`, in the order of every solution's values.
     #[getter]
     fn unknowns(&self) -> Vec<(String, &'static str)> {
         self.unknowns.clone()
@@ -560,9 +561,9 @@ impl Simulator {
     }
 
     /// Where the last analysis used logic devices outside their domains, each a dictionary
-    /// of the device's `path`, the `bound` it left, such as `"load"`, the domain's `low`
-    /// and `high`, the `value` furthest outside, the `time` it first left, and the `count`
-    /// of times it was read outside.
+    /// of the device's `instance`, the `bound` it left, such as `"load"`, the domain's
+    /// `minimum` and `maximum`, the `value` furthest outside, the `time` it first left, and
+    /// the `count` of times it was read outside.
     fn excursions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let simulator = self.lock();
         let found = PyList::empty(py);
@@ -1307,7 +1308,7 @@ fn expression_tree(expression: &str) -> PyResult<String> {
     let parsed: jolty_expressions::Expression = expression
         .parse()
         .map_err(|error| PyValueError::new_err(format!("`{expression}`: {error}")))?;
-    Ok(term_to_json_string(&parsed.tree()))
+    term_to_json_string(&parsed.tree()).map_err(|error| unreadable(&error))
 }
 
 /// The level of `waveform`, a source's waveform as JSON, at `time` in seconds: at time
@@ -1337,9 +1338,8 @@ fn defaulted(model: &str, parameters: &str) -> PyResult<String> {
 
 /// Serializes a term of an expression's tree to JSON iteratively, as [`expression_tree`]
 /// writes it, avoiding call-stack recursion on deep left-leaning binary chains.
-fn term_to_json_string(root: &jolty_expressions::Term) -> String {
+fn term_to_json_string(root: &jolty_expressions::Term) -> serde_json::Result<String> {
     use jolty_expressions::{Term, Variable};
-    use serde_json::json;
 
     enum Segment<'a> {
         Term(&'a Term),
@@ -1354,20 +1354,24 @@ fn term_to_json_string(root: &jolty_expressions::Term) -> String {
             Segment::Literal(text) => output.push_str(text),
             Segment::OperationTail(name) => {
                 output.push_str("],\"operation\":");
-                output.push_str(&json!(name).to_string());
+                output.push_str(&serde_json::to_string(name)?);
                 output.push('}');
             }
             Segment::Term(Term::Constant(value)) => {
-                output.push_str(&json!(value).to_string());
+                output.push_str(&serde_json::to_string(value)?);
             }
             Segment::Term(Term::Variable(Variable::Time)) => {
                 output.push_str("\"time\"");
             }
             Segment::Term(Term::Variable(Variable::Voltage(positive, negative))) => {
-                output.push_str(&json!({"voltage": [positive, negative]}).to_string());
+                output.push_str("{\"voltage\":");
+                output.push_str(&serde_json::to_string(&(positive, negative))?);
+                output.push('}');
             }
             Segment::Term(Term::Variable(Variable::Current(port))) => {
-                output.push_str(&json!({"current": port}).to_string());
+                output.push_str("{\"current\":");
+                output.push_str(&serde_json::to_string(port)?);
+                output.push('}');
             }
             Segment::Term(Term::Operation(name, operands)) => {
                 output.push_str("{\"operands\":[");
@@ -1386,18 +1390,18 @@ fn term_to_json_string(root: &jolty_expressions::Term) -> String {
                 rounding,
             }) => {
                 output.push_str("{\"abscissae\":");
-                output.push_str(&json!(abscissae).to_string());
+                output.push_str(&serde_json::to_string(abscissae)?);
                 output.push_str(",\"ordinates\":");
-                output.push_str(&json!(ordinates).to_string());
+                output.push_str(&serde_json::to_string(ordinates)?);
                 output.push_str(",\"rounding\":");
-                output.push_str(&json!(rounding).to_string());
+                output.push_str(&serde_json::to_string(rounding)?);
                 output.push_str(",\"table\":");
                 stack.push(Segment::Literal("}"));
                 stack.push(Segment::Term(input));
             }
         }
     }
-    output
+    Ok(output)
 }
 
 /// Every rule of the structural checks, in the order a check reports them: its name, its
@@ -1510,4 +1514,56 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("SimulationError", py.get_type::<SimulationError>())?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use jolty_expressions::{Term, Variable};
+
+    use super::term_to_json_string;
+
+    #[test]
+    fn term_to_json_string_serializes_all_variants() {
+        let constant = Term::Constant(1.5);
+        assert_eq!(term_to_json_string(&constant).unwrap(), "1.5");
+
+        let time = Term::Variable(Variable::Time);
+        assert_eq!(term_to_json_string(&time).unwrap(), "\"time\"");
+
+        let single_voltage = Term::Variable(Variable::Voltage("in".to_owned(), None));
+        assert_eq!(
+            term_to_json_string(&single_voltage).unwrap(),
+            r#"{"voltage":["in",null]}"#
+        );
+
+        let diff_voltage = Term::Variable(Variable::Voltage("a".to_owned(), Some("b".to_owned())));
+        assert_eq!(
+            term_to_json_string(&diff_voltage).unwrap(),
+            r#"{"voltage":["a","b"]}"#
+        );
+
+        let current = Term::Variable(Variable::Current("V1".to_owned()));
+        assert_eq!(
+            term_to_json_string(&current).unwrap(),
+            r#"{"current":"V1"}"#
+        );
+
+        let sum = Term::Operation("+", vec![constant, time]);
+        assert_eq!(
+            term_to_json_string(&sum).unwrap(),
+            r#"{"operands":[1.5,"time"],"operation":"+"}"#
+        );
+
+        let table = Term::Table {
+            input: Box::new(Term::Variable(Variable::Voltage("n".to_owned(), None))),
+            abscissae: vec![0.0, 1.0, 2.0],
+            ordinates: vec![0.0, 0.5, 1.0],
+            rounding: 0.1,
+        };
+        let expected = concat!(
+            r#"{"abscissae":[0.0,1.0,2.0],"ordinates":[0.0,0.5,1.0],"#,
+            r#""rounding":0.1,"table":{"voltage":["n",null]}}"#,
+        );
+        assert_eq!(term_to_json_string(&table).unwrap(), expected);
+    }
 }

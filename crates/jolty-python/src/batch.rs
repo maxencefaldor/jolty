@@ -14,7 +14,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use jolty_engine::batch::{Batch, Mapped, Measured, Run, Sink, Unmeasured, Variants as _};
-use jolty_engine::measure::MeasureError;
+use jolty_engine::measure::{MeasureError, Point, SumError};
 use jolty_engine::variants::{Axis, Explicit, Grid, MonteCarlo, Product, Toleranced};
 use jolty_engine::{
     Analysis, Cotangent, Cotangents, Differentiated, ElaborationError, Options,
@@ -427,6 +427,83 @@ enum Cause {
     Measure(MeasureError),
 }
 
+/// Allocation-free `Eq`/`Hash` key for [`Cause`], keying floating-point payloads by their
+/// IEEE-754 bit patterns (`f64::to_bits`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CauseKey {
+    Failed,
+    Kind,
+    Unknown(usize),
+    Mismatch,
+    Empty,
+    Outside(u8, u64, u64),
+    EmptyWindow,
+    Flat(u64),
+    Uncrossed,
+    Stays(u64),
+    Rises(u64),
+    Vanishes,
+    Unpositive(u64),
+    Short,
+    Silent,
+    Memory,
+    EmptyBand,
+    Band(u64, u64, u64, u64),
+    SumOverflow,
+    SumIndeterminate,
+    NoPoles,
+    Unreferred,
+}
+
+impl From<Cause> for CauseKey {
+    fn from(cause: Cause) -> Self {
+        match cause {
+            Cause::Failed => Self::Failed,
+            Cause::Measure(error) => match error {
+                MeasureError::Kind => Self::Kind,
+                MeasureError::Unknown(index) => Self::Unknown(index),
+                MeasureError::Mismatch => Self::Mismatch,
+                MeasureError::Empty => Self::Empty,
+                MeasureError::Outside { point, first, last } => Self::Outside(
+                    match point {
+                        Point::At => 0,
+                        Point::Start => 1,
+                        Point::Stop => 2,
+                    },
+                    first.to_bits(),
+                    last.to_bits(),
+                ),
+                MeasureError::EmptyWindow => Self::EmptyWindow,
+                MeasureError::Flat(value) => Self::Flat(value.to_bits()),
+                MeasureError::Uncrossed => Self::Uncrossed,
+                MeasureError::Stays(value) => Self::Stays(value.to_bits()),
+                MeasureError::Rises(value) => Self::Rises(value.to_bits()),
+                MeasureError::Vanishes => Self::Vanishes,
+                MeasureError::Unpositive(value) => Self::Unpositive(value.to_bits()),
+                MeasureError::Short => Self::Short,
+                MeasureError::Silent => Self::Silent,
+                MeasureError::Memory => Self::Memory,
+                MeasureError::EmptyBand => Self::EmptyBand,
+                MeasureError::Band {
+                    low,
+                    high,
+                    first,
+                    last,
+                } => Self::Band(
+                    low.to_bits(),
+                    high.to_bits(),
+                    first.to_bits(),
+                    last.to_bits(),
+                ),
+                MeasureError::Sum(SumError::Overflow) => Self::SumOverflow,
+                MeasureError::Sum(SumError::Indeterminate) => Self::SumIndeterminate,
+                MeasureError::NoPoles => Self::NoPoles,
+                MeasureError::Unreferred => Self::Unreferred,
+            },
+        }
+    }
+}
+
 /// What the sink has written, behind its lock: the arrays, one row per run, the causes
 /// measures read nothing for, and why each run that failed failed, by its row.
 struct Written<'a> {
@@ -437,8 +514,8 @@ struct Written<'a> {
     traces: Vec<Buffer<'a>>,
     /// Each cause, in the order the runs that met it first ended.
     reasons: Vec<Cause>,
-    /// Each cause's place among `reasons`, by its text.
-    known: HashMap<String, usize>,
+    /// Each cause's place among `reasons`.
+    known: HashMap<CauseKey, usize>,
     problems: BTreeMap<u64, ElaborationError>,
     errors: BTreeMap<u64, Vec<(usize, String)>>,
 }
@@ -591,9 +668,9 @@ impl Sink for Columns<'_> {
                             Unmeasured::Failed => Cause::Failed,
                             Unmeasured::Measure(error) => Cause::Measure(*error),
                         };
-                        let text = format!("{cause:?}");
+                        let key = CauseKey::from(cause);
                         let next = written.reasons.len();
-                        let known = *written.known.entry(text).or_insert(next);
+                        let known = *written.known.entry(key).or_insert(next);
                         if known == next {
                             written.reasons.push(cause);
                         }
@@ -920,6 +997,7 @@ pub(crate) fn run<'py>(
     )?;
     let found = PyDict::new(py);
     arrays.shaped(&found, runs, columns.len(), &prepared)?;
+    found.set_item("parameters", variants.parameters())?;
     written.into_python(&found)?;
     Ok(found)
 }
@@ -1361,17 +1439,16 @@ impl BatchPullback {
             .outer_iter()
             .map(|row| row.iter().copied().collect())
             .collect();
-        let selected = Selected {
-            values: runs
-                .iter()
+        let selected = Explicit(
+            runs.iter()
                 .map(|&run| self.runs[run].values.clone())
                 .collect(),
-        };
+        );
         let found = py.detach(|| {
             pool.inner.install(|| {
                 self.batch.map(
                     &selected,
-                    0..selected.values.len() as u64,
+                    0..selected.len(),
                     options,
                     &|index, simulator, options| -> Pulled {
                         let row = usize::try_from(index).map_err(|error| error.to_string())?;
@@ -1491,22 +1568,79 @@ fn succeeded<T, E: std::fmt::Display>(
     )))
 }
 
-/// The values of runs a pullback carries cotangents back on, a run each, in the order of
-/// the rows.
-struct Selected {
-    values: Vec<Values>,
-}
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
 
-impl jolty_engine::batch::Variants for Selected {
-    fn len(&self) -> u64 {
-        self.values.len() as u64
-    }
+    use jolty_engine::measure::{MeasureError, Point, SumError};
 
-    fn values(&self, index: u64) -> Values {
-        usize::try_from(index)
-            .ok()
-            .and_then(|index| self.values.get(index))
-            .cloned()
-            .unwrap_or_default()
+    use super::{Cause, CauseKey};
+
+    #[test]
+    fn cause_key_deduplicates_variants_and_float_bit_patterns() {
+        let nan_a = f64::from_bits(0x7ff8_0000_0000_0001);
+        let nan_b = f64::from_bits(0x7ff8_0000_0000_0002);
+        let samples = [
+            Cause::Failed,
+            Cause::Measure(MeasureError::Kind),
+            Cause::Measure(MeasureError::Unknown(0)),
+            Cause::Measure(MeasureError::Unknown(1)),
+            Cause::Measure(MeasureError::Mismatch),
+            Cause::Measure(MeasureError::Empty),
+            Cause::Measure(MeasureError::Outside {
+                point: Point::At,
+                first: 0.0,
+                last: 1.0,
+            }),
+            Cause::Measure(MeasureError::Outside {
+                point: Point::Start,
+                first: 0.0,
+                last: 1.0,
+            }),
+            Cause::Measure(MeasureError::Outside {
+                point: Point::Stop,
+                first: 0.0,
+                last: 1.0,
+            }),
+            Cause::Measure(MeasureError::EmptyWindow),
+            Cause::Measure(MeasureError::Flat(0.0)),
+            Cause::Measure(MeasureError::Flat(-0.0)),
+            Cause::Measure(MeasureError::Flat(f64::INFINITY)),
+            Cause::Measure(MeasureError::Flat(f64::NEG_INFINITY)),
+            Cause::Measure(MeasureError::Flat(nan_a)),
+            Cause::Measure(MeasureError::Flat(nan_b)),
+            Cause::Measure(MeasureError::Uncrossed),
+            Cause::Measure(MeasureError::Stays(100.0)),
+            Cause::Measure(MeasureError::Rises(0.5)),
+            Cause::Measure(MeasureError::Vanishes),
+            Cause::Measure(MeasureError::Unpositive(0.0)),
+            Cause::Measure(MeasureError::Short),
+            Cause::Measure(MeasureError::Silent),
+            Cause::Measure(MeasureError::Memory),
+            Cause::Measure(MeasureError::EmptyBand),
+            Cause::Measure(MeasureError::Band {
+                low: 10.0,
+                high: 100.0,
+                first: 1.0,
+                last: 50.0,
+            }),
+            Cause::Measure(MeasureError::Sum(SumError::Overflow)),
+            Cause::Measure(MeasureError::Sum(SumError::Indeterminate)),
+            Cause::Measure(MeasureError::NoPoles),
+            Cause::Measure(MeasureError::Unreferred),
+        ];
+
+        let mut unique = HashSet::new();
+        let mut table = HashMap::new();
+        for (index, cause) in samples.into_iter().enumerate() {
+            let key = CauseKey::from(cause);
+            assert!(unique.insert(key), "duplicate key for {cause:?}");
+            table.insert(key, index);
+        }
+        // Repeated lookups find the exact same index, including NaN bit patterns.
+        for (index, cause) in samples.into_iter().enumerate() {
+            let key = CauseKey::from(cause);
+            assert_eq!(table.get(&key), Some(&index), "missing key for {cause:?}");
+        }
     }
 }

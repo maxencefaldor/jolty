@@ -18,6 +18,13 @@ fn emit_rerun(path: &Path) -> io::Result<()> {
     writeln!(stdout, "cargo::rerun-if-changed={}", path.display())
 }
 
+fn io_error(action: &str, path: &Path, error: &io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!("{action} `{}`: {error}", path.display()),
+    )
+}
+
 fn collect_tree(
     root: &Path,
     directory: &Path,
@@ -25,33 +32,58 @@ fn collect_tree(
     entries: &mut BTreeMap<String, String>,
 ) -> io::Result<()> {
     emit_rerun(directory)?;
-    let mut paths: Vec<PathBuf> = fs::read_dir(directory)?
-        .map(|entry| entry.map(|item| item.path()))
+    let mut paths: Vec<PathBuf> = fs::read_dir(directory)
+        .map_err(|error| io_error("reading directory", directory, &error))?
+        .map(|entry| {
+            entry
+                .map(|item| item.path())
+                .map_err(|error| io_error("reading directory entry in", directory, &error))
+        })
         .collect::<io::Result<_>>()?;
     paths.sort();
     for path in paths {
         let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if path.is_dir() {
-            if file_name.starts_with('.') || file_name == "__pycache__" {
+        if file_name.starts_with('.') {
+            continue;
+        }
+        let file_type = fs::symlink_metadata(&path)
+            .map_err(|error| io_error("inspecting", &path, &error))?
+            .file_type();
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            if file_name == "__pycache__" {
                 continue;
             }
             collect_tree(root, &path, extension, entries)?;
+            continue;
+        }
+        if !file_type.is_file() {
             continue;
         }
         if path.extension().and_then(|suffix| suffix.to_str()) != Some(extension) {
             continue;
         }
         emit_rerun(&path)?;
-        let relative = path.strip_prefix(root).map_err(io::Error::other)?;
+        let relative = path.strip_prefix(root).map_err(|error| {
+            io::Error::other(format!(
+                "stripping `{}` from `{}`: {error}",
+                root.display(),
+                path.display()
+            ))
+        })?;
         let without_extension = relative.with_extension("");
         let slug = without_extension
             .iter()
             .map(|part| part.to_string_lossy())
             .collect::<Vec<_>>()
             .join("/");
-        let text = fs::read_to_string(&path)?.replace("\r\n", "\n");
+        let text = fs::read_to_string(&path)
+            .map_err(|error| io_error("reading file", &path, &error))?
+            .replace("\r\n", "\n");
         entries.insert(slug, text);
     }
     Ok(())
@@ -101,7 +133,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "workspace root could not be resolved from CARGO_MANIFEST_DIR",
+                format!(
+                    "workspace root could not be resolved from CARGO_MANIFEST_DIR `{}`",
+                    manifest_directory.display()
+                ),
             )
         })?;
     let out_directory = PathBuf::from(
@@ -109,21 +144,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "OUT_DIR is not set"))?,
     );
 
+    let guide_directory = repository_root.join("docs").join("guide");
     let mut guide = BTreeMap::new();
-    collect_tree(
-        &repository_root.join("docs").join("guide"),
-        &repository_root.join("docs").join("guide"),
-        "md",
-        &mut guide,
-    )?;
+    collect_tree(&guide_directory, &guide_directory, "md", &mut guide)?;
 
+    let examples_directory = repository_root.join("examples");
     let mut examples = BTreeMap::new();
-    collect_tree(
-        &repository_root.join("examples"),
-        &repository_root.join("examples"),
-        "py",
-        &mut examples,
-    )?;
+    collect_tree(&examples_directory, &examples_directory, "py", &mut examples)?;
 
     let mut payload = String::from("{\"examples\":");
     write_json_map(&mut payload, &examples);
@@ -131,6 +158,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     write_json_map(&mut payload, &guide);
     payload.push_str("}\n");
 
-    fs::write(out_directory.join("docs.json"), payload)?;
+    let output_path = out_directory.join("docs.json");
+    fs::write(&output_path, payload)
+        .map_err(|error| io_error("writing file", &output_path, &error))?;
     Ok(())
 }
