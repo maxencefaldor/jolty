@@ -3,46 +3,62 @@
 //! instances a record names.
 #![cfg(test)]
 
-use std::collections::{BTreeMap, BTreeSet};
+#[path = "common/capacitor.rs"]
+mod capacitor;
+mod common;
+#[path = "common/dc.rs"]
+mod dc;
+#[path = "common/sim.rs"]
+mod sim;
+#[path = "common/transient.rs"]
+mod transient;
 
+use std::collections::BTreeSet;
+
+use capacitor::capacitor;
+use common::{circuit, device, resistor, voltage_source};
+use dc::voltage_dc;
 use jolty_engine::{
-    Ac, Conditions, DcSweep, Method, Options, Record, RecordedValues, RecordedView, Recording,
-    Simulator, SummedTerminal, Transient,
+    Ac, DcSweep, Method, Options, Record, RecordedValues, RecordedView, Recording, Simulator,
+    SummedTerminal, Transient,
 };
 use jolty_ir::Circuit;
-use jolty_models::Library;
 use jolty_numerics::Complex64;
-use serde_json::{Value, json};
-
-fn simulator(instances: &Value) -> Simulator {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
-        "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
-    });
-    let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-    Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-        .expect("an elaborated circuit")
-}
+use serde_json::json;
+use sim::simulator;
+use transient::transient;
 
 /// A source stepping into a resistor and a capacitor, a diode across the capacitor, and a
 /// MOSFET whose gate and drain share a net and whose source and bulk join the reference.
-fn bench() -> Value {
-    json!([
-        {"name": "V1", "of": {"model": "voltage_source"},
-         "parameters": {"waveform": {"pulse": {"initial": 0, "pulsed": 3, "delay": 1e-7,
-                                               "rise": 1e-8, "fall": 1e-8, "width": 1e-6}}},
-         "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-         "terminals": {"a": "in", "b": "out"}},
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-10},
-         "terminals": {"a": "out", "b": "0"}},
-        {"name": "D1", "of": {"model": "diode"},
-         "parameters": {"saturation_current": 1e-14, "junction_capacitance": 1e-12},
-         "terminals": {"anode": "out", "cathode": "0"}},
-        {"name": "M1", "of": {"model": "mosfet"},
-         "parameters": {"width": 2e-6, "length": 1e-6, "threshold_voltage": 0.3,
-                        "transconductance_parameter": 1e-4},
-         "terminals": {"drain": "out", "gate": "out", "source": "0", "bulk": "0"}}
+fn bench() -> Circuit {
+    circuit([
+        voltage_source(
+            "V1",
+            "in",
+            "0",
+            json!({"pulse": {"initial": 0, "pulsed": 3, "delay": 1e-7,
+                             "rise": 1e-8, "fall": 1e-8, "width": 1e-6}}),
+        ),
+        resistor("R1", 1e3, "in", "out"),
+        capacitor("C1", 1e-10, "out", "0"),
+        device(
+            "D1",
+            "diode",
+            json!({"saturation_current": 1e-14, "junction_capacitance": 1e-12}),
+            &[("anode", "out"), ("cathode", "0")],
+        ),
+        device(
+            "M1",
+            "mosfet",
+            json!({"width": 2e-6, "length": 1e-6, "threshold_voltage": 0.3,
+                   "transconductance_parameter": 1e-4}),
+            &[
+                ("drain", "out"),
+                ("gate", "out"),
+                ("source", "0"),
+                ("bulk", "0"),
+            ],
+        ),
     ])
 }
 
@@ -220,15 +236,11 @@ fn every_terminal_is_named_by_its_device_and_its_own_name() {
 
 #[test]
 fn currents_at_an_operating_point_obey_ohm_and_kirchhoff() {
-    let mut simulator = simulator(&json!([
-        {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
-         "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-         "terminals": {"a": "in", "b": "out"}},
-        {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 4e3},
-         "terminals": {"a": "out", "b": "0"}},
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-9},
-         "terminals": {"a": "out", "b": "0"}}
+    let mut simulator = simulator(&circuit([
+        voltage_dc("V1", "in", 5.0),
+        resistor("R1", 1e3, "in", "out"),
+        resistor("R2", 4e3, "out", "0"),
+        capacitor("C1", 1e-9, "out", "0"),
     ]));
     let point = simulator.operating_point(&everything()).unwrap();
     let RecordedValues {
@@ -283,12 +295,8 @@ fn transient_currents_take_their_charges_derivative_by_the_step_s_formula() {
     for method in [Method::Trapezoidal, Method::Gear2, Method::BackwardEuler] {
         let mut simulator = simulator(&bench());
         let transient = Transient {
-            stop: 2e-6,
-            max_step: Some(2e-8),
-            method,
             breakpoints: vec![1.234_567e-7, 1.5e-6],
-            initial_conditions: BTreeMap::new(),
-            operating_point: true,
+            ..transient(2e-6, Some(2e-8), method)
         };
         let waveforms = simulator.transient(&transient, &tight()).unwrap();
         let out = simulator
@@ -377,19 +385,23 @@ fn small_signal_currents_are_the_admittances_times_the_phasors() {
 
 #[test]
 fn each_device_reports_its_own_small_signal_model_and_variables() {
-    let mut simulator = simulator(&json!([
-        {"name": "VG", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
-         "terminals": {"positive": "g", "negative": "0"}},
-        {"name": "VD", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 2.0}},
-         "terminals": {"positive": "d", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 4e3},
-         "terminals": {"a": "d", "b": "0"}},
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 3e-12},
-         "terminals": {"a": "g", "b": "d"}},
-        {"name": "M1", "of": {"model": "mosfet"},
-         "parameters": {"width": 2e-6, "length": 1e-6, "threshold_voltage": 0.3,
-                        "transconductance_parameter": 1e-4},
-         "terminals": {"drain": "d", "gate": "g", "source": "0", "bulk": "0"}}
+    let mut simulator = simulator(&circuit([
+        voltage_dc("VG", "g", 1.0),
+        voltage_dc("VD", "d", 2.0),
+        resistor("R1", 4e3, "d", "0"),
+        capacitor("C1", 3e-12, "g", "d"),
+        device(
+            "M1",
+            "mosfet",
+            json!({"width": 2e-6, "length": 1e-6, "threshold_voltage": 0.3,
+                   "transconductance_parameter": 1e-4}),
+            &[
+                ("drain", "d"),
+                ("gate", "g"),
+                ("source", "0"),
+                ("bulk", "0"),
+            ],
+        ),
     ]));
     let point = simulator.operating_point(&tight()).unwrap();
     let RecordedValues {
@@ -465,8 +477,7 @@ fn nested(outside: (&str, &str)) -> Simulator {
         }
     });
     let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-    Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-        .expect("an elaborated circuit")
+    simulator(&circuit)
 }
 
 /// Each summed terminal's name, with the device terminals it sums, by name.
@@ -570,17 +581,22 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         "timing": {"fixed": {"rise": 1e-9, "fall": 1e-9, "transition": 1e-10}},
         "electrical": {"input_capacitances": [2e-15]},
     });
-    let mut simulator = simulator(&json!([
-        {"name": "VDD", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
-         "terminals": {"positive": "vdd", "negative": "0"}},
-        {"name": "VA", "of": {"model": "voltage_source"},
-         "parameters": {"waveform": {"pulse": {"initial": 0, "pulsed": 1, "delay": 2e-9,
-                                               "rise": 1e-10, "fall": 1e-10, "width": 1e-8}}},
-         "terminals": {"positive": "a", "negative": "0"}},
-        {"name": "U1", "of": {"model": "logic_cell"}, "parameters": cell,
-         "terminals": {"a": "a", "y": "y", "supply": "vdd", "ground": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-         "terminals": {"a": "y", "b": "0"}}
+    let mut simulator = simulator(&circuit([
+        voltage_dc("VDD", "vdd", 1.0),
+        voltage_source(
+            "VA",
+            "a",
+            "0",
+            json!({"pulse": {"initial": 0, "pulsed": 1, "delay": 2e-9,
+                             "rise": 1e-10, "fall": 1e-10, "width": 1e-8}}),
+        ),
+        device(
+            "U1",
+            "logic_cell",
+            cell,
+            &[("a", "a"), ("y", "y"), ("supply", "vdd"), ("ground", "0")],
+        ),
+        resistor("R1", 1e3, "y", "0"),
     ]));
     let named: Vec<&str> = simulator
         .summed_terminals()
@@ -588,15 +604,9 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
         .map(SummedTerminal::name)
         .collect();
     assert_eq!(named, ["U1.a", "U1.y", "U1.supply", "U1.ground"]);
-    let transient = Transient {
-        stop: 1e-8,
-        max_step: Some(1e-10),
-        method: Method::Trapezoidal,
-        breakpoints: Vec::new(),
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
-    };
-    let waveforms = simulator.transient(&transient, &tight()).unwrap();
+    let waveforms = simulator
+        .transient(&transient(1e-8, Some(1e-10), Method::Trapezoidal), &tight())
+        .unwrap();
     let columns = Columns::from_record(&simulator, &Record::All);
     let pins: Vec<usize> = ["U1.a", "U1.y", "U1.supply", "U1.ground"]
         .into_iter()
@@ -628,12 +638,8 @@ fn a_logic_device_s_pins_carry_its_connect_elements_currents() {
 /// A transient of the bench's pulse, with steps at most 10 ns long.
 fn pulse() -> Transient {
     Transient {
-        stop: 1e-6,
-        max_step: Some(1e-8),
-        method: Method::Trapezoidal,
         breakpoints: vec![2.5e-7],
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
+        ..transient(1e-6, Some(1e-8), Method::Trapezoidal)
     }
 }
 
@@ -678,7 +684,7 @@ fn a_device_recorded_alone_reads_as_it_does_among_every_device() {
     );
     let chosen = Options { record, ..tight() };
     // Each simulator reads only the devices it records.
-    let mut apart = self::simulator(&bench());
+    let mut apart = sim::simulator(&bench());
     let every = simulator.transient(&pulse(), &tight()).unwrap();
     let alone = apart.transient(&pulse(), &chosen).unwrap();
     assert_eq!(alone.times, every.times);
@@ -736,7 +742,7 @@ fn a_transistor_s_region_recorded_alone_reads_as_its_variables_recorded_in_full(
         regions: true,
         ..tight()
     };
-    let mut apart = self::simulator(&bench());
+    let mut apart = sim::simulator(&bench());
     let every = simulator.transient(&pulse(), &tight()).unwrap();
     let alone = apart.transient(&pulse(), &regions).unwrap();
     assert_eq!(alone.values, every.values);

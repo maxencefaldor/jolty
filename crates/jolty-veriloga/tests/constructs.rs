@@ -6,6 +6,8 @@
 
 #![cfg(test)]
 
+#[path = "common/closed.rs"]
+mod closed;
 mod common;
 
 #[rustfmt::skip]
@@ -33,6 +35,7 @@ mod networks;
 #[path = "fixtures/thermal_resistance.rs"]
 mod thermal_resistance;
 
+use closed::Closed;
 use common::Worst;
 use jolty_models::testing::{
     Bench, Rig, assert_lift_matches_serde, assert_lift_matches_serde_with_optionals,
@@ -44,16 +47,7 @@ use jolty_models::{
 /// How far a value computed by the compiled kernel may lie from its closed form computed
 /// here, in units of the machine epsilon times its magnitude: each computes it in at most
 /// eight operations, each rounding by half an epsilon, in its own order.
-const CLOSED: f64 = 8.0;
-
-fn assert_closed(what: &str, compiled: f64, closed: f64) {
-    let distance = (compiled - closed).abs();
-    assert!(
-        distance <= CLOSED * f64::EPSILON * closed.abs(),
-        "{what}: {compiled:e} compiled, {closed:e} closed, {:.1} ε apart",
-        distance / (f64::EPSILON * closed.abs())
-    );
-}
+const CLOSED: Closed = Closed(8.0);
 
 /// An inlined analog function and a named block's variables compute the saturating
 /// conductance's closed form, `g · vs · tanh(v / vs) + b · g · vs · atan(v / vs)`, and its
@@ -68,8 +62,8 @@ fn functions_blocks_tanh_and_atan_compute_their_closed_forms() {
         let ratio = v / vs;
         let current = g * vs * ratio.tanh() + b * g * vs * ratio.atan();
         let slope = g * (1.0 - ratio.tanh() * ratio.tanh()) + b * g / (1.0 + ratio * ratio);
-        assert_closed(&format!("current at {v}"), evaluation.residual[0], current);
-        assert_closed(
+        CLOSED.assert(&format!("current at {v}"), evaluation.residual[0], current);
+        CLOSED.assert(
             &format!("conductance at {v}"),
             evaluation.conductance[0][0],
             slope,
@@ -169,10 +163,10 @@ fn a_heated_resistor_reads_and_heats_its_thermal_terminal() {
     let evaluation = bench.evaluate(&[1.0, 0.0, 5.0]);
     let heated = r * (1.0 + alpha * 5.0);
     let current = 1.0 / heated;
-    assert_closed("current", evaluation.residual[0], current);
-    assert_closed("returning current", evaluation.residual[1], -current);
-    assert_closed("heat", evaluation.residual[2], -current);
-    assert_closed(
+    CLOSED.assert("current", evaluation.residual[0], current);
+    CLOSED.assert("returning current", evaluation.residual[1], -current);
+    CLOSED.assert("heat", evaluation.residual[2], -current);
+    CLOSED.assert(
         "current by temperature",
         evaluation.conductance[0][2],
         -r * alpha / (heated * heated),
@@ -238,8 +232,8 @@ fn initial_code_rounds_the_fingers() {
     let parameters = format!(r#"{{"r": {r}, "fingers": 2.4}}"#);
     let mut bench = Bench::at::<initial_events::InitialEvents>(&parameters, REFERENCE_TEMPERATURE);
     let evaluation = bench.evaluate(&[0.5, 0.0]);
-    assert_closed("current", evaluation.residual[0], 0.5 * 5.0 / r);
-    assert_closed("conductance", evaluation.conductance[0][0], 5.0 / r);
+    CLOSED.assert("current", evaluation.residual[0], 0.5 * 5.0 / r);
+    CLOSED.assert("conductance", evaluation.conductance[0][0], 5.0 / r);
     let read = serde_json::from_str(&parameters).expect("parameters");
     let x = [0.5, 0.0];
     let rig = Rig {
@@ -295,19 +289,19 @@ fn shorts_join_nodes_and_keep_the_currents_read() {
         x[unknowns - 1] = short;
         let evaluation = bench.evaluate(&x);
         let into_z = if grounded == 1 { v / r } else { v / (2.0 * r) };
-        assert_closed(
+        CLOSED.assert(
             &format!("{parameters}: a"),
             evaluation.residual[0],
             short + into_z,
         );
-        assert_closed(&format!("{parameters}: b"), evaluation.residual[1], -short);
+        CLOSED.assert(&format!("{parameters}: b"), evaluation.residual[1], -short);
         for (row, residual) in evaluation.residual.iter().enumerate().skip(2) {
             assert!(
                 residual.abs() <= f64::EPSILON * short,
                 "{parameters}: row {row}, {residual:e}"
             );
         }
-        assert_closed(
+        CLOSED.assert(
             &format!("{parameters}: shorted"),
             bench.variables()[0],
             short,
@@ -350,7 +344,7 @@ fn a_noise_current_read_keeps_its_correlation() {
         .map(|(&column, value)| g[0][column] * value)
         .sum::<f64>()
         + excitation[0];
-    assert_closed("a's noise", source.white * current * current, k * k * s);
+    CLOSED.assert("a's noise", source.white * current * current, k * k * s);
 }
 
 /// Every compiled fixture kernel's derived `Lift` visits the exact real parameter paths

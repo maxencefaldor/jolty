@@ -1,17 +1,27 @@
 //! The lossless transmission line against the closed forms of its waves.
 #![cfg(test)]
 
-use std::collections::BTreeMap;
+mod common;
+#[path = "common/current.rs"]
+mod current;
+#[path = "common/dc.rs"]
+mod dc;
+#[path = "common/sim.rs"]
+mod sim;
+#[path = "common/transient.rs"]
+mod transient;
+
 use std::f64::consts::TAU;
 
-use jolty_engine::{
-    Ac, Conditions, Method, Options, PeriodicSteadyState, PoleZero, SimulationError, Simulator,
-    Transient,
-};
-use jolty_ir::Circuit;
-use jolty_models::Library;
+use common::{circuit, device, resistor, voltage_source};
+use current::current_dc;
+use dc::voltage_dc;
+use jolty_engine::{Ac, Method, Options, PeriodicSteadyState, PoleZero, SimulationError};
+use jolty_ir::{Circuit, Instance};
 use jolty_numerics::Complex64;
-use serde_json::{Value, json};
+use serde_json::json;
+use sim::simulator;
+use transient::transient;
 
 /// The characteristic impedance of every line here, in ohms.
 const IMPEDANCE: f64 = 50.0;
@@ -26,36 +36,32 @@ const EDGE: (f64, f64) = (0.5e-9, 0.2e-9);
 /// rounding too, the corners each stepped onto. A thousand ulps of the 1 V the waves are.
 const ROUNDING: f64 = 1e3 * f64::EPSILON;
 
-/// A circuit whose top component has a ground port `0` and places `instances`.
-fn circuit(instances: &[Value]) -> Circuit {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
-        "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
-                                "instances": instances}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
-}
-
-fn resistor(name: &str, resistance: f64, a: &str, b: &str) -> Value {
-    json!({"name": name, "of": {"model": "resistor"},
-           "parameters": {"resistance": resistance}, "terminals": {"a": a, "b": b}})
-}
-
 /// A line from port `a`, over the ground, to port `b`, over the ground.
-fn line(name: &str, a: &str, b: &str) -> Value {
-    json!({"name": name, "of": {"model": "transmission_line"},
-           "parameters": {"characteristic_impedance": IMPEDANCE, "delay": DELAY},
-           "terminals": {"positive1": a, "negative1": "0", "positive2": b, "negative2": "0"}})
+fn line(name: &str, a: &str, b: &str) -> Instance {
+    device(
+        name,
+        "transmission_line",
+        json!({"characteristic_impedance": IMPEDANCE, "delay": DELAY}),
+        &[
+            ("positive1", a),
+            ("negative1", "0"),
+            ("positive2", b),
+            ("negative2", "0"),
+        ],
+    )
 }
 
 /// A source at `positive` of a 1 V edge, [`EDGE`], from 0 V.
-fn edge(positive: &str) -> Value {
+fn edge(positive: &str) -> Instance {
     let (delay, rise) = EDGE;
-    json!({"name": "V1", "of": {"model": "voltage_source"},
-           "parameters": {"waveform": {"pulse": {
-               "initial": 0, "pulsed": 1, "delay": delay, "rise": rise, "fall": rise,
-               "width": 1}}},
-           "terminals": {"positive": positive, "negative": "0"}})
+    voltage_source(
+        "V1",
+        positive,
+        "0",
+        json!({"pulse": {
+            "initial": 0, "pulsed": 1, "delay": delay, "rise": rise, "fall": rise, "width": 1,
+        }}),
+    )
 }
 
 /// The source's level at `time`.
@@ -64,25 +70,12 @@ fn source(time: f64) -> f64 {
     ((time - delay) / rise).clamp(0.0, 1.0)
 }
 
-fn simulator(circuit: &Circuit) -> Simulator {
-    Simulator::new(circuit, &Library::standard(), &Conditions::default())
-        .expect("the circuit elaborates")
-}
-
 /// The transient of `circuit` until `stop`, by `method`: its times, and the voltages of
 /// `nets` at each.
 fn waves(circuit: &Circuit, stop: f64, method: Method, nets: &[&str]) -> Vec<(f64, Vec<f64>)> {
     let mut simulator = simulator(circuit);
-    let transient = Transient {
-        stop,
-        max_step: None,
-        method,
-        breakpoints: Vec::new(),
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
-    };
     let result = simulator
-        .transient(&transient, &Options::default())
+        .transient(&transient(stop, None, method), &Options::default())
         .expect("a transient");
     let unknowns: Vec<usize> = nets
         .iter()
@@ -123,7 +116,7 @@ fn assert_waves(found: &[(f64, Vec<f64>)], expected: impl Fn(f64) -> Vec<f64>, c
 /// whole a delay later: no reflection, every edge stepped onto.
 #[test]
 fn a_matched_line_delays_half_the_edge() {
-    let circuit = circuit(&[
+    let circuit = circuit([
         edge("in"),
         resistor("R1", IMPEDANCE, "in", "a"),
         line("T1", "a", "b"),
@@ -146,7 +139,7 @@ fn a_matched_line_delays_half_the_edge() {
 #[test]
 fn an_open_line_rings_down_by_its_reflections() {
     let resistance = IMPEDANCE / 2.0;
-    let circuit = circuit(&[
+    let circuit = circuit([
         edge("in"),
         resistor("R1", resistance, "in", "a"),
         line("T1", "a", "b"),
@@ -190,7 +183,7 @@ fn an_open_line_rings_down_by_its_reflections() {
 /// inverted two delays later, and the short carries twice the wave's current.
 #[test]
 fn a_shorted_line_returns_the_edge_inverted() {
-    let circuit = circuit(&[
+    let circuit = circuit([
         edge("in"),
         resistor("R1", IMPEDANCE, "in", "a"),
         line("T1", "a", "b"),
@@ -217,10 +210,8 @@ fn a_shorted_line_returns_the_edge_inverted() {
 /// At DC a line is a short through, from port to port.
 #[test]
 fn at_dc_a_line_is_a_short_through() {
-    let circuit = circuit(&[
-        json!({"name": "V1", "of": {"model": "voltage_source"},
-               "parameters": {"waveform": {"dc": 1.0}},
-               "terminals": {"positive": "in", "negative": "0"}}),
+    let circuit = circuit([
+        voltage_dc("V1", "in", 1.0),
         resistor("R1", 1e3, "in", "a"),
         line("T1", "a", "b"),
         resistor("R2", 3e3, "b", "0"),
@@ -242,10 +233,8 @@ fn at_dc_a_line_is_a_short_through() {
 #[test]
 fn a_quarter_wave_inverts_its_load() {
     let load = 100.0;
-    let circuit = circuit(&[
-        json!({"name": "I1", "of": {"model": "current_source"},
-               "parameters": {"waveform": {"dc": 0.0}},
-               "terminals": {"positive": "0", "negative": "a"}}),
+    let circuit = circuit([
+        current_dc("I1", "0", "a", 0.0),
         line("T1", "a", "b"),
         resistor("R1", load, "b", "0"),
     ]);
@@ -278,7 +267,7 @@ fn a_quarter_wave_inverts_its_load() {
 /// The analyses that cannot take a delay refuse it, naming the line.
 #[test]
 fn a_pole_zero_analysis_and_a_periodic_steady_state_refuse_a_line() {
-    let circuit = circuit(&[
+    let circuit = circuit([
         edge("in"),
         resistor("R1", IMPEDANCE, "in", "a"),
         line("T1", "a", "b"),

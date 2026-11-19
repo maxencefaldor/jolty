@@ -20,19 +20,12 @@ mod kernel;
 use jolty_models::REFERENCE_TEMPERATURE;
 use jolty_models::testing::Bench;
 
+use crate::closed::Closed;
+
 /// How far a value the compiled model computes may lie from the closed form computed
 /// here, in units of the machine epsilon times its magnitude: the model computes each in
 /// some four operations, the closed form in the same, each rounding by half an epsilon.
-const CLOSED: f64 = 4.0;
-
-fn assert_closed(what: &str, compiled: f64, closed: f64) {
-    let distance = (compiled - closed).abs();
-    assert!(
-        distance <= CLOSED * f64::EPSILON * closed.abs(),
-        "{what}: {compiled:e} compiled, {closed:e} closed, {:.1} ε apart",
-        distance / (f64::EPSILON * closed.abs())
-    );
-}
+const CLOSED: Closed = Closed(4.0);
 
 /// The local unknowns: the terminals, gate, inner bulk and bulk, then the inner gate and
 /// the gate below its vertical resistance.
@@ -66,18 +59,18 @@ fn its_parasitic_network_is_its_closed_forms() {
             let g = &evaluation.conductance;
             let c = &evaluation.capacitance;
             let what = format!("{parameters} at {bias:?}");
-            assert_closed(&format!("{what}: gate"), g[G][G], salicide);
-            assert_closed(&format!("{what}: gate to inner gate"), g[G][GII], -salicide);
-            assert_closed(
+            CLOSED.assert(&format!("{what}: gate"), g[G][G], salicide);
+            CLOSED.assert(&format!("{what}: gate to inner gate"), g[G][GII], -salicide);
+            CLOSED.assert(
                 &format!("{what}: inner gate"),
                 g[GII][GII],
                 salicide + vertical,
             );
-            assert_closed(&format!("{what}: inner gate down"), g[GII][GI], -vertical);
-            assert_closed(&format!("{what}: bulk"), g[B][B], end);
-            assert_closed(&format!("{what}: bulk to inner bulk"), g[B][BI], -end);
-            assert_closed(&format!("{what}: fringe"), c[GII][GII], fringe);
-            assert_closed(&format!("{what}: fringe across"), c[GII][BI], -fringe);
+            CLOSED.assert(&format!("{what}: inner gate down"), g[GII][GI], -vertical);
+            CLOSED.assert(&format!("{what}: bulk"), g[B][B], end);
+            CLOSED.assert(&format!("{what}: bulk to inner bulk"), g[B][BI], -end);
+            CLOSED.assert(&format!("{what}: fringe"), c[GII][GII], fringe);
+            CLOSED.assert(&format!("{what}: fringe across"), c[GII][BI], -fringe);
         }
         let given = serde_json::from_str(&parameters).expect("parameters");
         let warnings = kernel::Mosvar::warnings::<f64>(&given, REFERENCE_TEMPERATURE)

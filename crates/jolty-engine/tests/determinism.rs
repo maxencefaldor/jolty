@@ -6,26 +6,41 @@
 //! `f64::to_bits`.
 #![cfg(test)]
 
+#[path = "common/capacitor.rs"]
+mod capacitor;
+mod common;
+#[path = "common/dc.rs"]
+mod dc;
+#[path = "common/inductor.rs"]
+mod inductor;
+#[path = "common/latch.rs"]
+mod latch;
+#[path = "common/network.rs"]
+mod network;
+#[path = "common/shared.rs"]
+mod shared;
+
 use std::collections::BTreeMap;
-use std::fs;
 use std::ops::Range;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use capacitor::capacitor;
+use common::{circuit, device, resistor};
+use dc::voltage_dc;
+use inductor::inductor;
 use jolty_engine::batch::{Batch, Measured, Run, Sink, Summary, Variants};
 use jolty_engine::measure::{Measure, Signal};
 use jolty_engine::variants::{Axis, Explicit, Grid, MonteCarlo, Product, Toleranced, toleranced};
 use jolty_engine::{
-    Analysis, BREAK_EVENS, Derivatives, Elaborated, OperatingPoints, Options, Parallelism, Record,
-    SimulationError, Simulator, Structure, Values,
+    Analysis, AnalysisResult, BREAK_EVENS, Elaborated, OperatingPoints, Options, Parallelism,
+    Record, Simulator, Values,
 };
 use jolty_ir::{Circuit, Distribution, Lot, Name, Tolerance};
-use jolty_models::Library;
-use jolty_numerics::Complex64;
+use latch::latch;
 use proptest::prelude::*;
 use rayon::ThreadPoolBuilder;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
+use shared::{Bits, Network, benchmark, bits, network, reals, shared, upper};
 
 /// The thread counts every comparison runs at.
 const THREADS: [usize; 4] = [1, 2, 3, 8];
@@ -49,80 +64,6 @@ fn spreading(options: Options) -> Options {
         ..options
     }
 }
-
-fn reals(values: &[f64], into: &mut Vec<u64>) {
-    into.extend(values.iter().map(|value| value.to_bits()));
-}
-
-fn complexes(values: &[Complex64], into: &mut Vec<u64>) {
-    for value in values {
-        into.extend([value.re.to_bits(), value.im.to_bits()]);
-    }
-}
-
-/// Every number of an analysis's result, as its bits, and the result as text, which holds
-/// its counts of work and its messages.
-fn bits(outcome: &Result<jolty_engine::AnalysisResult, SimulationError>) -> Bits {
-    use jolty_engine::AnalysisResult as Found;
-    let mut numbers = Vec::new();
-    match outcome {
-        Ok(Found::OperatingPoint(point)) => reals(&point.values, &mut numbers),
-        Ok(Found::OperatingPoints(points)) => {
-            for point in points {
-                reals(&point.values, &mut numbers);
-            }
-        }
-        Ok(Found::Ac(response)) => {
-            reals(&response.operating_point.values, &mut numbers);
-            for row in response.values.iter().chain(&response.currents) {
-                complexes(row, &mut numbers);
-            }
-        }
-        Ok(Found::Noise(spectrum)) => {
-            reals(&spectrum.densities, &mut numbers);
-            for contribution in &spectrum.contributions {
-                reals(&contribution.densities, &mut numbers);
-            }
-            if let Some(input) = &spectrum.input {
-                complexes(&input.gains, &mut numbers);
-            }
-        }
-        Ok(Found::Stability(gain)) => complexes(&gain.gains, &mut numbers),
-        Ok(Found::Transient(waveforms)) => {
-            reals(&waveforms.times, &mut numbers);
-            for row in &waveforms.values {
-                reals(row, &mut numbers);
-            }
-            reals(&waveforms.observations.currents, &mut numbers);
-            reals(&waveforms.statistics.charge_leak.signed, &mut numbers);
-            reals(&waveforms.statistics.charge_leak.absolute, &mut numbers);
-        }
-        Ok(Found::DcSweep(sweep)) => {
-            for row in &sweep.values {
-                reals(row, &mut numbers);
-            }
-            reals(&sweep.observations.currents, &mut numbers);
-        }
-        Ok(Found::Sensitivity(found)) => match &found.derivatives {
-            Derivatives::Real(points) => {
-                for row in points.iter().flatten() {
-                    reals(row, &mut numbers);
-                }
-            }
-            Derivatives::Complex(points) => {
-                for row in points.iter().flatten() {
-                    complexes(row, &mut numbers);
-                }
-            }
-        },
-        Ok(_) => panic!("no other analysis is compared here"),
-        Err(_) => {}
-    }
-    (numbers, format!("{outcome:?}"))
-}
-
-/// An analysis's result as bits, and as text.
-type Bits = (Vec<u64>, String);
 
 /// A run's outcome as bits: each analysis's, each measure's, and the problems' text.
 type OutcomeBits = (Vec<Bits>, Vec<Option<u64>>, String);
@@ -157,10 +98,7 @@ impl Sink for Kept {
 
 /// What a batch found over some runs: each run's outcome as bits, by index, and the
 /// summary.
-type Found = (
-    BTreeMap<u64, (Vec<(Vec<u64>, String)>, Vec<Option<u64>>, String)>,
-    Summary,
-);
+type Found = (BTreeMap<u64, OutcomeBits>, Summary);
 
 /// The runs `ranges` of `variants`, each range a call of its own, on a pool of `threads`
 /// threads, and their summaries merged in order.
@@ -215,160 +153,23 @@ fn assert_same_everywhere(batch: &Batch, variants: &dyn Variants, splits: &[Vec<
     }
 }
 
-/// A grounded network of resistors, capacitors, inductors and diodes, driven by a pulse
-/// and by current sources.
-#[derive(Debug, Clone)]
-struct Network {
-    resistors: Vec<(usize, usize, f64)>,
-    capacitors: Vec<(usize, f64)>,
-    inductors: Vec<(usize, usize, f64)>,
-    diodes: Vec<usize>,
-    sources: Vec<(usize, f64)>,
-}
-
-fn node(index: usize) -> String {
-    if index == 0 {
-        "0".to_owned()
-    } else {
-        format!("n{index}")
-    }
-}
-
-/// A connected network on up to six nodes: a spanning tree of resistors from 0.1 Ω to
-/// 100 kΩ, so that some carry their current as an unknown, extra resistors, a capacitor
-/// at every node, inductors, diodes to the ground, the pulse at node 1, and current
-/// sources.
-fn network() -> impl Strategy<Value = Network> {
-    (2usize..7).prop_flat_map(|nodes| {
-        let tree =
-            proptest::collection::vec((any::<prop::sample::Index>(), -1.0..5.0f64), nodes - 1);
-        let extra = proptest::collection::vec((0..nodes, 0..nodes, -1.0..5.0f64), 0..nodes);
-        let capacitors = proptest::collection::vec(-12.0..-9.0f64, nodes - 1);
-        let inductors = proptest::collection::vec((0..nodes, 0..nodes, -7.0..-3.0f64), 0..3);
-        let diodes = proptest::collection::vec(1..nodes, 0..3);
-        let sources = proptest::collection::vec((1..nodes, -1e-3..1e-3f64), 0..3);
-        (tree, extra, capacitors, inductors, diodes, sources).prop_map(
-            |(tree, extra, capacitors, inductors, diodes, sources)| {
-                let mut resistors: Vec<(usize, usize, f64)> = tree
-                    .into_iter()
-                    .enumerate()
-                    .map(|(child, (parent, exponent))| {
-                        (child + 1, parent.index(child + 1), 10f64.powf(exponent))
-                    })
-                    .collect();
-                resistors.extend(
-                    extra
-                        .into_iter()
-                        .filter(|(a, b, _)| a != b)
-                        .map(|(a, b, exponent)| (a, b, 10f64.powf(exponent))),
-                );
-                Network {
-                    resistors,
-                    capacitors: capacitors
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, exponent)| (index + 1, 10f64.powf(exponent)))
-                        .collect(),
-                    inductors: inductors
-                        .into_iter()
-                        .filter(|(a, b, _)| a != b)
-                        .map(|(a, b, exponent)| (a, b, 10f64.powf(exponent)))
-                        .collect(),
-                    diodes,
-                    sources,
-                }
+/// Each resistor's resistance in `network`, toleranced by 50%, so that samples cross 1 Ω.
+fn toleranced_resistors(network: &Network) -> Vec<Toleranced> {
+    network
+        .resistors
+        .iter()
+        .enumerate()
+        .map(|(index, &(_, _, resistance))| Toleranced {
+            instance: format!("R{index}"),
+            parameter: "resistance".to_owned(),
+            nominal: resistance,
+            tolerance: Tolerance {
+                relative: 0.5,
+                distribution: Distribution::Uniform,
+                lot: None,
             },
-        )
-    })
-}
-
-impl Network {
-    fn circuit(&self) -> Circuit {
-        let device = |id: String, model: &str, parameters: Value, terminals: Value| {
-            json!({"name": id, "of": {"model": model}, "parameters": parameters,
-                   "terminals": terminals})
-        };
-        let mut instances = vec![
-            device(
-                "V1".to_owned(),
-                "voltage_source",
-                json!({"waveform": {"pulse": {"initial": 0.0, "pulsed": 1.0, "delay": 1e-9,
-                    "rise": 1e-9, "fall": 1e-9, "width": 5e-9, "period": 20e-9}}}),
-                json!({"positive": "drive", "negative": "0"}),
-            ),
-            device(
-                "RD".to_owned(),
-                "resistor",
-                json!({"resistance": 50.0}),
-                json!({"a": "drive", "b": node(1)}),
-            ),
-        ];
-        for (index, &(a, b, resistance)) in self.resistors.iter().enumerate() {
-            instances.push(device(
-                format!("R{index}"),
-                "resistor",
-                json!({"resistance": resistance}),
-                json!({"a": node(a), "b": node(b)}),
-            ));
-        }
-        for &(at, capacitance) in &self.capacitors {
-            instances.push(device(
-                format!("C{at}"),
-                "capacitor",
-                json!({"capacitance": capacitance}),
-                json!({"a": node(at), "b": "0"}),
-            ));
-        }
-        for (index, &(a, b, inductance)) in self.inductors.iter().enumerate() {
-            instances.push(device(
-                format!("L{index}"),
-                "inductor",
-                json!({"inductance": inductance}),
-                json!({"a": node(a), "b": node(b)}),
-            ));
-        }
-        for (index, &at) in self.diodes.iter().enumerate() {
-            instances.push(device(
-                format!("D{index}"),
-                "diode",
-                json!({"saturation_current": 1e-14, "junction_capacitance": 1e-12}),
-                json!({"anode": node(at), "cathode": "0"}),
-            ));
-        }
-        for (index, &(at, current)) in self.sources.iter().enumerate() {
-            instances.push(device(
-                format!("I{index}"),
-                "current_source",
-                json!({"waveform": {"dc": current}}),
-                json!({"positive": "0", "negative": node(at)}),
-            ));
-        }
-        let document = json!({
-            "format": "jolty-circuit", "version": 4, "top": "network",
-            "components": {"network": {
-                "ports": [{"name": "0", "role": "ground"}], "instances": instances,
-            }}
-        });
-        Circuit::from_json(&document.to_string()).expect("a valid circuit")
-    }
-
-    /// Each resistor's resistance, toleranced by 50%, so that samples cross 1 Ω.
-    fn toleranced(&self) -> Vec<Toleranced> {
-        self.resistors
-            .iter()
-            .enumerate()
-            .map(|(index, &(_, _, resistance))| Toleranced {
-                instance: format!("R{index}"),
-                parameter: "resistance".to_owned(),
-                nominal: resistance,
-                tolerance: Tolerance {
-                    relative: 0.5,
-                    distribution: Distribution::Uniform,
-                    lot: None,
-                },
-            })
-            .collect()
-    }
+        })
+        .collect()
 }
 
 /// The analyses a batch of networks runs: the operating point, 40 frequencies of the
@@ -407,37 +208,6 @@ fn node_one(elaborated: &Elaborated) -> Vec<Measured> {
     }]
 }
 
-fn shared(circuit: &Circuit) -> Arc<Elaborated> {
-    Elaborated::new(circuit, &Library::standard(), &Structure::default())
-        .expect("the circuit elaborates")
-}
-
-/// A plan of the engine's benchmarks, `benchmarks/speed/plans/<name>.json`.
-#[derive(Deserialize)]
-struct Plan {
-    circuit: String,
-    analyses: Vec<(String, Analysis)>,
-    options: Options,
-}
-
-/// The circuit, the analyses and the options of the benchmark `name`.
-fn benchmark(name: &str) -> (Circuit, Vec<Analysis>, Options) {
-    let speed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed");
-    let plan: Plan = serde_json::from_str(
-        &fs::read_to_string(speed.join(format!("plans/{name}.json"))).expect("the plan reads"),
-    )
-    .expect("a plan");
-    let text = fs::read_to_string(speed.join(format!("circuits/{}.json", plan.circuit)))
-        .expect("the circuit reads");
-    let circuit = Circuit::from_json(&text).expect("a circuit");
-    let analyses = plan
-        .analyses
-        .into_iter()
-        .map(|(_, analysis)| analysis)
-        .collect();
-    (circuit, analyses, plan.options)
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
 
@@ -445,13 +215,13 @@ proptest! {
     /// structure, finds the same at every thread count, and split into ranges.
     #[test]
     fn a_batch_finds_the_same_however_its_runs_spread(
-        network in network(),
+        network in network(true),
         seed in any::<u64>(),
     ) {
         let circuit = network.circuit();
         let elaborated = shared(&circuit);
         let samples = 24;
-        let variants = MonteCarlo::new(&elaborated, seed, samples, network.toleranced())
+        let variants = MonteCarlo::new(&elaborated, seed, samples, toleranced_resistors(&network))
             .expect("the network's resistances");
         let options = Options { record: Record::All, ..Options::default() };
         let measures = node_one(&elaborated);
@@ -464,7 +234,7 @@ proptest! {
     /// threads their frequencies and right-hand sides spread over.
     #[test]
     fn small_signal_analyses_find_the_same_however_their_frequencies_spread(
-        network in network(),
+        network in network(true),
     ) {
         let circuit = network.circuit();
         let frequencies: Vec<f64> =
@@ -504,28 +274,16 @@ proptest! {
 /// another pivot at each end, swept up and down.
 #[test]
 fn frequencies_whose_pivots_change_find_the_same_in_any_spread() {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "ladder",
-        "components": {"ladder": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 0.0}},
-             "terminals": {"positive": "in", "negative": "0"}},
-            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 50.0},
-             "terminals": {"a": "in", "b": "a"}},
-            {"name": "L1", "of": {"model": "inductor"}, "parameters": {"inductance": 1e-3},
-             "terminals": {"a": "a", "b": "b"}},
-            {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-9},
-             "terminals": {"a": "b", "b": "0"}},
-            {"name": "L2", "of": {"model": "inductor"}, "parameters": {"inductance": 1e-6},
-             "terminals": {"a": "b", "b": "c"}},
-            {"name": "C2", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-12},
-             "terminals": {"a": "c", "b": "0"}},
-            {"name": "L3", "of": {"model": "inductor"}, "parameters": {"inductance": 1e-5},
-             "terminals": {"a": "c", "b": "0"}},
-            {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-             "terminals": {"a": "c", "b": "0"}}
-        ]}}
-    });
-    let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
+    let circuit = circuit([
+        voltage_dc("V1", "in", 0.0),
+        resistor("R1", 50.0, "in", "a"),
+        inductor("L1", 1e-3, "a", "b"),
+        capacitor("C1", 1e-9, "b", "0"),
+        inductor("L2", 1e-6, "b", "c"),
+        capacitor("C2", 1e-12, "c", "0"),
+        inductor("L3", 1e-5, "c", "0"),
+        resistor("R2", 1e3, "c", "0"),
+    ]);
     let up: Vec<f64> = (0..120)
         .map(|step| 10f64.powf(f64::from(step) / 12.0))
         .collect();
@@ -682,8 +440,8 @@ fn a_part_added_leaves_every_other_draw_alone() {
     let mut larger = network.clone();
     larger.resistors.push((2, 0, 5e3));
     let (small, large) = (shared(&network.circuit()), shared(&larger.circuit()));
-    let fewer = MonteCarlo::new(&small, 11, 50, network.toleranced()).expect("numbers");
-    let more = MonteCarlo::new(&large, 11, 50, larger.toleranced()).expect("numbers");
+    let fewer = MonteCarlo::new(&small, 11, 50, toleranced_resistors(&network)).expect("numbers");
+    let more = MonteCarlo::new(&large, 11, 50, toleranced_resistors(&larger)).expect("numbers");
     for index in 0..50 {
         let (fewer, more) = (fewer.values(index), more.values(index));
         assert_eq!(fewer.patches().len() + 1, more.patches().len());
@@ -703,32 +461,12 @@ fn a_part_added_leaves_every_other_draw_alone() {
 
 /// A divider whose upper resistance each run of `upper` replaces.
 fn divider() -> Circuit {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "divider",
-        "components": {"divider": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
-             "terminals": {"positive": "top", "negative": "0"}},
-            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-             "terminals": {"a": "top", "b": "out"}},
-            {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-             "terminals": {"a": "out", "b": "0"}},
-            {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-9},
-             "terminals": {"a": "out", "b": "0"}}
-        ]}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
-}
-
-/// The values of `elaborated`, the divider, with its upper resistance `ohms`.
-fn upper(elaborated: &Elaborated, ohms: f64) -> Values {
-    let mut values = Values::default();
-    values.set(
-        elaborated
-            .parameter("R1", "resistance")
-            .expect("a resistance"),
-        ohms,
-    );
-    values
+    circuit([
+        voltage_dc("V1", "top", 5.0),
+        resistor("R1", 1e3, "top", "out"),
+        resistor("R2", 1e3, "out", "0"),
+        capacitor("C1", 1e-9, "out", "0"),
+    ])
 }
 
 /// A batch whose runs fail now and then, their values out of range, reports each failed
@@ -857,18 +595,11 @@ fn runs_that_alternate_between_structures_share_each_structure() {
 /// A shunt placed before its source: below 1 Ω, the shunt's current is an unknown, which
 /// comes before the source's among the unknowns.
 fn shunted() -> Circuit {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "shunted",
-        "components": {"shunted": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 2.0},
-             "terminals": {"a": "out", "b": "0"}},
-            {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
-             "terminals": {"positive": "top", "negative": "0"}},
-            {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-             "terminals": {"a": "top", "b": "out"}}
-        ]}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
+    circuit([
+        resistor("R1", 2.0, "out", "0"),
+        voltage_dc("V1", "top", 5.0),
+        resistor("R2", 1e3, "top", "out"),
+    ])
 }
 
 /// A run on another structure, its unknowns shifted by one it adds, reads the unknowns its
@@ -932,7 +663,7 @@ fn a_run_of_another_structure_measures_the_unknowns_of_its_names() {
     for (index, outcome) in kept.0.into_inner().expect("no test thread panicked") {
         let mut alone = Simulator::from_elaborated(Arc::clone(&elaborated), variants.values(index))
             .expect("a run");
-        let Ok(jolty_engine::AnalysisResult::OperatingPoint(point)) =
+        let Ok(AnalysisResult::OperatingPoint(point)) =
             alone.run(&Analysis::OperatingPoint, &Options::default())
         else {
             panic!("an operating point");
@@ -1016,9 +747,7 @@ fn a_chain_of_levels_is_the_dc_sweep_of_them() {
             .expect("a sweep");
     let mut simulator =
         Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
-    let Ok(jolty_engine::AnalysisResult::DcSweep(swept)) =
-        simulator.run(&sweep, &Options::default())
-    else {
+    let Ok(AnalysisResult::DcSweep(swept)) = simulator.run(&sweep, &Options::default()) else {
         panic!("a sweep");
     };
     for (index, values) in swept.values.iter().enumerate() {
@@ -1047,18 +776,16 @@ fn a_product_runs_every_sample_at_every_corner() {
 
 /// A diode forward from a 1 V source through 1 kΩ, its saturation current 10 fA.
 fn forward_diode() -> Circuit {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "forward",
-        "components": {"forward": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
-             "terminals": {"positive": "top", "negative": "0"}},
-            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-             "terminals": {"a": "top", "b": "anode"}},
-            {"name": "D1", "of": {"model": "diode"}, "parameters": {"saturation_current": 1e-14},
-             "terminals": {"anode": "anode", "cathode": "0"}}
-        ]}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
+    circuit([
+        voltage_dc("V1", "top", 1.0),
+        resistor("R1", 1e3, "top", "anode"),
+        device(
+            "D1",
+            "diode",
+            json!({"saturation_current": 1e-14}),
+            &[("anode", "anode"), ("cathode", "0")],
+        ),
+    ])
 }
 
 /// The saturation currents a sweep or a chain takes the diode through, a decade apart, so
@@ -1069,7 +796,7 @@ const SATURATION_CURRENTS: [f64; 4] = [1e-15, 1e-14, 1e-13, 1e-12];
 /// simulator made afresh for them.
 fn fresh_anode(elaborated: &Arc<Elaborated>, values: Values) -> f64 {
     let mut simulator = Simulator::from_elaborated(Arc::clone(elaborated), values).expect("a run");
-    let Ok(jolty_engine::AnalysisResult::OperatingPoint(point)) =
+    let Ok(AnalysisResult::OperatingPoint(point)) =
         simulator.run(&Analysis::OperatingPoint, &Options::default())
     else {
         panic!("an operating point");
@@ -1095,9 +822,7 @@ fn a_sweep_of_a_kernels_number_evaluates_each_value() {
     .expect("a sweep");
     let mut simulator =
         Simulator::from_elaborated(Arc::clone(&elaborated), Values::default()).expect("a run");
-    let Ok(jolty_engine::AnalysisResult::DcSweep(swept)) =
-        simulator.run(&sweep, &Options::default())
-    else {
+    let Ok(AnalysisResult::DcSweep(swept)) = simulator.run(&sweep, &Options::default()) else {
         panic!("a sweep");
     };
     let anode = simulator.unknown("anode").expect("the anode").index();
@@ -1253,33 +978,6 @@ fn a_transient_judged_over_many_chunks_finds_what_it_finds_on_one_thread() {
     );
     let spreads = [(usize::MAX, 1), (64, 1)];
     spread_finds_what_one_thread_finds(&circuit, &[start], &options, &spreads);
-}
-
-/// Two inverters in a loop, each a pair of MOSFETs: a latch, which holds either state and
-/// balances between them.
-fn latch() -> Circuit {
-    let channel = |id: &str, kind: &str, (drain, gate, source): (&str, &str, &str)| {
-        let threshold = if kind == "n" { 0.7 } else { -0.7 };
-        json!({"name": id, "of": {"model": "mosfet"},
-               "parameters": {"channel": kind, "threshold_voltage": threshold,
-                              "transconductance_parameter": 1e-4,
-                              "channel_length_modulation": 0.02,
-                              "width": 1e-5, "length": 1e-6},
-               "terminals": {"drain": drain, "gate": gate, "source": source, "bulk": source}})
-    };
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "latch",
-        "components": {"latch": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "VDD", "of": {"model": "voltage_source"},
-             "parameters": {"waveform": {"dc": 3.3}},
-             "terminals": {"positive": "vdd", "negative": "0"}},
-            channel("MP1", "p", ("b", "a", "vdd")),
-            channel("MN1", "n", ("b", "a", "0")),
-            channel("MP2", "p", ("a", "b", "vdd")),
-            channel("MN2", "n", ("a", "b", "0")),
-        ]}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
 }
 
 /// The search for a latch's every DC solution, which deflates each Newton step by the

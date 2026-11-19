@@ -1,20 +1,21 @@
 //! Circuits that Newton iteration alone does not solve, and the aid that does.
 #![cfg(test)]
 
-use jolty_engine::{Conditions, Options, Simulator, Strategy};
-use jolty_ir::Circuit;
-use jolty_models::Library;
-use serde_json::{Value, json};
+mod common;
+#[path = "common/current.rs"]
+mod current;
+#[path = "common/dc.rs"]
+mod dc;
+#[path = "common/sim.rs"]
+mod sim;
 
-/// A circuit of `instances` whose ground is `0`.
-fn circuit(instances: &Value) -> Circuit {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
-        "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
-                                "instances": instances}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
-}
+use common::{circuit, device, resistor};
+use current::current_dc;
+use dc::voltage_dc;
+use jolty_engine::{Options, Strategy};
+use jolty_ir::Circuit;
+use serde_json::json;
+use sim::simulator;
 
 #[test]
 fn gmin_stepping_across_the_junctions_saturates_a_transistor_into_a_negative_load() {
@@ -22,30 +23,50 @@ fn gmin_stepping_across_the_junctions_saturates_a_transistor_into_a_negative_loa
     // another feeds back the collector's voltage; the diode keeps the emitter above the
     // ground. Newton iteration fails, and so does a shunt stepped down at every node, as
     // in ngspice, whose true gmin stepping finds the same point.
-    let circuit = circuit(&json!([
-        {"name": "V1", "of": {"model": "voltage_source"},
-         "parameters": {"waveform": {"dc": 4.8}},
-         "terminals": {"positive": "base", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 230e3},
-         "terminals": {"a": "low", "b": "base"}},
-        {"name": "I1", "of": {"model": "current_source"},
-         "parameters": {"waveform": {"dc": 0.2e-3}},
-         "terminals": {"positive": "low", "negative": "0"}},
-        {"name": "G1", "of": {"model": "voltage_controlled_current_source"},
-         "parameters": {"transconductance": 1.75e-6},
-         "terminals": {"positive": "0", "negative": "emitter",
-                       "control_positive": "collector", "control_negative": "low"}},
-        {"name": "D1", "of": {"model": "diode"}, "parameters": {},
-         "terminals": {"anode": "0", "cathode": "emitter"}},
-        {"name": "Q1", "of": {"model": "bipolar_transistor"}, "parameters": {"polarity": "pnp"},
-         "terminals": {"collector": "collector", "base": "base", "emitter": "emitter"}},
-        {"name": "G2", "of": {"model": "voltage_controlled_current_source"},
-         "parameters": {"transconductance": 97e-6},
-         "terminals": {"positive": "0", "negative": "emitter",
-                       "control_positive": "emitter", "control_negative": "0"}},
-    ]));
-    let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-        .expect("the circuit elaborates");
+    let circuit = circuit([
+        voltage_dc("V1", "base", 4.8),
+        resistor("R1", 230e3, "low", "base"),
+        current_dc("I1", "low", "0", 0.2e-3),
+        device(
+            "G1",
+            "voltage_controlled_current_source",
+            json!({"transconductance": 1.75e-6}),
+            &[
+                ("positive", "0"),
+                ("negative", "emitter"),
+                ("control_positive", "collector"),
+                ("control_negative", "low"),
+            ],
+        ),
+        device(
+            "D1",
+            "diode",
+            json!({}),
+            &[("anode", "0"), ("cathode", "emitter")],
+        ),
+        device(
+            "Q1",
+            "bipolar_transistor",
+            json!({"polarity": "pnp"}),
+            &[
+                ("collector", "collector"),
+                ("base", "base"),
+                ("emitter", "emitter"),
+            ],
+        ),
+        device(
+            "G2",
+            "voltage_controlled_current_source",
+            json!({"transconductance": 97e-6}),
+            &[
+                ("positive", "0"),
+                ("negative", "emitter"),
+                ("control_positive", "emitter"),
+                ("control_negative", "0"),
+            ],
+        ),
+    ]);
+    let mut simulator = simulator(&circuit);
     let point = simulator
         .operating_point(&Options::default())
         .expect("an operating point");
@@ -84,8 +105,7 @@ fn the_operating_point_source_stepping_folds_short_of_is_ngspices() {
     // strategies before it converges first turns on the rounding of the sums of the
     // circuit's equations, which the order of their terms moves.
     let circuit = Circuit::from_json(include_str!("data/folded_sources.json")).expect("a circuit");
-    let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-        .expect("the circuit elaborates");
+    let mut simulator = simulator(&circuit);
     let point = simulator
         .operating_point(&Options::default())
         .expect("an operating point");

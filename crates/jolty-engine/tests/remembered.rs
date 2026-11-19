@@ -2,48 +2,50 @@
 //! the same as solved afresh.
 #![cfg(test)]
 
+#[path = "common/capacitor.rs"]
+mod capacitor;
+mod common;
+#[path = "common/sim.rs"]
+mod sim;
+#[path = "common/sine.rs"]
+mod sine;
+#[path = "common/transient.rs"]
+mod transient;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use capacitor::capacitor;
+use common::{circuit, device, resistor};
 use jolty_engine::{
-    Ac, AcResult, Analysis, AnalysisResult, Conditions, DcSweep, DcSweepResult, Differentiated,
-    Method, Mismatch, MismatchResult, Noise, NoiseResult, OperatingPointResult, OperatingPoints,
-    Options, PeriodicSteadyState, PeriodicSteadyStateResult, PoleZero, PoleZeroResult,
-    RandomVariable, Record, RecordedSeries, RecordedValues, Sensitivity, SensitivityResult,
-    Simulator, StabilityResult, TransferFunction, TransferFunctionResult, Transient,
-    TransientResult, Work,
+    Ac, AcResult, Analysis, AnalysisResult, DcSweep, DcSweepResult, Differentiated, Method,
+    Mismatch, MismatchResult, Noise, NoiseResult, OperatingPointResult, OperatingPoints, Options,
+    PeriodicSteadyState, PeriodicSteadyStateResult, PoleZero, PoleZeroResult, RandomVariable,
+    Record, RecordedSeries, RecordedValues, Sensitivity, SensitivityResult, Simulator,
+    StabilityResult, TransferFunction, TransferFunctionResult, TransientResult, Work,
 };
 use jolty_ir::Circuit;
-use jolty_models::Library;
-use serde_json::{Value, json};
-
-/// A circuit of `instances` whose ground is `0`.
-fn circuit(instances: &Value) -> Circuit {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
-        "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
-                                "instances": instances}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
-}
+use serde_json::json;
+use sim::simulator;
+use sine::voltage_sine;
+use transient::transient;
 
 /// A sine of 1 V about 1 V into a diode through 1 kΩ, a microfarad across the diode: a
 /// nonlinear circuit with a capacitance, which every analysis about an operating point can
 /// run.
 fn rectifier() -> Circuit {
-    circuit(&json!([
-        {"name": "V1", "of": {"model": "voltage_source"},
-         "parameters": {"waveform": {"sine": {"offset": 1.0, "amplitude": 1.0,
-                                              "frequency": 1e3}}},
-         "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-         "terminals": {"a": "in", "b": "out"}},
-        {"name": "D1", "of": {"model": "diode"}, "parameters": {},
-         "terminals": {"anode": "out", "cathode": "0"}},
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-6},
-         "terminals": {"a": "out", "b": "0"}},
-    ]))
+    circuit([
+        voltage_sine("V1", "in", 1.0, 1.0, 1e3),
+        resistor("R1", 1e3, "in", "out"),
+        device(
+            "D1",
+            "diode",
+            json!({}),
+            &[("anode", "out"), ("cathode", "0")],
+        ),
+        capacitor("C1", 1e-6, "out", "0"),
+    ])
 }
 
 /// The benchmarks' synchronous buck converter, `benchmarks/speed/circuits/buck.json`: two transistors
@@ -53,11 +55,6 @@ fn buck() -> Circuit {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed/circuits/buck.json");
     let text = fs::read_to_string(path).expect("the circuit reads");
     Circuit::from_json(&text).expect("a circuit")
-}
-
-fn simulator(circuit: &Circuit) -> Simulator {
-    Simulator::new(circuit, &Library::standard(), &Conditions::default())
-        .expect("the circuit elaborates")
 }
 
 /// `analysis` run with `options` on a simulator of its own.
@@ -164,14 +161,7 @@ fn iterations(outcome: &AnalysisResult) -> Option<usize> {
 
 fn analyses() -> Vec<Analysis> {
     let frequencies = vec![1.0, 1e3, 1e6];
-    let transient = Transient {
-        stop: 2e-3,
-        max_step: Some(2e-5),
-        method: Method::Trapezoidal,
-        breakpoints: Vec::new(),
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
-    };
+    let transient = transient(2e-3, Some(2e-5), Method::Trapezoidal);
     vec![
         Analysis::OperatingPoint,
         Analysis::Ac(Ac {
@@ -402,14 +392,7 @@ fn a_dc_sweep_leaves_the_operating_point_to_the_analyses_after_it() {
 /// solver, not from those the first transient left, and found other numbers.
 #[test]
 fn what_an_analysis_records_changes_none_of_its_numbers() {
-    let periods = Analysis::Transient(Transient {
-        stop: 2e-5,
-        max_step: None,
-        method: Method::Trapezoidal,
-        breakpoints: Vec::new(),
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
-    });
+    let periods = Analysis::Transient(transient(2e-5, None, Method::Trapezoidal));
     let plans = [
         (rectifier(), analyses()),
         (
@@ -467,14 +450,7 @@ fn an_analysis_after_the_operating_point_again_factors_as_after_it_first() {
     // The buck's transient leaves its sparse solver other pivots than the operating
     // point's, which the second transient, from the operating point taken again, factored
     // from; it found other numbers in their last digits than the first.
-    let periods = Analysis::Transient(Transient {
-        stop: 2e-5,
-        max_step: None,
-        method: Method::Trapezoidal,
-        breakpoints: Vec::new(),
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
-    });
+    let periods = Analysis::Transient(transient(2e-5, None, Method::Trapezoidal));
     let circuit = buck();
     let options = Options::default();
     let mut simulator = simulator(&circuit);

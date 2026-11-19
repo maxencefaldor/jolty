@@ -2,43 +2,28 @@
 //! known in closed form.
 #![cfg(test)]
 
-use std::collections::BTreeMap;
+#[path = "common/capacitor.rs"]
+mod capacitor;
+mod common;
+#[path = "common/dc.rs"]
+mod dc;
+#[path = "common/sim.rs"]
+mod sim;
+#[path = "common/transient.rs"]
+mod transient;
 
+use capacitor::capacitor;
+use common::{circuit, device, resistor, voltage_source};
+use dc::voltage_dc;
 use jolty_engine::{
-    Conditions, DcSweep, ElaborationProblem, Endpoint, ExcursionKind, Options, Simulator,
+    Conditions, DcSweep, ElaborationProblem, Endpoint, ExcursionKind, Method, Options, Simulator,
     Transient, TransientResult, Work,
 };
-use jolty_ir::Circuit;
+use jolty_ir::{Circuit, Instance};
 use jolty_models::{Library, LogicLevel};
 use serde_json::{Value, json};
-
-/// A device instance: its name, model, parameters, and the net of each terminal.
-type Device<'a> = (&'a str, &'a str, Value, &'a [(&'a str, &'a str)]);
-
-/// A circuit whose top component has a ground port `0` and places `devices`.
-fn circuit(devices: &[Device<'_>]) -> Circuit {
-    let instances: Vec<Value> = devices
-        .iter()
-        .map(|(id, model, parameters, terminals)| {
-            let terminals: serde_json::Map<String, Value> = terminals
-                .iter()
-                .map(|(terminal, net)| ((*terminal).to_owned(), json!(net)))
-                .collect();
-            json!({"name": id, "of": {"model": model}, "parameters": parameters,
-                   "terminals": terminals})
-        })
-        .collect();
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
-        "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit file")
-}
-
-fn simulator(circuit: &Circuit) -> Simulator {
-    Simulator::new(circuit, &Library::standard(), &Conditions::default())
-        .expect("an elaborated circuit")
-}
+use sim::simulator;
+use transient::transient;
 
 /// A cell of one function of `inputs`, given by `table`, with output `y`.
 fn cell(inputs: &[&str], table: &str, (rise, fall): (f64, f64), electrical: bool) -> Value {
@@ -53,8 +38,57 @@ fn cell(inputs: &[&str], table: &str, (rise, fall): (f64, f64), electrical: bool
     parameters
 }
 
-fn source(initial: &str, changes: &[(f64, &str)]) -> Value {
-    json!({"initial": initial, "changes": changes, "transition": 1e-12})
+fn logic_cell(
+    name: &str,
+    inputs: &[&str],
+    table: &str,
+    delays: (f64, f64),
+    electrical: bool,
+    terminals: &[(&str, &str)],
+) -> Instance {
+    device(
+        name,
+        "logic_cell",
+        cell(inputs, table, delays, electrical),
+        terminals,
+    )
+}
+
+fn logic_source(name: &str, initial: &str, changes: &[(f64, &str)], output: &str) -> Instance {
+    device(
+        name,
+        "logic_source",
+        json!({"initial": initial, "changes": changes, "transition": 1e-12}),
+        &[("output", output)],
+    )
+}
+
+/// An analog pulse into a logic inverter loaded by 1 fF, powered by `supply` with `delay`.
+fn edged_inverter(supply: f64, delay: f64) -> Circuit {
+    circuit([
+        voltage_dc("VDD", "vdd", supply),
+        voltage_source(
+            "V1",
+            "in",
+            "0",
+            json!({"pulse": {"initial": 0, "pulsed": supply, "delay": 1e-9,
+                "rise": 2e-9, "fall": 2e-9, "width": 1}}),
+        ),
+        logic_cell(
+            "U1",
+            &["a"],
+            "10",
+            (delay, delay),
+            true,
+            &[
+                ("a", "in"),
+                ("y", "out"),
+                ("supply", "vdd"),
+                ("ground", "0"),
+            ],
+        ),
+        capacitor("C1", 1e-15, "out", "0"),
+    ])
 }
 
 fn net(simulator: &Simulator, name: &str) -> usize {
@@ -72,44 +106,38 @@ fn apart_from_work(mut waveforms: TransientResult) -> TransientResult {
     waveforms
 }
 
-fn transient(stop: f64) -> Transient {
-    Transient {
-        stop,
-        max_step: None,
-        method: jolty_engine::Method::Trapezoidal,
-        breakpoints: Vec::new(),
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
-    }
+fn trapezoidal(stop: f64) -> Transient {
+    transient(stop, None, Method::Trapezoidal)
 }
 
 #[test]
 fn logic_settles_at_dc_and_follows_its_sources_after_each_delay() {
     use LogicLevel::{High, Low, Unknown};
-    let circuit = circuit(&[
-        (
-            "A",
-            "logic_source",
-            source("0", &[(1e-9, "1"), (5e-9, "0")]),
-            &[("output", "a")],
-        ),
-        ("B", "logic_source", source("1", &[]), &[("output", "b")]),
-        (
+    let circuit = circuit([
+        logic_source("A", "0", &[(1e-9, "1"), (5e-9, "0")], "a"),
+        logic_source("B", "1", &[], "b"),
+        logic_cell(
             "U1",
-            "logic_cell",
-            cell(&["a", "b"], "1110", (2e-9, 1e-9), false),
+            &["a", "b"],
+            "1110",
+            (2e-9, 1e-9),
+            false,
             &[("a", "a"), ("b", "b"), ("y", "n")],
         ),
-        (
+        logic_cell(
             "U2",
-            "logic_cell",
-            cell(&["a"], "10", (2e-9, 1e-9), false),
+            &["a"],
+            "10",
+            (2e-9, 1e-9),
+            false,
             &[("a", "n"), ("y", "y")],
         ),
-        (
+        logic_cell(
             "U3",
-            "logic_cell",
-            cell(&["a"], "10", (1e-9, 1e-9), false),
+            &["a"],
+            "10",
+            (1e-9, 1e-9),
+            false,
             &[("a", "z"), ("y", "w")],
         ),
     ]);
@@ -134,7 +162,7 @@ fn logic_settles_at_dc_and_follows_its_sources_after_each_delay() {
         ]
     );
     let waveforms = simulator
-        .transient(&transient(10e-9), &Options::default())
+        .transient(&trapezoidal(10e-9), &Options::default())
         .unwrap();
     // The NAND falls a nanosecond after a rises, and the inverter rises two after that.
     assert_eq!(
@@ -149,23 +177,20 @@ fn logic_settles_at_dc_and_follows_its_sources_after_each_delay() {
 
 #[test]
 fn a_pulse_shorter_than_a_delay_never_passes() {
-    let circuit = circuit(&[
-        (
-            "A",
-            "logic_source",
-            source("0", &[(1e-9, "1"), (1.5e-9, "0"), (4e-9, "1")]),
-            &[("output", "a")],
-        ),
-        (
+    let circuit = circuit([
+        logic_source("A", "0", &[(1e-9, "1"), (1.5e-9, "0"), (4e-9, "1")], "a"),
+        logic_cell(
             "U1",
-            "logic_cell",
-            cell(&["a"], "01", (1e-9, 1e-9), false),
+            &["a"],
+            "01",
+            (1e-9, 1e-9),
+            false,
             &[("a", "a"), ("y", "y")],
         ),
     ]);
     let mut simulator = simulator(&circuit);
     let waveforms = simulator
-        .transient(&transient(10e-9), &Options::default())
+        .transient(&trapezoidal(10e-9), &Options::default())
         .unwrap();
     assert_eq!(
         waveforms.logic[net(&simulator, "y")],
@@ -176,38 +201,7 @@ fn a_pulse_shorter_than_a_delay_never_passes() {
 #[test]
 fn an_analog_edge_crosses_into_logic_and_back_at_half_the_supply() {
     let (supply, delay) = (2.0, 3e-9);
-    let circuit = circuit(&[
-        (
-            "VDD",
-            "voltage_source",
-            json!({"waveform": {"dc": supply}}),
-            &[("positive", "vdd"), ("negative", "0")],
-        ),
-        (
-            "V1",
-            "voltage_source",
-            json!({"waveform": {"pulse": {"initial": 0, "pulsed": supply, "delay": 1e-9,
-                "rise": 2e-9, "fall": 2e-9, "width": 1}}}),
-            &[("positive", "in"), ("negative", "0")],
-        ),
-        (
-            "U1",
-            "logic_cell",
-            cell(&["a"], "10", (delay, delay), true),
-            &[
-                ("a", "in"),
-                ("y", "out"),
-                ("supply", "vdd"),
-                ("ground", "0"),
-            ],
-        ),
-        (
-            "C1",
-            "capacitor",
-            json!({"capacitance": 1e-15}),
-            &[("a", "out"), ("b", "0")],
-        ),
-    ]);
+    let circuit = edged_inverter(supply, delay);
     let mut simulator = simulator(&circuit);
     let names: Vec<&str> = simulator
         .devices()
@@ -216,7 +210,7 @@ fn an_analog_edge_crosses_into_logic_and_back_at_half_the_supply() {
         .collect();
     assert_eq!(names, ["VDD", "V1", "C1", "U1:a", "U1:y"]);
     let waveforms = simulator
-        .transient(&transient(10e-9), &Options::default())
+        .transient(&trapezoidal(10e-9), &Options::default())
         .unwrap();
     // The input crosses half the supply at 2 ns; the output crosses it a delay later.
     let changes = &waveforms.logic[net(&simulator, "U1:a")];
@@ -244,43 +238,25 @@ fn an_inverter_and_an_rc_oscillate_at_their_closed_form_period() {
     let (resistance, capacitance) = (1e3, 1e-9);
     let tau = resistance * capacitance;
     let delay = tau;
-    let circuit = circuit(&[
-        (
-            "VDD",
-            "voltage_source",
-            json!({"waveform": {"dc": 1.0}}),
-            &[("positive", "vdd"), ("negative", "0")],
-        ),
-        (
+    let circuit = circuit([
+        voltage_dc("VDD", "vdd", 1.0),
+        logic_cell(
             "U1",
-            "logic_cell",
-            cell(&["a"], "10", (delay, delay), true),
+            &["a"],
+            "10",
+            (delay, delay),
+            true,
             &[("a", "c"), ("y", "out"), ("supply", "vdd"), ("ground", "0")],
         ),
-        (
-            "R1",
-            "resistor",
-            json!({"resistance": resistance}),
-            &[("a", "out"), ("b", "c")],
-        ),
-        (
-            "C1",
-            "capacitor",
-            json!({"capacitance": capacitance}),
-            &[("a", "c"), ("b", "0")],
-        ),
-        (
+        resistor("R1", resistance, "out", "c"),
+        capacitor("C1", capacitance, "c", "0"),
+        voltage_source(
             "V1",
-            "voltage_source",
-            json!({"waveform": {"piecewise": {"points": [[0, 0], [1e-9, 0], [2e-9, 1], [3e-9, 0]]}}}),
-            &[("positive", "kick"), ("negative", "0")],
+            "kick",
+            "0",
+            json!({"piecewise": {"points": [[0, 0], [1e-9, 0], [2e-9, 1], [3e-9, 0]]}}),
         ),
-        (
-            "R2",
-            "resistor",
-            json!({"resistance": 1e9}),
-            &[("a", "kick"), ("b", "c")],
-        ),
+        resistor("R2", 1e9, "kick", "c"),
     ]);
     let mut simulator = simulator(&circuit);
     // The capacitor holds a nanocoulomb, far above the default charge tolerance, the least
@@ -291,7 +267,7 @@ fn an_inverter_and_an_rc_oscillate_at_their_closed_form_period() {
         ..Options::default()
     };
     let waveforms = simulator
-        .transient(&transient(40.0 * tau), &options)
+        .transient(&trapezoidal(40.0 * tau), &options)
         .unwrap();
     let changes: Vec<f64> = waveforms.logic[net(&simulator, "U1:a")]
         .iter()
@@ -314,23 +290,15 @@ fn an_inverter_and_an_rc_oscillate_at_their_closed_form_period() {
 #[test]
 fn a_ring_that_would_oscillate_at_dc_settles_unknown() {
     use LogicLevel::{High, Low, Unknown};
-    let circuit = circuit(&[
-        (
-            "VDD",
-            "voltage_source",
-            json!({"waveform": {"dc": 1.0}}),
-            &[("positive", "vdd"), ("negative", "0")],
-        ),
-        (
-            "V1",
-            "voltage_source",
-            json!({"waveform": {"dc": 0.0}}),
-            &[("positive", "enable"), ("negative", "0")],
-        ),
-        (
+    let circuit = circuit([
+        voltage_dc("VDD", "vdd", 1.0),
+        voltage_dc("V1", "enable", 0.0),
+        logic_cell(
             "U1",
-            "logic_cell",
-            cell(&["a", "b"], "1110", (1e-9, 1e-9), true),
+            &["a", "b"],
+            "1110",
+            (1e-9, 1e-9),
+            true,
             &[
                 ("a", "enable"),
                 ("b", "r3"),
@@ -339,16 +307,20 @@ fn a_ring_that_would_oscillate_at_dc_settles_unknown() {
                 ("ground", "0"),
             ],
         ),
-        (
+        logic_cell(
             "U2",
-            "logic_cell",
-            cell(&["a"], "10", (1e-9, 1e-9), false),
+            &["a"],
+            "10",
+            (1e-9, 1e-9),
+            false,
             &[("a", "r1"), ("y", "r2")],
         ),
-        (
+        logic_cell(
             "U3",
-            "logic_cell",
-            cell(&["a"], "10", (1e-9, 1e-9), false),
+            &["a"],
+            "10",
+            (1e-9, 1e-9),
+            false,
             &[("a", "r2"), ("y", "r3")],
         ),
     ]);
@@ -369,17 +341,14 @@ fn a_ring_that_would_oscillate_at_dc_settles_unknown() {
 
 #[test]
 fn a_logic_pin_crosses_to_an_electrical_net_only_through_a_supply() {
-    let circuit = circuit(&[
-        (
-            "R1",
-            "resistor",
-            json!({"resistance": 1.0}),
-            &[("a", "n"), ("b", "0")],
-        ),
-        (
+    let circuit = circuit([
+        resistor("R1", 1.0, "n", "0"),
+        logic_cell(
             "U1",
-            "logic_cell",
-            cell(&["a"], "10", (0.0, 0.0), false),
+            &["a"],
+            "10",
+            (0.0, 0.0),
+            false,
             &[("a", "n"), ("y", "y")],
         ),
     ]);
@@ -397,13 +366,15 @@ fn a_logic_pin_crosses_to_an_electrical_net_only_through_a_supply() {
 
 #[test]
 fn logic_nets_name_what_drives_and_reads_them() {
-    let circuit = circuit(&[
-        ("A", "logic_source", source("0", &[]), &[("output", "a")]),
-        ("B", "logic_source", source("1", &[]), &[("output", "a")]),
-        (
+    let circuit = circuit([
+        logic_source("A", "0", &[], "a"),
+        logic_source("B", "1", &[], "a"),
+        logic_cell(
             "U1",
-            "logic_cell",
-            cell(&["a", "b"], "1110", (0.0, 0.0), false),
+            &["a", "b"],
+            "1110",
+            (0.0, 0.0),
+            false,
             &[("a", "a"), ("b", "floating"), ("y", "y")],
         ),
     ]);
@@ -507,18 +478,13 @@ fn a_model_stands_in_for_a_component_instance() {
 fn an_output_turning_back_before_its_rail_crosses_sooner() {
     let mut buffer = cell(&["a"], "01", (1e-9, 1e-9), false);
     buffer["timing"]["fixed"]["transition"] = json!(2e-9);
-    let circuit = circuit(&[
-        (
-            "A",
-            "logic_source",
-            source("1", &[(1e-9, "0"), (2.5e-9, "1")]),
-            &[("output", "a")],
-        ),
-        ("U1", "logic_cell", buffer, &[("a", "a"), ("y", "y")]),
+    let circuit = circuit([
+        logic_source("A", "1", &[(1e-9, "0"), (2.5e-9, "1")], "a"),
+        device("U1", "logic_cell", buffer, &[("a", "a"), ("y", "y")]),
     ]);
     let mut simulator = simulator(&circuit);
     let waveforms = simulator
-        .transient(&transient(10e-9), &Options::default())
+        .transient(&trapezoidal(10e-9), &Options::default())
         .unwrap();
     let changes = &waveforms.logic[net(&simulator, "y")];
     assert_eq!(changes.len(), 3);
@@ -543,35 +509,20 @@ fn a_driver_s_load_counts_the_analog_capacitance_it_drives() {
         "electrical": {"input_capacitances": [0]},
     });
     let crossing = |load: f64| {
-        let circuit = circuit(&[
-            (
-                "VDD",
-                "voltage_source",
-                json!({"waveform": {"dc": 1.0}}),
-                &[("positive", "vdd"), ("negative", "0")],
-            ),
-            (
-                "A",
-                "logic_source",
-                source("0", &[(1e-9, "1")]),
-                &[("output", "a")],
-            ),
-            (
+        let circuit = circuit([
+            voltage_dc("VDD", "vdd", 1.0),
+            logic_source("A", "0", &[(1e-9, "1")], "a"),
+            device(
                 "U1",
                 "logic_cell",
                 inverter.clone(),
                 &[("a", "a"), ("y", "y"), ("supply", "vdd"), ("ground", "0")],
             ),
-            (
-                "C1",
-                "capacitor",
-                json!({"capacitance": load}),
-                &[("a", "y"), ("b", "0")],
-            ),
+            capacitor("C1", load, "y", "0"),
         ]);
         let mut simulator = simulator(&circuit);
         let waveforms = simulator
-            .transient(&transient(10e-9), &Options::default())
+            .transient(&trapezoidal(10e-9), &Options::default())
             .unwrap();
         waveforms.logic[net(&simulator, "U1:y")][1].0 + 0.5e-12
     };
@@ -601,35 +552,25 @@ fn a_cell_used_outside_its_domain_says_where() {
             ]}},
         "electrical": {"input_capacitances": [0]},
     });
-    let circuit = circuit(&[
-        (
-            "VDD",
-            "voltage_source",
-            json!({"waveform": {"dc": 1.2}}),
-            &[("positive", "vdd"), ("negative", "0")],
-        ),
-        (
+    let circuit = circuit([
+        voltage_dc("VDD", "vdd", 1.2),
+        device(
             "A",
             "logic_source",
             json!({"initial": "0", "changes": [[1e-9, "1"]], "transition": 1e-9}),
             &[("output", "a")],
         ),
-        (
+        device(
             "U1",
             "logic_cell",
             inverter,
             &[("a", "a"), ("y", "y"), ("supply", "vdd"), ("ground", "0")],
         ),
-        (
-            "C1",
-            "capacitor",
-            json!({"capacitance": 1e-13}),
-            &[("a", "y"), ("b", "0")],
-        ),
+        capacitor("C1", 1e-13, "y", "0"),
     ]);
     let mut simulator = simulator(&circuit);
     simulator
-        .transient(&transient(5e-9), &Options::default())
+        .transient(&trapezoidal(5e-9), &Options::default())
         .unwrap();
     let found: Vec<(ExcursionKind, f64, f64)> = simulator
         .excursions()
@@ -649,49 +590,17 @@ fn a_cell_used_outside_its_domain_says_where() {
 fn the_logic_returns_to_its_operating_point_after_a_transient() {
     // The transient moves the logic on and its drivers with it; the next analysis about the
     // operating point takes it again, and the logic and the drivers as it left them.
-    let supply = 2.0;
-    let circuit = circuit(&[
-        (
-            "VDD",
-            "voltage_source",
-            json!({"waveform": {"dc": supply}}),
-            &[("positive", "vdd"), ("negative", "0")],
-        ),
-        (
-            "V1",
-            "voltage_source",
-            json!({"waveform": {"pulse": {"initial": 0, "pulsed": supply, "delay": 1e-9,
-                "rise": 2e-9, "fall": 2e-9, "width": 1}}}),
-            &[("positive", "in"), ("negative", "0")],
-        ),
-        (
-            "U1",
-            "logic_cell",
-            cell(&["a"], "10", (3e-9, 3e-9), true),
-            &[
-                ("a", "in"),
-                ("y", "out"),
-                ("supply", "vdd"),
-                ("ground", "0"),
-            ],
-        ),
-        (
-            "C1",
-            "capacitor",
-            json!({"capacitance": 1e-15}),
-            &[("a", "out"), ("b", "0")],
-        ),
-    ]);
+    let circuit = edged_inverter(2.0, 3e-9);
     let options = Options::default();
     let mut simulator = simulator(&circuit);
     let point = simulator.operating_point(&options).unwrap();
-    let first = apart_from_work(simulator.transient(&transient(10e-9), &options).unwrap());
+    let first = apart_from_work(simulator.transient(&trapezoidal(10e-9), &options).unwrap());
     assert_eq!(simulator.operating_point(&options).unwrap(), point);
-    let second = simulator.transient(&transient(10e-9), &options).unwrap();
+    let second = simulator.transient(&trapezoidal(10e-9), &options).unwrap();
     assert_eq!(apart_from_work(second), first);
     assert_eq!(simulator.operating_point_solves(), 1);
-    let mut fresh = self::simulator(&circuit);
-    let afresh = fresh.transient(&transient(10e-9), &options).unwrap();
+    let mut fresh = sim::simulator(&circuit);
+    let afresh = fresh.transient(&trapezoidal(10e-9), &options).unwrap();
     assert_eq!(apart_from_work(afresh), first);
     assert_eq!(simulator.excursions(), fresh.excursions());
 }

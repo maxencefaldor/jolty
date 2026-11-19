@@ -5,6 +5,8 @@
 //! `kernels/`, which git ignores, and runs these tests with the `fetched` feature, which
 //! builds them; without it, or without the kernels, there is nothing to build.
 
+#[path = "../common/closed.rs"]
+mod closed;
 mod diode_cmc;
 mod mosvar;
 mod psp103;

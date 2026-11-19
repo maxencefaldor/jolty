@@ -17,12 +17,14 @@ mod kernel;
 
 use jolty_models::testing::Bench;
 
+use crate::closed::Closed;
+
 /// How far a value the compiled model computes may lie from the closed form computed
 /// here, in units of the machine epsilon times its magnitude: the closed form takes the
 /// model's own operations, the exponential of the same argument, and the two scale the
 /// saturation current, the area and the polarity in their own orders, three roundings of
 /// half an epsilon each, with one to spare.
-const CLOSED: f64 = 4.0;
+const CLOSED: Closed = Closed(4.0);
 
 /// Boltzmann's constant and the elementary charge as `DIODE_CMC` defines them
 /// (`DIODE_CMC_SIMKIT_macrodefs.include`), older than the exact SI values jolty keeps.
@@ -31,15 +33,6 @@ const QELE: f64 = 1.602_191_8e-19;
 
 /// The model's reference temperature, its default `TRJ`, in degrees Celsius.
 const TRJ: f64 = 21.0;
-
-fn assert_closed(what: &str, compiled: f64, closed: f64) {
-    let distance = (compiled - closed).abs();
-    assert!(
-        distance <= CLOSED * f64::EPSILON * closed.abs(),
-        "{what}: {compiled:e} compiled, {closed:e} closed, {:.1} ε apart",
-        distance / (f64::EPSILON * closed.abs())
-    );
-}
 
 /// The current from anode to cathode and its conductance, both polarities, at voltages
 /// from deep reverse to strong forward bias, for three areas and saturation currents.
@@ -63,18 +56,18 @@ fn reduced_to_an_ideal_diode_it_is_one() {
             let x = phit_inverse * v;
             let current = polarity * ab * (idsatrbot * (x.exp() - 1.0));
             let conductance = ab * (idsatrbot * x.exp() * phit_inverse);
-            assert_closed(&format!("{what}: current"), evaluation.residual[0], current);
-            assert_closed(
+            CLOSED.assert(&format!("{what}: current"), evaluation.residual[0], current);
+            CLOSED.assert(
                 &format!("{what}: returning current"),
                 evaluation.residual[1],
                 -current,
             );
-            assert_closed(
+            CLOSED.assert(
                 &format!("{what}: conductance"),
                 evaluation.conductance[0][0],
                 conductance,
             );
-            assert_closed(
+            CLOSED.assert(
                 &format!("{what}: transconductance"),
                 evaluation.conductance[0][1],
                 -conductance,

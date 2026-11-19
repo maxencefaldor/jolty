@@ -1,17 +1,37 @@
 //! Physical invariants on random circuits.
 #![cfg(test)]
 
+#[path = "common/capacitor.rs"]
+mod capacitor;
+mod common;
+#[path = "common/current.rs"]
+mod current;
+#[path = "common/network.rs"]
+mod network;
+#[path = "common/sim.rs"]
+mod sim;
+#[path = "common/sine.rs"]
+mod sine;
+#[path = "common/transient.rs"]
+mod transient;
+
 use std::collections::BTreeMap;
 
+use capacitor::capacitor;
+use common::{circuit, device, resistor, voltage_source};
+use current::current_dc;
 use jolty_engine::{
-    ChargeLeak, Conditions, Method, Options, Parallelism, PeriodicSteadyState, Record, Simulator,
-    Transient, TransientResult,
+    ChargeLeak, Method, Options, Parallelism, PeriodicSteadyState, Record, Simulator, Transient,
+    TransientResult,
 };
-use jolty_ir::Circuit;
-use jolty_models::Library;
+use jolty_ir::{Circuit, Instance};
+use network::{connected_resistors, node};
 use proptest::prelude::*;
 use rayon::ThreadPoolBuilder;
-use serde_json::{Value, json};
+use serde_json::json;
+use sim::simulator;
+use sine::{sine, voltage_sine};
+use transient::transient;
 
 /// A random grounded resistor network driven by current sources.
 #[derive(Debug, Clone)]
@@ -22,79 +42,37 @@ struct Network {
     sources: Vec<(usize, f64)>,
 }
 
-fn net(node: usize) -> String {
-    if node == 0 {
-        "0".to_owned()
-    } else {
-        format!("n{node}")
-    }
-}
-
 /// A connected network on up to eight nodes: a spanning tree, then extra resistors.
 fn network() -> impl Strategy<Value = Network> {
     (2usize..9).prop_flat_map(|nodes| {
-        let tree =
-            proptest::collection::vec((any::<prop::sample::Index>(), -3.0..6.0f64), nodes - 1);
-        let extra = proptest::collection::vec((0..nodes, 0..nodes, -3.0..6.0f64), 0..nodes);
+        let resistors = connected_resistors(nodes, -3.0..6.0);
         let sources = proptest::collection::vec((1..nodes, -1e-2..1e-2f64), 1..4);
-        (tree, extra, sources).prop_map(move |(tree, extra, sources)| {
-            let mut resistors: Vec<(usize, usize, f64)> = tree
-                .into_iter()
-                .enumerate()
-                .map(|(child, (parent, exponent))| {
-                    (child + 1, parent.index(child + 1), 10f64.powf(exponent))
-                })
-                .collect();
-            resistors.extend(
-                extra
-                    .into_iter()
-                    .filter(|(a, b, _)| a != b)
-                    .map(|(a, b, exponent)| (a, b, 10f64.powf(exponent))),
-            );
-            Network { resistors, sources }
-        })
+        (resistors, sources).prop_map(|(resistors, sources)| Network { resistors, sources })
     })
 }
 
-fn circuit(network: &Network, reversed: bool) -> Circuit {
-    let mut instances: Vec<Value> = network
+fn network_circuit(network: &Network, reversed: bool) -> Circuit {
+    let mut instances: Vec<Instance> = network
         .resistors
         .iter()
         .enumerate()
         .map(|(index, &(a, b, resistance))| {
-            json!({
-                "name": format!("R{index}"),
-                "of": {"model": "resistor"},
-                "parameters": {"resistance": resistance},
-                "terminals": {"a": net(a), "b": net(b)},
-            })
+            resistor(&format!("R{index}"), resistance, &node(a), &node(b))
         })
         .chain(
             network
                 .sources
                 .iter()
                 .enumerate()
-                .map(|(index, &(node, current))| {
-                    json!({
-                        "name": format!("I{index}"),
-                        "of": {"model": "current_source"},
-                        "parameters": {"waveform": {"dc": current}},
-                        "terminals": {"positive": "0", "negative": net(node)},
-                    })
+                .map(|(index, &(at, current))| {
+                    current_dc(&format!("I{index}"), "0", &node(at), current)
                 }),
         )
         .collect();
     if reversed {
         instances.reverse();
     }
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "network",
-        "components": {"network": {
-            "ports": [{"name": "0", "role": "ground"}],
-            "instances": instances,
-        }}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit file")
+    circuit(instances)
 }
 
 impl Network {
@@ -110,16 +88,15 @@ impl Network {
 
     /// Every node's voltage at the operating point, by node number, the ground being zero.
     fn voltages(&self, reversed: bool) -> Vec<f64> {
-        let circuit = circuit(self, reversed);
-        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("an elaborated circuit");
+        let built = network_circuit(self, reversed);
+        let mut simulator = simulator(&built);
         let solution = simulator
             .operating_point(&tight())
             .expect("an operating point");
         (0..self.nodes())
-            .map(|node| {
+            .map(|at| {
                 simulator
-                    .unknown(&net(node))
+                    .unknown(&node(at))
                     .map_or(0.0, |unknown| solution.values[unknown.index()])
             })
             .collect()
@@ -323,68 +300,50 @@ impl ClosedIsland {
                 }
             })
         } else {
-            json!({
-                "sine": {
-                    "offset": 0.0,
-                    "amplitude": self.amplitude,
-                    "frequency": 2.5e5,
-                }
-            })
+            sine(0.0, self.amplitude, 2.5e5)
         };
-        let mut instances = vec![json!({
-            "name": "V1",
-            "of": {"model": "voltage_source"},
-            "parameters": {"waveform": waveform},
-            "terminals": {"positive": "drive", "negative": "0"},
-        })];
+        let mut instances = vec![voltage_source("V1", "drive", "0", waveform)];
         for (index, capacitor) in self.capacitors.iter().enumerate() {
             let other = if capacitor.driven { "drive" } else { "0" };
-            instances.push(json!({
-                "name": format!("C{index}"),
-                "of": {"model": "capacitor"},
-                "parameters": {
+            instances.push(device(
+                &format!("C{index}"),
+                "capacitor",
+                json!({
                     "capacitance": capacitor.capacitance,
                     "voltage_coefficient": capacitor.voltage_coefficient,
                     "quadratic_voltage_coefficient": capacitor.quadratic_voltage_coefficient,
-                },
-                "terminals": {"a": net(capacitor.island_node), "b": other},
-            }));
+                }),
+                &[("a", &node(capacitor.island_node)), ("b", other)],
+            ));
         }
         for (index, &(a, b, resistance)) in self.resistors.iter().enumerate() {
-            instances.push(json!({
-                "name": format!("R{index}"),
-                "of": {"model": "resistor"},
-                "parameters": {"resistance": resistance},
-                "terminals": {"a": net(a), "b": net(b)},
-            }));
+            instances.push(resistor(
+                &format!("R{index}"),
+                resistance,
+                &node(a),
+                &node(b),
+            ));
         }
         for (index, &(anode, cathode)) in self.diodes.iter().enumerate() {
-            instances.push(json!({
-                "name": format!("D{index}"),
-                "of": {"model": "diode"},
-                "parameters": {"saturation_current": 1e-14, "junction_capacitance": 1e-12},
-                "terminals": {"anode": net(anode), "cathode": net(cathode)},
-            }));
+            instances.push(device(
+                &format!("D{index}"),
+                "diode",
+                json!({"saturation_current": 1e-14, "junction_capacitance": 1e-12}),
+                &[("anode", &node(anode)), ("cathode", &node(cathode))],
+            ));
         }
-        let document = json!({
-            "format": "jolty-circuit", "version": 4, "top": "island",
-            "components": {"island": {
-                "ports": [{"name": "0", "role": "ground"}],
-                "instances": instances,
-            }}
-        });
-        Circuit::from_json(&document.to_string()).expect("a valid circuit file")
+        circuit(instances)
     }
 
     /// Initial conditions setting the floating island's starting voltage(s).
     fn initial_conditions(&self) -> BTreeMap<String, f64> {
         let mut initial = BTreeMap::new();
         if self.operating_point {
-            initial.insert(net(1), self.initial_voltage);
+            initial.insert(node(1), self.initial_voltage);
         } else {
-            for node in 1..=self.nodes {
-                let offset = 0.1 * f64::from(u32::try_from(node - 1).expect("small node"));
-                initial.insert(net(node), self.initial_voltage + offset);
+            for at in 1..=self.nodes {
+                let offset = 0.1 * f64::from(u32::try_from(at - 1).expect("small node"));
+                initial.insert(node(at), self.initial_voltage + offset);
             }
         }
         initial
@@ -483,25 +442,21 @@ fn check_closed_island(
     max_step: f64,
 ) -> (f64, f64, f64, f64) {
     let built = island.circuit();
-    let mut simulator = Simulator::new(&built, &Library::standard(), &Conditions::default())
-        .expect("an elaborated circuit");
-    let transient = Transient {
-        stop,
-        max_step: Some(max_step),
-        method,
-        breakpoints: Vec::new(),
+    let mut simulator = simulator(&built);
+    let analysis = Transient {
         initial_conditions: island.initial_conditions(),
         operating_point: island.operating_point,
+        ..transient(stop, Some(max_step), method)
     };
     let waveforms = simulator
-        .transient(&transient, options)
+        .transient(&analysis, options)
         .expect("transient finishes");
     let leak = &waveforms.statistics.charge_leak;
     assert_valid_charge_leak(leak, simulator.unknowns().len());
 
     let drive_index = simulator.unknown("drive").expect("drive node").index();
     let island_indices: Vec<usize> = (1..=island.nodes)
-        .map(|node| simulator.unknown(&net(node)).expect("island node").index())
+        .map(|at| simulator.unknown(&node(at)).expect("island node").index())
         .collect();
     let slots = boundary_charge_slots(&simulator, island.capacitors.len());
     let (total_charges, charge_scale, current_scale) =
@@ -718,13 +673,9 @@ fn charge_leak_is_bit_identical_across_thread_counts() {
         operating_point: true,
     };
     let built = island.circuit();
-    let transient = Transient {
-        stop: 4e-6,
-        max_step: Some(1e-7),
-        method: Method::Trapezoidal,
-        breakpoints: Vec::new(),
+    let analysis = Transient {
         initial_conditions: island.initial_conditions(),
-        operating_point: true,
+        ..transient(4e-6, Some(1e-7), Method::Trapezoidal)
     };
     let run = |threads: usize| {
         let options = Options {
@@ -740,11 +691,9 @@ fn charge_leak_is_bit_identical_across_thread_counts() {
             .build()
             .expect("a pool");
         pool.install(|| {
-            let (library, conditions) = (Library::standard(), Conditions::default());
-            let mut simulator =
-                Simulator::new(&built, &library, &conditions).expect("an elaborated circuit");
+            let mut simulator = simulator(&built);
             let waveforms = simulator
-                .transient(&transient, &options)
+                .transient(&analysis, &options)
                 .expect("transient finishes");
             let leak = &waveforms.statistics.charge_leak;
             (slice_bits(&leak.signed), slice_bits(&leak.absolute))
@@ -758,35 +707,16 @@ fn charge_leak_is_bit_identical_across_thread_counts() {
 
 #[test]
 fn pure_logic_transient_has_empty_charge_leak() {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "logic",
-        "components": {"logic": {
-            "ports": [{"name": "0", "role": "ground"}],
-            "instances": [{
-                "name": "A",
-                "of": {"model": "logic_source"},
-                "parameters": {
-                    "initial": "0",
-                    "changes": [[1e-9, "1"]],
-                    "transition": 1e-12,
-                },
-                "terminals": {"output": "a"},
-            }],
-        }}
-    });
-    let built = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-    let mut simulator =
-        Simulator::new(&built, &Library::standard(), &Conditions::default()).expect("elaborates");
-    let transient = Transient {
-        stop: 5e-9,
-        max_step: None,
-        method: Method::Trapezoidal,
-        breakpoints: Vec::new(),
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
-    };
+    let built = circuit([device(
+        "A",
+        "logic_source",
+        json!({"initial": "0", "changes": [[1e-9, "1"]], "transition": 1e-12}),
+        &[("output", "a")],
+    )]);
+    let mut simulator = simulator(&built);
+    let analysis = transient(5e-9, None, Method::Trapezoidal);
     let waveforms = simulator
-        .transient(&transient, &Options::default())
+        .transient(&analysis, &Options::default())
         .expect("transient finishes");
     assert_eq!(simulator.unknowns(), []);
     assert_eq!(waveforms.statistics.charge_leak.signed, [] as [f64; 0]);
@@ -795,43 +725,18 @@ fn pure_logic_transient_has_empty_charge_leak() {
 
 #[test]
 fn periodic_steady_state_carries_period_charge_leak() {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "rectifier",
-        "components": {"rectifier": {
-            "ports": [{"name": "0", "role": "ground"}],
-            "instances": [
-                {
-                    "name": "V1",
-                    "of": {"model": "voltage_source"},
-                    "parameters": {
-                        "waveform": {"sine": {"offset": 0.0, "amplitude": 2.0, "frequency": 1e5}}
-                    },
-                    "terminals": {"positive": "in", "negative": "0"},
-                },
-                {
-                    "name": "D1",
-                    "of": {"model": "diode"},
-                    "parameters": {"saturation_current": 1e-14, "junction_capacitance": 1e-12},
-                    "terminals": {"anode": "in", "cathode": "out"},
-                },
-                {
-                    "name": "R1",
-                    "of": {"model": "resistor"},
-                    "parameters": {"resistance": 1e3},
-                    "terminals": {"a": "out", "b": "0"},
-                },
-                {
-                    "name": "C1",
-                    "of": {"model": "capacitor"},
-                    "parameters": {"capacitance": 1e-9},
-                    "terminals": {"a": "out", "b": "0"},
-                },
-            ],
-        }}
-    });
-    let built = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-    let mut simulator =
-        Simulator::new(&built, &Library::standard(), &Conditions::default()).expect("elaborates");
+    let built = circuit([
+        voltage_sine("V1", "in", 0.0, 2.0, 1e5),
+        device(
+            "D1",
+            "diode",
+            json!({"saturation_current": 1e-14, "junction_capacitance": 1e-12}),
+            &[("anode", "in"), ("cathode", "out")],
+        ),
+        resistor("R1", 1e3, "out", "0"),
+        capacitor("C1", 1e-9, "out", "0"),
+    ]);
+    let mut simulator = simulator(&built);
     let steady_state = PeriodicSteadyState {
         period: Some(1e-5),
         max_step: Some(2e-7),

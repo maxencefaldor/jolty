@@ -4,130 +4,34 @@
 //! restructured for them. Every comparison is of every number's bits.
 #![cfg(test)]
 
+#[path = "common/capacitor.rs"]
+mod capacitor;
+mod common;
+#[path = "common/dc.rs"]
+mod dc;
+#[path = "common/network.rs"]
+mod network;
+#[path = "common/shared.rs"]
+mod shared;
+
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 
+use capacitor::capacitor;
+use common::{circuit, device, resistor, voltage_source};
+use dc::voltage_dc;
 use jolty_engine::{
-    Analysis, AnalysisResult, Conditions, Derivatives, Elaborated, ElaborationProblem, Options,
-    Record, SimulationError, Simulator, Structure, Values,
+    Analysis, Conditions, Elaborated, ElaborationError, ElaborationProblem, Options, Record,
+    Simulator, Values,
 };
 use jolty_ir::{Circuit, Parameters};
 use jolty_models::Library;
-use jolty_numerics::Complex64;
 use proptest::prelude::*;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
+use shared::{Bits, benchmark, bits, network, shared, upper};
 
 /// Numbers that replace devices' own, by the device's path, then by the number's path.
 type Overrides = BTreeMap<String, BTreeMap<String, f64>>;
-
-/// Every number of an outcome, as its bits, and the whole outcome as text: Rust writes
-/// each number in the shortest form that reads back as the same bits, so equal text with
-/// equal bits is the same outcome, its counts of work among it.
-#[derive(Debug, PartialEq, Eq)]
-struct Bits {
-    numbers: Vec<u64>,
-    text: String,
-}
-
-fn reals(values: &[f64], into: &mut Vec<u64>) {
-    into.extend(values.iter().map(|value| value.to_bits()));
-}
-
-fn complexes(values: &[Complex64], into: &mut Vec<u64>) {
-    for value in values {
-        into.extend([value.re.to_bits(), value.im.to_bits()]);
-    }
-}
-
-fn point(point: &jolty_engine::OperatingPointResult, into: &mut Vec<u64>) {
-    reals(&point.values, into);
-    let observation = &point.observation;
-    for values in [
-        &observation.currents,
-        &observation.charges,
-        &observation.conductances,
-        &observation.capacitances,
-        &observation.variables,
-    ] {
-        reals(values, into);
-    }
-}
-
-/// The bits of the outcome of a run, or its error.
-fn bits(outcome: &Result<AnalysisResult, SimulationError>) -> Bits {
-    let mut numbers = Vec::new();
-    if let Ok(found) = outcome {
-        numbers_of(found, &mut numbers);
-    }
-    Bits {
-        numbers,
-        text: format!("{outcome:?}"),
-    }
-}
-
-/// Every number of `outcome`, as its bits.
-fn numbers_of(outcome: &AnalysisResult, numbers: &mut Vec<u64>) {
-    match outcome {
-        AnalysisResult::OperatingPoint(found) => point(found, numbers),
-        AnalysisResult::Ac(response) => {
-            point(&response.operating_point, numbers);
-            reals(&response.frequencies, numbers);
-            for row in response.values.iter().chain(&response.currents) {
-                complexes(row, numbers);
-            }
-        }
-        AnalysisResult::Transient(waveforms) => {
-            reals(&waveforms.times, numbers);
-            for row in &waveforms.values {
-                reals(row, numbers);
-            }
-            let observed = &waveforms.observations;
-            for values in [
-                &observed.currents,
-                &observed.charges,
-                &observed.conductances,
-                &observed.capacitances,
-                &observed.variables,
-            ] {
-                reals(values, numbers);
-            }
-            for trace in &waveforms.logic {
-                numbers.extend(trace.iter().map(|(time, _)| time.to_bits()));
-            }
-        }
-        AnalysisResult::DcSweep(sweep) => {
-            reals(&sweep.swept, numbers);
-            for row in &sweep.values {
-                reals(row, numbers);
-            }
-        }
-        AnalysisResult::Sensitivity(found) => {
-            numbers.extend(
-                found
-                    .parameters
-                    .iter()
-                    .map(|parameter| parameter.value.to_bits()),
-            );
-            match &found.derivatives {
-                Derivatives::Real(points) => {
-                    for row in points.iter().flatten() {
-                        reals(row, numbers);
-                    }
-                }
-                Derivatives::Complex(points) => {
-                    for row in points.iter().flatten() {
-                        complexes(row, numbers);
-                    }
-                }
-            }
-            numbers_of(&found.result, numbers);
-        }
-        _ => panic!("no other analysis is compared here"),
-    }
-}
 
 /// The bits of each analysis of `analyses`, run in turn on `simulator`.
 fn run(simulator: &mut Simulator, analyses: &[Analysis], options: &Options) -> Vec<Bits> {
@@ -137,36 +41,16 @@ fn run(simulator: &mut Simulator, analyses: &[Analysis], options: &Options) -> V
         .collect()
 }
 
-/// A plan of the engine's benchmarks, `benchmarks/speed/plans/<name>.json`.
-#[derive(Deserialize)]
-struct Plan {
-    circuit: String,
-    analyses: Vec<(String, Analysis)>,
-    options: Options,
-}
-
 /// The circuit and the analyses of the benchmark `bjt_amp`: two 2N3904s and three 2N3906s,
 /// whose junctions limit their steps from their last voltages, over 200 µs of a sine, at
 /// an operating point and at 71 frequencies. The transient comes first, so that it solves
 /// the operating point it starts from, and counts the factorizations of a solver that has
 /// kept no pivots.
 fn bjt_amp() -> (Circuit, Vec<Analysis>, Options) {
-    let speed = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../benchmarks/speed");
-    let plan: Plan = serde_json::from_str(
-        &fs::read_to_string(speed.join("plans/bjt_amp.json")).expect("the plan reads"),
-    )
-    .expect("a plan");
-    let text = fs::read_to_string(speed.join(format!("circuits/{}.json", plan.circuit)))
-        .expect("the circuit reads");
-    let circuit = Circuit::from_json(&text).expect("a circuit");
-    let mut analyses: Vec<Analysis> = plan
-        .analyses
-        .into_iter()
-        .map(|(_, analysis)| analysis)
-        .collect();
+    let (circuit, mut analyses, options) = benchmark("bjt_amp");
     analyses.rotate_right(1);
     assert!(matches!(analyses[0], Analysis::Transient(_)));
-    (circuit, analyses, plan.options)
+    (circuit, analyses, options)
 }
 
 /// Every number of every device of `circuit`, by the device's path then the number's.
@@ -183,18 +67,12 @@ fn every_number(circuit: &Circuit) -> Vec<(String, String, f64)> {
     found
 }
 
-/// `circuit` elaborated once, for runs to share.
-fn shared(circuit: &Circuit) -> Arc<Elaborated> {
-    Elaborated::new(circuit, &Library::standard(), &Structure::default())
-        .expect("the circuit elaborates")
-}
-
 /// The circuit elaborated with `overrides` at `temperature`, as `Simulator::new` takes it.
 fn elaborated_with(
     circuit: &Circuit,
     overrides: &Overrides,
     temperature: f64,
-) -> Result<Simulator, jolty_engine::ElaborationError> {
+) -> Result<Simulator, ElaborationError> {
     let mut conditions = Conditions::at(temperature);
     for (path, numbers) in overrides {
         // Each number by its path among the parameters, such as `waveform.dc`.
@@ -230,7 +108,7 @@ fn both_ways(
             )
         }
         (direct, from_shared) => {
-            let problems = |result: Result<Simulator, jolty_engine::ElaborationError>| {
+            let problems = |result: Result<Simulator, ElaborationError>| {
                 result.err().map(|error| error.to_string())
             };
             let (direct, from_shared) = (problems(direct), problems(from_shared));
@@ -240,106 +118,8 @@ fn both_ways(
     }
 }
 
-/// A grounded network of resistors and capacitors, driven by a pulse and by current
-/// sources: its resistors, as `(node, node, resistance)`, node 0 the ground.
-#[derive(Debug, Clone)]
-struct Network {
-    resistors: Vec<(usize, usize, f64)>,
-    capacitors: Vec<(usize, f64)>,
-    sources: Vec<(usize, f64)>,
-}
-
 /// The numbers of a network's pulse, `V1`.
 const PULSE_NUMBERS: usize = 7;
-
-fn node(index: usize) -> String {
-    if index == 0 {
-        "0".to_owned()
-    } else {
-        format!("n{index}")
-    }
-}
-
-/// A connected network on up to six nodes: a spanning tree, extra resistors, a capacitor
-/// at every node, the pulse at node 1, and current sources. Resistances run from 0.1 Ω to
-/// 100 kΩ, so that some lie below 1 Ω, where a resistor carries its current as an unknown.
-fn network() -> impl Strategy<Value = Network> {
-    (2usize..7).prop_flat_map(|nodes| {
-        let tree =
-            proptest::collection::vec((any::<prop::sample::Index>(), -1.0..5.0f64), nodes - 1);
-        let extra = proptest::collection::vec((0..nodes, 0..nodes, -1.0..5.0f64), 0..nodes);
-        let capacitors = proptest::collection::vec(-12.0..-9.0f64, nodes - 1);
-        let sources = proptest::collection::vec((1..nodes, -1e-3..1e-3f64), 0..3);
-        (tree, extra, capacitors, sources).prop_map(|(tree, extra, capacitors, sources)| {
-            let mut resistors: Vec<(usize, usize, f64)> = tree
-                .into_iter()
-                .enumerate()
-                .map(|(child, (parent, exponent))| {
-                    (child + 1, parent.index(child + 1), 10f64.powf(exponent))
-                })
-                .collect();
-            resistors.extend(
-                extra
-                    .into_iter()
-                    .filter(|(a, b, _)| a != b)
-                    .map(|(a, b, exponent)| (a, b, 10f64.powf(exponent))),
-            );
-            let capacitors = capacitors
-                .into_iter()
-                .enumerate()
-                .map(|(index, exponent)| (index + 1, 10f64.powf(exponent)))
-                .collect();
-            Network {
-                resistors,
-                capacitors,
-                sources,
-            }
-        })
-    })
-}
-
-impl Network {
-    fn circuit(&self) -> Circuit {
-        let mut instances = vec![json!({
-            "name": "V1", "of": {"model": "voltage_source"},
-            "parameters": {"waveform": {"pulse": {"initial": 0.0, "pulsed": 1.0, "delay": 1e-9,
-                "rise": 1e-9, "fall": 1e-9, "width": 5e-9, "period": 20e-9}}},
-            "terminals": {"positive": "drive", "negative": "0"},
-        })];
-        instances.push(json!({
-            "name": "RD", "of": {"model": "resistor"}, "parameters": {"resistance": 50.0},
-            "terminals": {"a": "drive", "b": node(1)},
-        }));
-        for (index, &(a, b, resistance)) in self.resistors.iter().enumerate() {
-            instances.push(json!({
-                "name": format!("R{index}"), "of": {"model": "resistor"},
-                "parameters": {"resistance": resistance},
-                "terminals": {"a": node(a), "b": node(b)},
-            }));
-        }
-        for &(at, capacitance) in &self.capacitors {
-            instances.push(json!({
-                "name": format!("C{at}"), "of": {"model": "capacitor"},
-                "parameters": {"capacitance": capacitance},
-                "terminals": {"a": node(at), "b": "0"},
-            }));
-        }
-        for (index, &(at, current)) in self.sources.iter().enumerate() {
-            instances.push(json!({
-                "name": format!("I{index}"), "of": {"model": "current_source"},
-                "parameters": {"waveform": {"dc": current}},
-                "terminals": {"positive": "0", "negative": node(at)},
-            }));
-        }
-        let document = json!({
-            "format": "jolty-circuit", "version": 4, "top": "network",
-            "components": {"network": {
-                "ports": [{"name": "0", "role": "ground"}], "instances": instances,
-            }}
-        });
-        Circuit::from_json(&document.to_string()).expect("a valid circuit")
-    }
-}
 
 /// Every number of `circuit` that `factors` scales, each by its factor, by its place
 /// among the numbers of every device but those at `kept`; a factor of 1 leaves its number
@@ -396,7 +176,7 @@ proptest! {
     /// resistances cross 1 Ω, and its pulse as it is.
     #[test]
     fn overrides_run_the_same_on_a_shared_circuit(
-        (network, factors) in network().prop_flat_map(|network| {
+        (network, factors) in network(false).prop_flat_map(|network| {
             let count = every_number(&network.circuit()).len() - PULSE_NUMBERS;
             (Just(network), factors(count, 10.0))
         }),
@@ -504,17 +284,8 @@ fn a_run_reset_to_other_values_equals_one_made_for_them() {
 /// after its transient forgets the logic's events and traces, and the drivers' ramps.
 #[test]
 fn a_reset_forgets_the_logic() {
-    let device = |id: &str, model: &str, parameters: Value, terminals: Value| {
-        json!({"name": id, "of": {"model": model}, "parameters": parameters,
-               "terminals": terminals})
-    };
-    let instances = vec![
-        device(
-            "VDD",
-            "voltage_source",
-            json!({"waveform": {"dc": 1.0}}),
-            json!({"positive": "vdd", "negative": "0"}),
-        ),
+    let circuit = circuit([
+        voltage_dc("VDD", "vdd", 1.0),
         device(
             "U1",
             "logic_cell",
@@ -522,38 +293,18 @@ fn a_reset_forgets_the_logic() {
                 "inputs": ["a"], "outputs": [{"name": "y", "table": "10"}],
                 "timing": {"fixed": {"rise": 1e-6, "fall": 1e-6, "transition": 1e-12}},
                 "electrical": {"input_capacitances": [0.0]}}),
-            json!({"a": "c", "y": "out", "supply": "vdd", "ground": "0"}),
+            &[("a", "c"), ("y", "out"), ("supply", "vdd"), ("ground", "0")],
         ),
-        device(
-            "R1",
-            "resistor",
-            json!({"resistance": 1e3}),
-            json!({"a": "out", "b": "c"}),
-        ),
-        device(
-            "C1",
-            "capacitor",
-            json!({"capacitance": 1e-9}),
-            json!({"a": "c", "b": "0"}),
-        ),
-        device(
+        resistor("R1", 1e3, "out", "c"),
+        capacitor("C1", 1e-9, "c", "0"),
+        voltage_source(
             "V1",
-            "voltage_source",
-            json!({"waveform": {"piecewise": {"points": [[0, 0], [1e-9, 0], [2e-9, 1], [3e-9, 0]]}}}),
-            json!({"positive": "kick", "negative": "0"}),
+            "kick",
+            "0",
+            json!({"piecewise": {"points": [[0, 0], [1e-9, 0], [2e-9, 1], [3e-9, 0]]}}),
         ),
-        device(
-            "R2",
-            "resistor",
-            json!({"resistance": 1e9}),
-            json!({"a": "kick", "b": "c"}),
-        ),
-    ];
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "ring",
-        "components": {"ring": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
-    });
-    let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
+        resistor("R2", 1e9, "kick", "c"),
+    ]);
     let elaborated = shared(&circuit);
     let analyses = [
         serde_json::from_value(json!({"transient": {"stop": 2e-5}})).expect("a transient"),
@@ -582,27 +333,11 @@ fn a_reset_forgets_the_logic() {
 /// A divider whose upper resistor is 2 Ω: a resistance below 1 Ω carries its current as an
 /// unknown of its own.
 fn divider() -> Circuit {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "divider",
-        "components": {"divider": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "V1", "of": {"model": "voltage_source"},
-             "parameters": {"waveform": {"dc": 1.0}},
-             "terminals": {"positive": "in", "negative": "0"}},
-            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 2.0},
-             "terminals": {"a": "in", "b": "out"}},
-            {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 3.0},
-             "terminals": {"a": "out", "b": "0"}}
-        ]}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
-}
-
-fn upper(elaborated: &Elaborated, ohms: f64) -> Values {
-    let overrides = Overrides::from([(
-        "R1".to_owned(),
-        BTreeMap::from([("resistance".to_owned(), ohms)]),
-    )]);
-    elaborated.values(&overrides, None).expect("values")
+    circuit([
+        voltage_dc("V1", "in", 1.0),
+        resistor("R1", 2.0, "in", "out"),
+        resistor("R2", 3.0, "out", "0"),
+    ])
 }
 
 /// A resistor overridden across 1 Ω changes the circuit's structure: the values get a key
@@ -673,20 +408,16 @@ fn a_resistor_overridden_across_one_ohm_changes_the_structure() {
 /// problem, all of them reported.
 #[test]
 fn values_report_every_number_they_cannot_replace() {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "top",
-        "components": {"top": {"ports": [{"name": "0", "role": "ground"}], "instances": [
-            {"name": "V1", "of": {"model": "voltage_source"},
-             "parameters": {"waveform": {"dc": 1.0}},
-             "terminals": {"positive": "in", "negative": "0"}},
-            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 2.0},
-             "terminals": {"a": "in", "b": "0"}},
-            {"name": "U1", "of": {"model": "logic_source"},
-             "parameters": {"initial": "0", "changes": [[1e-9, "1"]], "transition": 1e-12},
-             "terminals": {"output": "y"}}
-        ]}}
-    });
-    let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
+    let circuit = circuit([
+        voltage_dc("V1", "in", 1.0),
+        resistor("R1", 2.0, "in", "0"),
+        device(
+            "U1",
+            "logic_source",
+            json!({"initial": "0", "changes": [[1e-9, "1"]], "transition": 1e-12}),
+            &[("output", "y")],
+        ),
+    ]);
     let elaborated = shared(&circuit);
     let overrides = Overrides::from([
         (

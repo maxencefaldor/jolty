@@ -17,20 +17,13 @@ mod kernel;
 use jolty_models::REFERENCE_TEMPERATURE;
 use jolty_models::testing::Bench;
 
+use crate::closed::Closed;
+
 /// How far a value the compiled model computes may lie from the closed form computed
 /// here, in units of the machine epsilon times its magnitude: the model computes the
 /// resistance in some eight operations, its geometry scaled to micrometres and back,
 /// each rounding by half an epsilon.
-const CLOSED: f64 = 8.0;
-
-fn assert_closed(what: &str, compiled: f64, closed: f64) {
-    let distance = (compiled - closed).abs();
-    assert!(
-        distance <= CLOSED * f64::EPSILON * closed.abs(),
-        "{what}: {compiled:e} compiled, {closed:e} closed, {:.1} ε apart",
-        distance / (f64::EPSILON * closed.abs())
-    );
-}
+const CLOSED: Closed = Closed(8.0);
 
 /// The local index of the unknown `name` on `bench`.
 fn unknown(bench: &Bench, name: &str) -> usize {
@@ -65,22 +58,22 @@ fn forced_linear_at_its_nominal_temperature_it_is_a_resistor() {
             x[i2] = v;
             let evaluation = bench.evaluate(&x);
             let what = format!("{parameters} at {v} V");
-            assert_closed(
+            CLOSED.assert(
                 &format!("{what}: current"),
                 evaluation.residual[i2],
                 v / resistance,
             );
-            assert_closed(
+            CLOSED.assert(
                 &format!("{what}: returning current"),
                 evaluation.residual[i1],
                 -v / resistance,
             );
-            assert_closed(
+            CLOSED.assert(
                 &format!("{what}: conductance"),
                 evaluation.conductance[i2][i2],
                 1.0 / resistance,
             );
-            assert_closed(
+            CLOSED.assert(
                 &format!("{what}: transconductance"),
                 evaluation.conductance[i2][i1],
                 -1.0 / resistance,

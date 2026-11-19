@@ -1,39 +1,36 @@
 //! Measures read the engine's own results, and never panic on any numbers.
 #![cfg(test)]
 
+#[path = "common/capacitor.rs"]
+mod capacitor;
+mod common;
+#[path = "common/dc.rs"]
+mod dc;
+#[path = "common/sim.rs"]
+mod sim;
+
+use capacitor::capacitor;
+use common::{circuit, resistor, voltage_source};
+use dc::{dc, voltage_dc};
 use jolty_engine::measure::{
     AnalysisResult, Edge, Measure, MeasureError, Signal, Table, Transfer, Window, dampings,
     natural_frequencies,
 };
-use jolty_engine::{Analysis, Conditions, Options, Simulator};
-use jolty_ir::Circuit;
-use jolty_models::Library;
+use jolty_engine::{Analysis, Options, Simulator};
 use jolty_numerics::Complex64;
 use proptest::prelude::*;
 use serde_json::{Value, json};
+use sim::simulator;
 
 /// A low pass of `R1`, 1 kΩ, from `in` to `out` and `C1`, 1 µF, from `out` to the ground,
 /// driven at `in` by `V1`, 5 V, with `VP`, a probe of 0 V, in series with the resistor.
 fn low_pass() -> Simulator {
-    let instances = json!([
-        {"name": "V1", "of": {"model": "voltage_source"},
-         "parameters": {"waveform": {"dc": 5.0}},
-         "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "VP", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 0.0}},
-         "terminals": {"positive": "mid", "negative": "in"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-         "terminals": {"a": "mid", "b": "out"}},
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-6},
-         "terminals": {"a": "out", "b": "0"}}
-    ]);
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
-        "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
-                                "instances": instances}}
-    });
-    let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-    Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-        .expect("the circuit elaborates")
+    simulator(&circuit([
+        voltage_dc("V1", "in", 5.0),
+        voltage_source("VP", "mid", "in", dc(0.0)),
+        resistor("R1", 1e3, "mid", "out"),
+        capacitor("C1", 1e-6, "out", "0"),
+    ]))
 }
 
 fn run(simulator: &mut Simulator, analysis: &Value) -> jolty_engine::AnalysisResult {

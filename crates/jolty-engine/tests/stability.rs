@@ -1,13 +1,24 @@
 //! The loop gain through a probe against closed forms.
 #![cfg(test)]
 
+#[path = "common/capacitor.rs"]
+mod capacitor;
+mod common;
+#[path = "common/current.rs"]
+mod current;
+#[path = "common/sim.rs"]
+mod sim;
+
 use std::f64::consts::TAU;
 
-use jolty_engine::{Conditions, Options, SimulationError, Simulator, Stability};
+use capacitor::capacitor;
+use common::{circuit, device, resistor, voltage_source};
+use current::current_dc;
+use jolty_engine::{Options, SimulationError, Stability};
 use jolty_ir::Circuit;
-use jolty_models::Library;
 use jolty_numerics::Complex64;
 use serde_json::json;
+use sim::simulator;
 
 const GAIN: f64 = 1e3;
 const OUTPUT: f64 = 100.0;
@@ -26,29 +37,26 @@ fn amplifier(names: &[(&str, &str)], level: f64) -> Circuit {
             .find(|(from, _)| *from == name)
             .map_or(name.to_owned(), |(_, to)| (*to).to_owned())
     };
-    let instances = json!([
-        {"name": "E1", "of": {"model": "voltage_controlled_voltage_source"},
-         "parameters": {"gain": -GAIN},
-         "terminals": {"positive": net("e"), "negative": net("g"),
-                       "control_positive": net("in"), "control_negative": net("g")}},
-        {"name": "RO", "of": {"model": "resistor"}, "parameters": {"resistance": OUTPUT},
-         "terminals": {"a": net("e"), "b": net("y")}},
-        {"name": "VP", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": level}},
-         "terminals": {"positive": net("x"), "negative": net("y")}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": UPPER},
-         "terminals": {"a": net("x"), "b": net("in")}},
-        {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": LOWER},
-         "terminals": {"a": net("in"), "b": net("g")}},
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": CAPACITANCE},
-         "terminals": {"a": net("in"), "b": net("g")}},
-        {"name": "IS", "of": {"model": "current_source"}, "parameters": {"waveform": {"dc": 0.0}},
-         "terminals": {"positive": net("g"), "negative": net("in")}}
-    ]);
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
-        "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
+    let (e, g, input, x, y) = (net("e"), net("g"), net("in"), net("x"), net("y"));
+    circuit([
+        device(
+            "E1",
+            "voltage_controlled_voltage_source",
+            json!({"gain": -GAIN}),
+            &[
+                ("positive", &e),
+                ("negative", &g),
+                ("control_positive", &input),
+                ("control_negative", &g),
+            ],
+        ),
+        resistor("RO", OUTPUT, &e, &y),
+        voltage_source("VP", &x, &y, json!({"dc": level})),
+        resistor("R1", UPPER, &x, &input),
+        resistor("R2", LOWER, &input, &g),
+        capacitor("C1", CAPACITANCE, &input, &g),
+        current_dc("IS", &g, &input, 0.0),
+    ])
 }
 
 /// The loop gain: the amplifier's gain times the divider's, loaded by the output resistance.
@@ -58,8 +66,7 @@ fn expected(frequency: f64) -> Complex64 {
 }
 
 fn stability(circuit: &Circuit, probe: &str) -> Result<Vec<Complex64>, SimulationError> {
-    let mut simulator = Simulator::new(circuit, &Library::standard(), &Conditions::default())
-        .expect("the circuit elaborates");
+    let mut simulator = simulator(circuit);
     let analysis = Stability {
         probe: probe.to_owned(),
         frequencies: FREQUENCIES.to_vec(),

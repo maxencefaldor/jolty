@@ -1,107 +1,91 @@
 //! Adjoint sensitivities against finite differences of the whole circuit.
 #![cfg(test)]
 
+#[path = "common/capacitor.rs"]
+mod capacitor;
+mod common;
+#[path = "common/dc.rs"]
+mod dc;
+#[path = "common/derivatives.rs"]
+mod derivatives;
+#[path = "common/inductor.rs"]
+mod inductor;
+#[path = "common/sim.rs"]
+mod sim;
+#[path = "common/sine.rs"]
+mod sine;
+#[path = "common/transient.rs"]
+mod transient;
+
 use std::collections::BTreeMap;
 
+use capacitor::capacitor;
+use common::{circuit, device, resistor, two_terminal};
+use dc::voltage_dc;
+use derivatives::{moved, rectifier, tight_options};
+use inductor::inductor;
 use jolty_engine::{
-    Ac, Conditions, Cotangent, Cotangents, DcSweep, Derivatives, Differentiated, Method, Options,
-    Parallelism, ParameterCotangents, PeriodicSteadyState, Sensitivity, SimulationError, Simulator,
-    Transient,
+    Ac, Cotangent, Cotangents, DcSweep, Derivatives, Differentiated, Method, Options, Parallelism,
+    ParameterCotangents, PeriodicSteadyState, Sensitivity, SimulationError, Simulator, Transient,
 };
-use jolty_ir::Circuit;
-use jolty_models::Library;
+use jolty_ir::{Circuit, Instance};
 use jolty_numerics::Complex64;
 use rayon::ThreadPoolBuilder;
-use serde_json::{Value, json};
-
-/// A circuit whose top component has a ground port `0` and places `instances`.
-fn circuit_of(instances: &Value) -> Circuit {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
-        "components": {"test": {"ports": [{"name": "0", "role": "ground"}], "instances": instances}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
-}
+use serde_json::json;
+use sim::simulator;
+use sine::voltage_sine;
+use transient::transient;
 
 /// A source into a resistor and a diode with a series resistance, then a divider: nonlinear,
 /// with an internal unknown.
-fn diode() -> Value {
-    json!([
-        {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 5.0}},
-         "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-         "terminals": {"a": "in", "b": "a"}},
-        {"name": "D1", "of": {"model": "diode"},
-         "parameters": {"saturation_current": 1e-14, "emission_coefficient": 1.2,
-                        "series_resistance": 10.0},
-         "terminals": {"anode": "a", "cathode": "0"}},
-        {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 2e3},
-         "terminals": {"a": "a", "b": "out"}},
-        {"name": "R3", "of": {"model": "resistor"}, "parameters": {"resistance": 3e3},
-         "terminals": {"a": "out", "b": "0"}}
+fn diode() -> Circuit {
+    circuit([
+        voltage_dc("V1", "in", 5.0),
+        resistor("R1", 1e3, "in", "a"),
+        device(
+            "D1",
+            "diode",
+            json!({"saturation_current": 1e-14, "emission_coefficient": 1.2,
+                   "series_resistance": 10.0}),
+            &[("anode", "a"), ("cathode", "0")],
+        ),
+        resistor("R2", 2e3, "a", "out"),
+        resistor("R3", 3e3, "out", "0"),
     ])
 }
 
 /// A common-source stage: an n-channel MOSFET biased into saturation, its drain loaded by
 /// a resistor.
-fn amplifier() -> Value {
-    json!([
-        {"name": "VDD", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 3.3}},
-         "terminals": {"positive": "vdd", "negative": "0"}},
-        {"name": "VG", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 1.2}},
-         "terminals": {"positive": "gate", "negative": "0"}},
-        {"name": "RD", "of": {"model": "resistor"}, "parameters": {"resistance": 1e4},
-         "terminals": {"a": "vdd", "b": "drain"}},
-        {"name": "M1", "of": {"model": "mosfet"},
-         "parameters": {"width": 2e-6, "length": 1e-6, "threshold_voltage": 0.7,
-                        "transconductance_parameter": 1e-4, "channel_length_modulation": 0.02},
-         "terminals": {"drain": "drain", "gate": "gate", "source": "0", "bulk": "0"}}
-    ])
+fn amplifier(gate_node: &str) -> Vec<Instance> {
+    vec![
+        voltage_dc("VDD", "vdd", 3.3),
+        voltage_dc("VG", gate_node, 1.2),
+        resistor("RD", 1e4, "vdd", "drain"),
+        device(
+            "M1",
+            "mosfet",
+            json!({"width": 2e-6, "length": 1e-6, "threshold_voltage": 0.7,
+                   "transconductance_parameter": 1e-4, "channel_length_modulation": 0.02}),
+            &[
+                ("drain", "drain"),
+                ("gate", "gate"),
+                ("source", "0"),
+                ("bulk", "0"),
+            ],
+        ),
+    ]
 }
 
 /// The common-source stage loaded by a capacitor and driven through a resistor, so its
 /// response falls with frequency.
-fn loaded_amplifier() -> Value {
-    let mut instances = amplifier();
-    let placed = instances.as_array_mut().expect("instances");
-    placed[1]["terminals"]["positive"] = json!("source");
-    placed.push(json!({"name": "RG", "of": {"model": "resistor"},
-        "parameters": {"resistance": 1e4}, "terminals": {"a": "source", "b": "gate"}}));
-    placed.push(json!({"name": "CL", "of": {"model": "capacitor"},
-        "parameters": {"capacitance": 1e-12}, "terminals": {"a": "drain", "b": "0"}}));
-    placed.push(json!({"name": "CG", "of": {"model": "capacitor"},
-        "parameters": {"capacitance": 2e-13}, "terminals": {"a": "gate", "b": "drain"}}));
+fn loaded_amplifier() -> Vec<Instance> {
+    let mut instances = amplifier("source");
+    instances.extend([
+        resistor("RG", 1e4, "source", "gate"),
+        capacitor("CL", 1e-12, "drain", "0"),
+        capacitor("CG", 2e-13, "gate", "drain"),
+    ]);
     instances
-}
-
-/// A sine through a resistor into a diode and a capacitor across it: a rectifier, whose
-/// waveforms bend where the diode conducts.
-fn rectifier() -> Value {
-    json!([
-        {"name": "V1", "of": {"model": "voltage_source"},
-         "parameters": {"waveform": {"sine": {"offset": 0.2, "amplitude": 1.0,
-                                              "frequency": 1e6}}},
-         "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-         "terminals": {"a": "in", "b": "a"}},
-        {"name": "D1", "of": {"model": "diode"},
-         "parameters": {"saturation_current": 1e-14, "series_resistance": 10.0,
-                        "transit_time": 1e-9, "junction_capacitance": 2e-12},
-         "terminals": {"anode": "a", "cathode": "out"}},
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-10},
-         "terminals": {"a": "out", "b": "0"}},
-        {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 1e4},
-         "terminals": {"a": "out", "b": "0"}}
-    ])
-}
-
-fn tight() -> Options {
-    Options {
-        relative_tolerance: 1e-12,
-        voltage_tolerance: 1e-15,
-        current_tolerance: 1e-18,
-        ..Options::default()
-    }
 }
 
 /// The options `of` runs at: tight, and for a transient or a periodic steady state, with a
@@ -109,35 +93,10 @@ fn tight() -> Options {
 /// growing to the longest, and finite differences see what the parameters move, not where
 /// the steps fall.
 fn options(of: &Differentiated) -> Options {
-    match of {
-        Differentiated::Transient(_) | Differentiated::PeriodicSteadyState(_) => Options {
-            truncation_tolerance: f64::INFINITY,
-            ..tight()
-        },
-        _ => tight(),
-    }
-}
-
-/// The simulator of the circuit of `instances` with the parameter `name` of `device` at
-/// `value`.
-fn moved(instances: &Value, device: &str, name: &str, value: f64) -> Simulator {
-    let mut parameters = instances
-        .as_array()
-        .and_then(|placed| placed.iter().find(|instance| instance["name"] == device))
-        .expect("the device is placed")["parameters"]
-        .clone();
-    let slot = name
-        .split('.')
-        .try_fold(&mut parameters, |slot, key| slot.get_mut(key))
-        .expect("the parameter is set");
-    *slot = Value::from(value);
-    let mut conditions = Conditions::default();
-    conditions.overrides.insert(
-        device.to_owned(),
-        serde_json::from_value(parameters).expect("parameters"),
-    );
-    Simulator::new(&circuit_of(instances), &Library::standard(), &conditions)
-        .expect("an elaborated circuit")
+    tight_options(matches!(
+        of,
+        Differentiated::Transient(_) | Differentiated::PeriodicSteadyState(_)
+    ))
 }
 
 /// Each output's value at each point of the analysis `of`, on `simulator`.
@@ -151,18 +110,19 @@ fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> V
             .map(|row| columns.iter().map(|&column| row[column].into()).collect())
             .collect()
     };
+    let tight = tight_options(false);
     match of {
         Differentiated::OperatingPoint => pick(vec![
             simulator
-                .operating_point(&tight())
+                .operating_point(&tight)
                 .expect("a solution")
                 .values,
         ]),
         Differentiated::DcSweep(sweep) => {
-            pick(simulator.dc_sweep(sweep, &tight()).expect("a sweep").values)
+            pick(simulator.dc_sweep(sweep, &tight).expect("a sweep").values)
         }
         Differentiated::Ac(ac) => simulator
-            .ac(ac, &tight())
+            .ac(ac, &tight)
             .expect("a response")
             .values
             .iter()
@@ -201,19 +161,17 @@ fn complex(derivatives: &Derivatives) -> Vec<Vec<Vec<Complex64>>> {
     }
 }
 
-/// Checks that the sensitivities of `outputs` along `of` in the circuit of `instances` match
-/// central finite differences of the whole circuit, solved again with each parameter moved,
-/// within `tolerance` of the largest derivative of each output and parameter, and returns
-/// the parameters' names.
+/// Checks that the sensitivities of `outputs` along `of` in `circuit` match central finite
+/// differences of the whole circuit, solved again with each parameter moved, within
+/// `tolerance` of the largest derivative of each output and parameter, and returns the
+/// parameters' names.
 fn assert_matches(
-    instances: &Value,
+    circuit: &Circuit,
     outputs: &[&str],
     of: &Differentiated,
     tolerance: f64,
 ) -> Vec<String> {
-    let circuit = circuit_of(instances);
-    let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-        .expect("an elaborated circuit");
+    let mut simulator = simulator(circuit);
     let sensitivity = Sensitivity {
         outputs: outputs.iter().map(|&output| output.to_owned()).collect(),
         of: of.clone(),
@@ -226,12 +184,12 @@ fn assert_matches(
         let step = 1e-4 * parameter.value;
         let (device, name) = (&parameter.instance, &parameter.name);
         let above = values(
-            &mut moved(instances, device, name, parameter.value + step),
+            &mut moved(circuit, device, name, parameter.value + step),
             of,
             outputs,
         );
         let below = values(
-            &mut moved(instances, device, name, parameter.value - step),
+            &mut moved(circuit, device, name, parameter.value - step),
             of,
             outputs,
         );
@@ -287,7 +245,12 @@ fn adjoint_sensitivities_match_finite_differences() {
             "R3.resistance",
         ]
     );
-    let names = assert_matches(&amplifier(), &["drain", "VDD:current"], &at, 1e-5);
+    let names = assert_matches(
+        &circuit(amplifier("gate")),
+        &["drain", "VDD:current"],
+        &at,
+        1e-5,
+    );
     assert_eq!(names.len(), 8, "{names:?}");
 }
 
@@ -308,29 +271,16 @@ fn sensitivities_over_frequency_match_finite_differences() {
         source: "VG".to_owned(),
         frequencies: vec![1e3, 1e6, 1e8, 1e9],
     });
-    assert_matches(&loaded_amplifier(), &["drain"], &ac, 1e-5);
+    assert_matches(&circuit(loaded_amplifier()), &["drain"], &ac, 1e-5);
 }
 
 #[test]
 fn sensitivities_over_time_match_finite_differences() {
-    let transient = Differentiated::Transient(Transient {
-        stop: 2e-6,
-        max_step: Some(1e-8),
-        method: Method::Trapezoidal,
-        breakpoints: Vec::new(),
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
-    });
-    assert_matches(&rectifier(), &["a", "out"], &transient, 1e-4);
-    let gear = Differentiated::Transient(Transient {
-        stop: 2e-6,
-        max_step: Some(1e-8),
-        method: Method::Gear2,
-        breakpoints: Vec::new(),
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
-    });
-    assert_matches(&rectifier(), &["out"], &gear, 1e-4);
+    let rectifier = circuit(rectifier());
+    let trapezoidal = Differentiated::Transient(transient(2e-6, Some(1e-8), Method::Trapezoidal));
+    assert_matches(&rectifier, &["a", "out"], &trapezoidal, 1e-4);
+    let gear = Differentiated::Transient(transient(2e-6, Some(1e-8), Method::Gear2));
+    assert_matches(&rectifier, &["out"], &gear, 1e-4);
 }
 
 #[test]
@@ -342,14 +292,12 @@ fn sensitivities_along_a_periodic_steady_state_match_finite_differences() {
         max_step: Some(1e-8),
         ..PeriodicSteadyState::default()
     });
-    assert_matches(&rectifier(), &["a", "out"], &steady, 1e-4);
+    assert_matches(&circuit(rectifier()), &["a", "out"], &steady, 1e-4);
 }
 
 #[test]
 fn a_sensitivity_names_unknowns_that_exist() {
-    let circuit = circuit_of(&diode());
-    let mut simulator =
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default()).unwrap();
+    let mut simulator = simulator(&diode());
     let sensitivity = Sensitivity {
         outputs: vec!["nowhere".to_owned()],
         of: Differentiated::OperatingPoint,
@@ -365,27 +313,30 @@ fn sensitivities_through_an_inductor_and_a_port_match_finite_differences_over_a_
     // A sine into a tank whose conductance reads its inductor's current through a port:
     // the inductor's flux, on its branch current, carries the state as a charge does, and
     // the conductance's derivative with respect to that current shapes every tangent.
-    let instances = json!([
-        {"name": "V1", "of": {"model": "voltage_source"},
-         "parameters": {"waveform": {"sine": {"offset": 0.1, "amplitude": 1.0, "frequency": 5e6}}},
-         "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 100.0},
-         "terminals": {"a": "in", "b": "t"}},
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-9},
-         "terminals": {"a": "t", "b": "0"}},
-        {"name": "L1", "of": {"model": "inductor"}, "parameters": {"inductance": 1e-6},
-         "terminals": {"a": "t", "b": "l"}},
-        {"name": "B1", "of": {"model": "behavioral_current_source"},
-         "parameters": {"expression": "-6e-3 * v(x) * (1 - (v(x) ^ 2 + (31.6 * i(p)) ^ 2))"},
-         "terminals": {"positive": "t", "negative": "0", "x": "t",
-                       "p_positive": "l", "p_negative": "0"}},
+    let tank = circuit([
+        voltage_sine("V1", "in", 0.1, 1.0, 5e6),
+        resistor("R1", 100.0, "in", "t"),
+        capacitor("C1", 1e-9, "t", "0"),
+        inductor("L1", 1e-6, "t", "l"),
+        device(
+            "B1",
+            "behavioral_current_source",
+            json!({"expression": "-6e-3 * v(x) * (1 - (v(x) ^ 2 + (31.6 * i(p)) ^ 2))"}),
+            &[
+                ("positive", "t"),
+                ("negative", "0"),
+                ("x", "t"),
+                ("p_positive", "l"),
+                ("p_negative", "0"),
+            ],
+        ),
     ]);
     let steady = Differentiated::PeriodicSteadyState(PeriodicSteadyState {
         period: Some(2e-7),
         max_step: Some(2e-9),
         ..PeriodicSteadyState::default()
     });
-    assert_matches(&instances, &["t", "L1:current"], &steady, 1e-4);
+    assert_matches(&tank, &["t", "L1:current"], &steady, 1e-4);
 }
 
 /// The largest disagreement allowed between the JVP and the VJP, relative to the
@@ -437,26 +388,23 @@ fn picked_cotangent(
     }])
 }
 
-/// Checks the dot-product test `⟨v, J t⟩ = ⟨Jᵀ v, t⟩` along `of` in the circuit of
-/// `instances`, with respect to `parameters`, for a tangent and a cotangent of numbers
-/// [`picked`], each parameter moved relative to its value, and that the JVP along the
-/// tangent is the Jacobian's columns, which the JVP finds along each parameter, combined
-/// by it; to [`TRANSPOSED`] of the magnitudes of the terms. Returns the worst relative
-/// disagreement of the two.
-fn assert_transposes(instances: &Value, parameters: &[(&str, &str)], of: &Differentiated) -> f64 {
-    transposes_with(instances, parameters, of, &options(of))
+/// Checks the dot-product test `⟨v, J t⟩ = ⟨Jᵀ v, t⟩` along `of` in `circuit`, with respect
+/// to `parameters`, for a tangent and a cotangent of numbers [`picked`], each parameter moved
+/// relative to its value, and that the JVP along the tangent is the Jacobian's columns, which
+/// the JVP finds along each parameter, combined by it; to [`TRANSPOSED`] of the magnitudes of
+/// the terms. Returns the worst relative disagreement of the two.
+fn assert_transposes(circuit: &Circuit, parameters: &[(&str, &str)], of: &Differentiated) -> f64 {
+    transposes_with(circuit, parameters, of, &options(of))
 }
 
 /// [`assert_transposes`] with `options`.
 fn transposes_with(
-    instances: &Value,
+    circuit: &Circuit,
     parameters: &[(&str, &str)],
     of: &Differentiated,
     options: &Options,
 ) -> f64 {
-    let circuit = circuit_of(instances);
-    let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-        .expect("an elaborated circuit");
+    let mut simulator = simulator(circuit);
     let names: Vec<(String, String)> = parameters
         .iter()
         .map(|&(instance, name)| (instance.to_owned(), name.to_owned()))
@@ -547,13 +495,14 @@ fn the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis() {
         ("D1", "series_resistance"),
         ("R3", "resistance"),
     ];
-    let mut worst = assert_transposes(&diode(), &diode_parameters, &Differentiated::OperatingPoint);
+    let diode = diode();
+    let mut worst = assert_transposes(&diode, &diode_parameters, &Differentiated::OperatingPoint);
     let sweep = Differentiated::DcSweep(DcSweep {
         source: "V1".to_owned(),
         parameter: None,
         values: (0..=10).map(|step| f64::from(step) * 0.5).collect(),
     });
-    worst = worst.max(assert_transposes(&diode(), &diode_parameters, &sweep));
+    worst = worst.max(assert_transposes(&diode, &diode_parameters, &sweep));
     let ac = Differentiated::Ac(Ac {
         source: "VG".to_owned(),
         frequencies: vec![1e3, 1e6, 1e8, 1e9],
@@ -565,11 +514,8 @@ fn the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis() {
         ("CL", "capacitance"),
         ("RG", "resistance"),
     ];
-    worst = worst.max(assert_transposes(
-        &loaded_amplifier(),
-        &amplifier_parameters,
-        &ac,
-    ));
+    let loaded = circuit(loaded_amplifier());
+    worst = worst.max(assert_transposes(&loaded, &amplifier_parameters, &ac));
     let rectifier_parameters = [
         ("V1", "waveform.sine.amplitude"),
         ("R1", "resistance"),
@@ -578,17 +524,11 @@ fn the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis() {
         ("C1", "capacitance"),
         ("R2", "resistance"),
     ];
+    let rectifier = circuit(rectifier());
     for method in [Method::Trapezoidal, Method::Gear2] {
-        let transient = Differentiated::Transient(Transient {
-            stop: 2e-6,
-            max_step: Some(1e-8),
-            method,
-            breakpoints: Vec::new(),
-            initial_conditions: BTreeMap::new(),
-            operating_point: true,
-        });
+        let transient = Differentiated::Transient(transient(2e-6, Some(1e-8), method));
         worst = worst.max(assert_transposes(
-            &rectifier(),
+            &rectifier,
             &rectifier_parameters,
             &transient,
         ));
@@ -599,7 +539,7 @@ fn the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis() {
         ..PeriodicSteadyState::default()
     });
     worst = worst.max(assert_transposes(
-        &rectifier(),
+        &rectifier,
         &rectifier_parameters,
         &steady,
     ));
@@ -612,15 +552,21 @@ fn the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis() {
         "-{:e} * v(x) * (1 - (v(x) ^ 2 + ({impedance:e} * i(p)) ^ 2))",
         0.2 / impedance
     );
-    let tank = json!([
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": capacitance},
-         "terminals": {"a": "t", "b": "0"}},
-        {"name": "L1", "of": {"model": "inductor"}, "parameters": {"inductance": inductance},
-         "terminals": {"a": "t", "b": "l"}},
-        {"name": "B1", "of": {"model": "behavioral_current_source"},
-         "parameters": {"expression": expression},
-         "terminals": {"positive": "t", "negative": "0", "x": "t",
-                       "p_positive": "l", "p_negative": "0"}},
+    let tank = circuit([
+        capacitor("C1", capacitance, "t", "0"),
+        inductor("L1", inductance, "t", "l"),
+        device(
+            "B1",
+            "behavioral_current_source",
+            json!({"expression": expression}),
+            &[
+                ("positive", "t"),
+                ("negative", "0"),
+                ("x", "t"),
+                ("p_positive", "l"),
+                ("p_negative", "0"),
+            ],
+        ),
     ]);
     let oscillator = Differentiated::PeriodicSteadyState(PeriodicSteadyState::default());
     let tank_options = Options {
@@ -646,15 +592,15 @@ fn the_jvp_and_the_vjp_are_transposes_of_each_other_at_every_analysis() {
 #[test]
 fn a_vjp_in_chunks_pulls_back_to_each_parameter_as_a_vjp_along_it_alone() {
     let mut instances = rectifier();
-    instances[2]["parameters"] = json!({
+    instances[2].parameters = serde_json::from_value(json!({
         "saturation_current": 1e-14, "emission_coefficient": 1.05, "series_resistance": 10.0,
         "junction_capacitance": 2e-12, "junction_potential": 0.8, "grading_coefficient": 0.4,
         "depletion_coefficient": 0.45, "transit_time": 1e-9,
         "sidewall_saturation_current": 1e-16, "nominal_temperature": 300.15
-    });
-    let names: Vec<(String, String)> = instances[2]["parameters"]
-        .as_object()
-        .expect("the diode's parameters")
+    }))
+    .expect("the diode's parameters");
+    let names: Vec<(String, String)> = instances[2]
+        .parameters
         .keys()
         .map(|name| ("D1".to_owned(), name.clone()))
         .chain([
@@ -662,22 +608,14 @@ fn a_vjp_in_chunks_pulls_back_to_each_parameter_as_a_vjp_along_it_alone() {
             ("C1".to_owned(), "capacitance".to_owned()),
         ])
         .collect();
-    let circuit = circuit_of(&instances);
-    let transient = Differentiated::Transient(Transient {
-        stop: 2e-6,
-        max_step: Some(1e-8),
-        method: Method::Trapezoidal,
-        breakpoints: Vec::new(),
-        initial_conditions: BTreeMap::new(),
-        operating_point: true,
-    });
+    let circuit = circuit(instances);
+    let transient = Differentiated::Transient(transient(2e-6, Some(1e-8), Method::Trapezoidal));
     for (of, points) in [
         (Differentiated::OperatingPoint, vec![0]),
         (transient, vec![0, 50, 150]),
     ] {
         let options = options(&of);
-        let mut simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("an elaborated circuit");
+        let mut simulator = simulator(&circuit);
         let unknowns = simulator.unknowns().len();
         let cotangents = Cotangents::Real(vec![Cotangent {
             points: points
@@ -717,14 +655,11 @@ fn a_vjp_in_chunks_pulls_back_to_each_parameter_as_a_vjp_along_it_alone() {
 }
 
 /// A 1 V source through 1 kΩ into 1 nF: an RC of time constant 1 µs.
-fn rc() -> Value {
-    json!([
-        {"name": "V1", "of": {"model": "voltage_source"}, "parameters": {"waveform": {"dc": 1.0}},
-         "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-         "terminals": {"a": "in", "b": "out"}},
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": 1e-9},
-         "terminals": {"a": "out", "b": "0"}}
+fn rc() -> Circuit {
+    circuit([
+        voltage_dc("V1", "in", 1.0),
+        resistor("R1", 1e3, "in", "out"),
+        capacitor("C1", 1e-9, "out", "0"),
     ])
 }
 
@@ -751,19 +686,11 @@ fn a_transient_from_initial_conditions_moves_as_the_state_it_starts_from() {
     ];
     for operating_point in [false, true] {
         let transient = Differentiated::Transient(Transient {
-            stop: 2.0 * tau,
-            max_step: Some(tau / 500.0),
-            method: Method::Trapezoidal,
-            breakpoints: Vec::new(),
             initial_conditions: BTreeMap::from([("out".to_owned(), 0.0)]),
             operating_point,
+            ..transient(2.0 * tau, Some(tau / 500.0), Method::Trapezoidal)
         });
-        let mut simulator = Simulator::new(
-            &circuit_of(&rc()),
-            &Library::standard(),
-            &Conditions::default(),
-        )
-        .expect("an elaborated circuit");
+        let mut simulator = simulator(&rc());
         let options = options(&transient);
         let found = simulator
             .jvp(&transient, &names, &units, &options)
@@ -837,25 +764,39 @@ fn a_transient_from_initial_conditions_moves_as_the_state_it_starts_from() {
 
 /// A self-heated diode biased through a resistor, coupled to a thermal RC network whose
 /// thermal resistance sets how much its junction warms above ambient.
-fn heated_diode(supply: f64, thermal_resistance: f64) -> Value {
-    json!([
-        {"name": "V1", "of": {"model": "voltage_source"},
-         "parameters": {"waveform": {"dc": supply}},
-         "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 50.0},
-         "terminals": {"a": "in", "b": "anode"}},
-        {"name": "D1", "of": {"model": "diode"},
-         "parameters": {"saturation_current": 1e-14, "emission_coefficient": 1.2,
-                        "series_resistance": 4.0, "junction_capacitance": 2e-9,
-                        "transit_time": 1e-9, "thermal": true},
-         "terminals": {"anode": "anode", "cathode": "0", "thermal": "temperature"}},
-        {"name": "RTH", "of": {"model": "thermal_resistance"},
-         "parameters": {"resistance": thermal_resistance},
-         "terminals": {"a": "temperature", "b": "0"}},
-        {"name": "CTH", "of": {"model": "thermal_capacitance"},
-         "parameters": {"capacitance": 1e-8},
-         "terminals": {"a": "temperature", "b": "0"}}
-    ])
+fn heated_diode(supply: f64, thermal_resistance: f64) -> Vec<Instance> {
+    vec![
+        voltage_dc("V1", "in", supply),
+        resistor("R1", 50.0, "in", "anode"),
+        device(
+            "D1",
+            "diode",
+            json!({"saturation_current": 1e-14, "emission_coefficient": 1.2,
+                   "series_resistance": 4.0, "junction_capacitance": 2e-9,
+                   "transit_time": 1e-9, "thermal": true}),
+            &[
+                ("anode", "anode"),
+                ("cathode", "0"),
+                ("thermal", "temperature"),
+            ],
+        ),
+        two_terminal(
+            "RTH",
+            "thermal_resistance",
+            "resistance",
+            thermal_resistance,
+            "temperature",
+            "0",
+        ),
+        two_terminal(
+            "CTH",
+            "thermal_capacitance",
+            "capacitance",
+            1e-8,
+            "temperature",
+            "0",
+        ),
+    ]
 }
 
 #[test]
@@ -877,7 +818,7 @@ fn sensitivities_over_frequency_of_a_heated_circuit_match_finite_differences() {
         ("CTH", "capacitance"),
     ];
     // Hot case: substantial self-heating shifts both electrical and thermal Jacobians.
-    let hot = heated_diode(2.0, 200.0);
+    let hot = circuit(heated_diode(2.0, 200.0));
     assert_matches(&hot, &["anode", "temperature"], &ac, 1e-5);
     assert_transposes(&hot, &parameters, &ac);
     // Exact dot-product test also holds across six decades including low frequency.
@@ -889,40 +830,35 @@ fn sensitivities_over_frequency_of_a_heated_circuit_match_finite_differences() {
     // Exact ambient case (`ΔT == 0` bit-for-bit while forward-biased and conducting):
     // measure the diode's ambient power first, then sink that exact power with a
     // `heat_source` so `temperature == 0.0` at DC while remaining a live AC thermal unknown.
-    let mut reference = Simulator::new(
-        &circuit_of(&json!([
-            {"name": "V1", "of": {"model": "voltage_source"},
-             "parameters": {"waveform": {"dc": 2.0}},
-             "terminals": {"positive": "in", "negative": "0"}},
-            {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 50.0},
-             "terminals": {"a": "in", "b": "anode"}},
-            {"name": "D1", "of": {"model": "diode"},
-             "parameters": {"saturation_current": 1e-14, "emission_coefficient": 1.2,
-                            "series_resistance": 4.0, "junction_capacitance": 2e-9,
-                            "transit_time": 1e-9},
-             "terminals": {"anode": "anode", "cathode": "0"}}
-        ])),
-        &Library::standard(),
-        &Conditions::default(),
-    )
-    .expect("reference");
-    let operating = reference.operating_point(&tight()).expect("dc");
+    let mut reference = simulator(&circuit([
+        voltage_dc("V1", "in", 2.0),
+        resistor("R1", 50.0, "in", "anode"),
+        device(
+            "D1",
+            "diode",
+            json!({"saturation_current": 1e-14, "emission_coefficient": 1.2,
+                   "series_resistance": 4.0, "junction_capacitance": 2e-9,
+                   "transit_time": 1e-9}),
+            &[("anode", "anode"), ("cathode", "0")],
+        ),
+    ]));
+    let tight = tight_options(false);
+    let operating = reference.operating_point(&tight).expect("dc");
     let anode = operating.values[reference.unknown("anode").expect("anode").index()];
     let current = -operating.values[reference.unknown("V1:current").expect("V1:current").index()];
     let ambient_power = anode * current;
     let mut cooled = heated_diode(2.0, 200.0);
-    cooled.as_array_mut().expect("instances").push(json!({
-        "name": "Q1", "of": {"model": "heat_source"},
-        "parameters": {"power": ambient_power},
-        "terminals": {"a": "temperature", "b": "0"}
-    }));
-    let mut cooled_simulator = Simulator::new(
-        &circuit_of(&cooled),
-        &Library::standard(),
-        &Conditions::default(),
-    )
-    .expect("cooled");
-    let cooled_operating = cooled_simulator.operating_point(&tight()).expect("dc");
+    cooled.push(two_terminal(
+        "Q1",
+        "heat_source",
+        "power",
+        ambient_power,
+        "temperature",
+        "0",
+    ));
+    let cooled = circuit(cooled);
+    let mut cooled_simulator = simulator(&cooled);
+    let cooled_operating = cooled_simulator.operating_point(&tight).expect("dc");
     let rise = cooled_operating.values[cooled_simulator
         .unknown("temperature")
         .expect("temperature")
@@ -949,28 +885,30 @@ fn sensitivities_over_frequency_of_a_heated_circuit_match_finite_differences() {
 
 #[test]
 fn sensitivities_over_frequency_of_a_behavioral_circuit_match_finite_differences() {
-    let instances = json!([
-        {"name": "V1", "of": {"model": "voltage_source"},
-         "parameters": {"waveform": {"dc": 1.2}},
-         "terminals": {"positive": "in", "negative": "0"}},
-        {"name": "R1", "of": {"model": "resistor"}, "parameters": {"resistance": 1e3},
-         "terminals": {"a": "in", "b": "out"}},
-        {"name": "B1", "of": {"model": "behavioral_current_source"},
-         "parameters": {"expression": "2e-3 * tanh(3.0 * v(x)) + 1e-4 * (v(x) ^ 3)"},
-         "terminals": {"positive": "out", "negative": "0", "x": "out"}},
-        {"name": "BC1", "of": {"model": "behavioral_capacitor"},
-         "parameters": {"expression": "1e-12 * (v(x) + 0.3 * (v(x) ^ 2))"},
-         "terminals": {"positive": "out", "negative": "0", "x": "out"}},
-        {"name": "R2", "of": {"model": "resistor"}, "parameters": {"resistance": 2e3},
-         "terminals": {"a": "out", "b": "0"}}
+    let circuit = circuit([
+        voltage_dc("V1", "in", 1.2),
+        resistor("R1", 1e3, "in", "out"),
+        device(
+            "B1",
+            "behavioral_current_source",
+            json!({"expression": "2e-3 * tanh(3.0 * v(x)) + 1e-4 * (v(x) ^ 3)"}),
+            &[("positive", "out"), ("negative", "0"), ("x", "out")],
+        ),
+        device(
+            "BC1",
+            "behavioral_capacitor",
+            json!({"expression": "1e-12 * (v(x) + 0.3 * (v(x) ^ 2))"}),
+            &[("positive", "out"), ("negative", "0"), ("x", "out")],
+        ),
+        resistor("R2", 2e3, "out", "0"),
     ]);
     let ac = Differentiated::Ac(Ac {
         source: "V1".to_owned(),
         frequencies: vec![1e3, 1e7, 1e9],
     });
-    assert_matches(&instances, &["out"], &ac, 1e-5);
+    assert_matches(&circuit, &["out"], &ac, 1e-5);
     assert_transposes(
-        &instances,
+        &circuit,
         &[
             ("V1", "waveform.dc"),
             ("R1", "resistance"),
@@ -986,9 +924,10 @@ fn sensitivities_over_frequency_of_a_linear_circuit_match_finite_differences() {
         source: "V1".to_owned(),
         frequencies: vec![1e2, 1e5, 1e7],
     });
-    assert_matches(&rc(), &["out"], &ac, 1e-5);
+    let rc = rc();
+    assert_matches(&rc, &["out"], &ac, 1e-5);
     assert_transposes(
-        &rc(),
+        &rc,
         &[
             ("V1", "waveform.dc"),
             ("R1", "resistance"),
@@ -1001,15 +940,28 @@ fn sensitivities_over_frequency_of_a_linear_circuit_match_finite_differences() {
 #[test]
 fn ac_derivatives_are_deterministic_across_thread_counts() {
     let mut instances = loaded_amplifier();
-    let placed = instances.as_array_mut().expect("instances");
-    placed.push(json!({"name": "D1", "of": {"model": "diode"},
-        "parameters": {"saturation_current": 1e-14, "series_resistance": 5.0,
-                       "junction_capacitance": 1e-12, "thermal": true},
-        "terminals": {"anode": "drain", "cathode": "0", "thermal": "temperature"}}));
-    placed.push(json!({"name": "RTH", "of": {"model": "thermal_resistance"},
-        "parameters": {"resistance": 150.0},
-        "terminals": {"a": "temperature", "b": "0"}}));
-    let circuit = circuit_of(&instances);
+    instances.extend([
+        device(
+            "D1",
+            "diode",
+            json!({"saturation_current": 1e-14, "series_resistance": 5.0,
+                   "junction_capacitance": 1e-12, "thermal": true}),
+            &[
+                ("anode", "drain"),
+                ("cathode", "0"),
+                ("thermal", "temperature"),
+            ],
+        ),
+        two_terminal(
+            "RTH",
+            "thermal_resistance",
+            "resistance",
+            150.0,
+            "temperature",
+            "0",
+        ),
+    ]);
+    let circuit = circuit(instances);
     let ac = Differentiated::Ac(Ac {
         source: "VG".to_owned(),
         frequencies: vec![1e2, 1e4, 1e6, 1e7, 1e8, 1e9],
@@ -1042,11 +994,9 @@ fn ac_derivatives_are_deterministic_across_thread_counts() {
                     min_solves_per_task: Some(1),
                     ..Parallelism::default()
                 },
-                ..tight()
+                ..tight_options(false)
             };
-            let mut simulator =
-                Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-                    .expect("simulator");
+            let mut simulator = simulator(&circuit);
             let jvp = simulator
                 .jvp(&ac, &names, std::slice::from_ref(&tangent), &options)
                 .expect("jvp");
@@ -1080,10 +1030,9 @@ fn ac_derivatives_are_deterministic_across_thread_counts() {
 }
 
 /// The common-source stage driving a `rungs`-section resistive ladder, returning its
-/// instances and every parameter name with its nominal value.
-fn amplifier_with_ladder(rungs: usize) -> (Value, Vec<(String, String)>, Vec<f64>) {
+/// circuit and every parameter name with its nominal value.
+fn amplifier_with_ladder(rungs: usize) -> (Circuit, Vec<(String, String)>, Vec<f64>) {
     let mut instances = loaded_amplifier();
-    let placed = instances.as_array_mut().expect("instances");
     let mut previous = "drain".to_owned();
     let mut names = vec![
         ("RD".to_owned(), "resistance".to_owned()),
@@ -1096,32 +1045,26 @@ fn amplifier_with_ladder(rungs: usize) -> (Value, Vec<(String, String)>, Vec<f64
         let next = format!("tap{rung}");
         let series = format!("RS{rung}");
         let shunt = format!("RP{rung}");
-        placed.push(json!({"name": series, "of": {"model": "resistor"},
-            "parameters": {"resistance": 100.0},
-            "terminals": {"a": previous, "b": next}}));
-        placed.push(json!({"name": shunt, "of": {"model": "resistor"},
-            "parameters": {"resistance": 1e5},
-            "terminals": {"a": next, "b": "0"}}));
+        instances.push(resistor(&series, 100.0, &previous, &next));
+        instances.push(resistor(&shunt, 1e5, &next, "0"));
         names.push((series, "resistance".to_owned()));
         names.push((shunt, "resistance".to_owned()));
         nominal.extend([100.0, 1e5]);
         previous = next;
     }
-    (instances, names, nominal)
+    (circuit(instances), names, nominal)
 }
 
 #[test]
 fn ac_vjp_matches_jvp_and_finite_differences_with_many_parameters() {
-    let (instances, names, nominal) = amplifier_with_ladder(250);
-    let circuit = circuit_of(&instances);
+    let (circuit, names, nominal) = amplifier_with_ladder(250);
     let ac_analysis = Ac {
         source: "VG".to_owned(),
         frequencies: vec![1e3, 1e6, 1e8],
     };
     let ac = Differentiated::Ac(ac_analysis.clone());
-    let options = tight();
-    let mut simulator =
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default()).expect("simulator");
+    let options = tight_options(false);
+    let mut simulator = simulator(&circuit);
     let tangent: Vec<f64> = nominal
         .iter()
         .enumerate()
@@ -1173,7 +1116,7 @@ fn ac_vjp_matches_jvp_and_finite_differences_with_many_parameters() {
     ] {
         let step = 1e-4 * base;
         let run_objective = |value: f64| -> Complex64 {
-            let mut moved_simulator = moved(&instances, device, parameter, value);
+            let mut moved_simulator = moved(&circuit, device, parameter, value);
             let response = moved_simulator.ac(&ac_analysis, &options).expect("ac");
             response
                 .values
@@ -1198,15 +1141,13 @@ fn ac_vjp_matches_jvp_and_finite_differences_with_many_parameters() {
 
 #[test]
 fn jvp_with_empty_tangents_still_rejects_non_real_parameters() {
-    let circuit = circuit_of(&loaded_amplifier());
-    let mut simulator =
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default()).expect("elaborates");
+    let mut simulator = simulator(&circuit(loaded_amplifier()));
     let error = simulator
         .jvp(
             &Differentiated::OperatingPoint,
             &[("M1".to_owned(), "level".to_owned())],
             &[],
-            &tight(),
+            &tight_options(false),
         )
         .unwrap_err();
     assert!(
@@ -1221,14 +1162,13 @@ fn jvp_with_empty_tangents_still_rejects_non_real_parameters() {
 
 #[test]
 fn pull_back_rejects_non_finite_period_when_points_are_empty() {
-    let circuit = circuit_of(&rc());
-    let mut simulator =
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default()).expect("elaborates");
+    let mut simulator = simulator(&rc());
+    let tight = tight_options(false);
     let pullback = simulator
         .vjp(
             &Differentiated::OperatingPoint,
             &[("R1".to_owned(), "resistance".to_owned())],
-            &tight(),
+            &tight,
         )
         .expect("vjp");
     for bad_period in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
@@ -1237,7 +1177,7 @@ fn pull_back_rejects_non_finite_period_when_points_are_empty() {
             period: bad_period,
         };
         let error = simulator
-            .pull_back(&pullback, &Cotangents::Real(vec![cotangent]), &tight())
+            .pull_back(&pullback, &Cotangents::Real(vec![cotangent]), &tight)
             .unwrap_err();
         assert!(
             matches!(error, SimulationError::InvalidAnalysis(_)),

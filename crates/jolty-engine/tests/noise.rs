@@ -1,46 +1,32 @@
 //! The noise at an output against closed forms.
 #![cfg(test)]
 
+#[path = "common/capacitor.rs"]
+mod capacitor;
+mod common;
+#[path = "common/current.rs"]
+mod current;
+#[path = "common/dc.rs"]
+mod dc;
+#[path = "common/sim.rs"]
+mod sim;
+
 use std::f64::consts::TAU;
 
-use jolty_engine::{Conditions, Noise, NoiseResult, Options, SimulationError, Simulator};
+use capacitor::capacitor;
+use common::{circuit, device, resistor};
+use current::current_dc;
+use dc::voltage_dc;
+use jolty_engine::{Noise, NoiseResult, Options, SimulationError};
 use jolty_ir::Circuit;
-use jolty_models::{
-    BOLTZMANN, ELEMENTARY_CHARGE, Library, Nature, REFERENCE_TEMPERATURE, thermal_voltage,
-};
-use serde_json::{Value, json};
+use jolty_models::{BOLTZMANN, ELEMENTARY_CHARGE, Nature, REFERENCE_TEMPERATURE, thermal_voltage};
+use serde_json::json;
+use sim::simulator;
 
 /// `4kT` at the reference temperature, the default conditions'.
 const FOUR_KT: f64 = 4.0 * BOLTZMANN * REFERENCE_TEMPERATURE;
 
 const FREQUENCIES: [f64; 4] = [1.0, 1e3, 1e5, 1e7];
-
-/// A circuit of `instances` whose ground is `0`.
-fn circuit(instances: &Value) -> Circuit {
-    let document = json!({
-        "format": "jolty-circuit", "version": 4, "top": "test",
-        "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
-                                "instances": instances}}
-    });
-    Circuit::from_json(&document.to_string()).expect("a valid circuit")
-}
-
-fn resistor(id: &str, resistance: f64, a: &str, b: &str) -> Value {
-    json!({"name": id, "of": {"model": "resistor"}, "parameters": {"resistance": resistance},
-           "terminals": {"a": a, "b": b}})
-}
-
-fn voltage_source(id: &str, positive: &str) -> Value {
-    json!({"name": id, "of": {"model": "voltage_source"},
-           "parameters": {"waveform": {"dc": 5.0}},
-           "terminals": {"positive": positive, "negative": "0"}})
-}
-
-fn current_source(id: &str, into: &str, current: f64) -> Value {
-    json!({"name": id, "of": {"model": "current_source"},
-           "parameters": {"waveform": {"dc": current}},
-           "terminals": {"positive": "0", "negative": into}})
-}
 
 fn noise(
     circuit: &Circuit,
@@ -48,8 +34,7 @@ fn noise(
     reference: Option<&str>,
     source: Option<&str>,
 ) -> Result<NoiseResult, SimulationError> {
-    let mut simulator = Simulator::new(circuit, &Library::standard(), &Conditions::default())
-        .expect("the circuit elaborates");
+    let mut simulator = simulator(circuit);
     let analysis = Noise {
         output: output.to_owned(),
         reference: reference.map(str::to_owned),
@@ -80,11 +65,11 @@ fn share<'a>(spectrum: &'a NoiseResult, device: &str) -> &'a [f64] {
 #[test]
 fn a_dividers_noise_is_its_parallel_resistances_and_refers_to_its_input() {
     let (upper, lower) = (1e3, 3e3);
-    let divider = circuit(&json!([
-        voltage_source("V1", "top"),
+    let divider = circuit([
+        voltage_dc("V1", "top", 5.0),
         resistor("R1", upper, "top", "out"),
         resistor("R2", lower, "out", "0"),
-    ]));
+    ]);
     let spectrum = noise(&divider, "out", None, Some("V1")).unwrap();
     let parallel = upper * lower / (upper + lower);
     let referred = spectrum.referred().expect("a source");
@@ -114,12 +99,11 @@ fn a_dividers_noise_is_its_parallel_resistances_and_refers_to_its_input() {
 #[test]
 fn a_capacitor_filters_its_resistors_noise() {
     let (resistance, capacitance) = (1e3, 1e-9);
-    let filter = circuit(&json!([
-        voltage_source("V1", "in"),
+    let filter = circuit([
+        voltage_dc("V1", "in", 5.0),
         resistor("R1", resistance, "in", "out"),
-        {"name": "C1", "of": {"model": "capacitor"}, "parameters": {"capacitance": capacitance},
-         "terminals": {"a": "out", "b": "0"}},
-    ]));
+        capacitor("C1", capacitance, "out", "0"),
+    ]);
     let spectrum = noise(&filter, "out", None, None).unwrap();
     assert!(spectrum.input.is_none() && spectrum.referred().is_none());
     for (&frequency, &density) in FREQUENCIES.iter().zip(&spectrum.densities) {
@@ -131,11 +115,11 @@ fn a_capacitor_filters_its_resistors_noise() {
 #[test]
 fn a_small_resistors_noise_is_a_voltage_in_series() {
     // A current source holds the output, so every resistance's voltage reaches it whole.
-    let chain = circuit(&json!([
-        current_source("I1", "out", 1e-3),
+    let chain = circuit([
+        current_dc("I1", "0", "out", 1e-3),
         resistor("R1", 0.5, "out", "mid"),
         resistor("R2", 1e3, "mid", "0"),
-    ]));
+    ]);
     let spectrum = noise(&chain, "out", None, Some("I1")).unwrap();
     for index in 0..FREQUENCIES.len() {
         assert_close(share(&spectrum, "R1")[index], FOUR_KT * 0.5);
@@ -149,11 +133,11 @@ fn a_small_resistors_noise_is_a_voltage_in_series() {
 
 #[test]
 fn outputs_can_be_differential_or_currents() {
-    let divider = circuit(&json!([
-        voltage_source("V1", "top"),
+    let divider = circuit([
+        voltage_dc("V1", "top", 5.0),
         resistor("R1", 1e3, "top", "out"),
         resistor("R2", 3e3, "out", "0"),
-    ]));
+    ]);
     // Across the upper resistor, the same noise as across the lower one.
     let across = noise(&divider, "top", Some("out"), None).unwrap();
     assert_close(across.densities[0], FOUR_KT * 750.0);
@@ -167,12 +151,15 @@ fn outputs_can_be_differential_or_currents() {
 
 #[test]
 fn a_diodes_shot_noise_reaches_the_output_through_its_impedance() {
-    let biased = circuit(&json!([
-        current_source("I1", "out", 1e-3),
-        {"name": "D1", "of": {"model": "diode"},
-         "parameters": {"saturation_current": 1e-14, "flicker_coefficient": 1e-16},
-         "terminals": {"anode": "out", "cathode": "0"}},
-    ]));
+    let biased = circuit([
+        current_dc("I1", "0", "out", 1e-3),
+        device(
+            "D1",
+            "diode",
+            json!({"saturation_current": 1e-14, "flicker_coefficient": 1e-16}),
+            &[("anode", "out"), ("cathode", "0")],
+        ),
+    ]);
     let spectrum = noise(&biased, "out", None, Some("I1")).unwrap();
     let gains = &spectrum.input.as_ref().expect("an input").gains;
     let shot = spectrum
@@ -187,8 +174,7 @@ fn a_diodes_shot_noise_reaches_the_output_through_its_impedance() {
         .expect("flicker noise");
     // The diode's current at the operating point, which holds 1 mA to within Newton's
     // tolerance.
-    let simulator = Simulator::new(&biased, &Library::standard(), &Conditions::default())
-        .expect("the circuit elaborates");
+    let simulator = simulator(&biased);
     let out = simulator.unknown("out").expect("the output");
     let voltage = spectrum.operating_point.values[out.index()];
     let current = 1e-14 * ((voltage / thermal_voltage(REFERENCE_TEMPERATURE)).exp() - 1.0);
@@ -209,11 +195,11 @@ fn a_diodes_shot_noise_reaches_the_output_through_its_impedance() {
 
 #[test]
 fn rejects_what_it_cannot_measure() {
-    let divider = circuit(&json!([
-        voltage_source("V1", "top"),
+    let divider = circuit([
+        voltage_dc("V1", "top", 5.0),
         resistor("R1", 1e3, "top", "out"),
         resistor("R2", 3e3, "out", "0"),
-    ]));
+    ]);
     assert_eq!(
         noise(&divider, "nowhere", None, None),
         Err(SimulationError::UnknownOutput("nowhere".to_owned()))
@@ -232,8 +218,7 @@ fn rejects_what_it_cannot_measure() {
         noise(&divider, "out", None, Some("R1")),
         Err(SimulationError::NotASource("R1".to_owned()))
     );
-    let mut simulator = Simulator::new(&divider, &Library::standard(), &Conditions::default())
-        .expect("the circuit elaborates");
+    let mut simulator = simulator(&divider);
     for frequencies in [vec![], vec![0.0], vec![1.0, -1.0], vec![f64::INFINITY]] {
         let analysis = Noise {
             output: "out".to_owned(),
