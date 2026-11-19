@@ -740,7 +740,7 @@ def test_bipolar_transistors_have_spice_s_substrate() -> None:
 @pytest.mark.parametrize(
     ("text", "message"),
     [
-        (".subckt a x\nR1 x 0 1k", r"parts\.lib:1: the subcircuit never ends"),
+        (".subckt a x\nR1 x 0 1k", r"parts\.lib:1: unterminated \.subckt block"),
         (".subckt a x\n.subckt b y\n.ends", "a subcircuit defined within another"),
         (".subckt a x\nZ1 x 0 1\n.ends", "no element of letter `Z`"),
         (".subckt a x\nD1 x 0 DX\n.ends", "no model is named `DX`"),
@@ -1377,7 +1377,8 @@ def test_bsim_is_written_for_ngspice_as_its_card_reads_back(
         f"{card}\n.subckt a d\n{element.replace('MM1 d d', 'M1 d d', 1)}\n.ends"
     )
     (instance,) = read.component("a").definition.instances
-    assert instance.parameters == pytest.approx(expected_params, rel=DECIMAL_SCALE_RTOL)
+    # Decimal card formatting and SI scaling (1e-6 / 1e6) round within default 1e-6.
+    assert instance.parameters == pytest.approx(expected_params)
 
 
 def test_a_bsim3_held_at_its_own_temperature_cannot_be_exported() -> None:
@@ -3433,7 +3434,7 @@ def test_consistent_parallel_and_loop_capacitor_ic_succeed() -> None:
             "contradictory initial conditions",
         ),
         (".subckt s a\nC1 a a 1u IC=1.5\n.ends\n", False, "shorted capacitor `C1`"),
-        (".subckt s a\nC1 a 0 1u IC=1,2\n.ends\n", True, "`IC` has one value"),
+        (".subckt s a\nC1 a 0 1u IC=1,2\n.ends\n", True, "`IC` accepts one value"),
         (".subckt s a\nR1 a 0 1k IC=1\n.ends\n", True, "no `IC` here"),
     ],
 )
@@ -3732,18 +3733,18 @@ def test_pss_from_spice_simulates_driven_and_autonomous_decks() -> None:
 @pytest.mark.parametrize(
     ("card", "fragment"),
     [
-        (".pss 0", "frequency must be positive"),
-        (".pss -1meg", "frequency must be positive"),
-        (".pss period=0", "period must be positive"),
-        (".pss period=-1u", "period must be positive"),
-        (".pss 1meg -1u", "stabilization time must be at least 0"),
-        (".pss max_step=0", "max_step must be positive"),
-        (".pss max_step=-1n", "max_step must be positive"),
-        (".pss 1meg 0 out 0", "points must be a positive integer"),
-        (".pss 1meg 0 out 10.5", "points must be a positive integer"),
-        (".pss 1meg 0 out 64 0", "harmonics must be a positive integer"),
-        (".pss 1meg 0 out 64 5 0", "shooting iterations must be a positive integer"),
-        (".pss 1meg 0 out 64 5 10 0", "steady coefficient must be positive"),
+        (".pss 0", "frequency is positive"),
+        (".pss -1meg", "frequency is positive"),
+        (".pss period=0", "period is positive"),
+        (".pss period=-1u", "period is positive"),
+        (".pss 1meg -1u", "stabilization time is at least 0"),
+        (".pss max_step=0", "max_step is positive"),
+        (".pss max_step=-1n", "max_step is positive"),
+        (".pss 1meg 0 out 0", "points is a positive integer"),
+        (".pss 1meg 0 out 10.5", "points is a positive integer"),
+        (".pss 1meg 0 out 64 0", "harmonics is a positive integer"),
+        (".pss 1meg 0 out 64 5 0", "shooting iterations is a positive integer"),
+        (".pss 1meg 0 out 64 5 10 0", "steady coefficient is positive"),
         (".pss 1meg 0 0", "ground node `0`"),
         (".pss 1meg 0 V(0)", "ground node `0`"),
         (".pss 1meg 0 V(a,b)", "written `node` or `V(node)`"),

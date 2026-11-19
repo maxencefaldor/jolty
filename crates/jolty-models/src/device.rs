@@ -229,9 +229,7 @@ impl ParameterError {
             Ok(value)
         } else {
             let value = value.value();
-            Err(Self(format!(
-                "{parameter} is at least 0, not {value:?}"
-            )))
+            Err(Self(format!("{parameter} is at least 0, not {value:?}")))
         }
     }
 }

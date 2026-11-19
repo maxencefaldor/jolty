@@ -141,7 +141,7 @@ impl Kernel for Networks {
         ParameterError::positive("r", parameters.r)?;
         ParameterError::non_negative("s", parameters.s)?;
         if !(0.0..=1.0).contains(&f64::from(parameters.grounded)) {
-            return Err(ParameterError(format!("grounded must be at least 0 and at most 1, not {:?}", parameters.grounded)));
+            return Err(ParameterError(format!("grounded is at least 0 and at most 1, not {:?}", parameters.grounded)));
         }
         Ok(PreparedNetworks {
             r: parameters.r,

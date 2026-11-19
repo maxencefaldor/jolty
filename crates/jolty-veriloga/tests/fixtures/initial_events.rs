@@ -104,7 +104,7 @@ impl Kernel for InitialEvents {
         ParameterError::positive("fingers", parameters.fingers)?;
         ParameterError::positive("vmax", parameters.vmax)?;
         if !(0.0..=1.0).contains(&f64::from(parameters.refuse)) {
-            return Err(ParameterError(format!("refuse must be at least 0 and at most 1, not {:?}", parameters.refuse)));
+            return Err(ParameterError(format!("refuse is at least 0 and at most 1, not {:?}", parameters.refuse)));
         }
         let mut v = Locals { g: R::constant(0.0) };
         let t0000 = parameters.fingers + 0.5;
@@ -188,7 +188,7 @@ impl InitialEvents {
         ParameterError::positive("fingers", parameters.fingers)?;
         ParameterError::positive("vmax", parameters.vmax)?;
         if !(0.0..=1.0).contains(&f64::from(parameters.refuse)) {
-            return Err(ParameterError(format!("refuse must be at least 0 and at most 1, not {:?}", parameters.refuse)));
+            return Err(ParameterError(format!("refuse is at least 0 and at most 1, not {:?}", parameters.refuse)));
         }
         let mut found = Vec::new();
         if parameters.fingers.value() > 10.0 {

@@ -414,7 +414,7 @@ _ERROR_CASES: dict[str, _ErrorEntry] = {
     "missing-analysis": (
         "rc",
         {"analysis": "nope", "measure": "value", "signal": "out"},
-        ("holds no analysis named 'nope'", "op", "bode"),
+        ("contains no analysis named 'nope'", "op", "bode"),
     ),
     "missing-unknown-truncated": (
         "rc",
@@ -509,4 +509,4 @@ def test_measure_factual_errors_for_empty_results_file(
         measure="value",
         signal="out",
     )
-    _assert_factual_error(request, ("holds no analyses",))
+    _assert_factual_error(request, ("contains no analyses",))

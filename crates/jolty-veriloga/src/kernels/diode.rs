@@ -464,10 +464,10 @@ impl Kernel for Diode {
         ParameterError::non_negative("junction_capacitance", parameters.junction_capacitance)?;
         ParameterError::positive("junction_potential", parameters.junction_potential)?;
         if !(0.0..1.0).contains(&parameters.grading_coefficient.value()) {
-            return Err(ParameterError(format!("grading_coefficient must be at least 0 and below 1, not {:?}", parameters.grading_coefficient.value())));
+            return Err(ParameterError(format!("grading_coefficient is at least 0 and below 1, not {:?}", parameters.grading_coefficient.value())));
         }
         if !(0.0..1.0).contains(&parameters.depletion_coefficient.value()) {
-            return Err(ParameterError(format!("depletion_coefficient must be at least 0 and below 1, not {:?}", parameters.depletion_coefficient.value())));
+            return Err(ParameterError(format!("depletion_coefficient is at least 0 and below 1, not {:?}", parameters.depletion_coefficient.value())));
         }
         ParameterError::non_negative("transit_time", parameters.transit_time)?;
         ParameterError::positive("forward_knee_current", parameters.forward_knee_current.unwrap_or(R::constant(1.0)))?;
@@ -480,10 +480,10 @@ impl Kernel for Diode {
         ParameterError::non_negative("sidewall_junction_capacitance", parameters.sidewall_junction_capacitance)?;
         ParameterError::positive("sidewall_junction_potential", parameters.sidewall_junction_potential)?;
         if !(0.0..1.0).contains(&parameters.sidewall_grading_coefficient.value()) {
-            return Err(ParameterError(format!("sidewall_grading_coefficient must be at least 0 and below 1, not {:?}", parameters.sidewall_grading_coefficient.value())));
+            return Err(ParameterError(format!("sidewall_grading_coefficient is at least 0 and below 1, not {:?}", parameters.sidewall_grading_coefficient.value())));
         }
         if !(0.0..1.0).contains(&parameters.sidewall_depletion_coefficient.value()) {
-            return Err(ParameterError(format!("sidewall_depletion_coefficient must be at least 0 and below 1, not {:?}", parameters.sidewall_depletion_coefficient.value())));
+            return Err(ParameterError(format!("sidewall_depletion_coefficient is at least 0 and below 1, not {:?}", parameters.sidewall_depletion_coefficient.value())));
         }
         ParameterError::positive("sidewall_forward_knee_current", parameters.sidewall_forward_knee_current.unwrap_or(R::constant(1.0)))?;
         ParameterError::non_negative("tunneling_saturation_current", parameters.tunneling_saturation_current)?;
@@ -493,10 +493,10 @@ impl Kernel for Diode {
         ParameterError::non_negative("breakdown_current", parameters.breakdown_current)?;
         ParameterError::positive("breakdown_emission_coefficient", parameters.breakdown_emission_coefficient.unwrap_or(parameters.emission_coefficient))?;
         if !(0.0..=2.0).contains(&f64::from(parameters.temperature_model)) {
-            return Err(ParameterError(format!("temperature_model must be at least 0 and at most 2, not {:?}", parameters.temperature_model)));
+            return Err(ParameterError(format!("temperature_model is at least 0 and at most 2, not {:?}", parameters.temperature_model)));
         }
         if !(0.0..=1.0).contains(&f64::from(parameters.capacitance_temperature_model)) {
-            return Err(ParameterError(format!("capacitance_temperature_model must be at least 0 and at most 1, not {:?}", parameters.capacitance_temperature_model)));
+            return Err(ParameterError(format!("capacitance_temperature_model is at least 0 and at most 1, not {:?}", parameters.capacitance_temperature_model)));
         }
         ParameterError::non_negative("energy_gap_beta", parameters.energy_gap_beta)?;
         ParameterError::positive("nominal_temperature", parameters.nominal_temperature)?;
@@ -560,7 +560,7 @@ impl Kernel for Diode {
         let t0000 = if parameters.temperature_model == 2 { 1.16 } else { 1.11 };
         if parameters.energy_gap.unwrap_or(R::constant(t0000)).value() < 0.0 {
             let t0001 = if parameters.temperature_model == 2 { 1.16 } else { 1.11 };
-            return Err(ParameterError(format!("energy_gap must be at least 0, not {:?}", parameters.energy_gap.unwrap_or(R::constant(t0001)).value())));
+            return Err(ParameterError(format!("energy_gap is at least 0, not {:?}", parameters.energy_gap.unwrap_or(R::constant(t0001)).value())));
         }
         v.vt = temperature * BOLTZMANN / ELEMENTARY_CHARGE;
         v.ratio = temperature / parameters.nominal_temperature;
@@ -602,10 +602,10 @@ impl Kernel for Diode {
             v.sidewall_capacitance = parameters.sidewall_junction_capacitance * (parameters.sidewall_junction_capacitance_temperature_coefficient * v.difference + 1.0);
         }
         if v.potential.value() <= 0.0 {
-            return Err(ParameterError(format!("junction_potential at the temperature must be positive, not {:?}", v.potential.value())));
+            return Err(ParameterError(format!("junction_potential at the temperature is positive, not {:?}", v.potential.value())));
         }
         if v.sidewall_potential.value() <= 0.0 {
-            return Err(ParameterError(format!("sidewall_junction_potential at the temperature must be positive, not {:?}", v.sidewall_potential.value())));
+            return Err(ParameterError(format!("sidewall_junction_potential at the temperature is positive, not {:?}", v.sidewall_potential.value())));
         }
         v.threshold = parameters.depletion_coefficient * v.potential;
         v.charge_at_threshold = v.potential * (R::constant(1.0) - (R::constant(1.0) - parameters.depletion_coefficient).pow(R::constant(1.0) - v.grading)) / (R::constant(1.0) - v.grading);

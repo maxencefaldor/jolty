@@ -61,7 +61,7 @@ def test_a_quantity_of_the_wrong_dimension_names_what_it_was_for() -> None:
 
 
 def test_a_quantity_must_be_finite() -> None:
-    with pytest.raises(ValueError, match="a level must be finite, not inf"):
+    with pytest.raises(ValueError, match="a level is finite, not inf"):
         Quantity(math.inf, VOLTAGE).to(VOLTAGE, "a level")
 
 

@@ -80,7 +80,7 @@ def test_values_spread_within_their_tolerance() -> None:
 def test_a_tolerance_needs_a_number_below_one() -> None:
     with pytest.raises(ValueError, match="gives inductance no number"):
         devices.resistor(1 * kohm).toleranced("inductance", 0.1)
-    with pytest.raises(ValueError, match="needs to be below 1"):
+    with pytest.raises(ValueError, match="tolerance is below 1"):
         devices.resistor(1 * kohm, tolerance=1.5)
     built = circuit(pair())
     top = built.components["cell"]
@@ -288,7 +288,7 @@ def test_an_exponentials_argument_spreads_in_its_logarithm() -> None:
     assert first.std() == pytest.approx(math.log(36) / math.sqrt(3), rel=0.05)
     # Shared lot cancels: base-emitter voltages within 2 mV (+ 1e-12 f64 log rounding).
     assert np.abs(first - second).max() * 0.02585 <= 2e-3 + 1e-12
-    with pytest.raises(ValueError, match="only a logarithmic one may exceed it"):
+    with pytest.raises(ValueError, match="only a logarithmic tolerance may exceed 1"):
         ir.Tolerance(relative=1.5)
     assert ir.Tolerance(relative=1.5, distribution="log_normal").relative == 1.5
 

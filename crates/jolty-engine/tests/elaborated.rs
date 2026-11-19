@@ -445,7 +445,7 @@ fn values_report_every_number_they_cannot_replace() {
         .expect_err("a problem");
     assert_eq!(
         problem.to_string(),
-        "instance `R1`: resistance must be positive, not -1.0"
+        "instance `R1`: resistance is positive, not -1.0"
     );
     // A failed reset leaves simulator state unchanged.
     let mut simulator =

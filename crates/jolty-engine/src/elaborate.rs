@@ -1442,7 +1442,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "instance `X1/R1`: the override `resistance.dc` has no place among the parameters\n\
-             instance `X2/R1`: resistance must be positive, not -1.0\n\
+             instance `X2/R1`: resistance is positive, not -1.0\n\
              the circuit has no device at `X3/R1`, whose parameters are replaced"
         );
     }
@@ -1464,7 +1464,7 @@ mod tests {
             "instance `Q1`: unknown model `transistor`\n\
              instance `C1`: connects `c`, which a capacitor does not have\n\
              instance `C1`: terminal `b` of its capacitor is unconnected\n\
-             instance `R1` (amp.py:9): resistance must be positive, not -1.0"
+             instance `R1` (amp.py:9): resistance is positive, not -1.0"
         );
     }
 
@@ -1501,7 +1501,7 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "the top component `top` has no ground port\n\
-             instance `R1`: resistance must be positive, not -1.0"
+             instance `R1`: resistance is positive, not -1.0"
         );
     }
 

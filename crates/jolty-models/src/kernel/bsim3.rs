@@ -729,10 +729,7 @@ mod tests {
             error(r#"{"length": 1e-6, "nlx": -2e-6}"#),
             "nlx, -2e-6, is at least the negative of the effective length, 1e-6"
         );
-        assert_eq!(
-            error(r#"{"dvt1": -0.1}"#),
-            "dvt1 is at least 0, not -0.1"
-        );
+        assert_eq!(error(r#"{"dvt1": -0.1}"#), "dvt1 is at least 0, not -0.1");
         assert_eq!(error(r#"{"pclm": 0}"#), "pclm is positive, not 0.0");
         assert_eq!(
             error(r#"{"mj": 1}"#),

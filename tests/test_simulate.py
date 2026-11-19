@@ -240,7 +240,9 @@ def test_a_stability_analysis_finds_the_loop_gain_and_its_margins() -> None:
 def test_a_probe_is_a_voltage_source_off_the_ground() -> None:
     simulation = Simulation(follower())
     for probe in ("VIN", "G1", "R1"):
-        with pytest.raises(SimulationError, match=f"`{probe}` is not a voltage source"):
+        with pytest.raises(
+            SimulationError, match=f"`{probe}` is not a floating voltage source"
+        ):
             simulation.run(Stability(probe, [1 * kHz]))
 
 

@@ -524,8 +524,8 @@ def test_valid_spice_subcircuits_round_trip_through_export(text: str) -> None:
         ),
         # Non-finite values and Rust device validation errors (were raw ValueError).
         (".subckt s a b\nR1 a b 1k temp=1e500\n.ends", 300.15, "not finite"),
-        (".subckt s a b\nV1 a b PWL(1 0 0 1)\n.ends", 300.15, "must increase"),
-        (".subckt s a b\nV1 a b PWL(1 0 0 1) DC 0\n.ends", 300.15, "must increase"),
+        (".subckt s a b\nV1 a b PWL(1 0 0 1)\n.ends", 300.15, "strictly increase"),
+        (".subckt s a b\nV1 a b PWL(1 0 0 1) DC 0\n.ends", 300.15, "strictly increase"),
         (
             ".subckt s a b c d\nE1 a b TABLE {V(c,d)} = (0,0) (0,1)\n.ends",
             300.15,

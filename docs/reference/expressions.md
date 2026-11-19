@@ -7,7 +7,7 @@ A behavioral source's output is an expression of the voltages and currents it re
 An expression reads three kinds of variable:
 
 - `v(a)` is the voltage of terminal `a`, and `v(a, b)` the voltage of `a` over `b`.
-- `i(p)` is the current through the sensing port `p`, a short circuit of the source's own.
+- `i(p)` is the current through the source's internal short-circuit sensing port `p`.
 - `time` is the time, in seconds: 0 at the operating point.
 
 Numbers are plain, such as `2.5e-3`, and `pi` is π.
@@ -50,7 +50,7 @@ A comparison or a logical operator is 1 when true and 0 when false, and any nonz
 | `if(c, a, b)` | `c ? a : b` |
 | `table(x, x1, y1, x2, y2, …)` | the piecewise-linear interpolation of constant points with ascending abscissae, constant beyond the first and the last |
 | `pwl(x, x1, y1, x2, y2, …)` | the same, extended beyond the first and the last along the first and the last segments |
-| `rounded_table(x, r, x1, y1, x2, y2, …)` | `table`, each corner, the ends' included, rounded by a parabola over `r` times the shorter segment beside it, `r` from 0 to ½, as ngspice reads PSpice's `TABLE` sources |
+| `rounded_table(x, r, x1, y1, x2, y2, …)` | `table` with each corner (including the endpoints) rounded by a parabola spanning `r` times the shorter adjacent segment, for `r` in `[0, 0.5]`, matching ngspice PSpice `TABLE` sources |
 
 A function outside its domain, such as `sqrt(-1)`, is not a number, and the analysis fails.
 
@@ -61,5 +61,5 @@ Where an expression branches, through a conditional, `min`, `max`, `limit` or a 
 
 ## Jumps
 
-An expression's value jumps where a comparison, `u`, `sgn`, `floor` or `ceil` that it reads, through the branches it takes, changes.
-A transient analysis locates each such change between two of its points, steps onto it, and restarts its integration there, as at a corner of a source's waveform.
+An expression's value jumps whenever an active comparison, `u`, `sgn`, `floor`, or `ceil` changes branch.
+Transient analysis locates each jump between time points, steps directly onto the transition, and restarts integration as at a waveform corner.

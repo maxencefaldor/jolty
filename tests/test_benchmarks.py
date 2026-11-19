@@ -101,7 +101,7 @@ def test_the_score_says_why_work_falls_short(tmp_path: Path) -> None:
     )
     verdict = score(COST_DOWN, tmp_path)
     assert kinds(verdict) == [("unelaborated", None), ("spec", "catalog")]
-    assert "resistance must be positive" in verdict.reasons[0]
+    assert "resistance is positive" in verdict.reasons[0]
     (tmp_path / "design.py").write_text(
         "def build():\n    raise RuntimeError('unfinished')\n", encoding="utf-8"
     )
@@ -449,7 +449,7 @@ def test_a_shortfall_s_kind_is_where_the_scorer_found_it(tmp_path: Path) -> None
     )
     verdict = score(VOLTAGE_CURRENT, tmp_path)
     assert {shortfall.kind for shortfall in verdict.shortfalls} == {"unelaborated"}
-    assert "resistance must be positive" in verdict.reasons[0]
+    assert "resistance is positive" in verdict.reasons[0]
 
 
 CUBIC_DISCRETE = BENCHMARKS / "cubic_discrete"

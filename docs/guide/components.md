@@ -80,6 +80,6 @@ Problems name the instance by its path and that line, as a compiler names the li
 <!-- output of: jolty build filter.py --no-schematic -->
 
 ```text
-error: capacitance must be at least 0, not -1e-9
+error: capacitance is at least 0, not -1e-9
   = X1/C1, filter.py:14 in low_pass()
 ```

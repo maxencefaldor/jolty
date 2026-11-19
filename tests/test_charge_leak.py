@@ -113,7 +113,7 @@ def test_charge_leak_validates_dimensions_and_lengths() -> None:
         results.ChargeLeak(np.zeros((1, 2)), np.zeros((1, 2)))
     with pytest.raises(ValueError, match="one-dimensional"):
         results.ChargeLeak(np.array(0.0), np.array(0.0))
-    with pytest.raises(ValueError, match="same length"):
+    with pytest.raises(ValueError, match="equal length"):
         results.ChargeLeak(np.zeros(2), np.zeros(3))
 
 

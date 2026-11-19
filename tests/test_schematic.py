@@ -214,7 +214,7 @@ def test_the_draw_command_names_what_it_cannot_draw(
     step = Transient(stop=1 * us, max_step=0.1 * us)
     save_results(results, {"step": Simulation(drawn).run(step)})
     assert run("draw", str(path), "--results", str(results)) == 2
-    assert "holds no operating point" in capsys.readouterr().err
+    assert "contains no operating point" in capsys.readouterr().err
 
 
 def test_schematic_labels_integer_parameters_and_exponential_waveforms() -> None:

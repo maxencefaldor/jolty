@@ -171,7 +171,10 @@ def _parse_rust_constant(
     if match is None:
         return None
     name = match.group(1)
-    parts = [match.group(2).split("//", 1)[0].strip()]
+    remainder = match.group(2)
+    assert isinstance(name, str)
+    assert isinstance(remainder, str)
+    parts = [remainder.split("//", 1)[0].strip()]
     cursor = line_index + 1
     while ";" not in parts[-1] and cursor < len(lines) and cursor < line_index + 8:
         parts.append(lines[cursor].split("//", 1)[0].strip())

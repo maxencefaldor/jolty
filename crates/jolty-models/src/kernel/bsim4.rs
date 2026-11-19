@@ -1302,15 +1302,9 @@ mod tests {
             error(r#"{"length": 1e-7, "lint": 6e-8}"#),
             "the effective length is positive, not -1.9999999999999994e-8"
         );
-        assert_eq!(
-            error(r#"{"dvt1": -0.1}"#),
-            "dvt1 is at least 0, not -0.1"
-        );
+        assert_eq!(error(r#"{"dvt1": -0.1}"#), "dvt1 is at least 0, not -0.1");
         assert_eq!(error(r#"{"pclm": 0}"#), "pclm is positive, not 0.0");
-        assert_eq!(
-            error(r#"{"fingers": 0.5}"#),
-            "nf is at least 1, not 0.5"
-        );
+        assert_eq!(error(r#"{"fingers": 0.5}"#), "nf is at least 1, not 0.5");
         assert_eq!(
             error(r#"{"body_resistance_model": 2}"#),
             "jolty's BSIM4 has body_resistance_model 0 or 1, not 2"
@@ -1319,10 +1313,7 @@ mod tests {
             error(r#"{"length": 1e-7, "xgl": 1e-7}"#),
             "xgl, 1e-7, is less than the drawn length plus xl, 1e-7"
         );
-        assert_eq!(
-            error(r#"{"ngcon": 0.5}"#),
-            "ngcon is at least 1, not 0.5"
-        );
+        assert_eq!(error(r#"{"ngcon": 0.5}"#), "ngcon is at least 1, not 0.5");
         assert_eq!(error(r#"{"njs": 0}"#), "njs is positive, not 0.0");
         assert_eq!(error(r#"{"njd": -1}"#), "njd is positive, not -1.0");
     }

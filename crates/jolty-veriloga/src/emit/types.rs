@@ -411,7 +411,7 @@ pub(super) struct Names {
 }
 
 impl Names {
-    /// Derives PascalCase kernel, parameter, shape, prepared, and memory type names from
+    /// Derives `PascalCase` kernel, parameter, shape, prepared, and memory type names from
     /// Verilog-A `module`.
     pub(super) fn from_module(
         module: &str,

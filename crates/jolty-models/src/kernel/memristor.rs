@@ -206,9 +206,7 @@ impl<R: Real> PreparedMemristor<R> {
         let initial = ParameterError::non_negative("state", state)?;
         if initial.value() > 1.0 {
             let state = initial.value();
-            return Err(ParameterError(format!(
-                "state is at most 1, not {state:?}"
-            )));
+            return Err(ParameterError(format!("state is at most 1, not {state:?}")));
         }
         Ok(Self {
             memristance,

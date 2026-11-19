@@ -483,7 +483,7 @@ def test_impossible_requirements_and_specs_are_errors() -> None:
         (value("op", "out") >= 1 * V).with_margin(-1 * V)
     with pytest.raises(ValueError, match="states a bound"):
         Requirement(value("op", "out"))
-    with pytest.raises(ValueError, match="must be finite"):
+    with pytest.raises(ValueError, match="is finite"):
         _ = value("op", "out") >= math.inf
     with pytest.raises(ValueError, match="at least one requirement"):
         Specs([])
@@ -610,7 +610,7 @@ def test_requirements_hold_at_their_worst_corner(
     assert hot.ok
     assert slow.ok
     assert not broken.ok
-    assert "resistance must be positive" in broken.problems[0]
+    assert "resistance is positive" in broken.problems[0]
     # At 125 °C, the resistance has grown by 39 %, and the corner falls to 114 kHz.
     (verdict,) = outcome.specs
     assert (verdict.status, verdict.corner) == ("failed", "hot")

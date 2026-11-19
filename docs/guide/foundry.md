@@ -168,7 +168,7 @@ At typical corners, native coverage stands at 251 of 263 devices for SKY130, 65 
 | native | diode (level 3) |  | 9: `dantenna`, `dpantenna`, `ddnwpsub`, `darea` (model), `dperim` (model), `dcorner` (model), `dparea` (model), `dpperim` (model), `dpcorner` (model) |
 | native | diode (level 3); diode (level 1) |  | 2: `isolbox`, `dpwdnw` |
 | native | diode (level 1) |  | 11: `diodevdd_2kv`, `diodevdd_4kv`, `diodevss_2kv`, `diodevss_4kv`, `diodevdd_mod` (model), `diodevss_mod` (model), `dsub_2kv_mod` (model), `dsub_4kv_mod` (model), `dmain_mod` (model), `drev_mod` (model), `dsub_mod` (model) |
-| neither | diode (level 1); Gummel-Poon (level 1); resistor; capacitor | `AREA` has one value, not `((Nx*Ny)*(l*w)) /(scaling*scaling)` | 1: `schottky_nbl1` |
+| neither | diode (level 1); Gummel-Poon (level 1); resistor; capacitor | `AREA` accepts one value, not `((Nx*Ny)*(l*w)) /(scaling*scaling)` | 1: `schottky_nbl1` |
 | native | capacitor's model card |  | 1: `cmim_core` (model) |
 
 Native devices agree with ngspice reading the same kit at the same corner across the verification suites below:

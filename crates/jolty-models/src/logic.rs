@@ -468,16 +468,16 @@ impl Tables {
             let count = pins.inputs.len();
             let row = (arc.before.len() == count
                 && arc.before.chars().all(|bit| matches!(bit, '0' | '1')))
-                .then(|| usize::from_str_radix(&arc.before, 2).ok())
-                .flatten()
-                .or_else(|| (count == 0 && arc.before.is_empty()).then_some(0))
-                .ok_or_else(|| {
-                    ParameterError(format!(
-                        "an arc's levels before its change are a 0 or a 1 for each of the \
+            .then(|| usize::from_str_radix(&arc.before, 2).ok())
+            .flatten()
+            .or_else(|| (count == 0 && arc.before.is_empty()).then_some(0))
+            .ok_or_else(|| {
+                ParameterError(format!(
+                    "an arc's levels before its change are a 0 or a 1 for each of the \
                          {count} inputs, not {:?}",
-                        arc.before
-                    ))
-                })?;
+                    arc.before
+                ))
+            })?;
             let after = row ^ (1 << (count - 1 - input));
             let table = &tables[output];
             if table[row] == table[after] {

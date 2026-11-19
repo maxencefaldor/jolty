@@ -513,12 +513,12 @@ _ANALYSIS_ERROR_CASES: dict[str, tuple[Analysis, int | None, tuple[str, ...]]] =
     "stability-grounded-source": (
         Stability("V1", [1 * kHz]),
         None,
-        ("`V1` is not a voltage source off ground", "probes: VP"),
+        ("`V1` is not a floating voltage source", "probes: VP"),
     ),
     "stability-resistor-probe": (
         Stability("R1", [1 * kHz]),
         None,
-        ("`R1` is not a voltage source off ground", "probes: VP"),
+        ("`R1` is not a floating voltage source", "probes: VP"),
     ),
     "noise-current-ref": (
         Noise("V1:current", [1 * kHz], reference="ground"),

@@ -8,131 +8,131 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `expression` | required | What the device's output follows, a capacitor's its charge: an expression of the voltages of the terminals it reads, of the currents through sensing ports of its own, and of time. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `expression` | required | Expression defining output current, voltage, or stored charge as a function of sensed terminal voltages, port currents, and simulation time. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `behavioral_current_source`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `expression` | required | What the device's output follows, a capacitor's its charge: an expression of the voltages of the terminals it reads, of the currents through sensing ports of its own, and of time. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `expression` | required | Expression defining output current, voltage, or stored charge as a function of sensed terminal voltages, port currents, and simulation time. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `behavioral_voltage_source`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `expression` | required | What the device's output follows, a capacitor's its charge: an expression of the voltages of the terminals it reads, of the currents through sensing ports of its own, and of time. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `expression` | required | Expression defining output current, voltage, or stored charge as a function of sensed terminal voltages, port currents, and simulation time. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `bipolar_transistor`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `base_collector_capacitance` | `0` | The zero-bias base-collector depletion capacitance, `CJC`, in farads; default 0. |
-| `base_collector_capacitance_temperature_coefficient` | `0` | The base-collector depletion capacitance's temperature coefficient where `TLEVC` is 1, `CTC`, per kelvin; default 0. |
-| `base_collector_grading` | `0.33` | The base-collector grading coefficient, `MJC`, below 1; default 0.33. |
-| `base_collector_grading_quadratic_temperature_coefficient` | `0` | The base-collector grading coefficient's quadratic temperature coefficient, `TMJC2`, per kelvin squared; default 0. |
-| `base_collector_grading_temperature_coefficient` | `0` | The base-collector grading coefficient's linear temperature coefficient, `TMJC1`, per kelvin: it scales by `1 + TMJC1·ΔT + TMJC2·ΔT²` from the nominal temperature; default 0. |
-| `base_collector_leakage_current` | `0` | The base-collector leakage saturation current, `ISC`, in amperes; default 0. |
-| `base_collector_leakage_emission_coefficient` | `2` | The base-collector leakage emission coefficient, `NC`; default 2. |
-| `base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient` | `0` | The base-collector leakage emission coefficient's quadratic temperature coefficient, `TNC2`, per kelvin squared; default 0. |
-| `base_collector_leakage_emission_coefficient_temperature_coefficient` | `0` | The base-collector leakage emission coefficient's linear temperature coefficient, `TNC1`, per kelvin: it scales by `1 + TNC1·ΔT + TNC2·ΔT²` from the nominal temperature; default 0. |
-| `base_collector_potential` | `0.75` | The base-collector built-in potential, `VJC`, in volts; default 0.75. |
-| `base_collector_potential_temperature_coefficient` | `0` | The base-collector built-in potential's temperature coefficient where `TLEVC` is 1, `TVJC`, in volts per kelvin; default 0. |
-| `base_emitter_capacitance` | `0` | The zero-bias base-emitter depletion capacitance, `CJE`, in farads; default 0. |
-| `base_emitter_capacitance_temperature_coefficient` | `0` | The base-emitter depletion capacitance's temperature coefficient where `TLEVC` is 1, `CTE`, per kelvin; default 0. |
-| `base_emitter_grading` | `0.33` | The base-emitter grading coefficient, `MJE`, below 1; default 0.33. |
-| `base_emitter_grading_quadratic_temperature_coefficient` | `0` | The base-emitter grading coefficient's quadratic temperature coefficient, `TMJE2`, per kelvin squared; default 0. |
-| `base_emitter_grading_temperature_coefficient` | `0` | The base-emitter grading coefficient's linear temperature coefficient, `TMJE1`, per kelvin: it scales by `1 + TMJE1·ΔT + TMJE2·ΔT²` from the nominal temperature; default 0. |
-| `base_emitter_leakage_current` | `0` | The base-emitter leakage saturation current, `ISE`, in amperes; default 0. |
-| `base_emitter_leakage_emission_coefficient` | `1.5` | The base-emitter leakage emission coefficient, `NE`; default 1.5. |
-| `base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient` | `0` | The base-emitter leakage emission coefficient's quadratic temperature coefficient, `TNE2`, per kelvin squared; default 0. |
-| `base_emitter_leakage_emission_coefficient_temperature_coefficient` | `0` | The base-emitter leakage emission coefficient's linear temperature coefficient, `TNE1`, per kelvin: it scales by `1 + TNE1·ΔT + TNE2·ΔT²` from the nominal temperature; default 0. |
-| `base_emitter_potential` | `0.75` | The base-emitter built-in potential, `VJE`, in volts; default 0.75. |
-| `base_emitter_potential_temperature_coefficient` | `0` | The base-emitter built-in potential's temperature coefficient where `TLEVC` is 1, `TVJE`, in volts per kelvin; default 0. |
-| `base_resistance` | `0` | The zero-bias base resistance, `RB`, in ohms; default 0. |
-| `base_resistance_current` |  | The base current, `IRB`, at which the base resistance falls halfway to its minimum, in amperes; without it, the base resistance falls with the base charge. |
-| `base_resistance_current_quadratic_temperature_coefficient` | `0` | The base resistance's halfway current's quadratic temperature coefficient, `TIRB2`, per kelvin squared; default 0. |
-| `base_resistance_current_temperature_coefficient` | `0` | The base resistance's halfway current's linear temperature coefficient, `TIRB1`, per kelvin: it scales by `1 + TIRB1·ΔT + TIRB2·ΔT²` from the nominal temperature; default 0. |
-| `base_resistance_quadratic_temperature_coefficient` | `0` | The zero-bias base resistance's quadratic temperature coefficient, `TRB2`, per kelvin squared; default 0. |
-| `base_resistance_temperature_coefficient` | `0` | The zero-bias base resistance's linear temperature coefficient, `TRB1`, per kelvin: it scales by `1 + TRB1·ΔT + TRB2·ΔT²` from the nominal temperature; default 0. |
-| `beta_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the betas where `TLEV` is 0, or their linear temperature coefficient, per kelvin, where it is 1, `XTB`; default 0. |
-| `capacitance_temperature_model` | `0` | How the junctions' depletion capacitances and built-in potentials follow the temperature, `TLEVC`; default 0. |
-| `collector_resistance` | `0` | The collector resistance, `RC`, in ohms; default 0. |
-| `collector_resistance_quadratic_temperature_coefficient` | `0` | The collector resistance's quadratic temperature coefficient, `TRC2`, per kelvin squared; default 0. |
-| `collector_resistance_temperature_coefficient` | `0` | The collector resistance's linear temperature coefficient, `TRC1`, per kelvin: it scales by `1 + TRC1·ΔT + TRC2·ΔT²` from the nominal temperature; default 0. |
-| `depletion_coefficient` | `0.5` | The fraction of each junction's potential above which its depletion capacitance is extended linearly, `FC`, below 1; default 0.5. |
-| `emitter_resistance` | `0` | The emitter resistance, `RE`, in ohms; default 0. |
-| `emitter_resistance_quadratic_temperature_coefficient` | `0` | The emitter resistance's quadratic temperature coefficient, `TRE2`, per kelvin squared; default 0. |
-| `emitter_resistance_temperature_coefficient` | `0` | The emitter resistance's linear temperature coefficient, `TRE1`, per kelvin: it scales by `1 + TRE1·ΔT + TRE2·ΔT²` from the nominal temperature; default 0. |
-| `energy_gap` | `1.11` | The energy gap that scales the saturation currents with temperature, `EG`, in volts; default 1.11, silicon's. |
-| `excess_phase` | `0` | The excess phase at the frequency `1 / (2π · TF)`, `PTF`, in degrees, which delays the forward transport current by `PTF · π / 180 · TF`; default 0. |
-| `flicker_coefficient` | `0` | The flicker noise coefficient of the base current, `KF`; default 0, no flicker noise. |
-| `flicker_exponent` | `1` | The power of the base current in the flicker noise, `AF`; default 1. |
-| `forward_beta` | `100` | The ideal maximum forward current gain, `BF`; default 100. |
-| `forward_beta_quadratic_temperature_coefficient` |  | The forward beta's quadratic temperature coefficient, `TBF2`, per kelvin squared, as `TBF1` says. |
-| `forward_beta_temperature_coefficient` |  | The forward beta's linear temperature coefficient, `TBF1`, per kelvin: given, with `TBF2` or without, the beta scales by `1 + TBF1·ΔT + TBF2·ΔT²` from the nominal temperature instead of by `XTB`'s factor; without either, by `XTB`'s factor. |
-| `forward_early_voltage` |  | The forward Early voltage, `VAF`, in volts; infinite by default. |
-| `forward_early_voltage_quadratic_temperature_coefficient` | `0` | The forward Early voltage's quadratic temperature coefficient, `TVAF2`, per kelvin squared; default 0. |
-| `forward_early_voltage_temperature_coefficient` | `0` | The forward Early voltage's linear temperature coefficient, `TVAF1`, per kelvin: it scales by `1 + TVAF1·ΔT + TVAF2·ΔT²` from the nominal temperature; default 0. |
-| `forward_emission_coefficient` | `1` | The forward emission coefficient, `NF`; default 1. |
-| `forward_emission_coefficient_quadratic_temperature_coefficient` | `0` | The forward emission coefficient's quadratic temperature coefficient, `TNF2`, per kelvin squared; default 0. |
-| `forward_emission_coefficient_temperature_coefficient` | `0` | The forward emission coefficient's linear temperature coefficient, `TNF1`, per kelvin: it scales by `1 + TNF1·ΔT + TNF2·ΔT²` from the nominal temperature; default 0. |
-| `forward_knee_current` |  | The forward knee current, `IKF`, where high injection sets in, in amperes; infinite by default. |
-| `forward_knee_current_quadratic_temperature_coefficient` | `0` | The forward knee current's quadratic temperature coefficient, `TIKF2`, per kelvin squared; default 0. |
-| `forward_knee_current_temperature_coefficient` | `0` | The forward knee current's linear temperature coefficient, `TIKF1`, per kelvin: it scales by `1 + TIKF1·ΔT + TIKF2·ΔT²` from the nominal temperature; default 0. |
-| `forward_transit_time` | `0` | The ideal forward transit time, `TF`, in seconds; default 0. |
-| `forward_transit_time_quadratic_temperature_coefficient` | `0` | The forward transit time's quadratic temperature coefficient, `TTF2`, per kelvin squared; default 0. |
-| `forward_transit_time_temperature_coefficient` | `0` | The forward transit time's linear temperature coefficient, `TTF1`, per kelvin: it scales by `1 + TTF1·ΔT + TTF2·ΔT²` from the nominal temperature; default 0. |
-| `high_injection_exponent` | `0.5` | The exponent of high injection in the base charge, `NKF`, above 0 and at most 1: `qb = q1 · (1 + (1 + 4 · q2)^NKF) / 2`; default 0.5, a square root. |
-| `internal_base_fraction` | `1` | The fraction of the base-collector capacitance on the internal base, `XCJC`, the rest on the external base; default 1. |
-| `min_base_resistance` |  | The base resistance at high current, `RBM`, in ohms; the base resistance by default. |
-| `min_base_resistance_quadratic_temperature_coefficient` | `0` | The minimum base resistance's quadratic temperature coefficient, `TRM2`, per kelvin squared; default 0. |
-| `min_base_resistance_temperature_coefficient` | `0` | The minimum base resistance's linear temperature coefficient, `TRM1`, per kelvin: it scales by `1 + TRM1·ΔT + TRM2·ΔT²` from the nominal temperature; default 0. |
-| `nominal_temperature` | `300.15` | The temperature the parameters were measured at, in kelvins; default 27 °C. |
-| `polarity` | `npn` | The doping order; default `npn`. One of `npn`, `pnp`. |
-| `reverse_beta` | `1` | The ideal maximum reverse current gain, `BR`; default 1. |
-| `reverse_beta_quadratic_temperature_coefficient` |  | The reverse beta's quadratic temperature coefficient, `TBR2`, per kelvin squared, as `TBR1` says. |
-| `reverse_beta_temperature_coefficient` |  | The reverse beta's linear temperature coefficient, `TBR1`, per kelvin: given, with `TBR2` or without, the beta scales by `1 + TBR1·ΔT + TBR2·ΔT²` from the nominal temperature instead of by `XTB`'s factor; without either, by `XTB`'s factor. |
-| `reverse_early_voltage` |  | The reverse Early voltage, `VAR`, in volts; infinite by default. |
-| `reverse_early_voltage_quadratic_temperature_coefficient` | `0` | The reverse Early voltage's quadratic temperature coefficient, `TVAR2`, per kelvin squared; default 0. |
-| `reverse_early_voltage_temperature_coefficient` | `0` | The reverse Early voltage's linear temperature coefficient, `TVAR1`, per kelvin: it scales by `1 + TVAR1·ΔT + TVAR2·ΔT²` from the nominal temperature; default 0. |
-| `reverse_emission_coefficient` | `1` | The reverse emission coefficient, `NR`; default 1. |
-| `reverse_emission_coefficient_quadratic_temperature_coefficient` | `0` | The reverse emission coefficient's quadratic temperature coefficient, `TNR2`, per kelvin squared; default 0. |
-| `reverse_emission_coefficient_temperature_coefficient` | `0` | The reverse emission coefficient's linear temperature coefficient, `TNR1`, per kelvin: it scales by `1 + TNR1·ΔT + TNR2·ΔT²` from the nominal temperature; default 0. |
-| `reverse_knee_current` |  | The reverse knee current, `IKR`, in amperes; infinite by default. |
-| `reverse_knee_current_quadratic_temperature_coefficient` | `0` | The reverse knee current's quadratic temperature coefficient, `TIKR2`, per kelvin squared; default 0. |
-| `reverse_knee_current_temperature_coefficient` | `0` | The reverse knee current's linear temperature coefficient, `TIKR1`, per kelvin: it scales by `1 + TIKR1·ΔT + TIKR2·ΔT²` from the nominal temperature; default 0. |
-| `reverse_transit_time` | `0` | The ideal reverse transit time, `TR`, in seconds; default 0. |
-| `reverse_transit_time_quadratic_temperature_coefficient` | `0` | The reverse transit time's quadratic temperature coefficient, `TTR2`, per kelvin squared; default 0. |
-| `reverse_transit_time_temperature_coefficient` | `0` | The reverse transit time's linear temperature coefficient, `TTR1`, per kelvin: it scales by `1 + TTR1·ΔT + TTR2·ΔT²` from the nominal temperature; default 0. |
-| `saturation_current` | `1e-16` | The transport saturation current, `IS`, in amperes; default 1e-16. |
-| `saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the saturation currents' scaling, `XTI`; default 3. |
-| `substrate` |  | How the transistor is built, if it has a substrate, as ngspice's `SUBS` of 1 and −1 builds it; without it, the transistor has none. The parameters below, of the junction to the substrate, need one. One of `vertical`, `lateral`. |
-| `substrate_capacitance` |  | The substrate junction's zero-bias depletion capacitance, `CJS`, in farads; default 0. |
-| `substrate_capacitance_temperature_coefficient` | `0` | The substrate junction's depletion capacitance's temperature coefficient where `TLEVC` is 1, `CTS`, per kelvin; default 0. |
-| `substrate_emission_coefficient` |  | The substrate junction's emission coefficient, `NS`; default 1. |
-| `substrate_emission_coefficient_quadratic_temperature_coefficient` | `0` | The substrate junction's emission coefficient's quadratic temperature coefficient, `TNS2`, per kelvin squared; default 0. |
-| `substrate_emission_coefficient_temperature_coefficient` | `0` | The substrate junction's emission coefficient's linear temperature coefficient, `TNS1`, per kelvin: it scales by `1 + TNS1·ΔT + TNS2·ΔT²` from the nominal temperature; default 0. |
-| `substrate_grading` |  | The substrate junction's grading coefficient, `MJS`, below 1; default 0. |
-| `substrate_grading_quadratic_temperature_coefficient` | `0` | The substrate junction's grading coefficient's quadratic temperature coefficient, `TMJS2`, per kelvin squared; default 0. |
-| `substrate_grading_temperature_coefficient` | `0` | The substrate junction's grading coefficient's linear temperature coefficient, `TMJS1`, per kelvin: it scales by `1 + TMJS1·ΔT + TMJS2·ΔT²` from the nominal temperature; default 0. |
-| `substrate_potential` |  | The substrate junction's built-in potential, `VJS`, in volts; default 0.75. |
-| `substrate_potential_temperature_coefficient` | `0` | The substrate junction's built-in potential's temperature coefficient where `TLEVC` is 1, `TVJS`, in volts per kelvin; default 0. |
-| `substrate_saturation_current` |  | The substrate junction's saturation current, `ISS`, in amperes; without it, the junction carries the minimum conductance only. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_model` | `0` | How the saturation currents and the betas follow the temperature, `TLEV`; default 0. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
-| `transit_time_bias_coefficient` | `0` | How much the forward transit time grows with bias, `XTF`; default 0. |
-| `transit_time_current` | `0` | The current, `ITF`, above which the forward transit time grows, in amperes; default 0. |
-| `transit_time_current_quadratic_temperature_coefficient` | `0` | The transit time's current's quadratic temperature coefficient, `TITF2`, per kelvin squared; default 0. |
-| `transit_time_current_temperature_coefficient` | `0` | The transit time's current's linear temperature coefficient, `TITF1`, per kelvin: it scales by `1 + TITF1·ΔT + TITF2·ΔT²` from the nominal temperature; default 0. |
-| `transit_time_voltage` |  | The base-collector voltage, `VTF`, that sets how the forward transit time grows with it, in volts; infinite by default. |
+| `base_collector_capacitance` | `0` | Zero-bias base-collector depletion capacitance `CJC`, in farads; default 0. |
+| `base_collector_capacitance_temperature_coefficient` | `0` | Linear base-collector capacitance temperature coefficient `CTC` for `TLEVC = 1`, per kelvin; default 0. |
+| `base_collector_grading` | `0.33` | Base-collector grading coefficient `MJC`, below 1; default 0.33. |
+| `base_collector_grading_quadratic_temperature_coefficient` | `0` | Quadratic base-collector grading temperature coefficient `TMJC2`, per kelvin squared; default 0. |
+| `base_collector_grading_temperature_coefficient` | `0` | Linear base-collector grading temperature coefficient `TMJC1`, per kelvin; default 0. |
+| `base_collector_leakage_current` | `0` | Base-collector leakage saturation current `ISC`, in amperes; default 0. |
+| `base_collector_leakage_emission_coefficient` | `2` | Base-collector leakage emission coefficient `NC`; default 2. |
+| `base_collector_leakage_emission_coefficient_quadratic_temperature_coefficient` | `0` | Quadratic base-collector leakage emission-coefficient temperature coefficient `TNC2`, per kelvin squared; default 0. |
+| `base_collector_leakage_emission_coefficient_temperature_coefficient` | `0` | Linear base-collector leakage emission-coefficient temperature coefficient `TNC1`, per kelvin; default 0. |
+| `base_collector_potential` | `0.75` | Base-collector built-in potential `VJC`, in volts; default 0.75. |
+| `base_collector_potential_temperature_coefficient` | `0` | Linear base-collector built-in potential temperature coefficient `TVJC` for `TLEVC = 1`, in volts per kelvin; default 0. |
+| `base_emitter_capacitance` | `0` | Zero-bias base-emitter depletion capacitance `CJE`, in farads; default 0. |
+| `base_emitter_capacitance_temperature_coefficient` | `0` | Linear base-emitter capacitance temperature coefficient `CTE` for `TLEVC = 1`, per kelvin; default 0. |
+| `base_emitter_grading` | `0.33` | Base-emitter grading coefficient `MJE`, below 1; default 0.33. |
+| `base_emitter_grading_quadratic_temperature_coefficient` | `0` | Quadratic base-emitter grading temperature coefficient `TMJE2`, per kelvin squared; default 0. |
+| `base_emitter_grading_temperature_coefficient` | `0` | Linear base-emitter grading temperature coefficient `TMJE1`, per kelvin; default 0. |
+| `base_emitter_leakage_current` | `0` | Base-emitter leakage saturation current `ISE`, in amperes; default 0. |
+| `base_emitter_leakage_emission_coefficient` | `1.5` | Base-emitter leakage emission coefficient `NE`; default 1.5. |
+| `base_emitter_leakage_emission_coefficient_quadratic_temperature_coefficient` | `0` | Quadratic base-emitter leakage emission-coefficient temperature coefficient `TNE2`, per kelvin squared; default 0. |
+| `base_emitter_leakage_emission_coefficient_temperature_coefficient` | `0` | Linear base-emitter leakage emission-coefficient temperature coefficient `TNE1`, per kelvin; default 0. |
+| `base_emitter_potential` | `0.75` | Base-emitter built-in potential `VJE`, in volts; default 0.75. |
+| `base_emitter_potential_temperature_coefficient` | `0` | Linear base-emitter built-in potential temperature coefficient `TVJE` for `TLEVC = 1`, in volts per kelvin; default 0. |
+| `base_resistance` | `0` | Zero-bias base resistance `RB`, in ohms; default 0. |
+| `base_resistance_current` |  | Base current `IRB` at which base resistance falls halfway toward `RBM`, in amperes; omitted modulates resistance by base charge. |
+| `base_resistance_current_quadratic_temperature_coefficient` | `0` | Quadratic temperature coefficient `TIRB2` for halfway base-resistance current `IRB`, per kelvin squared; default 0. |
+| `base_resistance_current_temperature_coefficient` | `0` | Linear temperature coefficient `TIRB1` for halfway base-resistance current `IRB`, per kelvin; default 0. |
+| `base_resistance_quadratic_temperature_coefficient` | `0` | Quadratic zero-bias base-resistance temperature coefficient `TRB2`, per kelvin squared; default 0. |
+| `base_resistance_temperature_coefficient` | `0` | Linear zero-bias base-resistance temperature coefficient `TRB1`, per kelvin; default 0. |
+| `beta_temperature_exponent` | `0` | Beta temperature parameter `XTB`: exponent of `T/Tn` for `TLEV = 0`, or linear coefficient per kelvin for `TLEV = 1`; default 0. |
+| `capacitance_temperature_model` | `0` | Junction-capacitance and potential temperature model `TLEVC`; default 0. |
+| `collector_resistance` | `0` | Collector series resistance `RC`, in ohms; default 0. |
+| `collector_resistance_quadratic_temperature_coefficient` | `0` | Quadratic collector-resistance temperature coefficient `TRC2`, per kelvin squared; default 0. |
+| `collector_resistance_temperature_coefficient` | `0` | Linear collector-resistance temperature coefficient `TRC1`, per kelvin; default 0. |
+| `depletion_coefficient` | `0.5` | Fraction `FC` of junction potential above which depletion capacitance extends linearly; below 1; default 0.5. |
+| `emitter_resistance` | `0` | Emitter series resistance `RE`, in ohms; default 0. |
+| `emitter_resistance_quadratic_temperature_coefficient` | `0` | Quadratic emitter-resistance temperature coefficient `TRE2`, per kelvin squared; default 0. |
+| `emitter_resistance_temperature_coefficient` | `0` | Linear emitter-resistance temperature coefficient `TRE1`, per kelvin; default 0. |
+| `energy_gap` | `1.11` | Energy gap `EG` scaling saturation currents with temperature, in volts; default 1.11 (silicon). |
+| `excess_phase` | `0` | Excess phase `PTF` at `1 / (2π · TF)`, in degrees, giving delay `PTF · π / 180 · TF`; default 0. |
+| `flicker_coefficient` | `0` | Base-current flicker noise coefficient `KF`; default 0 (no flicker noise). |
+| `flicker_exponent` | `1` | Base-current flicker noise exponent `AF`; default 1. |
+| `forward_beta` | `100` | Ideal maximum forward current gain `BF`; default 100. |
+| `forward_beta_quadratic_temperature_coefficient` |  | Quadratic forward-beta temperature coefficient `TBF2`, per kelvin squared (see `TBF1`). |
+| `forward_beta_temperature_coefficient` |  | Linear forward-beta temperature coefficient `TBF1`, per kelvin. When `TBF1` or `TBF2` is provided, scales `BF` by `1 + TBF1·ΔT + TBF2·ΔT²` instead of `XTB`. |
+| `forward_early_voltage` |  | Forward Early voltage `VAF`, in volts; infinite by default. |
+| `forward_early_voltage_quadratic_temperature_coefficient` | `0` | Quadratic forward Early-voltage temperature coefficient `TVAF2`, per kelvin squared; default 0. |
+| `forward_early_voltage_temperature_coefficient` | `0` | Linear forward Early-voltage temperature coefficient `TVAF1`, per kelvin; default 0. |
+| `forward_emission_coefficient` | `1` | Forward emission coefficient `NF`; default 1. |
+| `forward_emission_coefficient_quadratic_temperature_coefficient` | `0` | Quadratic forward emission-coefficient temperature coefficient `TNF2`, per kelvin squared; default 0. |
+| `forward_emission_coefficient_temperature_coefficient` | `0` | Linear forward emission-coefficient temperature coefficient `TNF1`, per kelvin; default 0. |
+| `forward_knee_current` |  | Forward high-injection knee current `IKF`, in amperes; infinite by default. |
+| `forward_knee_current_quadratic_temperature_coefficient` | `0` | Quadratic forward knee-current temperature coefficient `TIKF2`, per kelvin squared; default 0. |
+| `forward_knee_current_temperature_coefficient` | `0` | Linear forward knee-current temperature coefficient `TIKF1`, per kelvin; default 0. |
+| `forward_transit_time` | `0` | Ideal forward transit time `TF`, in seconds; default 0. |
+| `forward_transit_time_quadratic_temperature_coefficient` | `0` | Quadratic forward transit-time temperature coefficient `TTF2`, per kelvin squared; default 0. |
+| `forward_transit_time_temperature_coefficient` | `0` | Linear forward transit-time temperature coefficient `TTF1`, per kelvin; default 0. |
+| `high_injection_exponent` | `0.5` | High-injection base-charge exponent `NKF` in `(0, 1]`, giving `qb = q1 · (1 + (1 + 4 · q2)^NKF) / 2`; default 0.5. |
+| `internal_base_fraction` | `1` | Fraction `XCJC` of base-collector capacitance placed on the internal base; default 1. |
+| `min_base_resistance` |  | Minimum high-current base resistance `RBM`, in ohms; defaults to `base_resistance`. |
+| `min_base_resistance_quadratic_temperature_coefficient` | `0` | Quadratic minimum base-resistance temperature coefficient `TRM2`, per kelvin squared; default 0. |
+| `min_base_resistance_temperature_coefficient` | `0` | Linear minimum base-resistance temperature coefficient `TRM1`, per kelvin; default 0. |
+| `nominal_temperature` | `300.15` | Nominal measurement temperature, in kelvins; default 27 °C. |
+| `polarity` | `npn` | Doping polarity; default `npn`. One of `npn`, `pnp`. |
+| `reverse_beta` | `1` | Ideal maximum reverse current gain `BR`; default 1. |
+| `reverse_beta_quadratic_temperature_coefficient` |  | Quadratic reverse-beta temperature coefficient `TBR2`, per kelvin squared (see `TBR1`). |
+| `reverse_beta_temperature_coefficient` |  | Linear reverse-beta temperature coefficient `TBR1`, per kelvin. When `TBR1` or `TBR2` is provided, scales `BR` by `1 + TBR1·ΔT + TBR2·ΔT²` instead of `XTB`. |
+| `reverse_early_voltage` |  | Reverse Early voltage `VAR`, in volts; infinite by default. |
+| `reverse_early_voltage_quadratic_temperature_coefficient` | `0` | Quadratic reverse Early-voltage temperature coefficient `TVAR2`, per kelvin squared; default 0. |
+| `reverse_early_voltage_temperature_coefficient` | `0` | Linear reverse Early-voltage temperature coefficient `TVAR1`, per kelvin; default 0. |
+| `reverse_emission_coefficient` | `1` | Reverse emission coefficient `NR`; default 1. |
+| `reverse_emission_coefficient_quadratic_temperature_coefficient` | `0` | Quadratic reverse emission-coefficient temperature coefficient `TNR2`, per kelvin squared; default 0. |
+| `reverse_emission_coefficient_temperature_coefficient` | `0` | Linear reverse emission-coefficient temperature coefficient `TNR1`, per kelvin; default 0. |
+| `reverse_knee_current` |  | Reverse high-injection knee current `IKR`, in amperes; infinite by default. |
+| `reverse_knee_current_quadratic_temperature_coefficient` | `0` | Quadratic reverse knee-current temperature coefficient `TIKR2`, per kelvin squared; default 0. |
+| `reverse_knee_current_temperature_coefficient` | `0` | Linear reverse knee-current temperature coefficient `TIKR1`, per kelvin; default 0. |
+| `reverse_transit_time` | `0` | Ideal reverse transit time `TR`, in seconds; default 0. |
+| `reverse_transit_time_quadratic_temperature_coefficient` | `0` | Quadratic reverse transit-time temperature coefficient `TTR2`, per kelvin squared; default 0. |
+| `reverse_transit_time_temperature_coefficient` | `0` | Linear reverse transit-time temperature coefficient `TTR1`, per kelvin; default 0. |
+| `saturation_current` | `1e-16` | Transport saturation current `IS`, in amperes; default 1e-16. |
+| `saturation_current_temperature_exponent` | `3` | Temperature-ratio exponent `XTI` scaling saturation currents; default 3. |
+| `substrate` |  | Substrate construction (`vertical` or `lateral`, matching ngspice `SUBS = 1` and `-1`); omitted disables the substrate terminal and requires substrate junction parameters to remain unset. One of `vertical`, `lateral`. |
+| `substrate_capacitance` |  | Zero-bias substrate depletion capacitance `CJS`, in farads; default 0. |
+| `substrate_capacitance_temperature_coefficient` | `0` | Linear substrate capacitance temperature coefficient `CTS` for `TLEVC = 1`, per kelvin; default 0. |
+| `substrate_emission_coefficient` |  | Substrate junction emission coefficient `NS`; default 1. |
+| `substrate_emission_coefficient_quadratic_temperature_coefficient` | `0` | Quadratic substrate emission-coefficient temperature coefficient `TNS2`, per kelvin squared; default 0. |
+| `substrate_emission_coefficient_temperature_coefficient` | `0` | Linear substrate emission-coefficient temperature coefficient `TNS1`, per kelvin; default 0. |
+| `substrate_grading` |  | Substrate grading coefficient `MJS`, below 1; default 0. |
+| `substrate_grading_quadratic_temperature_coefficient` | `0` | Quadratic substrate grading temperature coefficient `TMJS2`, per kelvin squared; default 0. |
+| `substrate_grading_temperature_coefficient` | `0` | Linear substrate grading temperature coefficient `TMJS1`, per kelvin; default 0. |
+| `substrate_potential` |  | Substrate built-in potential `VJS`, in volts; default 0.75. |
+| `substrate_potential_temperature_coefficient` | `0` | Linear substrate built-in potential temperature coefficient `TVJS` for `TLEVC = 1`, in volts per kelvin; default 0. |
+| `substrate_saturation_current` |  | Substrate junction saturation current `ISS`, in amperes; omitted conducts `gmin` only. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_model` | `0` | Saturation-current and beta temperature model `TLEV`; default 0. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
+| `transit_time_bias_coefficient` | `0` | Forward transit-time bias modulation coefficient `XTF`; default 0. |
+| `transit_time_current` | `0` | High-current threshold `ITF` for forward transit time growth, in amperes; default 0. |
+| `transit_time_current_quadratic_temperature_coefficient` | `0` | Quadratic temperature coefficient `TITF2` for transit-time current `ITF`, per kelvin squared; default 0. |
+| `transit_time_current_temperature_coefficient` | `0` | Linear temperature coefficient `TITF1` for transit-time current `ITF`, per kelvin; default 0. |
+| `transit_time_voltage` |  | Base-collector voltage `VTF` modulating forward transit time, in volts; infinite by default. |
 
 ## `bsim3`
 
@@ -141,8 +141,8 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `a0` | `1` | The bulk charge effect of a short channel, `a0`; default 1. |
 | `a1` | `0` | The first coefficient of the non-saturation effect, `a1`, per volt; default 0. |
 | `a2` | `1` | The second coefficient of the non-saturation effect, `a2`; default 1. |
-| `acde` | `1` | The exponential coefficient of the charge layer's thickness, `capmod` 3's, `acde`, in meters per volt; default 1. |
-| `af` | `1` | The flicker noise's current exponent, `noimod` 1, 4 and 5's, `af`; default 1. |
+| `acde` | `1` | Charge-layer thickness exponential coefficient for `capmod` 3, `acde`, in meters per volt; default 1. |
+| `af` | `1` | Flicker-noise current exponent (`noimod` 1, 4, and 5), `af`; default 1. |
 | `ags` | `0` | The gate bias's effect on the bulk charge, `ags`, per volt; default 0. |
 | `alpha0` | `0` | The first coefficient of the impact ionization's substrate current, `alpha0`, in meters per volt; default 0. |
 | `alpha1` | `0` | The length scaling of the impact ionization's substrate current, `alpha1`, per volt; default 0. |
@@ -157,12 +157,12 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `cf` |  | The fringing capacitance per width, `cf`, in farads per meter; default 2 · εox / π · ln(1 + 0.4 µm / `tox`). |
 | `cgbo` |  | The gate-bulk overlap capacitance per length, `cgbo`, in farads per meter; default 2 · `dwc` · Cox. |
 | `cgdl` | `0` | The bias-dependent overlap capacitance between the gate and the lightly doped drain, `cgdl`, in farads per meter; default 0. |
-| `cgdo` |  | The gate-drain overlap capacitance per width, beyond the bias-dependent one, `cgdo`, in farads per meter; default `dlc` · Cox − `cgdl` with a positive `dlc`, else 0.6 · `xj` · Cox. |
+| `cgdo` |  | Fixed gate-drain overlap capacitance per unit width, `cgdo`, in farads per meter; default `dlc` · Cox − `cgdl` when `dlc &gt; 0`, otherwise 0.6 · `xj` · Cox. |
 | `cgsl` | `0` | The bias-dependent overlap capacitance between the gate and the lightly doped source, `cgsl`, in farads per meter; default 0. |
-| `cgso` |  | The gate-source overlap capacitance per width, beyond the bias-dependent one, `cgso`, in farads per meter; default `dlc` · Cox − `cgsl` with a positive `dlc`, else 0.6 · `xj` · Cox. |
+| `cgso` |  | Fixed gate-source overlap capacitance per unit width, `cgso`, in farads per meter; default `dlc` · Cox − `cgsl` when `dlc &gt; 0`, otherwise 0.6 · `xj` · Cox. |
 | `channel` | `n` | The channel; default `n`. One of `n`, `p`. |
 | `charge_partition` | `0` | The share of the channel's charge the drain takes in saturation, `xpart`: 0.4 below 0.5, 0.5 at 0.5 and none above it, and no channel charge at all below 0; default 0. |
-| `check_parameters` | `false` | Whether the size-dependent parameters are checked and clamped where they lie out of range, `paramchk = 1`; default false. |
+| `check_parameters` | `false` | Flag enabling range checking and clamping of size-dependent parameters (`paramchk = 1`); default false. |
 | `cit` | `0` | The interface traps' capacitance, `cit`, in farads per square meter; default 0. |
 | `cj` | `0.0005` | The junctions' zero-bias bottom capacitance per area, `cj`, in farads per square meter; default 0.0005. |
 | `cjsw` | `5e-10` | The junctions' zero-bias sidewall capacitance per length along the field oxide, `cjsw`, in farads per meter; default 5e-10. |
@@ -186,8 +186,8 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `dwb` | `0` | The body bias's narrowing of the channel, `dwb`, in meters per square-root volt; default 0. |
 | `dwc` |  | The width each side of the channel loses in the charges, `dwc`, in meters; default `wint`. |
 | `dwg` | `0` | The gate bias's narrowing of the channel, `dwg`, in meters per volt; default 0. |
-| `ef` | `1` | The flicker noise's frequency exponent, `ef`; default 1. |
-| `em` | `41000000` | The saturation field in the flicker noise, `em`, in volts per meter; default 41000000. |
+| `ef` | `1` | Flicker-noise frequency exponent, `ef`; default 1. |
+| `em` | `41000000` | Saturation field for flicker noise, `em`, in volts per meter; default 41000000. |
 | `eta0` | `0.08` | The drain-induced barrier lowering below the threshold, `eta0`; default 0.08. |
 | `etab` | `-0.07` | The body effect on the drain-induced barrier lowering below the threshold, `etab`, per volt; default -0.07. |
 | `gamma1` |  | The body effect near the surface, `gamma1`, in square-root volts; default derived from `nch`. |
@@ -200,7 +200,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `k3` | `80` | The narrow-width coefficient, `k3`; default 80. |
 | `k3b` | `0` | The body effect on `k3`, `k3b`, per volt; default 0. |
 | `keta` | `-0.047` | The body effect on the bulk charge, `keta`, per volt; default -0.047. |
-| `kf` | `0` | The flicker noise's coefficient, `noimod` 1, 4 and 5's, `kf`; default 0. |
+| `kf` | `0` | Flicker-noise coefficient (`noimod` 1, 4, and 5), `kf`; default 0. |
 | `kt1` | `-0.11` | The threshold's temperature coefficient, `kt1`, in volts; default -0.11. |
 | `kt1l` | `0` | The channel length's effect on `kt1`, `kt1l`, in volt-meters; default 0. |
 | `kt2` | `0.022` | The body effect on `kt1`, `kt2`; default 0.022. |
@@ -242,7 +242,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `lgamma1` | `0` | The length dependence of `gamma1`, `lgamma1`: its coefficient of the reciprocal of the effective length, in the unit of `gamma1` times meters; default 0. |
 | `lgamma2` | `0` | The length dependence of `gamma2`, `lgamma2`: its coefficient of the reciprocal of the effective length, in the unit of `gamma2` times meters; default 0. |
 | `lint` | `0` | The length each side of the channel loses, which shortens it, `lint`, in meters; default 0. |
-| `lintnoi` | `0` | The length each side of the channel loses in the flicker noise, beyond `lint`, `lintnoi`, in meters; default 0. |
+| `lintnoi` | `0` | Channel length offset per side for flicker noise beyond `lint`, `lintnoi`, in meters; default 0. |
 | `lk1` | `0` | The length dependence of `k1`, `lk1`: its coefficient of the reciprocal of the effective length, in the unit of `k1` times meters; default 0. |
 | `lk2` | `0` | The length dependence of `k2`, `lk2`: its coefficient of the reciprocal of the effective length, in the unit of `k2` times meters; default 0. |
 | `lk3` | `0` | The length dependence of `k3`, `lk3`: its coefficient of the reciprocal of the effective length, in the unit of `k3` times meters; default 0. |
@@ -302,17 +302,17 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `mjswg` |  | The gate sidewall's grading coefficient, `mjswg`; default `mjsw`. |
 | `mobility_model` | `1` | The mobility model, `mobmod`, 1, 2 or 3; default 1. |
 | `mobility_multiplier` | `1` | A factor of the low-field mobility, `mulu0`; default 1. |
-| `moin` | `15` | The gate bias's effect on the surface potential, `capmod` 3's, `moin`; default 15. |
+| `moin` | `15` | Surface-potential gate-bias coefficient for `capmod` 3, `moin`; default 15. |
 | `multiplier` | `1` | The number of identical transistors in parallel, `m`; default 1. |
 | `nch` |  | The channel's doping concentration near the surface, `nch`, per cubic meter; default 1.7e23 per cubic meter, or derived from `gamma1` where it alone is given. |
 | `nfactor` | `1` | The subthreshold swing's coefficient, `nfactor`; default 1. |
 | `ngate` | `0` | The poly gate's doping concentration, zero for no depletion of the gate, `ngate`, per cubic meter; default 0. |
 | `nj` | `1` | The junctions' emission coefficient, `nj`; default 1. |
 | `nlx` | `1.74e-07` | The lateral non-uniform doping along the channel, `nlx`, in meters; default 1.74e-7. |
-| `noff` | `1` | The subthreshold swing's coefficient in the charges, `capmod` 1 to 3's, `noff`; default 1. |
-| `noia` |  | The first oxide trap density coefficient of the flicker noise, `noimod` 2, 3 and 6's, `noia`, in the manual's unit; default 1e20 for an n-channel, 9.9e18 for a p-channel. |
-| `noib` |  | The second oxide trap density coefficient of the flicker noise, `noib`, in the manual's unit; default 5e4 for an n-channel, 2.4e3 for a p-channel. |
-| `noic` |  | The third oxide trap density coefficient of the flicker noise, `noic`, in the manual's unit; default -1.4e-12 for an n-channel, 1.4e-12 for a p-channel. |
+| `noff` | `1` | Subthreshold swing coefficient in `capmod` 1 to 3 charges, `noff`; default 1. |
+| `noia` |  | First oxide-trap density coefficient for flicker noise (`noimod` 2, 3, and 6), `noia`, in manual units; default 1e20 for n-channel, 9.9e18 for p-channel. |
+| `noib` |  | Second oxide-trap density coefficient for flicker noise, `noib`, in manual units; default 5e4 for n-channel, 2.4e3 for p-channel. |
+| `noic` |  | Third oxide-trap density coefficient for flicker noise, `noic`, in manual units; default -1.4e-12 for n-channel, 1.4e-12 for p-channel. |
 | `noise_model` | `1` | The noise model, `noimod`, 1 to 6; default 1. |
 | `nominal_temperature` | `300.15` | The temperature the parameters were measured at, `tnom`, in kelvins; default 27 °C. |
 | `nsub` | `6e+22` | The substrate's doping concentration, `nsub`, per cubic meter; default 6e22. |
@@ -385,7 +385,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `ppscbe2` | `0` | The area dependence of `pscbe2`, `ppscbe2`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `pscbe2` times square meters; default 0. |
 | `ppvag` | `0` | The area dependence of `pvag`, `ppvag`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `pvag` times square meters; default 0. |
 | `prdsw` | `0` | The area dependence of `rdsw`, `prdsw`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `rdsw` times square meters; default 0. |
-| `prt` | `0` | The temperature coefficient of `rdsw`, as `rdsw` is, `prt`, in ohms; default 0. |
+| `prt` | `0` | Temperature coefficient of `rdsw`, `prt`, in ohms; default 0. |
 | `prwb` | `0` | The body effect on `rdsw`, `prwb`, per square-root volt; default 0. |
 | `prwg` | `0` | The gate bias's effect on `rdsw`, `prwg`, per volt; default 0. |
 | `pscbe1` | `424000000` | The first coefficient of the substrate current's body effect on the output resistance, `pscbe1`, in volts per meter; default 424000000. |
@@ -419,9 +419,9 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `tcj` | `0` | The temperature coefficient of `cj`, `tcj`, per kelvin; default 0. |
 | `tcjsw` | `0` | The temperature coefficient of `cjsw`, `tcjsw`, per kelvin; default 0. |
 | `tcjswg` | `0` | The temperature coefficient of `cjswg`, `tcjswg`, per kelvin; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
 | `threshold_adjustment` | `0` | A shift of the zero-bias threshold, `delvto`, in volts; default 0. |
 | `tox` | `1.5e-08` | The gate oxide's thickness, `tox`, in meters; default 1.5e-8. |
 | `toxm` |  | The oxide thickness the parameters were extracted at, which scales `k1` and `k2`, `toxm`, in meters; default `tox`. |
@@ -440,8 +440,8 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `vbx` |  | The bulk-source voltage at which the depletion reaches `xt`, `vbx`, in volts; default derived from `nch` and `xt`. |
 | `vfb` |  | The flat-band voltage, `vfb`, in volts; default derived from `vth0`, or -1 V. |
 | `vfbcv` | `-1` | The flat-band voltage of `capmod` 0, `vfbcv`, in volts; default -1. |
-| `voff` | `-0.08` | The offset of the threshold below it, in the drain current's smoothing, `voff`, in volts; default -0.08. |
-| `voffcv` | `0` | The offset of the threshold in the charges, `capmod` 1 to 3's, `voffcv`, in volts; default 0. |
+| `voff` | `-0.08` | Subthreshold offset voltage in drain-current smoothing, `voff`, in volts; default -0.08. |
+| `voffcv` | `0` | Threshold offset voltage in `capmod` 1 to 3 charges, `voffcv`, in volts; default 0. |
 | `vsat` | `80000` | The carriers' saturation velocity at the nominal temperature, `vsat`, in meters per second; default 80000. |
 | `vth0` |  | The zero-bias threshold voltage of a long, wide channel, negative for a p-channel, `vth0`, in volts; default derived from `vfb`, `phi` and `k1`. |
 | `w0` | `2.5e-06` | The width offset of the narrow-width effect, `w0`, in meters; default 2.5e-6. |
@@ -576,7 +576,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `cdsc` | `0.00024` | The coupling capacitance of the drain and the source to the channel, `cdsc`, in farads per square meter; default 0.00024. |
 | `cdscb` | `0` | The body-bias dependence of `cdsc`, `cdscb`, in farads per volt square meter; default 0. |
 | `cdscd` | `0` | The drain-bias dependence of `cdsc`, `cdscd`, in farads per volt square meter; default 0. |
-| `cf` |  | The fringe capacitance parameter, `cf`, in farads per meter; default `2 · epsrox · ε0 / π · ln(1 + 0.4 µm / toxe)`, of `toxe` where it is given, else of 3 nm. |
+| `cf` |  | Fringe capacitance parameter, `cf`, in farads per meter; default `2 · epsrox · ε0 / π · ln(1 + 0.4 µm / toxe)` using `toxe` when given or 3 nm. |
 | `cgbo` |  | The gate-bulk overlap capacitance per length, `cgbo`, in farads per meter; default twice `dwc` times the oxide capacitance. |
 | `cgdl` | `0` | The gate-drain overlap capacitance per width of the lightly doped extension, `cgdl`, in farads per meter; default 0. |
 | `cgdo` |  | The gate-drain overlap capacitance per width, `cgdo`, in farads per meter; default derived from `dlc` and `cgdl`, or from `xj`. |
@@ -585,7 +585,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `cgso` |  | The gate-source overlap capacitance per width, `cgso`, in farads per meter; default derived from `dlc` and `cgsl`, or from `xj`. |
 | `channel` | `n` | The channel; default `n`. One of `n`, `p`. |
 | `charge_partition` | `0` | The share of the channel's charge the drain takes in saturation, `xpart`: 0.4 below 0.5, 0.5 at 0.5 and none above it; default 0. |
-| `check_parameters` | `true` | Whether the size-dependent parameters are checked and clamped where they lie out of range, `paramchk = 1`; default true. |
+| `check_parameters` | `true` | Flag enabling range checking and clamping of size-dependent parameters (`paramchk = 1`); default true. |
 | `cigbacc` | `0.075` | The parameter for Igb, `cigbacc`, in per volt; default 0.075. |
 | `cigbinv` | `0.006` | The parameter for Igb, `cigbinv`, in per volt; default 0.006. |
 | `cigc` |  | The parameter for Igc, `cigc`, in per volt; default 0.075 per volt for an n-channel and 0.03 per volt for a p-channel. |
@@ -905,7 +905,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `pckappas` | `0` | The area dependence of `ckappas`, `pckappas`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `ckappas` times square meters; default 0. |
 | `pclc` | `0` | The area dependence of `clc`, `pclc`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `clc` times square meters; default 0. |
 | `pcle` | `0` | The area dependence of `cle`, `pcle`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `cle` times square meters; default 0. |
-| `pclm` | `1.3` | The channel length modulation Coefficient, `pclm`; default 1.3. |
+| `pclm` | `1.3` | Channel-length modulation coefficient, `pclm`; default 1.3. |
 | `pdelta` | `0` | The area dependence of `delta`, `pdelta`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `delta` times square meters; default 0. |
 | `pdiblc1` | `0.39` | The first coefficient of the drain-induced barrier lowering of the output resistance, `pdiblc1`; default 0.39. |
 | `pdiblc2` | `0.0086` | The second coefficient of the drain-induced barrier lowering of the output resistance, `pdiblc2`; default 0.0086. |
@@ -927,7 +927,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `pdwg` | `0` | The area dependence of `dwg`, `pdwg`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `dwg` times square meters; default 0. |
 | `pegidl` | `0` | The area dependence of `egidl`, `pegidl`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `egidl` times square meters; default 0. |
 | `peigbinv` | `0` | The area dependence of `eigbinv`, `peigbinv`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `eigbinv` times square meters; default 0. |
-| `perimeter_model` | `1` | What the diffusions' perimeters `ps` and `pd` include, `permod`, 0 or 1; default 1. |
+| `perimeter_model` | `1` | Diffusion perimeter convention (`permod`, 0 or 1) determining whether `ps` and `pd` include the gate edge; default 1. |
 | `peta0` | `0` | The area dependence of `eta0`, `peta0`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `eta0` times square meters; default 0. |
 | `petab` | `0` | The area dependence of `etab`, `petab`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `etab` times square meters; default 0. |
 | `peu` | `0` | The area dependence of `eu`, `peu`: its coefficient of the reciprocal of the effective length times the effective width, in the unit of `eu` times square meters; default 0. |
@@ -1072,9 +1072,9 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `tcj` | `0` | The temperature coefficient of cj, `tcj`, in per kelvin; default 0. |
 | `tcjsw` | `0` | The temperature coefficient of cjsw, `tcjsw`, in per kelvin; default 0. |
 | `tcjswg` | `0` | The temperature coefficient of cjswg, `tcjswg`, in per kelvin; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
 | `thermal_noise_model` | `0` | The channel's thermal noise model, `tnoimod`, 0 or 1; default 0. |
 | `threshold_adjustment` | `0` | A shift of the zero-bias threshold, `delvto`, in volts; default 0. |
 | `tku0` | `0` | The temperature coefficient of KU0, `tku0`; default 0. |
@@ -1296,69 +1296,69 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `capacitance` | required | The capacitance, in farads, at the nominal temperature; zero or positive. |
-| `nominal_temperature` | `300.15` | The temperature the capacitance was measured at, in kelvins; default 27 °C. |
-| `quadratic_temperature_coefficient` | `0` | The quadratic temperature coefficient `tc2`, per kelvin squared; default 0. |
-| `quadratic_voltage_coefficient` | `0` | The quadratic voltage coefficient `vc2`, per volt squared; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_coefficient` | `0` | The linear temperature coefficient `tc1`, per kelvin; default 0. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `voltage_coefficient` | `0` | The linear voltage coefficient `vc1`, per volt; default 0. |
+| `capacitance` | required | Capacitance at nominal temperature, in farads; non-negative. |
+| `nominal_temperature` | `300.15` | Nominal measurement temperature, in kelvins; default 27 °C. |
+| `quadratic_temperature_coefficient` | `0` | Quadratic temperature coefficient `tc2`, per kelvin squared; default 0. |
+| `quadratic_voltage_coefficient` | `0` | Quadratic voltage coefficient `vc2`, per volt squared; default 0. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_coefficient` | `0` | Linear temperature coefficient `tc1`, per kelvin; default 0. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `voltage_coefficient` | `0` | Linear voltage coefficient `vc1`, per volt; default 0. |
 
 ## `coupled_inductors`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `windings` | required | Each winding, as an inductor's parameters; at least two. |
-| `windings.*.inductance` | required | The inductance, in henries, at the nominal temperature; positive. |
-| `windings.*.nominal_temperature` | `300.15` | The temperature the inductance was measured at, in kelvins; default 27 °C. |
-| `windings.*.quadratic_temperature_coefficient` | `0` | The quadratic temperature coefficient `tc2`, per kelvin squared; default 0. |
-| `windings.*.temperature_coefficient` | `0` | The linear temperature coefficient `tc1`, per kelvin; default 0. |
-| `couplings` | `[]` | The couplings between pairs of windings. |
-| `couplings.*.coefficient` | required | The coupling coefficient, from -1 to 1. |
-| `couplings.*.windings` | required | The two windings, by their numbers from 1. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `windings` | required | Winding specifications as [`InductorParameters`]; at least two windings. |
+| `windings.*.inductance` | required | Inductance at nominal temperature, in henries; positive. |
+| `windings.*.nominal_temperature` | `300.15` | Nominal measurement temperature, in kelvins; default 27 °C. |
+| `windings.*.quadratic_temperature_coefficient` | `0` | Quadratic temperature coefficient `tc2`, per kelvin squared; default 0. |
+| `windings.*.temperature_coefficient` | `0` | Linear temperature coefficient `tc1`, per kelvin; default 0. |
+| `couplings` | `[]` | Magnetic couplings between pairs of windings. |
+| `couplings.*.coefficient` | required | Coupling coefficient in `[-1, 1]`. |
+| `couplings.*.windings` | required | Pair of 1-based winding indices. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `current_controlled_current_source`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `gain` | required | The ratio of the output current to the control current. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `current_controlled_memristor`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `charge` | required | The charge that carries the state across its whole range, in coulombs; positive. |
-| `off_resistance` | required | The resistance fully off, at a state of 1, in ohms; above the on resistance. |
-| `on_resistance` | required | The resistance fully on, at a state of 0, in ohms; positive. |
-| `law` | `linear` | How the resistance follows the state; default linear. One of `linear`, `exponential`. |
-| `state` | `1` | The state it was made in, from 0, fully on, to 1, fully off; default 1. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `window` | `0.01` | The width of the window that slows the state at either bound, a fraction of its range; positive; default 0.01. |
+| `charge` | required | Switching charge carrying the state across its full range, in coulombs; positive. |
+| `off_resistance` | required | Fully off resistance at state 1, in ohms; greater than `on_resistance`. |
+| `on_resistance` | required | Fully on resistance at state 0, in ohms; positive. |
+| `law` | `linear` | Resistance-versus-state law; default linear. One of `linear`, `exponential`. |
+| `state` | `1` | Initial state from 0 (fully on) to 1 (fully off); default 1. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `window` | `0.01` | Boundary window width as a fraction of the state range; positive; default 0.01. |
 
 ## `current_controlled_switch`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `off_current` | `0` | The control current at which the switch is off, in amperes; default 0. |
-| `off_resistance` | `1000000` | The resistance with the control at or past the off current, in ohms; default 1e6. |
-| `on_current` | `0.001` | The control current at which the switch is on, in amperes; default 1 mA. |
-| `on_resistance` | `1` | The resistance with the control at or past the on current, in ohms; default 1. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `off_current` | `0` | Control current at which the switch reaches `off_resistance`, in amperes; default 0. |
+| `off_resistance` | `1000000` | Off-state resistance at or past `off_current`, in ohms; default 1e6. |
+| `on_current` | `0.001` | Control current at which the switch reaches `on_resistance`, in amperes; default 1 mA. |
+| `on_resistance` | `1` | On-state resistance at or past `on_current`, in ohms; default 1. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `current_controlled_voltage_source`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `transresistance` | required | The ratio of the output voltage to the control current, in ohms. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `current_source`
 
@@ -1390,64 +1390,64 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `waveform.exponential.pulsed` | required | The value the rise tends to. |
 | `waveform.exponential.rise_delay` | `0` | The time the rise starts, in seconds. |
 | `waveform.exponential.rise_time_constant` | required | The rise's time constant, in seconds; positive. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `diode`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `breakdown_current` | `0.001` | The current at the breakdown voltage, in amperes, at least 0; default 1e-3. |
-| `breakdown_emission_coefficient` |  | The breakdown emission coefficient; the emission coefficient by default. |
-| `breakdown_temperature_coefficient` | `0` | How fast the breakdown voltage falls with temperature: in volts per kelvin at temperature model 0, and per kelvin, relative to the breakdown voltage, at 1 and 2; default 0. |
-| `breakdown_voltage` |  | The reverse breakdown voltage, in volts, at least 0; without it, the junction never breaks down. |
-| `capacitance_temperature_model` | `0` | How the junction capacitances and potentials follow the temperature, SPICE's `TLEVC`; default 0. |
-| `depletion_coefficient` | `0.5` | The fraction of the junction potential above which the depletion capacitance is extended linearly, below 1; default 0.5. |
-| `emission_coefficient` | `1` | The emission coefficient; default 1. |
-| `energy_gap` |  | The energy gap that scales the saturation currents with temperature, in volts; by default 1.11, silicon's, and at temperature model 2, where it is the gap at 0 K, 1.16. |
-| `energy_gap_alpha` | `0.000702` | Varshni's `α` of the energy gap at temperature model 2, in volts per kelvin; default 7.02e-4, silicon's. |
-| `energy_gap_beta` | `1108` | Varshni's `β` of the energy gap at temperature model 2, in kelvins; default 1108, silicon's. |
-| `flicker_coefficient` | `0` | The flicker noise coefficient, `KF`; default 0, no flicker noise. |
-| `flicker_exponent` | `1` | The power of the current in the flicker noise, `AF`; default 1. |
-| `forward_knee_current` |  | The forward knee current, in amperes, above which high injection halves the junction current's slope; without it, none. |
-| `grading_coefficient` | `0.5` | The grading coefficient of the junction, below 1; default 0.5. |
-| `grading_coefficient_quadratic_temperature_coefficient` | `0` | The grading coefficient's quadratic temperature coefficient, per kelvin squared; default 0. |
-| `grading_coefficient_temperature_coefficient` | `0` | The grading coefficient's linear temperature coefficient, per kelvin; default 0. |
-| `junction_capacitance` | `0` | The zero-bias junction capacitance, in farads; default 0. |
-| `junction_capacitance_temperature_coefficient` | `0` | The junction capacitance's linear temperature coefficient at capacitance temperature model 1, per kelvin; default 0. |
-| `junction_potential` | `1` | The junction potential, in volts; default 1. |
-| `junction_potential_temperature_coefficient` | `0` | How fast the junction potential falls with temperature at capacitance temperature model 1, in volts per kelvin; default 0. |
-| `nominal_temperature` | `300.15` | The temperature the parameters were measured at, in kelvins; default 27 °C. |
-| `recombination_emission_coefficient` | `2` | The recombination current's emission coefficient; default 2. |
-| `recombination_saturation_current` |  | The saturation current of the recombination in the depletion region, in amperes; without it, no recombination current. |
-| `reverse_knee_current` |  | The reverse knee current, in amperes, beyond which the reverse current's growth slows alike; without it, none. |
-| `saturation_current` | `1e-14` | The saturation current, in amperes; default 1e-14. |
-| `saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the saturation currents' scaling; default 3. |
-| `series_resistance` | `0` | The series resistance, in ohms; default 0. |
-| `series_resistance_quadratic_temperature_coefficient` | `0` | The series resistances' quadratic temperature coefficient, per kelvin squared; default 0. |
-| `series_resistance_temperature_coefficient` | `0` | The series resistances' linear temperature coefficient, per kelvin; default 0. |
-| `sidewall_depletion_coefficient` | `0.5` | The fraction of the sidewall junction's potential above which its depletion capacitance is extended linearly, below 1; default 0.5. |
-| `sidewall_emission_coefficient` |  | The sidewall junction's emission coefficient; the emission coefficient by default. |
-| `sidewall_forward_knee_current` |  | The sidewall junction's forward knee current, in amperes; without it, none. |
-| `sidewall_grading_coefficient` | `0.33` | The sidewall junction's grading coefficient, below 1; default 0.33. |
-| `sidewall_junction_capacitance` | `0` | The sidewall junction's zero-bias capacitance, in farads; default 0. |
-| `sidewall_junction_capacitance_temperature_coefficient` | `0` | The sidewall junction capacitance's linear temperature coefficient at capacitance temperature model 1, per kelvin; default 0. |
-| `sidewall_junction_potential` | `1` | The sidewall junction's potential, in volts; default 1. |
-| `sidewall_junction_potential_temperature_coefficient` | `0` | How fast the sidewall junction potential falls with temperature at capacitance temperature model 1, in volts per kelvin; default 0. |
-| `sidewall_saturation_current` | `0` | The sidewall junction's saturation current, in amperes; default 0, no sidewall current. |
-| `sidewall_series_resistance` |  | The sidewall junction's own series resistance, in ohms, from the anode; without it, the sidewall sits beside the junction, behind the series resistance. |
-| `sidewall_tunneling_saturation_current` | `0` | The sidewall's tunneling saturation current, in amperes; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_model` | `0` | How the saturation currents and the band gap follow the temperature, SPICE's `TLEV`; default 0. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
-| `transit_time` | `0` | The transit time, in seconds; default 0. |
-| `transit_time_quadratic_temperature_coefficient` | `0` | The transit time's quadratic temperature coefficient, per kelvin squared; default 0. |
-| `transit_time_temperature_coefficient` | `0` | The transit time's linear temperature coefficient, per kelvin; default 0. |
-| `tunneling_emission_coefficient` | `30` | The tunneling current's emission coefficient; default 30. |
-| `tunneling_energy_gap_factor` | `1` | The factor of the energy gap in the tunneling saturation currents' scaling; default 1. |
-| `tunneling_saturation_current` | `0` | The tunneling current's saturation current, in amperes; default 0, no tunneling. |
-| `tunneling_saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the tunneling saturation currents' scaling; default 3. |
+| `breakdown_current` | `0.001` | Current magnitude at `breakdown_voltage`, in amperes (non-negative); default 1e-3. |
+| `breakdown_emission_coefficient` |  | Reverse breakdown emission coefficient; defaults to `emission_coefficient`. |
+| `breakdown_temperature_coefficient` | `0` | Linear breakdown voltage temperature coefficient: in volts per kelvin for model 0, or relative per kelvin for models 1 and 2; default 0. |
+| `breakdown_voltage` |  | Reverse breakdown voltage, in volts (non-negative); omitted disables breakdown. |
+| `capacitance_temperature_model` | `0` | Junction-capacitance and potential temperature model (`TLEVC`); default 0. |
+| `depletion_coefficient` | `0.5` | Fraction of junction potential above which depletion capacitance extends linearly; below 1; default 0.5. |
+| `emission_coefficient` | `1` | Bottom junction emission coefficient; default 1. |
+| `energy_gap` |  | Energy gap scaling saturation currents, in volts; defaults to 1.11 (or 1.16 at 0 K under temperature model 2). |
+| `energy_gap_alpha` | `0.000702` | Varshni `α` parameter for temperature model 2, in volts per kelvin; default 7.02e-4 (silicon). |
+| `energy_gap_beta` | `1108` | Varshni `β` parameter for temperature model 2, in kelvins; default 1108 (silicon). |
+| `flicker_coefficient` | `0` | Flicker noise coefficient `KF`; default 0 (no flicker noise). |
+| `flicker_exponent` | `1` | Flicker noise current exponent `AF`; default 1. |
+| `forward_knee_current` |  | Forward high-injection knee current, in amperes; omitted disables forward knee softening. |
+| `grading_coefficient` | `0.5` | Bottom junction grading coefficient, below 1; default 0.5. |
+| `grading_coefficient_quadratic_temperature_coefficient` | `0` | Quadratic grading coefficient temperature coefficient, per kelvin squared; default 0. |
+| `grading_coefficient_temperature_coefficient` | `0` | Linear grading coefficient temperature coefficient, per kelvin; default 0. |
+| `junction_capacitance` | `0` | Zero-bias bottom junction capacitance, in farads; default 0. |
+| `junction_capacitance_temperature_coefficient` | `0` | Linear bottom capacitance temperature coefficient under `TLEVC = 1`, per kelvin; default 0. |
+| `junction_potential` | `1` | Bottom junction built-in potential, in volts; default 1. |
+| `junction_potential_temperature_coefficient` | `0` | Linear bottom junction potential temperature coefficient under `TLEVC = 1`, in volts per kelvin; default 0. |
+| `nominal_temperature` | `300.15` | Nominal measurement temperature, in kelvins; default 27 °C. |
+| `recombination_emission_coefficient` | `2` | Recombination current emission coefficient; default 2. |
+| `recombination_saturation_current` |  | Depletion-region recombination saturation current, in amperes; omitted disables recombination current. |
+| `reverse_knee_current` |  | Reverse high-injection knee current, in amperes; omitted disables reverse knee softening. |
+| `saturation_current` | `1e-14` | Bottom junction saturation current, in amperes; default 1e-14. |
+| `saturation_current_temperature_exponent` | `3` | Temperature-ratio exponent scaling saturation currents; default 3. |
+| `series_resistance` | `0` | Main series resistance, in ohms; default 0. |
+| `series_resistance_quadratic_temperature_coefficient` | `0` | Quadratic series resistance temperature coefficient, per kelvin squared; default 0. |
+| `series_resistance_temperature_coefficient` | `0` | Linear series resistance temperature coefficient, per kelvin; default 0. |
+| `sidewall_depletion_coefficient` | `0.5` | Fraction of sidewall junction potential above which sidewall depletion capacitance extends linearly; below 1; default 0.5. |
+| `sidewall_emission_coefficient` |  | Sidewall junction emission coefficient; defaults to `emission_coefficient`. |
+| `sidewall_forward_knee_current` |  | Sidewall forward high-injection knee current, in amperes; omitted disables sidewall knee softening. |
+| `sidewall_grading_coefficient` | `0.33` | Sidewall junction grading coefficient, below 1; default 0.33. |
+| `sidewall_junction_capacitance` | `0` | Zero-bias sidewall junction capacitance, in farads; default 0. |
+| `sidewall_junction_capacitance_temperature_coefficient` | `0` | Linear sidewall capacitance temperature coefficient under `TLEVC = 1`, per kelvin; default 0. |
+| `sidewall_junction_potential` | `1` | Sidewall junction built-in potential, in volts; default 1. |
+| `sidewall_junction_potential_temperature_coefficient` | `0` | Linear sidewall junction potential temperature coefficient under `TLEVC = 1`, in volts per kelvin; default 0. |
+| `sidewall_saturation_current` | `0` | Sidewall junction saturation current, in amperes; default 0 (no sidewall current). |
+| `sidewall_series_resistance` |  | Dedicated sidewall series resistance from `anode`, in ohms; omitted places the sidewall in parallel with the bottom junction behind `series_resistance`. |
+| `sidewall_tunneling_saturation_current` | `0` | Sidewall tunneling saturation current, in amperes; default 0. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_model` | `0` | Saturation-current and band-gap temperature model (`TLEV`); default 0. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
+| `transit_time` | `0` | Carrier transit time, in seconds; default 0. |
+| `transit_time_quadratic_temperature_coefficient` | `0` | Quadratic transit time temperature coefficient, per kelvin squared; default 0. |
+| `transit_time_temperature_coefficient` | `0` | Linear transit time temperature coefficient, per kelvin; default 0. |
+| `tunneling_emission_coefficient` | `30` | Tunneling current emission coefficient; default 30. |
+| `tunneling_energy_gap_factor` | `1` | Energy-gap multiplier scaling tunneling saturation currents; default 1. |
+| `tunneling_saturation_current` | `0` | Bottom tunneling saturation current, in amperes; default 0 (no tunneling). |
+| `tunneling_saturation_current_temperature_exponent` | `3` | Temperature-ratio exponent scaling tunneling saturation currents; default 3. |
 
 ## `foundry_mosfet`
 
@@ -1459,69 +1459,69 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `width` | required | The channel's width, all its fingers together, in meters; positive. |
 | `fingers` | `1` | The fingers the width is split into; 1 unless given. |
 | `multiplier` | `1` | The transistors in parallel; 1 unless given. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `heat_source`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `power` | required | The heat flow, in watts. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `power` | required | Heat flow, in watts. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `inductor`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `inductance` | required | The inductance, in henries, at the nominal temperature; positive. |
-| `nominal_temperature` | `300.15` | The temperature the inductance was measured at, in kelvins; default 27 °C. |
-| `quadratic_temperature_coefficient` | `0` | The quadratic temperature coefficient `tc2`, per kelvin squared; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_coefficient` | `0` | The linear temperature coefficient `tc1`, per kelvin; default 0. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `inductance` | required | Inductance at nominal temperature, in henries; positive. |
+| `nominal_temperature` | `300.15` | Nominal measurement temperature, in kelvins; default 27 °C. |
+| `quadratic_temperature_coefficient` | `0` | Quadratic temperature coefficient `tc2`, per kelvin squared; default 0. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_coefficient` | `0` | Linear temperature coefficient `tc1`, per kelvin; default 0. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `jfet`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `channel` | `n` | The channel; default `n`. One of `n`, `p`. |
-| `channel_length_modulation` | `0` | The channel-length modulation, `λ`, per volt; default 0. |
-| `depletion_coefficient` | `0.5` | The fraction of the junction potential above which the depletion capacitance is extended linearly, below 1; default 0.5. |
-| `doping_tail` | `1` | The doping tail, `b`: 1 for the plain square law; default 1. |
-| `drain_resistance` | `0` | The drain resistance, in ohms; default 0. |
-| `energy_gap` | `1.11` | The energy gap that scales the saturation current with temperature, in volts; default 1.11, silicon's. |
-| `flicker_coefficient` | `0` | The flicker noise coefficient of the drain current, `KF`; default 0, no flicker noise. |
-| `flicker_exponent` | `1` | The power of the drain current in the flicker noise, `AF`; default 1. |
-| `gate_drain_capacitance` | `0` | The zero-bias gate-drain capacitance, in farads; default 0. |
-| `gate_source_capacitance` | `0` | The zero-bias gate-source capacitance, in farads; default 0. |
-| `junction_potential` | `1` | The gate junctions' potential, `pb`, in volts; default 1. |
-| `nominal_temperature` | `300.15` | The temperature the parameters were measured at, in kelvins; default 27 °C. |
-| `saturation_current` | `1e-14` | The gate junctions' saturation current, in amperes; default 1e-14. |
-| `saturation_current_temperature_exponent` | `0` | The exponent of the temperature ratio in the saturation current's scaling; default 0, as ngspice scales a JFET's by it only when it is given. |
-| `source_resistance` | `0` | The source resistance, in ohms; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
-| `threshold_voltage` | `-2` | The threshold voltage, `vto`, in volts; default −2. |
-| `threshold_voltage_temperature_coefficient` | `0` | How fast the threshold voltage rises with temperature, in volts per kelvin; default 0. |
-| `transconductance_parameter` | `0.0001` | The transconductance parameter, `β`, in amperes per square volt; default 1e-4. |
-| `transconductance_parameter_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the transconductance parameter; default 0. |
+| `channel` | `n` | Channel polarity; default `n`. One of `n`, `p`. |
+| `channel_length_modulation` | `0` | Channel-length modulation `λ`, per volt; default 0. |
+| `depletion_coefficient` | `0.5` | Fraction of junction potential above which depletion capacitance extends linearly; below 1; default 0.5. |
+| `doping_tail` | `1` | Doping tail parameter `b` (`1` gives the plain square law); default 1. |
+| `drain_resistance` | `0` | Drain series resistance, in ohms; default 0. |
+| `energy_gap` | `1.11` | Energy gap scaling saturation current with temperature, in volts; default 1.11 (silicon). |
+| `flicker_coefficient` | `0` | Drain-current flicker noise coefficient `KF`; default 0 (no flicker noise). |
+| `flicker_exponent` | `1` | Drain-current flicker noise exponent `AF`; default 1. |
+| `gate_drain_capacitance` | `0` | Zero-bias gate-drain capacitance, in farads; default 0. |
+| `gate_source_capacitance` | `0` | Zero-bias gate-source capacitance, in farads; default 0. |
+| `junction_potential` | `1` | Gate junction built-in potential `pb`, in volts; default 1. |
+| `nominal_temperature` | `300.15` | Nominal measurement temperature, in kelvins; default 27 °C. |
+| `saturation_current` | `1e-14` | Gate junction saturation current, in amperes; default 1e-14. |
+| `saturation_current_temperature_exponent` | `0` | Temperature-ratio exponent scaling saturation current; default 0 (matching ngspice JFET defaults). |
+| `source_resistance` | `0` | Source series resistance, in ohms; default 0. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
+| `threshold_voltage` | `-2` | Threshold voltage `vto`, in volts; default −2. |
+| `threshold_voltage_temperature_coefficient` | `0` | Linear threshold voltage temperature coefficient, in volts per kelvin; default 0. |
+| `transconductance_parameter` | `0.0001` | Transconductance parameter `β`, in amperes per square volt; default 1e-4. |
+| `transconductance_parameter_temperature_exponent` | `0` | Temperature-ratio exponent scaling the transconductance parameter; default 0. |
 
 ## `logic_cell`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `inputs` | required | The inputs' names, in the order of the truth tables' bits. |
-| `outputs` | required | The outputs, each with its truth table. |
+| `inputs` | required | Input pin names ordered to match truth-table bit positions. |
+| `outputs` | required | Output pins paired with their truth tables. |
 | `outputs.*.name` | required | The output's name. |
 | `outputs.*.table` | required | The output's level for each combination of the inputs, a `0` or a `1` per row. Row `k` holds the inputs whose bits make `k`, the first input the most significant: for inputs `a` and `b`, the rows are `ab` = 00, 01, 10 and 11, so a NAND is `1110`. |
-| `timing` | required | How the outputs follow the inputs in time. |
-| `timing.fixed` |  | The same delays after any input changes, whatever the load. |
+| `timing` | required | Propagation timing specification for the cell outputs. |
+| `timing.fixed` |  | Constant rise, fall, and transition times independent of load. |
 | `timing.fixed.fall` | required | The delay of an output falling to 0, in seconds. |
 | `timing.fixed.rise` | required | The delay of an output rising to 1, in seconds. |
 | `timing.fixed.transition` | required | The outputs' transition, the time an edge takes to swing from ground to supply, in seconds. |
-| `timing.characterized` |  | Delays and transitions that depend on the arc, the input transition and the load. |
+| `timing.characterized` |  | Lookup-table delays and transitions indexed by arc, input slew, and output load. |
 | `timing.characterized.arcs` | required | Every arc: each change of an input that changes an output. |
 | `timing.characterized.arcs.*.before` | required | Every input's level before the change, a `0` or a `1` each, in the order of the inputs. |
 | `timing.characterized.arcs.*.delay` | required | The delay, in seconds, for each input transition, then for each load: one row per transition. |
@@ -1531,11 +1531,11 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `timing.characterized.loads` | required | The output loads the tables were measured at, in farads, rising. |
 | `timing.characterized.slews` | required | The input transitions the tables were measured at, in seconds, rising. |
 | `timing.characterized.supply` |  | The voltage from ground to supply the tables were measured at, in volts. |
-| `electrical` |  | With them, the cell has terminals `supply` and `ground`, and its pins may join electrical nets. |
-| `electrical.ground` | `ground` | The name of the ground terminal; `ground` unless given. |
-| `electrical.input_capacitances` | required | The capacitance of each input, in farads, in the order of the inputs. |
-| `electrical.supply` | `supply` | The name of the supply terminal; `supply` unless given. |
-| `electrical.threshold` | `0.5` | The fraction of the supply, from ground, at which an input switches; one half unless given. |
+| `electrical` |  | Optional electrical interface enabling analog connections through supply and ground terminals. |
+| `electrical.ground` | `ground` | Name of the ground terminal; defaults to `ground`. |
+| `electrical.input_capacitances` | required | Input pin capacitances, in farads, ordered to match `inputs`. |
+| `electrical.supply` | `supply` | Name of the supply terminal; defaults to `supply`. |
+| `electrical.threshold` | `0.5` | Switching threshold as a fraction of supply above ground; defaults to `0.5`. |
 
 ## `logic_source`
 
@@ -1591,13 +1591,13 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `source_resistance` |  | The source resistance, in ohms; default none, for the sheet resistance's. |
 | `source_squares` | `1` | The source diffusion's length in squares, `nrs`; default 1. |
 | `static_feedback` |  | Level 3: the drain's static feedback on the threshold, `eta`; default 0. |
-| `substrate_doping` |  | The substrate doping, `nsub`, per cubic meter, from which `vto`, `γ` and `φ` derive unless given; default none. It needs an oxide thickness. |
+| `substrate_doping` |  | Substrate doping `nsub`, per cubic meter, used to derive `vto`, `γ`, and `φ` when omitted (requires `oxide_thickness`); default none. |
 | `surface_mobility` | `0.06` | The surface mobility, `uo`, in square meters per volt-second, from which `kp` derives; default 0.06. |
 | `surface_potential` |  | The surface potential, `φ`, in volts; default 0.6, or derived from the substrate doping. |
 | `surface_state_density` | `0` | The surface state density, `nss`, per square meter, which shifts a derived `vto`; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
 | `threshold_adjustment` |  | Level 3: a shift of the threshold, `delvto`, in volts; default 0. |
 | `threshold_voltage` |  | The zero-bias threshold voltage, `vto`, in volts; default 0, or derived from the substrate doping. |
 | `transconductance_parameter` |  | The transconductance parameter, `kp`, in amperes per square volt; default 2e-5, or the surface mobility times the oxide capacitance per area, given an oxide thickness. |
@@ -1609,55 +1609,55 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `resistance` | required | The resistance at the reference illuminance, in ohms; positive. |
-| `dark_resistance` | `1000000` | The resistance in darkness, in ohms; positive; default 1e6, the GL5528's. |
-| `gamma` | `0.6` | How steeply the resistance falls with the illuminance, `γ`, the slope of its logarithm against the illuminance's; positive; default 0.6, which with the default dark resistance is Senba's GL5528, the most common cell of its GL55 series. |
-| `illuminance` | `10` | The reference illuminance, in lux; positive; default 10, as datasheets give it, such as Senba's of its GL55 series. |
-| `response_time` | `0` | The time constant of the response, in seconds; zero or more; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `resistance` | required | Resistance at the reference illuminance, in ohms; positive. |
+| `dark_resistance` | `1000000` | Resistance in darkness, in ohms; positive; default 1e6 (matching the Senba GL5528). |
+| `gamma` | `0.6` | Log-log slope `γ` of resistance versus illuminance; positive; default 0.6 (matching the Senba GL5528 together with default `dark_resistance`). |
+| `illuminance` | `10` | Reference illuminance, in lux; positive; default 10 (standard datasheet reference). |
+| `response_time` | `0` | Carrier response time constant, in seconds; non-negative; default 0. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `resistor`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `resistance` | required | The resistance, in ohms, at the nominal temperature; positive. |
-| `exponential_temperature_coefficient` |  | The exponential temperature coefficient `tce`, in percent per kelvin: given, the resistance is multiplied by `1.01^(tce · ΔT)` instead of the polynomial. |
-| `flicker_coefficient` | `0` | The flicker noise coefficient, `KF`; default 0, no flicker noise. |
-| `flicker_exponent` | `1` | The power of the current in the flicker noise, `AF`; default 1. |
-| `nominal_temperature` | `300.15` | The temperature the resistance was measured at, in kelvins; default 27 °C. |
-| `quadratic_temperature_coefficient` | `0` | The quadratic temperature coefficient `tc2`, per kelvin squared; default 0. |
-| `quadratic_voltage_coefficient` | `0` | The quadratic voltage coefficient `vc2`, per volt squared; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_coefficient` | `0` | The linear temperature coefficient `tc1`, per kelvin; default 0. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
-| `voltage_coefficient` | `0` | The linear voltage coefficient `vc1`, per volt; default 0. |
+| `resistance` | required | Resistance at nominal temperature, in ohms; positive. |
+| `exponential_temperature_coefficient` |  | Exponential temperature coefficient `tce`, in percent per kelvin; when present, scales resistance by `1.01^(tce · ΔT)` instead of the polynomial. |
+| `flicker_coefficient` | `0` | Flicker noise coefficient `KF`; default 0 (no flicker noise). |
+| `flicker_exponent` | `1` | Flicker noise current exponent `AF`; default 1. |
+| `nominal_temperature` | `300.15` | Nominal measurement temperature, in kelvins; default 27 °C. |
+| `quadratic_temperature_coefficient` | `0` | Quadratic temperature coefficient `tc2`, per kelvin squared; default 0. |
+| `quadratic_voltage_coefficient` | `0` | Quadratic voltage coefficient `vc2`, per volt squared; default 0. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_coefficient` | `0` | Linear temperature coefficient `tc1`, per kelvin; default 0. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
+| `voltage_coefficient` | `0` | Linear voltage coefficient `vc1`, per volt; default 0. |
 
 ## `thermal_capacitance`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `capacitance` | required | The heat capacity, in joules per kelvin; zero or positive. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `capacitance` | required | Heat capacity, in joules per kelvin; non-negative. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `thermal_resistance`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `resistance` | required | The resistance, in kelvins per watt; positive. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `resistance` | required | Thermal resistance, in kelvins per watt; positive. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `transmission_line`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `characteristic_impedance` | required | The characteristic impedance `Z₀`, in ohms, SPICE's `Z0`; positive. |
-| `delay` | required | The time a wave takes from one port to the other, in seconds, SPICE's `TD`; positive. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `characteristic_impedance` | required | Characteristic impedance `Z₀`, in ohms (SPICE `Z0`); positive. |
+| `delay` | required | One-way propagation delay `τ`, in seconds (SPICE `TD`); positive. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `vbic`
 
@@ -1667,7 +1667,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `avalanche_coefficient` | `0` | The weak avalanche's coefficient, `AVC1`, per volt; default 0, no avalanche. |
 | `avalanche_exponent_coefficient` | `0` | The weak avalanche's exponent coefficient, `AVC2`, in volts to the power `1 − MC`; default 0. |
 | `avalanche_temperature_coefficient` | `0` | The linear temperature coefficient of the avalanche's exponent coefficient, `TAVC`, per kelvin; default 0. |
-| `base_charge` | `vbic` | How the base charge is formed, as `QBM` selects it; default `vbic`. One of `vbic`, `gummel_poon`. |
+| `base_charge` | `vbic` | Normalized base-charge formulation selected by `QBM`; default `vbic`. One of `vbic`, `gummel_poon`. |
 | `base_collector_capacitance` | `0` | The zero-bias intrinsic base-collector depletion capacitance, `CJC`, in farads; default 0. |
 | `base_collector_grading` | `0.33` | The base-collector grading coefficient, `MC`, below 1; default 0.33. |
 | `base_collector_overlap_capacitance` | `0` | The base-collector overlap capacitance, `CBCO`, in farads, between the terminals; default 0. |
@@ -1710,7 +1710,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `forward_emission_coefficient` | `1` | The forward emission coefficient, `NF`; default 1. |
 | `forward_knee_current` |  | The forward knee current, `IKF`, in amperes; infinite by default. |
 | `forward_knee_current_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the forward knee current, `XIKF`; default 0. |
-| `forward_transit_time` | `0` | The ideal forward transit time, `TF`, in seconds; default 0. |
+| `forward_transit_time` | `0` | Ideal forward transit time, `TF`, in seconds; default 0. |
 | `high_current_collector_factor` | `1` | The high-current factor of the intrinsic collector resistance, `HRCF`, positive; default 1. |
 | `ideal_base_collector_activation_energy` | `1.12` | The activation energy of the ideal base-collector currents and of their potential, `EAIC`, in volts; default 1.12. |
 | `ideal_base_collector_current` | `1e-16` | The ideal base-collector saturation current, `IBCI`, in amperes; default 1e-16. |
@@ -1762,11 +1762,11 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the transport saturation currents' scaling, `XIS`; default 3. |
 | `substrate_resistance` | `0` | The substrate resistance, `RS`, in ohms; default 0. |
 | `substrate_resistance_temperature_exponent` | `0` | The exponent of the temperature ratio that scales the substrate resistance, `XRS`; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
-| `transit_time_base_width_coefficient` | `0` | How the forward transit time grows with the base charge's Early part, `QTF`; default 0. |
-| `transit_time_bias_coefficient` | `0` | How much the forward transit time grows with bias, `XTF`; default 0. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
+| `transit_time_base_width_coefficient` | `0` | Dependence of forward transit time on Early base charge, `QTF`; default 0. |
+| `transit_time_bias_coefficient` | `0` | Bias-dependent growth coefficient of forward transit time, `XTF`; default 0. |
 | `transit_time_current` | `0` | The current, `ITF`, above which the forward transit time grows, in amperes; default 0, for growth at any current. |
 | `transit_time_voltage` |  | The base-collector voltage, `VTF`, that sets how the forward transit time grows with it, in volts; infinite by default. |
 
@@ -1792,7 +1792,7 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `energy_gap` | `1.11` | The energy gap that scales the body diode's saturation current with temperature, `EG`, in volts; default 1.11, silicon's. |
 | `flicker_coefficient` | `0` | The flicker noise coefficient of the drain current, `KF`; default 0, no flicker noise. |
 | `flicker_exponent` | `1` | The power of the drain current in the flicker noise, `AF`; default 1. |
-| `gate_drain_capacitance_coefficient` | `1` | How fast the gate-drain capacitance moves with the gate-drain voltage, `A`, per volt; default 1. |
+| `gate_drain_capacitance_coefficient` | `1` | Gate-drain capacitance transition steepness `A`, per volt; default 1. |
 | `gate_resistance` | `0` | The gate resistance, `RG`, in ohms; default 0. |
 | `gate_resistance_quadratic_temperature_coefficient` | `0` | The gate resistance's quadratic temperature coefficient, `TRG2`, per square kelvin; default 0. |
 | `gate_resistance_temperature_coefficient` | `0` | The gate resistance's linear temperature coefficient, `TRG1`, per kelvin; default 0. |
@@ -1804,12 +1804,12 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `min_gate_drain_capacitance` | `2e-11` | The gate-drain capacitance far below the drain, `CGDMIN`, in farads; default 20 pF. |
 | `mobility_modulation` | `0` | The gate field's degradation of the mobility, `THETA`, per volt; default 0. |
 | `multiplier` | `1` | The number of identical transistors in parallel, `M`; default 1. |
-| `nominal_temperature` | `300.15` | The temperature the parameters were measured at, `TNOM`, in kelvins; default 27 °C. |
+| `nominal_temperature` | `300.15` | Nominal measurement temperature `TNOM`, in kelvins; default 27 °C. |
 | `quasi_saturation_resistance` |  | The quasi-saturation resistance, `RQ`, in ohms, which the drain resistance grows towards with the drain voltage; default none, for no quasi-saturation. |
 | `quasi_saturation_resistance_temperature_exponent` | `0.3` | The exponent of the temperature ratio that scales the quasi-saturation resistance, `TEXP1`; default 0.3. |
 | `quasi_saturation_voltage` |  | The quasi-saturation voltage, `VQ`, in volts, at which the drain resistance has grown by half the quasi-saturation resistance; default none, for no quasi-saturation. |
 | `saturation_current` | `1e-14` | The body diode's saturation current, `IS`, in amperes; default 1e-14. |
-| `saturation_current_temperature_exponent` | `3` | The exponent of the temperature ratio in the body diode's saturation current's scaling, `XTI`; default 3. |
+| `saturation_current_temperature_exponent` | `3` | Temperature-ratio exponent `XTI` scaling body-diode saturation current; default 3. |
 | `source_resistance` | `0` | The source resistance, `RS`, in ohms; default 0. |
 | `source_resistance_quadratic_temperature_coefficient` | `0` | The source resistance's quadratic temperature coefficient, `TRS2`, per square kelvin; default 0. |
 | `source_resistance_temperature_coefficient` | `0` | The source resistance's linear temperature coefficient, `TRS1`, per kelvin; default 0. |
@@ -1817,11 +1817,11 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `subthreshold_slope` | `0.1` | The slope of the overdrive's softening below the threshold, `KSUBTHRES`, in volts; default 0.1. |
 | `subthreshold_slope_quadratic_temperature_coefficient` | `0` | The subthreshold slope's quadratic temperature coefficient, `TKSUBTHRES2`, per square kelvin; default 0. |
 | `subthreshold_slope_temperature_coefficient` | `0` | The subthreshold slope's linear temperature coefficient, `TKSUBTHRES1`, per kelvin; default 0. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `thermal` | `false` | Whether the device heats by the power it dissipates, through a terminal `thermal` joined to a thermal net, whose temperature above the ambient it runs at. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `thermal` | `false` | Flag enabling self-heating by adding a `thermal` terminal whose net temperature rise above ambient tracks dissipated power. |
 | `threshold_voltage` |  | The threshold voltage, `VTO`, in volts; default 3 for an n-channel and −3 for a p-channel, an IRF540's and an IRF9540's. |
-| `threshold_voltage_temperature_coefficient` | `0` | How fast the threshold voltage moves with temperature, `TCVTH` or `VTOTC`, in volts per kelvin; default 0. |
+| `threshold_voltage_temperature_coefficient` | `0` | Linear threshold voltage temperature coefficient `TCVTH` (`VTOTC`), in volts per kelvin; default 0. |
 | `transconductance_parameter` |  | The transconductance parameter, `KP`, in amperes per square volt; default 20 for an n-channel and 10 for a p-channel. |
 | `transconductance_parameter_temperature_exponent` | `-1.5` | The exponent of the temperature ratio that scales the transconductance parameter, `MU` or `BEX`; default −1.5. |
 | `transit_time` | `0` | The body diode's transit time, `TT`, in seconds; default 0. |
@@ -1832,45 +1832,45 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `transconductance` | required | The ratio of the output current to the control voltage, in siemens. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `voltage_controlled_memristor`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `off_rate` | required | The state's speed toward off at twice the off voltage, in full ranges per second; positive. |
-| `off_resistance` | required | The resistance fully off, at a state of 1, in ohms; above the on resistance. |
-| `off_voltage` | required | The voltage above which the state moves toward off, in volts; positive. |
-| `on_rate` | required | The state's speed toward on at twice the on voltage, in full ranges per second; positive. |
-| `on_resistance` | required | The resistance fully on, at a state of 0, in ohms; positive. |
-| `on_voltage` | required | The voltage below which the state moves toward on, in volts; negative. |
-| `law` | `linear` | How the resistance follows the state; default linear. One of `linear`, `exponential`. |
-| `off_exponent` | `1` | How steeply the speed toward off grows past the off voltage, `α_off`; at least 1; default 1. |
-| `on_exponent` | `1` | How steeply the speed toward on grows past the on voltage, `α_on`; at least 1; default 1. |
-| `state` | `1` | The state it was made in, from 0, fully on, to 1, fully off; default 1. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
-| `window` | `0.01` | The width of the window that slows the state at either bound, a fraction of its range; positive; default 0.01. |
+| `off_rate` | required | State speed toward off at twice `off_voltage`, in full ranges per second; positive. |
+| `off_resistance` | required | Fully off resistance at state 1, in ohms; greater than `on_resistance`. |
+| `off_voltage` | required | Voltage threshold above which state moves toward off, in volts; positive. |
+| `on_rate` | required | State speed toward on at twice `on_voltage`, in full ranges per second; positive. |
+| `on_resistance` | required | Fully on resistance at state 0, in ohms; positive. |
+| `on_voltage` | required | Voltage threshold below which state moves toward on, in volts; negative. |
+| `law` | `linear` | Resistance-versus-state law; default linear. One of `linear`, `exponential`. |
+| `off_exponent` | `1` | Nonlinearity exponent `α_off` for motion past `off_voltage`; at least 1; default 1. |
+| `on_exponent` | `1` | Nonlinearity exponent `α_on` for motion past `on_voltage`; at least 1; default 1. |
+| `state` | `1` | Initial state from 0 (fully on) to 1 (fully off); default 1. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
+| `window` | `0.01` | Boundary window width as a fraction of the state range; positive; default 0.01. |
 
 ## `voltage_controlled_switch`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `off_resistance` | `1000000` | The resistance with the control at or past the off voltage, in ohms; default 1e6. |
-| `off_voltage` | `0` | The control voltage at which the switch is off, in volts; default 0. |
-| `on_resistance` | `1` | The resistance with the control at or past the on voltage, in ohms; default 1. |
-| `on_voltage` | `1` | The control voltage at which the switch is on, in volts; default 1. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `off_resistance` | `1000000` | Off-state resistance at or past `off_voltage`, in ohms; default 1e6. |
+| `off_voltage` | `0` | Control voltage at which the switch reaches `off_resistance`, in volts; default 0. |
+| `on_resistance` | `1` | On-state resistance at or past `on_voltage`, in ohms; default 1. |
+| `on_voltage` | `1` | Control voltage at which the switch reaches `on_resistance`, in volts; default 1. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `voltage_controlled_voltage_source`
 
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `gain` | required | The ratio of the output voltage to the control voltage. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
 ## `voltage_source`
 
@@ -1902,5 +1902,5 @@ Values are in SI base units, as the circuit format holds them, while the functio
 | `waveform.exponential.pulsed` | required | The value the rise tends to. |
 | `waveform.exponential.rise_delay` | `0` | The time the rise starts, in seconds. |
 | `waveform.exponential.rise_time_constant` | required | The rise's time constant, in seconds; positive. |
-| `temperature` |  | The temperature the device is held at whatever the simulation's, in kelvins; at least 0. Without it, the device is at the simulation's temperature. |
-| `temperature_offset` |  | How far the device's temperature lies above the simulation's, below where negative, in kelvins; the device's temperature at least 0. Without it, the device is at the simulation's temperature. |
+| `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
+| `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |

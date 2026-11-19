@@ -188,7 +188,7 @@ module diode(anode, cathode);
         if ($temperature <= 0)
             $error("a junction's temperature lies above 0 K, not at %g K", $temperature);
         if (energy_gap < 0)
-            $error("energy_gap must be at least 0, not %g", energy_gap);
+            $error("energy_gap is at least 0, not %g", energy_gap);
         vt = $temperature * `P_K / `P_Q;
         ratio = $temperature / nominal_temperature;
         difference = $temperature - nominal_temperature;
@@ -232,9 +232,9 @@ module diode(anode, cathode);
             sidewall_capacitance = sidewall_junction_capacitance * (sidewall_junction_capacitance_temperature_coefficient * difference + 1);
         end
         if (potential <= 0)
-            $error("junction_potential at the temperature must be positive, not %g", potential);
+            $error("junction_potential at the temperature is positive, not %g", potential);
         if (sidewall_potential <= 0)
-            $error("sidewall_junction_potential at the temperature must be positive, not %g", sidewall_potential);
+            $error("sidewall_junction_potential at the temperature is positive, not %g", sidewall_potential);
         threshold = depletion_coefficient * potential;
         charge_at_threshold = potential * (1 - pow(1 - depletion_coefficient, 1 - grading)) / (1 - grading);
         divisor = pow(1 - depletion_coefficient, grading + 1);

@@ -126,7 +126,7 @@ def test_a_circuit_that_does_not_elaborate_exits_with_1(
     script.write_text(FILTER.replace("1 * nF", "-1 * nF"), encoding="utf-8")
     out = _invoke(capsys, "simulate", "low_pass.py", code=1).out
     assert (
-        "error: capacitance must be at least 0, not -1e-9\n"
+        "error: capacitance is at least 0, not -1e-9\n"
         "  = C1, low_pass.py:11 in low_pass()\n"
         "\n"
         "the circuit does not elaborate: 1 error"
@@ -521,7 +521,7 @@ def test_measure_reads_saved_results_without_running_a_simulation(
         "out",
         code=2,
     ).err
-    assert "holds no analysis named 'missing'" in err
+    assert "contains no analysis named 'missing'" in err
     assert "step" in err
 
     # Zero simulations executed during any measure command.

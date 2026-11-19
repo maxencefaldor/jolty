@@ -528,10 +528,7 @@ impl<R: Real> Bsim4Parameters<R> {
             ("width of the junctions", junction_width),
         ] {
             check(value.value() <= 0.0, || {
-                format!(
-                    "the effective {name} is positive, not {:?}",
-                    value.value()
-                )
+                format!("the effective {name} is positive, not {:?}", value.value())
             })?;
         }
         Ok(Geometry {

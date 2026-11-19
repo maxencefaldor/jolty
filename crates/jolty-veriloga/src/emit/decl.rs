@@ -1129,11 +1129,11 @@ fn check(
     }
     arguments.push(shown);
     let (condition, verb) = if exclude {
-        (contains, "must not be")
+        (contains, "is not")
     } else if contains.contains("&&") {
-        (format!("!({contains})"), "must be")
+        (format!("!({contains})"), "is")
     } else {
-        (format!("!{contains}"), "must be")
+        (format!("!{contains}"), "is")
     };
     format!(
         "if {condition} {{\n    return Err(ParameterError(format!(\"{external} {verb} {}, not {{:?}}\", {})));\n}}",
@@ -1165,8 +1165,8 @@ pub(super) fn format_message(message: &str, values: &[String]) -> String {
     }
 }
 
-/// Wraps code-like identifiers (snake_case or camelCase) in `text` with backticks to satisfy
-/// clippy's `doc_markdown` lint.
+/// Wraps code-like identifiers (`snake_case` or `camelCase`) in `text` with backticks to
+/// satisfy clippy's `doc_markdown` lint.
 fn prose(text: &str) -> String {
     text.split(' ')
         .map(|word| {

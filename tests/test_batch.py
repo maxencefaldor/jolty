@@ -327,7 +327,7 @@ def test_a_run_that_fails_is_reported_and_the_batch_goes_on() -> None:
     assert np.nonzero(found.failed)[0].tolist() == failed
     for index in range(7):
         if index in failed:
-            assert "resistance must be positive" in (found.failure(index) or "")
+            assert "resistance is positive" in (found.failure(index) or "")
             assert found.reason(index, 0) == "the analysis op failed"
             assert math.isnan(found.measured[index, 0])
         else:

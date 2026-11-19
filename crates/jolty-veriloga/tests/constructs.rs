@@ -202,10 +202,7 @@ fn aliases_bounds_and_defaults_read_as_the_source_says() {
     let error = Bench::try_at::<constructs::Constructs>(narrow, REFERENCE_TEMPERATURE)
         .map(|_| ())
         .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "saturation_max must be at least 2.0, not 1.0"
-    );
+    assert_eq!(error.to_string(), "saturation_max is at least 2.0, not 1.0");
     assert_eq!(
         constructs::ConstructsParameters::<f64>::default()
             .scale

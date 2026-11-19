@@ -118,7 +118,7 @@ impl Kernel for Constructs {
         ParameterError::positive("conductance", parameters.conductance)?;
         ParameterError::positive("saturation", parameters.saturation)?;
         if !(parameters.saturation.value()..).contains(&parameters.saturation_max.value()) {
-            return Err(ParameterError(format!("saturation_max must be at least {:?}, not {:?}", parameters.saturation.value(), parameters.saturation_max.value())));
+            return Err(ParameterError(format!("saturation_max is at least {:?}, not {:?}", parameters.saturation.value(), parameters.saturation_max.value())));
         }
         ParameterError::positive("scale", parameters.scale)?;
         let mut v = Locals { saturated1_g: R::constant(0.0), saturated1_vs: R::constant(0.0) };
@@ -217,7 +217,7 @@ impl Constructs {
         ParameterError::positive("conductance", parameters.conductance)?;
         ParameterError::positive("saturation", parameters.saturation)?;
         if !(parameters.saturation.value()..).contains(&parameters.saturation_max.value()) {
-            return Err(ParameterError(format!("saturation_max must be at least {:?}, not {:?}", parameters.saturation.value(), parameters.saturation_max.value())));
+            return Err(ParameterError(format!("saturation_max is at least {:?}, not {:?}", parameters.saturation.value(), parameters.saturation_max.value())));
         }
         ParameterError::positive("scale", parameters.scale)?;
         let mut found = Vec::new();

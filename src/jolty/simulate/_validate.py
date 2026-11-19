@@ -335,7 +335,7 @@ def _stability_problems(analysis: Stability, catalog: Catalog) -> list[str]:
         )
         return [f"there is no instance at `{analysis.probe}`{close}{probes_list}"]
     if analysis.probe not in catalog.probes:
-        return [f"`{analysis.probe}` is not a voltage source off ground{probes_list}"]
+        return [f"`{analysis.probe}` is not a floating voltage source{probes_list}"]
     return []
 
 

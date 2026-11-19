@@ -25,65 +25,67 @@ The default levels below hold until settings or options set others (see [Checks]
 
 ## unconnected-terminal
 
-A device's terminal or logic pin joins a net that no other terminal or pin joins and that is not the ground: nothing connects to it.
+A device terminal or logic pin joins a non-ground net that no other terminal or pin connects to.
 
 ## shorted-source
 
-A voltage or current source, independent or controlled, has both ends of its output on one node, or a current-controlled source has both ends of the port that senses its control current on one node.
-A voltage source then holds its voltage across nothing, a current source drives its current through nothing, and a sensing port senses no current.
+A voltage or current source (independent or controlled) has both output terminals on the same node, or a current-controlled source has both sensing-port terminals on the same node.
+Shorting a voltage source creates an inconsistent voltage constraint, shorting a current source bypasses its output, and shorting a sensing port eliminates the sensed current.
 
 ## shorted-device
 
-A resistor, capacitor, inductor, diode or transistor has every terminal on one node, so it carries no current and does nothing.
-A transistor with only some terminals joined, such as a diode-connected one, raises nothing.
+A resistor, capacitor, inductor, diode, or transistor has every terminal on the same node, carrying no current.
+A transistor with only some terminals joined, such as a diode-connected transistor, does not trigger this rule.
 
 ## voltage-loop
 
-Voltage sources and inductors, independent or controlled, form a loop.
-At DC an inductor is a short, so the loop's sources alone fix the voltages around it: they conflict, or leave the current around the loop undefined.
+Voltage sources and inductors (independent or controlled) form a closed loop.
+At DC an inductor acts as a short circuit, so the loop's sources either conflict or leave the loop current undefined.
 Each independent loop raises one diagnostic.
 
 ## no-dc-path
 
-A group of nodes has no path to the ground through resistors, diodes, inductors or voltage sources, and no current source drives it: it reaches the ground only through capacitors, control inputs or nothing, so its DC voltage is undefined.
-A group whose every node joins a single terminal is left to unconnected-terminal.
+A group of nodes has no path to ground through resistors, diodes, inductors, or voltage sources, and no current source drives the group.
+The nodes couple to ground only through capacitors or control inputs, leaving their DC voltage undefined.
+Groups whose nodes each join only a single terminal are reported under unconnected-terminal.
 
 ## current-cutset
 
-Current sources, independent or controlled, drive a group of nodes that has no DC path to the ground, as no-dc-path defines it: at DC their current has nowhere to go.
-A group whose every node joins a single terminal is left to unconnected-terminal.
+Current sources (independent or controlled) drive a group of nodes that has no DC path to ground, as defined by no-dc-path, leaving their DC current with no return path.
+Groups whose nodes each join only a single terminal are reported under unconnected-terminal.
 
 ## driver-conflict
 
-Two or more logic outputs drive one logic net.
-Wherever they drive different levels, the net's level is unknown.
+Two or more logic outputs drive the same logic net.
+Whenever those outputs drive different logic levels, the net level is unknown.
 
 ## floating-input
 
-Logic inputs read a logic net that no output drives, so its level is always unknown.
-A net that a single input joins is left to unconnected-terminal.
+Logic inputs read a logic net that no output drives, leaving the net level permanently unknown.
+A net joined by only a single input is reported under unconnected-terminal.
 
 ## non-standard-value
 
-A resistor's resistance is in no E series of IEC 60063 from E3 to E192, or a capacitor's capacitance or an inductor's inductance in none from E3 to E24, but for rounding: no standard part has the value.
+A resistor value falls outside the IEC 60063 E3 through E192 series, or a capacitor or inductor value falls outside E3 through E24 (beyond rounding precision).
+No standard preferred part matches the value.
 
 ## gmin-dependence
 
-Doubling gmin, the conductance the engine places across every junction to help Newton iteration converge, would move a net's voltage at the operating point, to first order, by more than a hundredth of the larger of that voltage and 1 V: little but gmin holds the net, as between reverse-biased junctions, so its voltage comes from the simulator rather than the circuit.
-One diagnostic names every such net, by decreasing move.
-A simulation checks it at its plan's operating point.
+Doubling gmin (the shunt conductance placed across every junction to aid Newton convergence) moves a net's operating-point voltage to first order by more than 1% of max(|V|, 1 V).
+Little other than gmin sets that net's potential, as between reverse-biased junctions, so the voltage reflects simulator regularization rather than circuit behavior.
+One diagnostic lists all affected nets in decreasing order of shift during operating-point checks.
 
 ## multiple-operating-points
 
-The circuit's DC equations have a solution besides its operating point, as an operating-points analysis finds them: the circuit can rest in more than one state, as a latch does, or a bias circuit that can also rest with no current, and which it rests in depends on how it starts.
-The diagnostic names the nets whose voltages differ between the two by at least half the largest difference.
-A simulation checks it at its plan's operating point, on circuits of at most 500 unknowns.
+The circuit's DC equations admit an additional solution distinct from the operating point, as found by operating-points analysis.
+Circuits such as latches or self-biased stages can settle into more than one state depending on startup.
+The diagnostic names every net whose voltage differs by at least half the maximum difference, checked during operating-point analysis on circuits with at most 500 unknowns.
 
 ## unstable-pole
 
-The circuit linearized at its operating point has a pole whose real part is above a millionth of its magnitude: a natural mode grows away from the operating point, as an oscillation that builds up or a latch that tips, so the circuit does not rest there.
-A real pole, or a conjugate pair, raises one diagnostic, naming the nets where its mode's amplitude is at least half its largest.
-A simulation checks it at its plan's operating point, on circuits of at most 500 unknowns whose linearization fits its max_memory option.
+The circuit linearized at its operating point has a pole whose real part exceeds 1e-6 times its magnitude.
+A natural mode therefore grows away from the operating point, such as an emerging oscillation or a tipping latch.
+Each real pole or conjugate pair raises one diagnostic naming nets with at least half the peak mode amplitude, checked on circuits of at most 500 unknowns whose linearization fits within max_memory.
 
 ## low-phase-margin
 

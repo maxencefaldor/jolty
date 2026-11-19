@@ -233,7 +233,7 @@ def test_problems_come_back_with_the_circuit(tmp_path: Path) -> None:
     assert outcome.devices is None
     assert outcome.unknowns is None
     (problem,) = outcome.problems
-    assert problem.startswith("error: resistance must be positive")
+    assert problem.startswith("error: resistance is positive")
     assert problem.endswith("= R2, script.py:11 in divider()")
     assert outcome.analyses == ()
 

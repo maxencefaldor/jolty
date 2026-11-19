@@ -139,7 +139,9 @@ def test_names_ids_and_terminals_are_checked() -> None:
     builder.net("mid")
     with pytest.raises(BuildError, match="already declares a net or port named 'mid'"):
         builder.port("mid")
-    with pytest.raises(AttributeError, match="R1 has no terminal 'c'; it has a, b"):
+    with pytest.raises(
+        AttributeError, match="R1 has no terminal 'c'; available terminals: a, b"
+    ):
         _ = resistor.c
     other = Builder("other").place(devices.resistor(1 * kohm), name="R9")
     with pytest.raises(BuildError, match=r"R9\.a does not belong to checked"):
