@@ -306,7 +306,7 @@ fn check_ratings(name: &Name, instance: &crate::Instance, problems: &mut Vec<Pro
             problems.push(Problem::InvalidRating {
                 component: name.clone(),
                 id: instance.name.clone(),
-                stress: format!("{:?}", rating.stress).to_lowercase(),
+                stress: rating.stress.as_str().to_owned(),
                 at,
                 minimum: rating
                     .minimum
@@ -314,11 +314,11 @@ fn check_ratings(name: &Name, instance: &crate::Instance, problems: &mut Vec<Pro
                 maximum: rating
                     .maximum
                     .map_or_else(|| "none".to_owned(), |maximum| format!("{maximum:?}")),
-                needed: [
-                    "no terminals",
-                    "one of its terminals",
-                    "two distinct terminals of its own",
-                ][needed],
+                needed: match rating.stress {
+                    Stress::Voltage => "two distinct terminals of its own",
+                    Stress::Current => "one of its terminals",
+                    Stress::Power | Stress::Temperature => "no terminals",
+                },
             });
         }
     }
@@ -420,43 +420,59 @@ fn check_component(
     }
 }
 
-/// Reports each cycle of the component graph once, by a depth-first search.
-fn find_cycles(components: &BTreeMap<Name, Component>, problems: &mut Vec<Problem>) {
-    /// Visits `name` and every component below it not yet `visited`. `path` holds the
-    /// components the search is within, so a child on it closes a cycle.
-    fn visit<'a>(
-        name: &'a Name,
-        components: &'a BTreeMap<Name, Component>,
-        visited: &mut BTreeSet<&'a Name>,
-        path: &mut Vec<&'a Name>,
-        problems: &mut Vec<Problem>,
-    ) {
-        visited.insert(name);
-        path.push(name);
-        let children =
-            components[name]
-                .instances
-                .iter()
-                .filter_map(|instance| match &instance.of {
-                    Of::Component(target) if components.contains_key(target) => Some(target),
-                    _ => None,
-                });
-        for child in children {
-            if let Some(start) = path.iter().position(|&n| n == child) {
-                let mut cycle: Vec<Name> = path[start..].iter().map(|&n| n.clone()).collect();
-                cycle.push(child.clone());
-                problems.push(Problem::Recursive { cycle });
-            } else if !visited.contains(child) {
-                visit(child, components, visited, path, problems);
-            }
+/// Returns the distinct defined component targets instantiated by `component`, in the order
+/// first seen.
+fn distinct_children<'a>(
+    component: &'a Component,
+    components: &BTreeMap<Name, Component>,
+) -> Vec<&'a Name> {
+    let mut seen = BTreeSet::new();
+    let mut children = Vec::new();
+    for instance in &component.instances {
+        if let Of::Component(target) = &instance.of
+            && components.contains_key(target)
+            && seen.insert(target)
+        {
+            children.push(target);
         }
-        path.pop();
     }
+    children
+}
 
-    let mut visited = BTreeSet::new();
-    for name in components.keys() {
-        if !visited.contains(name) {
-            visit(name, components, &mut visited, &mut Vec::new(), problems);
+/// Reports each cycle of the component graph once, by an iterative depth-first search.
+fn find_cycles(components: &BTreeMap<Name, Component>, problems: &mut Vec<Problem>) {
+    let mut visited: BTreeSet<&Name> = BTreeSet::new();
+    let mut path: Vec<&Name> = Vec::new();
+    let mut on_path: BTreeMap<&Name, usize> = BTreeMap::new();
+    let mut stack: Vec<(Vec<&Name>, usize)> = Vec::new();
+    for (root, component) in components {
+        if !visited.insert(root) {
+            continue;
+        }
+        on_path.insert(root, path.len());
+        path.push(root);
+        stack.push((distinct_children(component, components), 0));
+        while let Some((children, next)) = stack.last_mut() {
+            let index = *next;
+            if index < children.len() {
+                *next += 1;
+                let child = children[index];
+                if let Some(&start) = on_path.get(child) {
+                    let mut cycle: Vec<Name> =
+                        path[start..].iter().map(|&node| node.clone()).collect();
+                    cycle.push(child.clone());
+                    problems.push(Problem::Recursive { cycle });
+                } else if visited.insert(child) {
+                    on_path.insert(child, path.len());
+                    path.push(child);
+                    stack.push((distinct_children(&components[child], components), 0));
+                }
+            } else {
+                stack.pop();
+                if let Some(finished) = path.pop() {
+                    on_path.remove(finished);
+                }
+            }
         }
     }
 }
@@ -784,5 +800,97 @@ mod tests {
             problems.to_string(),
             "component `a` contains itself: a -> b -> a"
         );
+    }
+
+    #[test]
+    fn deduplicates_parallel_component_edges_when_reporting_cycles() {
+        let a = Component {
+            instances: vec![instance_of("X1", "b", &[]), instance_of("X2", "b", &[])],
+            ..Component::default()
+        };
+        let b = Component {
+            instances: vec![instance_of("Y1", "a", &[]), instance_of("Y2", "a", &[])],
+            ..Component::default()
+        };
+        let self_loop = Component {
+            instances: vec![
+                instance_of("S1", "self_loop", &[]),
+                instance_of("S2", "self_loop", &[]),
+            ],
+            ..Component::default()
+        };
+        let top = Component {
+            instances: vec![
+                instance_of("Z1", "a", &[]),
+                instance_of("Z2", "self_loop", &[]),
+            ],
+            ..Component::default()
+        };
+        let problems = circuit(vec![
+            ("top", top),
+            ("a", a),
+            ("b", b),
+            ("self_loop", self_loop),
+        ])
+        .validate()
+        .unwrap_err();
+        let messages: Vec<String> = problems.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            messages,
+            [
+                "component `a` contains itself: a -> b -> a",
+                "component `self_loop` contains itself: self_loop -> self_loop",
+            ]
+        );
+    }
+
+    #[test]
+    fn validates_deep_hierarchies_without_stack_overflow() {
+        let handle = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(|| {
+                let depth = 5_000;
+                let mut components = BTreeMap::new();
+                for level in 0..depth {
+                    let key = name(&format!("c{level:04}"));
+                    let instances = if level + 1 < depth {
+                        vec![instance_of("X", &format!("c{:04}", level + 1), &[])]
+                    } else {
+                        Vec::new()
+                    };
+                    components.insert(
+                        key,
+                        Component {
+                            instances,
+                            ..Component::default()
+                        },
+                    );
+                }
+                let acyclic = Circuit {
+                    top: name("c0000"),
+                    components: components.clone(),
+                };
+                assert_eq!(acyclic.validate(), Ok(()));
+
+                components
+                    .get_mut(&name(&format!("c{:04}", depth - 1)))
+                    .unwrap()
+                    .instances
+                    .push(instance_of("Back", "c0000", &[]));
+                let cyclic = Circuit {
+                    top: name("c0000"),
+                    components,
+                };
+                let problems = cyclic.validate().unwrap_err();
+                assert_eq!(problems.len(), 1);
+                let Some(Problem::Recursive { cycle }) = problems.iter().next() else {
+                    panic!("expected recursive cycle problem");
+                };
+                assert_eq!(cycle.len(), depth + 1);
+                assert_eq!(cycle.first(), Some(&name("c0000")));
+                assert_eq!(cycle.last(), Some(&name("c0000")));
+            })
+            .expect("spawn thread");
+        handle.join().expect("thread succeeded without stack overflow");
     }
 }

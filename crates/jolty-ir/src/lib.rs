@@ -175,6 +175,18 @@ pub enum Stress {
 }
 
 impl Stress {
+    /// Returns the lowercase name of the stress: `voltage`, `current`, `power`, or
+    /// `temperature`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Voltage => "voltage",
+            Self::Current => "current",
+            Self::Power => "power",
+            Self::Temperature => "temperature",
+        }
+    }
+
     /// How many terminals a rating of the stress names.
     #[must_use]
     pub const fn terminals(self) -> usize {
@@ -298,13 +310,21 @@ struct Header {
     version: u32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
     format: String,
     version: u32,
     top: Name,
     components: BTreeMap<Name, Component>,
+}
+
+#[derive(Serialize)]
+struct DocumentRef<'a> {
+    format: &'static str,
+    version: u32,
+    top: &'a Name,
+    components: &'a BTreeMap<Name, Component>,
 }
 
 impl Circuit {
@@ -318,17 +338,33 @@ impl Circuit {
     /// Returns [`ReadError`] when the text is not JSON, declares another format or version, or
     /// does not have the shape of a circuit.
     pub fn from_json(text: &str) -> Result<Self, ReadError> {
-        let header: Header = serde_json::from_str(text)?;
-        if header.format != FORMAT {
-            return Err(ReadError::Format(header.format));
+        match serde_json::from_str::<Document>(text) {
+            Ok(Document {
+                format,
+                version,
+                top,
+                components,
+            }) => {
+                if format != FORMAT {
+                    return Err(ReadError::Format(format));
+                }
+                if version != VERSION {
+                    return Err(ReadError::Version(version));
+                }
+                Ok(Self { top, components })
+            }
+            Err(error) => {
+                if let Ok(header) = serde_json::from_str::<Header>(text) {
+                    if header.format != FORMAT {
+                        return Err(ReadError::Format(header.format));
+                    }
+                    if header.version != VERSION {
+                        return Err(ReadError::Version(header.version));
+                    }
+                }
+                Err(ReadError::Json(error))
+            }
         }
-        if header.version != VERSION {
-            return Err(ReadError::Version(header.version));
-        }
-        let Document {
-            top, components, ..
-        } = serde_json::from_str(text)?;
-        Ok(Self { top, components })
     }
 
     /// Writes the circuit as JSON text, tagged with its format and version.
@@ -343,11 +379,11 @@ impl Circuit {
                   a circuit is keyed by strings"
     )]
     pub fn to_json(&self) -> String {
-        let document = Document {
-            format: FORMAT.to_owned(),
+        let document = DocumentRef {
+            format: FORMAT,
             version: VERSION,
-            top: self.top.clone(),
-            components: self.components.clone(),
+            top: &self.top,
+            components: &self.components,
         };
         serde_json::to_string_pretty(&document).expect("a circuit always serializes to JSON")
     }
@@ -430,5 +466,38 @@ mod tests {
     fn rejects_unknown_fields() {
         let text = divider().replace(r#""role": "ground""#, r#""role": "ground", "colour": 1"#);
         assert!(matches!(Circuit::from_json(&text), Err(ReadError::Json(_))));
+    }
+
+    #[test]
+    fn preserves_format_and_version_precedence_on_fallback_and_fast_path() {
+        let wrong_version_clean = divider().replace(
+            &format!(r#""version": {VERSION}"#),
+            &format!(r#""version": {}"#, VERSION + 1),
+        );
+        assert!(matches!(
+            Circuit::from_json(&wrong_version_clean),
+            Err(ReadError::Version(version)) if version == VERSION + 1
+        ));
+
+        let wrong_format_with_unknown = divider()
+            .replace("jolty-circuit", "other-tool")
+            .replace(
+                &format!(r#""version": {VERSION}"#),
+                &format!(r#""version": {}, "extra": 123"#, VERSION + 5),
+            );
+        assert!(matches!(
+            Circuit::from_json(&wrong_format_with_unknown),
+            Err(ReadError::Format(format)) if format == "other-tool"
+        ));
+
+        assert!(matches!(
+            Circuit::from_json("{not valid json"),
+            Err(ReadError::Json(_))
+        ));
+
+        assert_eq!(Stress::Voltage.as_str(), "voltage");
+        assert_eq!(Stress::Current.as_str(), "current");
+        assert_eq!(Stress::Power.as_str(), "power");
+        assert_eq!(Stress::Temperature.as_str(), "temperature");
     }
 }

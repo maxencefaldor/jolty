@@ -11,6 +11,15 @@ use crate::Parameters;
 #[error("`{0}` has no place among the parameters")]
 pub struct Unreachable(pub String);
 
+/// Parses `key` as an unsigned ASCII-digit array index, rejecting signed forms such as `"+0"`.
+fn parse_index(key: &str) -> Option<usize> {
+    if !key.is_empty() && key.bytes().all(|byte| byte.is_ascii_digit()) {
+        key.parse().ok()
+    } else {
+        None
+    }
+}
+
 /// The value at `path` among `parameters`, if one is there.
 #[must_use]
 pub fn parameter<'a>(parameters: &'a Parameters, path: &str) -> Option<&'a Value> {
@@ -18,7 +27,7 @@ pub fn parameter<'a>(parameters: &'a Parameters, path: &str) -> Option<&'a Value
     let first = parameters.get(keys.next()?)?;
     keys.try_fold(first, |value, key| match value {
         Value::Object(object) => object.get(key),
-        Value::Array(items) => items.get(key.parse::<usize>().ok()?),
+        Value::Array(items) => items.get(parse_index(key)?),
         _ => None,
     })
 }
@@ -93,7 +102,7 @@ pub fn numbers(parameters: &Parameters) -> Vec<(String, f64)> {
 fn inner_mut<'a>(value: &'a mut Value, key: &str) -> Option<&'a mut Value> {
     match value {
         Value::Object(object) => object.get_mut(key),
-        Value::Array(items) => items.get_mut(key.parse::<usize>().ok()?),
+        Value::Array(items) => items.get_mut(parse_index(key)?),
         _ => None,
     }
 }
@@ -167,5 +176,27 @@ mod tests {
             Unreachable("resistance.dc".to_owned()).to_string(),
             "`resistance.dc` has no place among the parameters"
         );
+    }
+
+    #[test]
+    fn rejects_signed_or_non_digit_array_indices() {
+        let mut parameters = source();
+        for invalid in [
+            "points.+0.0",
+            "points.0.+1",
+            "points.-0.0",
+            "points..0",
+            "points. 0.0",
+            "points.0 .0",
+        ] {
+            assert_eq!(parameter(&parameters, invalid), None, "{invalid}");
+            assert_eq!(parameter_mut(&mut parameters, invalid), None, "{invalid}");
+            assert_eq!(
+                set_parameter(&mut parameters, invalid, json!(9.0)),
+                Err(Unreachable(invalid.to_owned())),
+                "{invalid}"
+            );
+        }
+        assert_eq!(parameter(&parameters, "points.0.1"), Some(&json!(1)));
     }
 }
