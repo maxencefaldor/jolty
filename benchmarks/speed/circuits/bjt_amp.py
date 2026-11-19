@@ -14,72 +14,29 @@ reads. Three fixtures run it:
   throughput of many runs.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "examples" / "cluster"))
+
+from amplifier import TOLERANCE, amplifier, bench, build, resistor
 from fixture import Fixture, write
 
-from jolty import Builder, Component, Plan, Role, component, devices
-from jolty.parts import q2n3904, q2n3906
+from jolty import Component, Plan
 from jolty.plan import Ac, MonteCarlo, OperatingPoint, Transient, decade
-from jolty.units import GHz, Hz, MHz, V, kHz, kohm, mV, pF, us
-from jolty.waveforms import Sine
+from jolty.units import GHz, Hz, MHz, us
 
-TOLERANCE = 0.05
-"""Every resistor's tolerance."""
-
-
-def resistor(resistance: float) -> devices.Device:
-    """A resistor of `resistance` kilohms, within the tolerance."""
-    return devices.resistor(resistance * kohm, tolerance=TOLERANCE)
-
-
-@component
-def amplifier(c: Builder) -> None:
-    """The pair, its mirror and the follower, fed back for a gain of about 10."""
-    plus, out = c.port("plus", Role.INPUT), c.port("out", Role.OUTPUT)
-    vcc, vee = c.port("vcc", Role.SUPPLY), c.port("vee", Role.SUPPLY)
-    ground = c.port("ground", Role.GROUND)
-    left, right = c.place(q2n3904(), name="Q1"), c.place(q2n3904(), name="Q2")
-    diode, mirror = c.place(q2n3906(), name="Q3"), c.place(q2n3906(), name="Q4")
-    follower = c.place(q2n3904(), name="Q5")
-    tail = c.place(resistor(11), name="RT")
-    load = c.place(resistor(4.7), name="RE")
-    feedback, shunt = c.place(resistor(9.1), name="RF"), c.place(resistor(1), name="RG")
-    compensation = c.place(devices.capacitor(100 * pF), name="CC")
-    c.connect(plus, left.base)
-    c.connect(left.collector, diode.collector, diode.base, mirror.base, name="mirror")
-    c.connect(
-        right.collector, mirror.collector, follower.base, compensation.a, name="gain"
-    )
-    c.connect(left.emitter, right.emitter, tail.a, name="tail")
-    c.connect(right.base, feedback.b, shunt.a, name="minus")
-    c.connect(vcc, diode.emitter, mirror.emitter, follower.collector)
-    c.connect(follower.emitter, load.a, feedback.a, out)
-    c.connect(vee, tail.b, load.b)
-    c.connect(shunt.b, compensation.b, ground)
-
-
-@component
-def bench(c: Builder) -> None:
-    """The amplifier on ±12 V, driven through 1 kΩ by a 100 mV sine at 10 kHz."""
-    ground = c.port("ground", Role.GROUND)
-    positive = c.place(devices.voltage_source(12 * V), name="VCC")
-    negative = c.place(devices.voltage_source(12 * V), name="VEE")
-    signal = Sine(offset=0 * V, amplitude=100 * mV, frequency=10 * kHz)
-    source = c.place(devices.voltage_source(signal), name="V1")
-    series = c.place(resistor(1), name="RS")
-    stage = c.place(amplifier(), name="X1")
-    c.connect(source.positive, series.a, name="in")
-    c.connect(series.b, stage.plus, name="plus")
-    c.connect(positive.positive, stage.vcc, name="vcc")
-    c.connect(negative.negative, stage.vee, name="vee")
-    c.connect(stage.out, name="out")
-    c.connect(
-        positive.negative, negative.positive, source.negative, stage.ground, ground
-    )
-
-
-def build() -> Component:
-    """The amplifier on its bench."""
-    return bench()
+__all__ = [
+    "TOLERANCE",
+    "amplifier",
+    "bench",
+    "build",
+    "circuits",
+    "fixtures",
+    "plan",
+    "resistor",
+    "wide",
+]
 
 
 def plan() -> Plan:

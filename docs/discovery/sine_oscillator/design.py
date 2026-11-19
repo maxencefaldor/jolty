@@ -9,11 +9,6 @@ and drifts +16 % at -40 °C and -11 % at 85 °C, the detector diode's -2 mV/K. S
 it with ``jolty simulate docs/discovery/sine_oscillator/design.py``.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import candidates
 
 from jolty import Component, Corner, Plan, Specs

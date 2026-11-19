@@ -35,7 +35,6 @@ fixture is made.
 """
 
 import csv
-import io
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -56,7 +55,16 @@ from capabilities import (
     Values,
     fixtures,
 )
-from measuring import ROOT, Provenance, load, load_average, provenance, save, shown
+from measuring import (
+    ROOT,
+    Provenance,
+    load,
+    load_average,
+    markdown_table,
+    provenance,
+    save,
+    shown,
+)
 from pydantic import BaseModel, Field
 from simulators import Ngspice, Simulator, Unsupported, Xyce, runner
 
@@ -370,21 +378,22 @@ def render(document: SuiteResults) -> None:
         ]
         if not keys:
             continue
-        text.extend([f"## {TITLES[category]}", ""])
-        text.append("| Row | " + " | ".join(title for _, title in COLUMNS) + " |")
-        text.append("| --- |" + " --- |" * len(COLUMNS))
+        rows = []
         for key in keys:
             found = cells(document, key)
             written = [
                 SHORT[found[name].status] if name in found else "?"
                 for name, _ in COLUMNS
             ]
-            text.append(
-                f"| [{document.fixtures[key].name}](#{key}) | "
-                + " | ".join(written)
-                + " |"
-            )
-        text.append("")
+            rows.append([f"[{document.fixtures[key].name}](#{key})", *written])
+        text.extend(
+            [
+                f"## {TITLES[category]}",
+                "",
+                markdown_table(["Row", *(title for _, title in COLUMNS)], rows),
+                "",
+            ]
+        )
     text.extend(_counts(document))
     text.extend(_lacks(document))
     text.extend(_evidence(document))
@@ -392,49 +401,60 @@ def render(document: SuiteResults) -> None:
 
 
 def _provenance(document: SuiteResults) -> list[str]:
-    text = ["| Simulator | Version | Commit | Machine | Load | Date |"]
-    text.append("| --- | --- | --- | --- | --- | --- |")
-    for name, ran in document.simulators.items():
-        machine = str(ran.machine.get("processor") or ran.machine.get("cpu") or "")
-        text.append(
-            f"| {name} | {ran.version} | `{ran.commit[:12]}` | {machine} | "
-            f"{ran.load:.2f} | {ran.date} |"
-        )
-    text.append("")
-    text.append(
-        "The documented columns cite their sources in "
-        "[documented.py](documented.py); the fixtures are not timed."
-    )
-    text.append("")
-    return text
+    rows = [
+        [
+            name,
+            ran.version,
+            f"`{ran.commit[:12]}`",
+            str(ran.machine.get("processor") or ran.machine.get("cpu") or ""),
+            f"{ran.load:.2f}",
+            ran.date,
+        ]
+        for name, ran in document.simulators.items()
+    ]
+    return [
+        markdown_table(
+            ["Simulator", "Version", "Commit", "Machine", "Load", "Date"], rows
+        ),
+        "",
+        (
+            "The documented columns cite their sources in "
+            "[documented.py](documented.py); the fixtures are not timed."
+        ),
+        "",
+    ]
 
 
 def _counts(document: SuiteResults) -> list[str]:
-    text = ["## Counts", ""]
-    text.append(
-        "Rows each simulator offers, right or not, by category; no total and no "
-        "weights."
-    )
-    text.append("")
-    text.append("| Category | " + " | ".join(title for _, title in COLUMNS) + " |")
-    text.append("| --- |" + " --- |" * len(COLUMNS))
+    rows = []
     for category in Category:
         keys = [
             key
             for key in document.fixtures
             if document.fixtures[key].category == category
         ]
-        counts = []
-        for name, _ in COLUMNS:
-            offered = sum(
-                cells(document, key).get(name, Cell(status=Status.UNKNOWN)).status
-                in OFFERS
-                for key in keys
-            )
-            counts.append(f"{offered} of {len(keys)}")
-        text.append(f"| {TITLES[category]} | " + " | ".join(counts) + " |")
-    text.append("")
-    return text
+        counts = [
+            f"{
+                sum(
+                    cells(document, key).get(name, Cell(status=Status.UNKNOWN)).status
+                    in OFFERS
+                    for key in keys
+                )
+            } of {len(keys)}"
+            for name, _ in COLUMNS
+        ]
+        rows.append([TITLES[category], *counts])
+    return [
+        "## Counts",
+        "",
+        (
+            "Rows each simulator offers, right or not, by category; no total and no "
+            "weights."
+        ),
+        "",
+        markdown_table(["Category", *(title for _, title in COLUMNS)], rows),
+        "",
+    ]
 
 
 def _lacks(document: SuiteResults) -> list[str]:
@@ -670,8 +690,7 @@ def run_xyce(fixture: Fixture) -> Values:
     printed = executed.printed
     if executed.code != 0 or executed.values is None:
         raise _refused(printed, XYCE_REFUSALS)
-    text = executed.values
-    lines = list(csv.reader(io.StringIO(text)))
+    lines = list(csv.reader(executed.values.splitlines()))
     header = [cell.strip().upper() for cell in lines[0]]
     data = np.array([[float(cell) for cell in line] for line in lines[1:] if line])
     found = {column: data[:, index] for index, column in enumerate(header)}

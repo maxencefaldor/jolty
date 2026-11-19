@@ -40,7 +40,17 @@ from corpus import (
     Transient,
     fixtures,
 )
-from simulators import RUSAGE, Ngspice, Simulator, Unsupported, trouble
+from simulators import (
+    RUSAGE,
+    Ngspice,
+    Simulator,
+    Unsupported,
+    dc_command,
+    ngspice_method_flags,
+    ngspice_options_line,
+    tran_command,
+    trouble,
+)
 
 from jolty import _core, ir, plan
 from jolty.errors import JoltyError
@@ -386,16 +396,12 @@ def _options(fixture: Fixture) -> list[str]:
         for name, value in ((name, getattr(options, name)) for name in SPICE_OPTIONS)
         if value is not None
     ]
-    if (
-        isinstance(fixture.analysis, Transient)
-        and fixture.analysis.method != "trapezoidal"
-    ):
-        given.append("method=gear")
-        if fixture.analysis.method == "backward_euler":
-            given.append("maxord=1")
+    if isinstance(fixture.analysis, Transient):
+        given.extend(ngspice_method_flags(fixture.analysis.method))
     temperature = fixture.circuit.temperature()
     nominal = ngspice.option_temperature(_core.REFERENCE_TEMPERATURE)
-    lines = [f".options {' '.join(given)}"] if given else []
+    option_line = ngspice_options_line(given)
+    lines = [option_line] if option_line else []
     lines.append(
         f".options temp={ngspice.option_temperature(temperature)!r} tnom={nominal!r}"
     )
@@ -408,9 +414,9 @@ def _command(fixture: Fixture) -> str:
         case Point():
             return "op"
         case Sweep(source=source, start=start, stop=stop, step=step):
-            return f"dc {source} {start!r} {stop!r} {step!r}"
+            return dc_command(source, start, stop, step)
         case Transient(step=step, stop=stop) as transient:
-            return f"tran {step!r} {stop!r} 0 {transient.longest!r}"
+            return tran_command(step, stop, transient.longest)
 
 
 def main(arguments: list[str]) -> None:

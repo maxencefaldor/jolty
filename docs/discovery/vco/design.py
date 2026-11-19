@@ -11,11 +11,6 @@ twice its current times 2 kΩ at each reversal, the voltage it would have travel
 ``jolty simulate docs/discovery/vco/design.py``.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import candidates
 
 from jolty import Builder, Component, Plan, Role, Specs, component, devices

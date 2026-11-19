@@ -29,6 +29,8 @@ class Arm(StrEnum):
 
 TOOLS: Final = Path(__file__).with_name("ngspice.toml")
 """The ngspice arm's tools, in place of the jolty arm's in every prompt."""
+DISCRETE_PARTS: Final = Path(__file__).with_name("discrete_parts.py")
+"""Standalone 2N3904 and 2N3906 definitions shared by discrete transistor tasks."""
 SUFFIXES: Final = {Arm.JOLTY: ".py", Arm.NGSPICE: ".cir"}
 """The suffix of each arm's designs: a script's, or a netlist's."""
 
@@ -101,6 +103,28 @@ def given(task: Path, arm: Arm) -> list[Path]:
         message = f"the ngspice arm of {task.name} gets two files named {twice[0]}"
         raise ValueError(message)
     return sorted(found, key=lambda path: path.name)
+
+
+def _standalone_source(path: Path) -> Path:
+    """Returns `DISCRETE_PARTS` when `path` is a stub delegating to it."""
+    if path.name == "parts.py" and path.suffix == SUFFIXES[Arm.JOLTY]:
+        text = path.read_text(encoding="utf-8")
+        if "from discrete_parts import" in text:
+            return DISCRETE_PARTS
+    return path
+
+
+def staged(task: Path, arm: Arm) -> list[tuple[str, Path]]:
+    """The files `arm` stages into a session's working directory, as ``(name, path)``.
+
+    When a task's ``given/parts.py`` delegates to `DISCRETE_PARTS`, staging copies the
+    standalone `DISCRETE_PARTS` module as ``parts.py`` so sandboxed agents read the
+    full transistor definitions inside their working directory.
+    """
+    return [
+        (path.name, _standalone_source(path) if arm is Arm.JOLTY else path)
+        for path in given(task, arm)
+    ]
 
 
 def _spice(task: Path) -> list[Path]:

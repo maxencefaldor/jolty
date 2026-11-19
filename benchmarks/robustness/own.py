@@ -12,9 +12,19 @@ import math
 import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
+sys.path.append(str(Path(__file__).resolve().parents[2] / "examples"))
+sys.path.append(str(Path(__file__).resolve().parents[1] / "speed" / "circuits"))
+sys.path.append(
+    str(Path(__file__).resolve().parents[2] / "docs" / "discovery" / "memristive_nor")
+)
+
+import buck
 import numpy as np
+import sram_cell
+from common import SUPPLY, inverter, mos
 from corpus import (
     ROBUSTNESS,
     Built,
@@ -45,18 +55,6 @@ BENCHMARKS: Final = ROBUSTNESS.parent
 
 ROOT: Final = BENCHMARKS.parent
 """The repository's root."""
-
-for _shared in (
-    ROOT / "examples",
-    BENCHMARKS / "speed" / "circuits",
-    ROOT / "docs" / "discovery" / "memristive_nor",
-):
-    if str(_shared) not in sys.path:
-        sys.path.append(str(_shared))
-
-import buck  # noqa: E402 - the speed suite's fixture's script, beside its fixtures
-import sram_cell  # noqa: E402 - the example's script
-from common import SUPPLY, inverter, mos  # noqa: E402 - the examples' CMOS process
 
 FOLDED: Final = (
     ROOT / "crates" / "jolty-engine" / "tests" / "data" / "folded_sources.json"

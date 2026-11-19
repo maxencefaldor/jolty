@@ -12,6 +12,8 @@ the 10 kΩ alone discharges it to one third. The output is high for
 
 import math
 
+from common import comparator
+
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
 from jolty.devices import Gate
 from jolty.parts import q2n3904
@@ -21,14 +23,6 @@ from jolty.units import Hz, V, fF, kohm, ms, nF, ns, us
 
 SUPPLY = 9.0
 PERIOD = math.log(2) * (1e3 + 2 * 10e3) * 10e-9
-
-
-def comparator() -> devices.Device:
-    """A comparator, its output the supply or ground as `in` is above `ref` or not."""
-    half = SUPPLY / 2
-    return devices.behavioral_voltage_source(
-        f"{half} + {half} * tanh(v(in, ref) / 1e-3)"
-    )
 
 
 def gate(kind: Gate) -> devices.Device:
@@ -54,8 +48,8 @@ def timer(c: Builder) -> None:
     ):
         c.connect(resistor.a, a)
         c.connect(resistor.b, b)
-    high = c.place(comparator(), name="B1")
-    low = c.place(comparator(), name="B2")
+    high = c.place(comparator(SUPPLY), name="B1")
+    low = c.place(comparator(SUPPLY), name="B2")
     c.connect(high["in"], threshold)
     c.connect(high.ref, upper)
     c.connect(low["in"], lower)

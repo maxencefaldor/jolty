@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "examples"))
 from common import opamp
 
 from jolty import Builder, Component, Role, component, devices
+from jolty.builder import Connectable
 from jolty.units import F, V, ohm
 
 FREQUENCY = 50.0
@@ -29,11 +30,10 @@ def cap(farads: float) -> devices.Device:
     return devices.capacitor(farads * F, tolerance=CAPACITOR)
 
 
-@component
-def twin_t(c: Builder) -> None:
-    """The passive twin-T: two resistors R over 2C, two capacitors C over R/2."""
-    source, output = c.port("input"), c.port("output")
-    ground = c.port("ground", Role.GROUND)
+def _twin_t_bridge(
+    c: Builder, source: Connectable
+) -> tuple[tuple[Connectable, Connectable], tuple[Connectable, Connectable]]:
+    """Places the twin-T bridge from `source` and returns its output and leg pairs."""
     r1, r2, c3 = (
         c.place(r(RESISTANCE), name="R1"),
         c.place(r(RESISTANCE), name="R2"),
@@ -47,8 +47,17 @@ def twin_t(c: Builder) -> None:
     c.connect(source, r1.a, c1.a)
     c.connect(r1.b, r2.a, c3.a, name="resistive")
     c.connect(c1.b, c2.a, r3.a, name="capacitive")
-    c.connect(r2.b, c2.b, output)
-    c.connect(c3.b, r3.b, ground)
+    return (r2.b, c2.b), (c3.b, r3.b)
+
+
+@component
+def twin_t(c: Builder) -> None:
+    """The passive twin-T: two resistors R over 2C, two capacitors C over R/2."""
+    source, output = c.port("input"), c.port("output")
+    ground = c.port("ground", Role.GROUND)
+    bridge_out, leg = _twin_t_bridge(c, source)
+    c.connect(*bridge_out, output)
+    c.connect(*leg, ground)
 
 
 @component
@@ -123,26 +132,14 @@ def bootstrapped(c: Builder, feedback: float = 0.75) -> None:
     """
     source, output = c.port("input"), c.port("output")
     ground = c.port("ground", Role.GROUND)
-    r1, r2, c3 = (
-        c.place(r(RESISTANCE), name="R1"),
-        c.place(r(RESISTANCE), name="R2"),
-        c.place(cap(2 * CAPACITANCE), name="C3"),
-    )
-    c1, c2, r3 = (
-        c.place(cap(CAPACITANCE), name="C1"),
-        c.place(cap(CAPACITANCE), name="C2"),
-        c.place(r(RESISTANCE / 2), name="R3"),
-    )
+    bridge_out, leg = _twin_t_bridge(c, source)
     buffer, bootstrap = c.place(opamp(), name="U1"), c.place(opamp(), name="U2")
     upper, lower = (
         c.place(r(10e3 * (1 - feedback)), name="RK1"),
         c.place(r(10e3 * feedback), name="RK2"),
     )
-    c.connect(source, r1.a, c1.a)
-    c.connect(r1.b, r2.a, c3.a, name="resistive")
-    c.connect(c1.b, c2.a, r3.a, name="capacitive")
-    c.connect(r2.b, c2.b, buffer.inp, name="bridge")
+    c.connect(*bridge_out, buffer.inp, name="bridge")
     c.connect(buffer.out, buffer.inn, upper.a, output)
     c.connect(upper.b, lower.a, bootstrap.inp, name="fraction")
-    c.connect(bootstrap.out, bootstrap.inn, c3.b, r3.b, name="leg")
+    c.connect(bootstrap.out, bootstrap.inn, *leg, name="leg")
     c.connect(lower.b, buffer.ground, bootstrap.ground, ground)

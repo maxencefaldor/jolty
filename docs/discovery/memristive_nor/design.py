@@ -12,11 +12,6 @@ the inputs' turning on against the output's turning off: every input computes NO
 ``jolty simulate docs/discovery/memristive_nor/design.py``.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import candidates
 
 from jolty import Component, Corner, Plan, Specs, Transient

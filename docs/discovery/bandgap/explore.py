@@ -4,15 +4,10 @@
 It also finds the Widlar resistor that flattens each bandgap over temperature.
 """
 
-import sys
 from collections.abc import Callable
-from pathlib import Path
-
-import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import candidates
+import numpy as np
 
 from jolty import Component, DcSweep, OperatingPoint, Simulation, circuit
 from jolty.plan import linear

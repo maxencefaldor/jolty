@@ -5,15 +5,10 @@ The distortion comes from the output's spectrum over its last 40 periods, resamp
 evenly; each harmonic is the spectrum's magnitude at its multiple of the fundamental.
 """
 
-import sys
 from itertools import pairwise
-from pathlib import Path
-
-import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import candidates
+import numpy as np
 
 from jolty import Component, Simulation, Transient, circuit
 from jolty.units import celsius, ms, us

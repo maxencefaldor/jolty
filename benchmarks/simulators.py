@@ -32,6 +32,7 @@ from jolty.plan import (
     Ac,
     Analysis,
     DcSweep,
+    Method,
     Noise,
     OperatingPoint,
     Options,
@@ -276,6 +277,41 @@ def netlist(
     )
 
 
+def dc_command(element: str, start: float, stop: float, step: float) -> str:
+    """Formats a SPICE DC sweep command: ``dc <element> <start> <stop> <step>``."""
+    return f"dc {element} {start!r} {stop!r} {step!r}"
+
+
+def tran_command(step: float, stop: float, max_step: float | None = None) -> str:
+    """Formats a SPICE transient command: ``tran <step> <stop> 0 <max_step>``."""
+    longest = step if max_step is None else max_step
+    return f"tran {step!r} {stop!r} 0 {longest!r}"
+
+
+def ngspice_element(flat: ir.Circuit, path: str) -> str:
+    """The SPICE element name for the instance at `path` in flattened circuit `flat`.
+
+    Raises:
+        KeyError: When `flat` holds no instance at `path`.
+    """
+    top = flat.components[flat.top]
+    return export.element(_instance(top, path.replace("/", "_")))
+
+
+def ngspice_method_flags(method: Method) -> tuple[str, ...]:
+    """Returns ngspice ``.options`` tokens for integration `method`, empty for trap."""
+    if method == "gear2":
+        return ("method=gear", "maxord=2")
+    if method == "backward_euler":
+        return ("method=gear", "maxord=1")
+    return ()
+
+
+def ngspice_options_line(flags: Sequence[str], *, fallback: str = "") -> str:
+    """Joins ``.options`` `flags` into an option line, or `fallback` when empty."""
+    return f".options {' '.join(flags)}" if flags else fallback
+
+
 def command(analysis: Analysis, flat: ir.Circuit) -> str:
     """`analysis` as ngspice's command in a control section.
 
@@ -294,17 +330,16 @@ def command(analysis: Analysis, flat: ir.Circuit) -> str:
         case DcSweep(source=source, values=levels):
             given = [level.to(VOLTAGE, "a level") for level in levels]
             step = (given[-1] - given[0]) / (len(given) - 1)
-            element = export.element(_instance(top, source))
-            return f"dc {element} {given[0]!r} {given[-1]!r} {step!r}"
+            return dc_command(ngspice_element(flat, source), given[0], given[-1], step)
         case Ac(frequencies=frequencies):
             return f"ac {_decades(frequencies)}"
         case Noise(frequencies=frequencies, output=output, source=source):
-            element = export.element(_instance(top, source or ""))
+            element = ngspice_element(flat, source or "")
             return f"noise v({output}) {element} {_decades(frequencies)}"
         case Transient(stop=stop, max_step=max_step):
             end = stop.to(TIME, "a stop")
             longest = end / 50 if max_step is None else max_step.to(TIME, "a step")
-            return f"tran {longest!r} {end!r} 0 {longest!r}"
+            return tran_command(longest, end)
         case PoleZero(source=str(source), output=str(output)):
             positive = _instance(top, source).terminals["positive"]
             ground = next(

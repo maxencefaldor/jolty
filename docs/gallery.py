@@ -36,9 +36,19 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Final
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "benchmarks"))
+
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.ticker import EngFormatter
+from measuring import markdown_table
+from simulators import (
+    dc_command,
+    ngspice_element,
+    ngspice_method_flags,
+    ngspice_options_line,
+    tran_command,
+)
 
 from jolty import (
     JoltyError,
@@ -261,8 +271,8 @@ def _commands(
         case DcSweep(source=source, values=levels):
             values = [level.value for level in levels]
             step = values[1] - values[0] if len(values) > 1 else 1.0
-            element = _element(circuit, source)
-            return [f"dc {element} {values[0]!r} {values[-1]!r} {step!r}"], None, ""
+            element = ngspice_element(export.flatten(circuit), source)
+            return [dc_command(element, values[0], values[-1], step)], None, ""
         case Ac(source=source, frequencies=frequencies):
             values = [frequency.value for frequency in frequencies]
             per_decade = round(1 / math.log10(values[1] / values[0]))
@@ -279,12 +289,8 @@ def _commands(
             return commands, source, ""
         case Transient(stop=stop, max_step=max_step, method=method):
             step = max_step.value if max_step is not None else stop.value / 1000
-            option = {
-                "trapezoidal": "",
-                "gear2": ".options method=gear maxord=2",
-                "backward_euler": ".options method=gear maxord=1",
-            }[method]
-            return [f"tran {step!r} {stop.value!r} 0 {step!r}"], None, option
+            option = ngspice_options_line(ngspice_method_flags(method))
+            return [tran_command(step, stop.value)], None, option
     return None
 
 
@@ -330,16 +336,6 @@ def _run(
         ),
         loosened,
     )
-
-
-def _element(circuit: ir.Circuit, path: str) -> str:
-    """The SPICE element name of the device at `path`."""
-    flat = export.flatten(circuit)
-    instance = flat.components[flat.top].instance(path.replace("/", "_"))
-    if instance is None:
-        message = f"no device at {path}"
-        raise KeyError(message)
-    return export.element(instance)
 
 
 def _from_raw(
@@ -738,23 +734,19 @@ def _specs_section(built: Built) -> list[str]:
         verdict.requirement: verdict
         for verdict in (built.replication.verdicts if built.replication else ())
     }
-    lines = [
-        "## Specs",
-        "",
-        (
-            "| Requirement | jolty | ngspice | Difference |"
-            if replicated
-            else "| Requirement | jolty |"
-        ),
-        "| --- | --- | --- | --- |" if replicated else "| --- | --- |",
-    ]
+    headers = (
+        ["Requirement", "jolty", "ngspice", "Difference"]
+        if replicated
+        else ["Requirement", "jolty"]
+    )
+    rows = []
     for verdict in built.verdicts:
-        row = f"| {verdict.requirement} | {_reading(verdict)} |"
+        row = [verdict.requirement, _reading(verdict)]
         if replicated:
             spice = theirs.get(verdict.requirement)
-            row += f" {_reading(spice)} | {_difference(verdict, spice)} |"
-        lines.append(row)
-    return [*lines, ""]
+            row.extend([_reading(spice), _difference(verdict, spice)])
+        rows.append(row)
+    return ["## Specs", "", *markdown_table(headers, rows).splitlines(), ""]
 
 
 def _reading(verdict: specs.Verdict | None) -> str:
@@ -820,20 +812,28 @@ def _replication_section(built: Built) -> list[str]:
         "",
     ]
     if replication.deviations:
-        lines += [
-            (
-                "| Analysis | Voltages | Largest deviation "
-                "| Currents | Largest deviation |"
-            ),
-            "| --- | --- | --- | --- | --- |",
-        ]
+        rows = []
         for name, natures in replication.deviations.items():
             cells = []
             for nature in ("voltage", "current"):
                 count, deviation = natures.get(nature, (0, 0.0))
                 cells += [str(count), _ratio(deviation) if count else "-"]
-            lines.append(f"| `{name}` | {' | '.join(cells)} |")
-        lines.append("")
+            rows.append([f"`{name}`", *cells])
+        lines.extend(
+            [
+                *markdown_table(
+                    [
+                        "Analysis",
+                        "Voltages",
+                        "Largest deviation",
+                        "Currents",
+                        "Largest deviation",
+                    ],
+                    rows,
+                ).splitlines(),
+                "",
+            ]
+        )
     if built.entry.free_running:
         lines += [
             (

@@ -5,11 +5,7 @@ Run with ``uv run python docs/discovery/current_source/explore.py``.
 """
 
 import math
-import sys
 from collections.abc import Callable
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import candidates
 

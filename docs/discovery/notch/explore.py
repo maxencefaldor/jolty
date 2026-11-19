@@ -5,14 +5,8 @@ Each sample's depth is read between 45 Hz and 55 Hz, and its passband at 25 Hz a
 100 Hz.
 """
 
-import sys
-from pathlib import Path
-
-import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import candidates
+import numpy as np
 
 from jolty import Ac, Component, Simulation, circuit, ir, variation
 from jolty.units import Hz

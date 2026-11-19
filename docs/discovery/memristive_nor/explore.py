@@ -9,14 +9,8 @@ gate with one input on must see more than 0.5 V, the output of a gate with both 
 less, and the inputs of that gate less than 1 V.
 """
 
-import sys
-from pathlib import Path
-
-import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import candidates
+import numpy as np
 
 from jolty import Simulation, Transient
 from jolty.units import ns

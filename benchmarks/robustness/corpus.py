@@ -36,7 +36,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Final, Protocol
 
-from measuring import duration, load_average, provenance, save
+from measuring import duration, load_average, markdown_table, provenance, save
 from simulators import Runner, Simulator, runner
 
 from jolty import ir
@@ -519,18 +519,15 @@ def table(
     outcomes: Mapping[tuple[str, str], Outcome],
 ) -> list[str]:
     """The Markdown table of `chosen` fixtures by simulator, and each one's rates."""
-    lines = [
-        "| Fixture | Kind | " + " | ".join(names) + " |",
-        "| --- | --- | " + " | ".join("---" for _ in names) + " |",
-    ]
-    lines.extend(
-        f"| `{fixture.name}` | {fixture.kind} | "
-        + " | ".join(cell(outcomes[fixture.name, name]) for name in names)
-        + " |"
+    fixture_rows = [
+        [
+            f"`{fixture.name}`",
+            fixture.kind,
+            *(cell(outcomes[fixture.name, name]) for name in names),
+        ]
         for fixture in chosen
-    )
-    lines += ["", "| Simulator | Kind | Failed | Runs | Rate | 95 % interval |"]
-    lines.append("| --- | --- | --- | --- | --- | --- |")
+    ]
+    summary_rows: list[list[str]] = []
     for name in names:
         for kind in Kind:
             counts: dict[Status, int] = {}
@@ -540,14 +537,27 @@ def table(
                     counts[status] = counts.get(status, 0) + 1
             rate = wilsons(counts)
             if rate is None:
-                lines.append(f"| {name} | {kind} | | 0 | | |")
+                summary_rows.append([name, kind, "", "0", "", ""])
                 continue
             failed, supported, low, high = rate
-            lines.append(
-                f"| {name} | {kind} | {failed} | {supported} | "
-                f"{failed / supported:.0%} | {low:.0%} to {high:.0%} |"
+            summary_rows.append(
+                [
+                    name,
+                    kind,
+                    str(failed),
+                    str(supported),
+                    f"{failed / supported:.0%}",
+                    f"{low:.0%} to {high:.0%}",
+                ]
             )
-    return lines
+    return [
+        *markdown_table(["Fixture", "Kind", *names], fixture_rows).splitlines(),
+        "",
+        *markdown_table(
+            ["Simulator", "Kind", "Failed", "Runs", "Rate", "95 % interval"],
+            summary_rows,
+        ).splitlines(),
+    ]
 
 
 def details(

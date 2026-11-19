@@ -1,5 +1,5 @@
 # Copyright 2026 Maxence Faldor
-"""What the examples share beyond `jolty.parts`: zeners, an op-amp and a CMOS process.
+"""What the examples share beyond `jolty.parts`: zeners, an op-amp, a JFET and CMOS.
 
 The op-amp is a macromodel of three behavioral elements, written so ngspice reads it as
 jolty does: its input stage's current saturates, which sets its slew rate, and its
@@ -7,7 +7,7 @@ output clamps at its rails. The CMOS transistors are level 1 MOSFETs of a 1 µm 
 """
 
 from jolty import Builder, Role, component, devices
-from jolty.units import A, V, fF, nm, ohm, pF, um
+from jolty.units import A, K, V, fF, nm, ohm, pF, um
 
 # Zener diodes.
 
@@ -110,3 +110,27 @@ def inverter(c: Builder) -> None:
     c.connect(up.gate, down.gate, a)
     c.connect(up.drain, down.drain, y)
     c.connect(down.source, down.bulk, gnd)
+
+
+def comparator(supply: float = SUPPLY) -> devices.Device:
+    """A comparator, its output `supply` or ground as `in` is above `ref` or not."""
+    half = supply / 2
+    return devices.behavioral_voltage_source(
+        f"{half} + {half} * tanh(v(in, ref) / 1e-3)"
+    )
+
+
+def j2n5457() -> devices.Device:
+    """A 2N5457 JFET, with the SPICE parameters its maker publishes."""
+    return devices.jfet(
+        threshold_voltage=-1.372 * V,
+        transconductance_parameter=1.125e-3 * A / V**2,
+        channel_length_modulation=2.3e-3 / V,
+        drain_resistance=1 * ohm,
+        source_resistance=1 * ohm,
+        gate_source_capacitance=2.06 * pF,
+        gate_drain_capacitance=2.16 * pF,
+        saturation_current=181.3e-15 * A,
+        threshold_voltage_temperature_coefficient=-2.5e-3 * V / K,
+        transconductance_parameter_temperature_exponent=-0.5,
+    )

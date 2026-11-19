@@ -22,14 +22,14 @@ import math
 import runpy
 import sys
 import tempfile
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
 import numpy as np
 from arms import Arm, libraries
-from verdict import Kind, Shortfall
+from verdict import Kind, Shortfall, Verdict
 
 from jolty import (
     Component,
@@ -659,3 +659,43 @@ def tolerate(
         f"{YIELD:.0%}; on the first that falls short, {short[0]}"
     )
     return measured, [unmet("yield", reason)]
+
+
+@dataclass(frozen=True, slots=True)
+class DesignSpec:
+    """Configuration for scoring a component design across corners and tolerances."""
+
+    ports: Sequence[str]
+    bench: Callable[[Component], Component]
+    measure: Callable[[Component, Board], dict[str, float]]
+    shortfalls: Shortfalls
+    parts: Sequence[str]
+    allowed: Iterable[str]
+    spread: Spread
+    stem: str = "design"
+    extra_measurements: Mapping[str, float] = field(default_factory=dict)
+
+
+def score_design(task: Path, work: Path, arm: Arm, spec: DesignSpec) -> Verdict:
+    """Loads, benches, checks, simulates across corners and boards, and scores."""
+    made = design(task, work, spec.stem, arm)
+    if isinstance(made, Shortfall):
+        return Verdict(met=False, shortfalls=(made,))
+    built = benched(made, spec.ports, lambda: spec.bench(made))
+    if isinstance(built, Shortfall):
+        return Verdict(met=False, shortfalls=(built,))
+    reasons = disallowed(built, given(task, arm, *spec.parts), spec.allowed)
+
+    def measured(board: Board) -> dict[str, float]:
+        return spec.measure(made, board)
+
+    measurements, short = cornered(measured, spec.shortfalls)
+    reasons += short
+    if not reasons:
+        spread, reasons = tolerate(built, measured, spec.shortfalls, spec.spread)
+        measurements |= spread
+    measurements |= spec.extra_measurements
+    measurements["devices"] = float(count_devices(built, "X1"))
+    return Verdict(
+        met=not reasons, measurements=measurements, shortfalls=tuple(reasons)
+    )

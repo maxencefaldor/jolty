@@ -12,15 +12,18 @@ series, so an inverter's path spells its place in the chain in decimal digits, a
 circuit's file holds each size of chain once.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "examples"))
+
+from common import SUPPLY, mos
 from fixture import Fixture, write
 
 from jolty import Builder, Component, Plan, Role, component, devices
 from jolty.plan import Options, Transient
-from jolty.units import V, fF, nm, ns, um
+from jolty.units import V, ns
 from jolty.waveforms import Pulse
-
-SUPPLY = 3.3
-"""The supply, in volts."""
 
 LENGTHS = (500, 5000, 50_000)
 """The fixtures' numbers of inverters."""
@@ -30,21 +33,6 @@ MEMORY = 16.0
 each of whose transistors has three Meyer displacements of its own, held 2.1 at some 800
 points on 15 November, and more than 4 since SPICE's charge tolerance took more steps;
 on 16 November they fitted in 16 on `cedar`."""
-
-
-def mos(channel: str) -> devices.Device:
-    """A level 1 MOSFET 1 µm long, 1 µm wide for an n-channel and 2 µm for a p."""
-    p = channel == "p"
-    return devices.mosfet(
-        channel="p" if p else "n",
-        width=(2 if p else 1) * um,
-        length=1 * um,
-        threshold_voltage=(-0.7 if p else 0.7) * V,
-        channel_length_modulation=0.05 / V,
-        oxide_thickness=20 * nm,
-        bulk_drain_capacitance=2 * fF,
-        bulk_source_capacitance=2 * fF,
-    )
 
 
 @component

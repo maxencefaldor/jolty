@@ -7,33 +7,37 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "examples"))
 
-from common import opamp
+from common import j2n5457, opamp
 
 from jolty import Builder, Component, Role, component, devices
-from jolty.builder import Connectable
+from jolty.builder import Connectable, Net, Placed
 from jolty.parts import d1n4148
-from jolty.units import A, F, K, V, ohm, pF, uA, us
+from jolty.units import F, ohm, uA, us
 from jolty.waveforms import Pulse
 
 FREQUENCY = 1e3
 CAPACITANCE = 10e-9
 RESISTANCE = 1 / (2 * math.pi * FREQUENCY * CAPACITANCE)
 
+jfet = j2n5457
 
-def jfet() -> devices.Device:
-    """A 2N5457, with the SPICE parameters its maker publishes."""
-    return devices.jfet(
-        threshold_voltage=-1.372 * V,
-        transconductance_parameter=1.125e-3 * A / V**2,
-        channel_length_modulation=2.3e-3 / V,
-        drain_resistance=1 * ohm,
-        source_resistance=1 * ohm,
-        gate_source_capacitance=2.06 * pF,
-        gate_drain_capacitance=2.16 * pF,
-        saturation_current=181.3e-15 * A,
-        threshold_voltage_temperature_coefficient=-2.5e-3 * V / K,
-        transconductance_parameter_temperature_exponent=-0.5,
-    )
+
+def _jfet_wien_stage(
+    c: Builder, fixed: float
+) -> tuple[Net, Net, Placed, Placed, Placed, Net]:
+    """Places the op-amp, Wien bridge, feedback leg, and gain-control JFET."""
+    output, ground = c.port("output", Role.OUTPUT), c.port("ground", Role.GROUND)
+    amplifier = c.place(opamp(), name="U1")
+    plus, minus = c.net("plus"), c.net("minus")
+    bridge(c, output, plus, ground)
+    feedback = c.place(devices.resistor(20e3 * ohm), name="RF")
+    series = c.place(devices.resistor(fixed * ohm), name="RG")
+    channel = c.place(jfet(), name="J1")
+    drain = c.net("drain")
+    c.connect(feedback.b, series.a, amplifier.inn, minus)
+    c.connect(series.b, channel.drain, drain)
+    c.connect(amplifier.inp, plus)
+    return output, ground, amplifier, feedback, channel, drain
 
 
 def bridge(
@@ -95,21 +99,13 @@ def agc(
     from the drain feed half the channel's voltage to its gate, which cancels the square
     law's even distortion.
     """
-    output, ground = c.port("output", Role.OUTPUT), c.port("ground", Role.GROUND)
-    amplifier = c.place(opamp(), name="U1")
-    plus, minus = c.net("plus"), c.net("minus")
-    bridge(c, output, plus, ground)
-    feedback = c.place(devices.resistor(20e3 * ohm), name="RF")
-    series = c.place(devices.resistor(fixed * ohm), name="RG")
-    channel = c.place(jfet(), name="J1")
+    output, ground, amplifier, feedback, channel, drain = _jfet_wien_stage(c, fixed)
     detector = c.place(d1n4148(), name="D1")
     hold = c.place(devices.capacitor(1e-6 * F), name="CH")
     upper = c.place(devices.resistor(1e6 * (1 - divider) / divider * ohm), name="RD1")
     lower = c.place(devices.resistor(1e6 * ohm), name="RD2")
-    drain, peak, control = c.net("drain"), c.net("peak"), c.net("control")
+    peak, control = c.net("peak"), c.net("control")
     c.connect(amplifier.out, feedback.a, detector.cathode, output)
-    c.connect(feedback.b, series.a, amplifier.inn, minus)
-    c.connect(series.b, channel.drain, drain)
     c.connect(detector.anode, hold.a, upper.a, peak)
     c.connect(upper.b, lower.a, control)
     if linearized:
@@ -120,7 +116,6 @@ def agc(
         c.connect(bottom.b, control)
     else:
         c.connect(channel.gate, control)
-    c.connect(amplifier.inp, plus)
     c.connect(channel.source, hold.b, lower.b, amplifier.ground, ground)
 
 
@@ -144,13 +139,7 @@ def sensed_agc(
     nearly cancel in the amplitude. The hold capacitor's 1 MΩ discharge sets how fast
     the loop settles, and how much ripple reaches the gate.
     """
-    output, ground = c.port("output", Role.OUTPUT), c.port("ground", Role.GROUND)
-    amplifier = c.place(opamp(), name="U1")
-    plus, minus = c.net("plus"), c.net("minus")
-    bridge(c, output, plus, ground)
-    feedback = c.place(devices.resistor(20e3 * ohm), name="RF")
-    series = c.place(devices.resistor(fixed * ohm), name="RG")
-    channel = c.place(jfet(), name="J1")
+    output, ground, amplifier, feedback, channel, _ = _jfet_wien_stage(c, fixed)
     upper = c.place(devices.resistor(10e3 * (1 - sense) / sense * ohm), name="RS1")
     lower = c.place(devices.resistor(10e3 * ohm), name="RS2")
     detector = c.place(d1n4148(), name="D1")
@@ -158,8 +147,5 @@ def sensed_agc(
     leak = c.place(devices.resistor(1e6 * ohm), name="RH")
     c.connect(amplifier.out, feedback.a, upper.a, output)
     c.connect(upper.b, lower.a, detector.cathode, name="sensed")
-    c.connect(feedback.b, series.a, amplifier.inn, minus)
-    c.connect(series.b, channel.drain, name="drain")
     c.connect(detector.anode, capacitor.a, leak.a, channel.gate, name="gate")
-    c.connect(amplifier.inp, plus)
     c.connect(channel.source, lower.b, capacitor.b, leak.b, amplifier.ground, ground)

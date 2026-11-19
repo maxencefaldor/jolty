@@ -24,23 +24,11 @@ sources a current from the first and sinks one into the second, so the output cu
 flows out of ``output`` when ``plus`` is the higher.
 """
 
-from functools import partial
 from pathlib import Path
 
 import numpy as np
 from arms import Arm
-from scoring import (
-    Board,
-    benched,
-    cornered,
-    count_devices,
-    design,
-    disallowed,
-    discrete,
-    given,
-    tolerate,
-    unmet,
-)
+from scoring import Board, DesignSpec, discrete, score_design, unmet
 from verdict import Shortfall, Verdict
 
 from jolty import Builder, Component, Role, circuit, component, devices
@@ -226,26 +214,24 @@ def shortfalls(found: dict[str, float]) -> list[Shortfall]:
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
     """The verdict on the voltage-current converter in `work`, as `arm` writes it."""
-    made = design(task, work, "design", arm)
-    if isinstance(made, Shortfall):
-        return Verdict(met=False, shortfalls=(made,))
-    built = benched(made, PORTS, lambda: bench(made, cases()[0], swing()))
-    if isinstance(built, Shortfall):
-        return Verdict(met=False, shortfalls=(built,))
-    reasons = disallowed(built, given(task, arm, "npn", "pnp"), ALLOWED)
-    measured = partial(measure, made)
-    measurements, short = cornered(measured, shortfalls)
-    reasons += short
-    if not reasons:
-        spread, reasons = tolerate(built, measured, shortfalls, discrete)
-        measurements |= spread
-    measurements |= {
-        f"patent's error {case}": theirs for case, theirs in enumerate(PATENT, start=1)
-    }
-    measurements |= {
-        "evolved fitness": EVOLVED,
-        "devices": float(count_devices(built, "X1")),
-    }
-    return Verdict(
-        met=not reasons, measurements=measurements, shortfalls=tuple(reasons)
+    return score_design(
+        task,
+        work,
+        arm,
+        DesignSpec(
+            ports=PORTS,
+            bench=lambda made: bench(made, cases()[0], swing()),
+            measure=measure,
+            shortfalls=shortfalls,
+            parts=("npn", "pnp"),
+            allowed=ALLOWED,
+            spread=discrete,
+            extra_measurements={
+                **{
+                    f"patent's error {case}": theirs
+                    for case, theirs in enumerate(PATENT, start=1)
+                },
+                "evolved fitness": EVOLVED,
+            },
+        ),
     )

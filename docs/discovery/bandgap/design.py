@@ -11,11 +11,6 @@ out to straighten the bandgap's curvature: 1.2414 V within 1.08 mV from -40 °C 
 ``jolty simulate docs/discovery/bandgap/design.py``.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import candidates
 
 from jolty import Component, Corner, Plan, Specs

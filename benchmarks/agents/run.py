@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-from arms import Arm, given, prompt
+from arms import Arm, prompt, staged
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import CliPositionalArg, CliUnknownArgs, SettingsConfigDict
 from sandbox import Sandbox, confined, mechanism, sandbox
@@ -156,8 +156,8 @@ def default_agent(
 
 def prepare(task: Path, work: Path, arm: Arm = Arm.JOLTY) -> str:
     """Copies the files `arm` gets of `task` into `work`, and returns its prompt."""
-    for path in given(task, arm):
-        shutil.copy(path, work / path.name)
+    for name, source in staged(task, arm):
+        shutil.copy(source, work / name)
     return prompt(task, arm)
 
 

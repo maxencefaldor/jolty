@@ -78,7 +78,7 @@ from jolty.units import (
 from jolty.units import (
     m as m_,
 )
-from jolty.waveforms import Piecewise, Pulse, Sine
+from jolty.waveforms import Piecewise, Pulse, Sine, Waveform
 
 type Values = dict[str, complex]
 """What a fixture reads, by name: a voltage such as ``v(out)``, a current such as
@@ -214,23 +214,59 @@ class Fixture:
 
 # Where each simulator says what it offers, for the rows it has no statement for.
 
+NGSPICE_GUIDE: Final = "ngspice 47 manual"
+"""Citation prefix for ngspice 47 manual entries."""
+
 NGSPICE_ANALYSES: Final = (
-    "ngspice 47 manual, §11.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, "
+    f"{NGSPICE_GUIDE}, §11.3 Analyses, lists .AC, .DC, .DISTO, .NOISE, .OP, .PZ, "
     ".SENS, .SP, .TF, .TRAN, transient noise and .PSS"
 )
 """The ngspice manual's list of its analyses."""
 
 NGSPICE_SENSITIVITY: Final = (
-    "ngspice 47 manual, §11.3.7 .SENS: DC or Small-Signal AC Sensitivity Analysis"
+    f"{NGSPICE_GUIDE}, §11.3.7 .SENS: DC or Small-Signal AC Sensitivity Analysis"
 )
 """Where ngspice's manual says which sensitivities it computes."""
 
+XYCE_GUIDE: Final = "Xyce Reference Guide 7.10"
+"""Citation prefix for Xyce Reference Guide entries."""
+
 XYCE_COMMANDS: Final = (
-    "Xyce Reference Guide 7.10, Netlist Commands: .AC, .DC, .HB, .LIN, .MPDE, "
+    f"{XYCE_GUIDE}, Netlist Commands: .AC, .DC, .HB, .LIN, .MPDE, "
     ".NOISE, .OP, .PCE, .SAMPLING, .EMBEDDEDSAMPLING, .SENS, .STEP, .TRAN and others; "
     "no .PZ, .TF, .DISTO, loop gain or worst case"
 )
 """The Xyce Reference Guide's list of its analysis commands."""
+
+_PENDING: Final = "; no fixture runs it here yet"
+
+
+def _ngspice_documented(detail: str, *, pending: bool = False) -> Documented:
+    """Formats an ngspice manual `Documented` note with optional pending suffix."""
+    return Documented(f"{NGSPICE_GUIDE}{detail}{_PENDING if pending else ''}")
+
+
+def _ngspice_unsupported(detail: str) -> Unsupported:
+    """Formats an ngspice manual `Unsupported` note."""
+    return Unsupported(f"{NGSPICE_GUIDE}{detail}")
+
+
+def _xyce_documented(detail: str, *, pending: bool = False) -> Documented:
+    """Formats a Xyce Reference Guide `Documented` note with optional pending suffix."""
+    return Documented(f"{XYCE_GUIDE}{detail}{_PENDING if pending else ''}")
+
+
+def _xyce_unsupported(detail: str) -> Unsupported:
+    """Formats a Xyce Reference Guide `Unsupported` note."""
+    return Unsupported(f"{XYCE_GUIDE}{detail}")
+
+
+def _unrun_spice(
+    ngspice_note: Unsupported | Documented, xyce_note: Unsupported | Documented
+) -> Spice:
+    """Returns a `Spice` entry for rows not executed in ngspice or Xyce."""
+    return Spice(deck=(), ngspice=ngspice_note, xyce=xyce_note, reads={})
+
 
 JOLTY_ANALYSES: Final = (
     "jolty.plan.Analysis: OperatingPoint, OperatingPoints, DcSweep, Ac, Transient, "
@@ -414,13 +450,14 @@ def op_fixture(  # noqa: PLR0913, PLR0917 - a row's names, its fixture and its a
     *,
     reference: Simulator | None = None,
     xyce: Unsupported | Documented | None = None,
+    temperature: float = ROOM,
 ) -> Fixture:
     """A row whose fixture is a deck's operating point, in every simulator.
 
     `xyce` replaces Xyce's run of the deck, where Xyce reads its card otherwise.
     """
     fixture = Op(deck, tuple(known or {}) if reference is None else ())
-    spice = fixture.spice()
+    spice = fixture.spice(temperature=temperature)
     if xyce is not None:
         spice = dataclasses.replace(spice, xyce=xyce)
     return Fixture(
@@ -439,17 +476,23 @@ def _builder(name: str) -> tuple[Builder, Net]:
     return c, c.port("ground", Role.GROUND)
 
 
-def rc_step() -> Component:
-    """A source stepped from 0 V to 1 V in 10 ns at 1 µs, into 1 kΩ and 1 nF."""
-    c, ground = _builder("rc_step")
-    step = Piecewise([(1 * us, 0 * V), (1 * us + 10 * ns, 1 * V)])
-    source = c.place(devices.voltage_source(step), name="V1")
+def _rc_circuit(name: str, waveform: Waveform) -> Component:
+    """A source driven by `waveform` into 1 kΩ and 1 nF."""
+    c, ground = _builder(name)
+    source = c.place(devices.voltage_source(waveform), name="V1")
     resistor = c.place(devices.resistor(1 * kohm), name="R1")
     capacitor = c.place(devices.capacitor(1 * nF), name="C1")
     c.connect(source.positive, resistor.a, name="in")
     c.connect(resistor.b, capacitor.a, name="out")
     c.connect(capacitor.b, source.negative, ground)
     return c.finish()
+
+
+def rc_step() -> Component:
+    """A source stepped from 0 V to 1 V in 10 ns at 1 µs, into 1 kΩ and 1 nF."""
+    return _rc_circuit(
+        "rc_step", Piecewise([(1 * us, 0 * V), (1 * us + 10 * ns, 1 * V)])
+    )
 
 
 RC_TAU: Final = 1e3 * 1e-9
@@ -539,20 +582,7 @@ def transient_fixture(key: str, name: str, method: Method) -> Fixture:
 
 def analyses() -> list[Fixture]:
     """The analyses' rows."""
-    rows: list[Fixture] = []
     deck = divider_deck()
-    out = divider_out()
-    rows.append(
-        op_fixture(
-            "op",
-            Category.ANALYSIS,
-            "Operating point",
-            deck,
-            {"v(out)": out, "i(v1)": -5.0 / 4e3},
-            "closed form: a divider's ratio",
-        )
-    )
-
     # Every DC solution: a behavioral current of 1 mA·(v³ - v) out of a node, whose
     # solutions are -1, 0 and 1 V.
     cubic = ("* cubic", "B1 x 0 I={1m*(V(x)*V(x)*V(x) - V(x))}", "R1 x 0 1g")
@@ -567,7 +597,19 @@ def analyses() -> list[Fixture]:
 
     # 1e-3·(v³ - v) + 1e-9·v = 0: v = 0 or v² = 1 - 1e-6.
     edge = math.sqrt(1 - conductance / 1e-3)
-    rows.append(
+    levels = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    sweep_names = tuple(f"v(out)@{index}" for index in range(len(levels)))
+    resistances = [1e3, 2e3, 3e3]
+    swept = tuple(f"v(out)@{index}" for index in range(len(resistances)))
+    return [
+        op_fixture(
+            "op",
+            Category.ANALYSIS,
+            "Operating point",
+            deck,
+            {"v(out)": divider_out(), "i(v1)": -5.0 / 4e3},
+            "closed form: a divider's ratio",
+        ),
         Fixture(
             key="op-every",
             category=Category.ANALYSIS,
@@ -583,12 +625,7 @@ def analyses() -> list[Fixture]:
                 xyce=Unsupported(XYCE_COMMANDS + "; .OP finds one solution"),
                 reads={},
             ),
-        )
-    )
-
-    levels = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
-    sweep_names = tuple(f"v(out)@{index}" for index in range(len(levels)))
-    rows.append(
+        ),
         Fixture(
             key="dc-source",
             category=Category.ANALYSIS,
@@ -611,12 +648,7 @@ def analyses() -> list[Fixture]:
                 xyce=((".dc V1 0 5 1",), "dc"),
                 reads=_reads(sweep_names),
             ),
-        )
-    )
-
-    resistances = [1e3, 2e3, 3e3]
-    swept = tuple(f"v(out)@{index}" for index in range(len(resistances)))
-    rows.append(
+        ),
         Fixture(
             key="dc-resistance",
             category=Category.ANALYSIS,
@@ -639,16 +671,22 @@ def analyses() -> list[Fixture]:
                 xyce=((".dc R2:R 1k 3k 1k",), "dc"),
                 reads=_reads(swept),
             ),
-        )
-    )
+        ),
+        *sweeps(),
+    ]
 
-    rows.extend(sweeps())
-    return rows
+
+def _batch_out(deck: tuple[str, ...], grid: Grid, names: tuple[str, ...]) -> Values:
+    """Runs a batched operating point over `grid` on `deck` and reads ``out``."""
+    found = simulation(deck_circuit(deck)).batch(
+        {"op": OperatingPoint()}, grid, traces=["out"], options=TIGHT
+    )
+    values = np.asarray(found.traces[0].values_of("out"))
+    return {name: complex(values[index][0]) for index, name in enumerate(names)}
 
 
 def sweeps() -> list[Fixture]:
     """The rows of sweeps over the temperature and over two sources."""
-    rows: list[Fixture] = []
     # A resistor of 1 kΩ drifting 1 %/K over a fixed 3 kΩ, at -40, 25 and 90 °C.
     # A resistor's drift is a law of its temperature, not of a thermal voltage: Xyce,
     # whose constants are furthest from jolty's, sweeps the temperatures themselves.
@@ -656,19 +694,15 @@ def sweeps() -> list[Fixture]:
     temperatures = [-40.0, 25.0, 90.0]
     hot = tuple(f"v(out)@{index}" for index in range(len(temperatures)))
     kelvins = [t + 273.15 for t in temperatures]
-
-    def over_temperature() -> Values:
-        built = deck_circuit(drifting)
-        grid = Grid([Axis.temperature([k * K for k in kelvins])])
-        found = simulation(built).batch(
-            {"op": OperatingPoint()}, grid, traces=["out"], options=TIGHT
-        )
-        values = np.asarray(found.traces[0].values_of("out"))
-        return {name: complex(values[index][0]) for index, name in enumerate(hot)}
-
     first, last = (ngspice.option_temperature(k) for k in (kelvins[0], kelvins[-1]))
     step = (last - first) / 2
-    rows.append(
+    # Two sources summed by equal resistors: the output is their mean.
+    summed = ("* summed", "V1 a 0 0", "V2 b 0 0", "R1 a out 1k", "R2 b out 1k")
+    pairs = [(v1, v2) for v1 in (0.0, 1.0, 2.0) for v2 in (0.0, 1.0)]
+    names = tuple(f"v(out)@{index}" for index in range(len(pairs)))
+    # ngspice and Xyce sweep the first source fastest; jolty's grid its last axis.
+    spice_order = [i * 2 + j for j in range(2) for i in range(3)]
+    return [
         Fixture(
             key="dc-temperature",
             category=Category.ANALYSIS,
@@ -680,7 +714,9 @@ def sweeps() -> list[Fixture]:
                 },
                 source="closed form: a divider whose upper resistor drifts linearly",
             ),
-            jolty=over_temperature,
+            jolty=lambda: _batch_out(
+                drifting, Grid([Axis.temperature([k * K for k in kelvins])]), hot
+            ),
             spice=Spice(
                 deck=drifting,
                 ngspice=(f"dc temp {first!r} {last!r} {step!r}",),
@@ -688,30 +724,7 @@ def sweeps() -> list[Fixture]:
                 reads=_reads(hot),
                 thermal=False,
             ),
-        )
-    )
-
-    # Two sources summed by equal resistors: the output is their mean.
-    summed = ("* summed", "V1 a 0 0", "V2 b 0 0", "R1 a out 1k", "R2 b out 1k")
-    pairs = [(v1, v2) for v1 in (0.0, 1.0, 2.0) for v2 in (0.0, 1.0)]
-    names = tuple(f"v(out)@{index}" for index in range(len(pairs)))
-
-    def nested() -> Values:
-        grid = Grid(
-            [
-                Axis("V1", "waveform.dc", [0 * V, 1 * V, 2 * V]),
-                Axis("V2", "waveform.dc", [0 * V, 1 * V]),
-            ]
-        )
-        found = simulation(deck_circuit(summed)).batch(
-            {"op": OperatingPoint()}, grid, traces=["out"], options=TIGHT
-        )
-        values = np.asarray(found.traces[0].values_of("out"))
-        return {name: complex(values[index][0]) for index, name in enumerate(names)}
-
-    # ngspice and Xyce sweep the first source fastest; jolty's grid its last axis.
-    spice_order = [i * 2 + j for j in range(2) for i in range(3)]
-    rows.append(
+        ),
         Fixture(
             key="dc-two-sources",
             category=Category.ANALYSIS,
@@ -720,7 +733,16 @@ def sweeps() -> list[Fixture]:
                 values={n: (a + b) / 2 for n, (a, b) in zip(names, pairs, strict=True)},
                 source="closed form: the mean of two sources",
             ),
-            jolty=nested,
+            jolty=lambda: _batch_out(
+                summed,
+                Grid(
+                    [
+                        Axis("V1", "waveform.dc", [0 * V, 1 * V, 2 * V]),
+                        Axis("V2", "waveform.dc", [0 * V, 1 * V]),
+                    ]
+                ),
+                names,
+            ),
             spice=Spice(
                 deck=summed,
                 ngspice=("dc V1 0 2 1 V2 0 1 1",),
@@ -732,10 +754,9 @@ def sweeps() -> list[Fixture]:
                     for index, name in enumerate(names)
                 },
             ),
-        )
-    )
-    rows.extend(small_signal())
-    return rows
+        ),
+        *small_signal(),
+    ]
 
 
 RC_DECK: Final = ("* low pass", "V1 in 0 0 AC 1", "R1 in out 1k", "C1 out 0 1n")
@@ -755,10 +776,64 @@ def low_pass(frequency: float) -> complex:
 
 def small_signal() -> list[Fixture]:
     """The small-signal analyses' rows."""
-    rows: list[Fixture] = []
     names = tuple(f"v(out)@{index}" for index in range(len(FREQUENCIES)))
     frequencies = decade(1e4 * Hz, 1e6 * Hz, 1)
-    rows.append(
+    noise_names = tuple(f"onoise@{index}" for index in range(len(FREQUENCIES)))
+
+    # The RC's output noise: the resistor's 4kTR, filtered: 4kTR/(1 + (ωRC)²).
+    def noise() -> Values:
+        found = simulation(deck_circuit(RC_DECK)).run(
+            Noise("out", frequencies, source="V1"), TIGHT
+        )
+        return {
+            n: complex(d) for n, d in zip(noise_names, found.densities, strict=True)
+        }
+
+    def transfer() -> Values:
+        found = simulation(deck_circuit(divider_deck())).run(
+            TransferFunction("V1", "out"), TIGHT
+        )
+        return {
+            "gain": complex(found.gain),
+            "r(in)": complex(found.input_resistance),
+            "r(out)": complex(found.output_resistance),
+        }
+
+    # A series RLC of 10 Ω, 1 µH and 1 nF: poles at -R/2L ± j√(1/LC - (R/2L)²).
+    rlc = ("* rlc", "V1 in 0 0 AC 1", "R1 in mid 10", "L1 mid out 1u", "C1 out 0 1n")
+    sigma = 10 / (2 * 1e-6)
+    omega = math.sqrt(1 / (1e-6 * 1e-9) - sigma**2)
+
+    def poles() -> Values:
+        found = simulation(deck_circuit(rlc)).run(
+            PoleZero(source="V1", output="out"), TIGHT
+        )
+        upper = [p for p in found.poles if p.imag >= 0]
+        zeros = 0 if found.zeros is None else len(found.zeros)
+        return {"pole": complex(upper[0]), "zeros": complex(zeros)}
+
+    def pair(values: Values) -> Values:
+        poles = [v for n, v in values.items() if n.startswith("pole") and v.imag >= 0]
+        return {"pole": poles[0] if poles else complex("nan"), "zeros": complex(0)}
+
+    # A loop: an amplifier of gain 10 whose pole is at 1/(2π·1 µs), fed back by 1/2
+    # through the probe VP: T = 5/(1 + jωτ).
+    loop = (
+        "* loop",
+        "E1 a 0 0 fb 10",
+        "R1 a b 1k",
+        "C1 b 0 1n",
+        "E2 o 0 b 0 1",
+        "VP p o 0",
+        "R2 p fb 1k",
+        "R3 fb 0 1k",
+    )
+
+    def stable() -> Values:
+        found = simulation(deck_circuit(loop)).run(Stability("VP", frequencies), TIGHT)
+        return {f"t@{i}": complex(g) for i, g in enumerate(found.gains)}
+
+    return [
         Fixture(
             key="ac",
             category=Category.ANALYSIS,
@@ -776,20 +851,7 @@ def small_signal() -> list[Fixture]:
                 xyce=((".ac dec 1 1e4 1e6",), "ac"),
                 reads=_reads(names, complex=True),
             ),
-        )
-    )
-
-    # The RC's output noise: the resistor's 4kTR, filtered: 4kTR/(1 + (ωRC)²).
-    def noise() -> Values:
-        found = simulation(deck_circuit(RC_DECK)).run(
-            Noise("out", frequencies, source="V1"), TIGHT
-        )
-        return {
-            n: complex(d) for n, d in zip(noise_names, found.densities, strict=True)
-        }
-
-    noise_names = tuple(f"onoise@{index}" for index in range(len(FREQUENCIES)))
-    rows.append(
+        ),
         Fixture(
             key="noise",
             category=Category.ANALYSIS,
@@ -813,20 +875,7 @@ def small_signal() -> list[Fixture]:
                     for index, name in enumerate(noise_names)
                 },
             ),
-        )
-    )
-
-    def transfer() -> Values:
-        found = simulation(deck_circuit(divider_deck())).run(
-            TransferFunction("V1", "out"), TIGHT
-        )
-        return {
-            "gain": complex(found.gain),
-            "r(in)": complex(found.input_resistance),
-            "r(out)": complex(found.output_resistance),
-        }
-
-    rows.append(
+        ),
         Fixture(
             key="tf",
             category=Category.ANALYSIS,
@@ -846,27 +895,7 @@ def small_signal() -> list[Fixture]:
                     "r(out)": Read(ngspice="v(output_impedance_at_v(out))"),
                 },
             ),
-        )
-    )
-
-    # A series RLC of 10 Ω, 1 µH and 1 nF: poles at -R/2L ± j√(1/LC - (R/2L)²).
-    rlc = ("* rlc", "V1 in 0 0 AC 1", "R1 in mid 10", "L1 mid out 1u", "C1 out 0 1n")
-    sigma = 10 / (2 * 1e-6)
-    omega = math.sqrt(1 / (1e-6 * 1e-9) - sigma**2)
-
-    def poles() -> Values:
-        found = simulation(deck_circuit(rlc)).run(
-            PoleZero(source="V1", output="out"), TIGHT
-        )
-        upper = [p for p in found.poles if p.imag >= 0]
-        zeros = 0 if found.zeros is None else len(found.zeros)
-        return {"pole": complex(upper[0]), "zeros": complex(zeros)}
-
-    def pair(values: Values) -> Values:
-        poles = [v for n, v in values.items() if n.startswith("pole") and v.imag >= 0]
-        return {"pole": poles[0] if poles else complex("nan"), "zeros": complex(0)}
-
-    rows.append(
+        ),
         Fixture(
             key="pz",
             category=Category.ANALYSIS,
@@ -886,27 +915,7 @@ def small_signal() -> list[Fixture]:
                 },
                 derive=pair,
             ),
-        )
-    )
-
-    # A loop: an amplifier of gain 10 whose pole is at 1/(2π·1 µs), fed back by 1/2
-    # through the probe VP: T = 5/(1 + jωτ).
-    loop = (
-        "* loop",
-        "E1 a 0 0 fb 10",
-        "R1 a b 1k",
-        "C1 b 0 1n",
-        "E2 o 0 b 0 1",
-        "VP p o 0",
-        "R2 p fb 1k",
-        "R3 fb 0 1k",
-    )
-
-    def stable() -> Values:
-        found = simulation(deck_circuit(loop)).run(Stability("VP", frequencies), TIGHT)
-        return {f"t@{i}": complex(g) for i, g in enumerate(found.gains)}
-
-    rows.append(
+        ),
         Fixture(
             key="stability",
             category=Category.ANALYSIS,
@@ -922,18 +931,16 @@ def small_signal() -> list[Fixture]:
                 xyce=Unsupported(XYCE_COMMANDS),
                 reads={},
             ),
-        )
-    )
-    rows.extend(sensitivities())
-    rows.extend(transients())
-    rows.append(monte_carlo())
-    rows.extend(extended_analyses())
-    return rows
+        ),
+        *sensitivities(),
+        *transients(),
+        monte_carlo(),
+        *extended_analyses(),
+    ]
 
 
 def sensitivities() -> list[Fixture]:
     """The rows of sensitivities: at DC, over frequency and over time."""
-    rows: list[Fixture] = []
     deck = divider_deck()
 
     def at_dc() -> Values:
@@ -942,38 +949,6 @@ def sensitivities() -> list[Fixture]:
             "d(out)/d(r1)": complex(found.derivative("out", "R1", "resistance")),
             "d(out)/d(r2)": complex(found.derivative("out", "R2", "resistance")),
         }
-
-    rows.append(
-        Fixture(
-            key="sens-dc",
-            category=Category.ANALYSIS,
-            name="Sensitivities at DC",
-            known=Known(
-                values={
-                    "d(out)/d(r1)": -5 * 3e3 / 4e3**2,
-                    "d(out)/d(r2)": 5 * 1e3 / 4e3**2,
-                },
-                source="closed form: a divider's derivatives",
-            ),
-            jolty=at_dc,
-            spice=Spice(
-                deck=deck,
-                ngspice=("sens v(out)",),
-                xyce=(
-                    (".dc V1 5 5 1", ".sens objfunc={V(out)} param=R1:R,R2:R"),
-                    "sens",
-                ),
-                reads={
-                    "d(out)/d(r1)": Read(
-                        ngspice="v(r1)", xyce="D_{V(OUT)}/D_R1:R_ADJ", printed=False
-                    ),
-                    "d(out)/d(r2)": Read(
-                        ngspice="v(r2)", xyce="D_{V(OUT)}/D_R2:R_ADJ", printed=False
-                    ),
-                },
-            ),
-        )
-    )
 
     # d/dR of 1/(1 + jωRC) is -jωC/(1 + jωRC)².
     def d_ac(frequency: float) -> complex:
@@ -988,31 +963,6 @@ def sensitivities() -> list[Fixture]:
         )
         derivative = np.asarray(found.derivative("out", "R1", "resistance"))
         return {n: complex(d) for n, d in zip(names, derivative, strict=True)}
-
-    rows.append(
-        Fixture(
-            key="sens-ac",
-            category=Category.ANALYSIS,
-            name="Sensitivities over frequency",
-            known=Known(
-                values={n: d_ac(f) for n, f in zip(names, FREQUENCIES, strict=True)},
-                source="closed form: a low pass's derivative in its resistance",
-            ),
-            jolty=over_frequency,
-            spice=Spice(
-                deck=RC_DECK,
-                ngspice=("sens v(out) ac dec 1 1e4 1e6",),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, .SENS: AC sensitivities with "
-                    "acobjfunc; no fixture runs it here yet"
-                ),
-                reads={
-                    name: Read(ngspice="v(r1)", index=index)
-                    for index, name in enumerate(names)
-                },
-            ),
-        )
-    )
 
     # dv/dR of the ramp response: v depends on τ = RC, so dv/dR = C·dv/dτ.
     def d_tran(time: float) -> float:
@@ -1042,7 +992,57 @@ def sensitivities() -> list[Fixture]:
             for n, t in zip(tran_names, times, strict=True)
         }
 
-    rows.append(
+    return [
+        Fixture(
+            key="sens-dc",
+            category=Category.ANALYSIS,
+            name="Sensitivities at DC",
+            known=Known(
+                values={
+                    "d(out)/d(r1)": -5 * 3e3 / 4e3**2,
+                    "d(out)/d(r2)": 5 * 1e3 / 4e3**2,
+                },
+                source="closed form: a divider's derivatives",
+            ),
+            jolty=at_dc,
+            spice=Spice(
+                deck=deck,
+                ngspice=("sens v(out)",),
+                xyce=(
+                    (".dc V1 5 5 1", ".sens objfunc={V(out)} param=R1:R,R2:R"),
+                    "sens",
+                ),
+                reads={
+                    "d(out)/d(r1)": Read(
+                        ngspice="v(r1)", xyce="D_{V(OUT)}/D_R1:R_ADJ", printed=False
+                    ),
+                    "d(out)/d(r2)": Read(
+                        ngspice="v(r2)", xyce="D_{V(OUT)}/D_R2:R_ADJ", printed=False
+                    ),
+                },
+            ),
+        ),
+        Fixture(
+            key="sens-ac",
+            category=Category.ANALYSIS,
+            name="Sensitivities over frequency",
+            known=Known(
+                values={n: d_ac(f) for n, f in zip(names, FREQUENCIES, strict=True)},
+                source="closed form: a low pass's derivative in its resistance",
+            ),
+            jolty=over_frequency,
+            spice=Spice(
+                deck=RC_DECK,
+                ngspice=("sens v(out) ac dec 1 1e4 1e6",),
+                xyce=_xyce_documented(
+                    ", .SENS: AC sensitivities with acobjfunc", pending=True
+                ),
+                reads={
+                    name: Read(ngspice="v(r1)", index=index)
+                    for index, name in enumerate(names)
+                },
+            ),
+        ),
         Fixture(
             key="sens-tran",
             category=Category.ANALYSIS,
@@ -1057,39 +1057,25 @@ def sensitivities() -> list[Fixture]:
             spice=Spice(
                 deck=exported(circuit(rc_step()), "transient"),
                 ngspice=Unsupported(NGSPICE_SENSITIVITY),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, .SENS: transient sensitivities, direct "
-                    "and adjoint; no fixture runs it here yet"
+                xyce=_xyce_documented(
+                    ", .SENS: transient sensitivities, direct and adjoint",
+                    pending=True,
                 ),
                 reads={},
             ),
-        )
-    )
-    return rows
+        ),
+    ]
 
 
 def transients() -> list[Fixture]:
     """The rows of transients, and of the analyses built on them."""
-    rows = [
-        transient_fixture("tran-trapezoidal", "Transient, trapezoidal", "trapezoidal"),
-        transient_fixture("tran-gear2", "Transient, Gear of order 2", "gear2"),
-        transient_fixture(
-            "tran-backward-euler", "Transient, backward Euler", "backward_euler"
-        ),
-    ]
 
     # A low pass driven by a 1 MHz sine of 1 V: its periodic steady state's amplitude
     # at the output is |H(f)|, and its phase H's.
     def driven() -> Component:
-        c, ground = _builder("driven")
-        sine = Sine(offset=0 * V, amplitude=1 * V, frequency=1e6 * Hz)
-        source = c.place(devices.voltage_source(sine), name="V1")
-        resistor = c.place(devices.resistor(1 * kohm), name="R1")
-        capacitor = c.place(devices.capacitor(1 * nF), name="C1")
-        c.connect(source.positive, resistor.a, name="in")
-        c.connect(resistor.b, capacitor.a, name="out")
-        c.connect(capacitor.b, source.negative, ground)
-        return c.finish()
+        return _rc_circuit(
+            "driven", Sine(offset=0 * V, amplitude=1 * V, frequency=1e6 * Hz)
+        )
 
     response = low_pass(1e6)
     quarter = (0.25e-6, 0.5e-6, 0.75e-6, 1e-6)
@@ -1108,7 +1094,12 @@ def transients() -> list[Fixture]:
             for n, t in zip(names, quarter, strict=True)
         }
 
-    rows.append(
+    return [
+        transient_fixture("tran-trapezoidal", "Transient, trapezoidal", "trapezoidal"),
+        transient_fixture("tran-gear2", "Transient, Gear of order 2", "gear2"),
+        transient_fixture(
+            "tran-backward-euler", "Transient, backward Euler", "backward_euler"
+        ),
         Fixture(
             key="pss",
             category=Category.ANALYSIS,
@@ -1125,19 +1116,15 @@ def transients() -> list[Fixture]:
             jolty=periodic,
             spice=Spice(
                 deck=exported(circuit(driven()), "transient"),
-                ngspice=Unsupported(
-                    "ngspice 47 manual, §11.3.12 .PSS: periodic steady state of "
-                    "autonomous circuits, oscillators, only"
+                ngspice=_ngspice_unsupported(
+                    ", §11.3.12 .PSS: periodic steady state of autonomous circuits, "
+                    "oscillators, only"
                 ),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, .HB: harmonic balance; no fixture "
-                    "runs it here yet"
-                ),
+                xyce=_xyce_documented(", .HB: harmonic balance", pending=True),
                 reads={},
             ),
-        )
-    )
-    return rows
+        ),
+    ]
 
 
 THREE: Final = 3
@@ -1289,141 +1276,129 @@ def coupled_secondary(frequency: float) -> complex:
     return -r2 * secondary
 
 
+@dataclass(frozen=True, slots=True)
+class _OpSpec:
+    """Declarative entry for a deck-based operating-point fixture."""
+
+    key: str
+    name: str
+    deck: tuple[str, ...]
+    known: Values
+    source: str
+    xyce: Unsupported | Documented | None = None
+    temperature: float = ROOM
+
+
+@dataclass(frozen=True, slots=True)
+class _BuiltSpec:
+    """Declarative entry for a device built through jolty's builder."""
+
+    key: str
+    name: str
+    device: object
+    terminals: Mapping[str, float]
+    reads: tuple[str, ...]
+    known: Known
+    xyce: Unsupported | Documented
+    ngspice_note: Unsupported | None = None
+    temperature: float = ROOM
+
+
 def device_fixtures() -> list[Fixture]:
     """The device models' rows."""
-    rows: list[Fixture] = []
     at = 1e6
     jw = 2j * math.pi * at
-    rows.append(
-        ac_fixture(
-            "capacitor",
-            "Capacitor",
-            ("* capacitor", "V1 a 0 0 AC 1", "C1 a 0 1n"),
-            {"i(v1)": -jw * 1e-9},
-            "closed form: jωC",
-        )
-    )
-    rows.append(
-        ac_fixture(
-            "inductor",
-            "Inductor",
-            ("* inductor", "V1 a 0 0 AC 1", "R1 a b 1", "L1 b 0 1u"),
-            {"i(v1)": -1 / (1 + jw * 1e-6)},
-            "closed form: 1/(R + jωL)",
-        )
-    )
-    rows.append(
-        ac_fixture(
-            "coupled-inductors",
-            "Coupled inductors",
+    rows: list[Fixture] = [
+        ac_fixture(key, name, deck, known, source)
+        for key, name, deck, known, source in (
             (
-                "* coupled",
-                "V1 a 0 0 AC 1",
-                "R1 a b 1",
-                "L1 b 0 1u",
-                "L2 c 0 4u",
-                "R2 c 0 1g",
-                "K1 L1 L2 0.5",
+                "capacitor",
+                "Capacitor",
+                ("* capacitor", "V1 a 0 0 AC 1", "C1 a 0 1n"),
+                {"i(v1)": -jw * 1e-9},
+                "closed form: jωC",
             ),
-            {"v(c)": coupled_secondary(at)},
-            "closed form: a transformer's two meshes",
-        )
-    )
-    for key, name, deck, known in (
-        ("isource", "Current source", ("* isource", "I1 0 o 1m", "R1 o 0 1k"), 1.0),
-        (
-            "vcvs",
-            "Voltage-controlled voltage source",
-            ("* vcvs", "V1 a 0 2", "R1 a 0 1k", "E1 o 0 a 0 3", "R2 o 0 1k"),
-            6.0,
-        ),
-        (
-            "vccs",
-            "Voltage-controlled current source",
-            ("* vccs", "V1 a 0 2", "R1 a 0 1k", "G1 0 o a 0 1m", "R2 o 0 1k"),
-            2.0,
-        ),
-        (
-            "cccs",
-            "Current-controlled current source",
-            ("* cccs", "V1 a 0 2", "R1 a b 1k", "VS b 0 0", "F1 0 o VS 3", "R2 o 0 1k"),
-            6.0,
-        ),
-        (
-            "ccvs",
-            "Current-controlled voltage source",
             (
-                "* ccvs",
-                "V1 a 0 2",
-                "R1 a b 1k",
-                "VS b 0 0",
-                "H1 o 0 VS 500",
-                "R2 o 0 1k",
+                "inductor",
+                "Inductor",
+                ("* inductor", "V1 a 0 0 AC 1", "R1 a b 1", "L1 b 0 1u"),
+                {"i(v1)": -1 / (1 + jw * 1e-6)},
+                "closed form: 1/(R + jωL)",
             ),
-            1.0,
-        ),
-        (
-            "behavioral",
-            "Behavioral source",
             (
-                "* behavioral",
-                "V1 a 0 0.5",
-                "R1 a 0 1k",
-                "B1 o 0 V={sin(V(a)) + V(a)*V(a)}",
-                "R2 o 0 1k",
+                "coupled-inductors",
+                "Coupled inductors",
+                (
+                    "* coupled",
+                    "V1 a 0 0 AC 1",
+                    "R1 a b 1",
+                    "L1 b 0 1u",
+                    "L2 c 0 4u",
+                    "R2 c 0 1g",
+                    "K1 L1 L2 0.5",
+                ),
+                {"v(c)": coupled_secondary(at)},
+                "closed form: a transformer's two meshes",
             ),
-            math.sin(0.5) + 0.25,
-        ),
-    ):
-        rows.append(
-            op_fixture(key, Category.DEVICE, name, deck, {"v(o)": known}, "closed form")
         )
-
-    diode = ("* diode", "V1 a 0 0.7", "D1 a 0 dd", ".model dd D(IS=1e-14 N=1.2)")
-    current = 1e-14 * math.expm1(0.7 / (1.2 * THERMAL_VOLTAGE))
-    rows.append(
-        op_fixture(
-            "diode",
-            Category.DEVICE,
-            "Diode",
-            diode,
-            {"i(v1)": -current},
-            "closed form: Shockley's law",
+    ]
+    rows.extend(
+        op_fixture(key, Category.DEVICE, name, deck, {"v(o)": known}, "closed form")
+        for key, name, deck, known in (
+            ("isource", "Current source", ("* isource", "I1 0 o 1m", "R1 o 0 1k"), 1.0),
+            (
+                "vcvs",
+                "Voltage-controlled voltage source",
+                ("* vcvs", "V1 a 0 2", "R1 a 0 1k", "E1 o 0 a 0 3", "R2 o 0 1k"),
+                6.0,
+            ),
+            (
+                "vccs",
+                "Voltage-controlled current source",
+                ("* vccs", "V1 a 0 2", "R1 a 0 1k", "G1 0 o a 0 1m", "R2 o 0 1k"),
+                2.0,
+            ),
+            (
+                "cccs",
+                "Current-controlled current source",
+                (
+                    "* cccs",
+                    "V1 a 0 2",
+                    "R1 a b 1k",
+                    "VS b 0 0",
+                    "F1 0 o VS 3",
+                    "R2 o 0 1k",
+                ),
+                6.0,
+            ),
+            (
+                "ccvs",
+                "Current-controlled voltage source",
+                (
+                    "* ccvs",
+                    "V1 a 0 2",
+                    "R1 a b 1k",
+                    "VS b 0 0",
+                    "H1 o 0 VS 500",
+                    "R2 o 0 1k",
+                ),
+                1.0,
+            ),
+            (
+                "behavioral",
+                "Behavioral source",
+                (
+                    "* behavioral",
+                    "V1 a 0 0.5",
+                    "R1 a 0 1k",
+                    "B1 o 0 V={sin(V(a)) + V(a)*V(a)}",
+                    "R2 o 0 1k",
+                ),
+                math.sin(0.5) + 0.25,
+            ),
         )
-    )
-
-    gummel = (
-        "* gummel-poon",
-        "VC c 0 2",
-        "VB b 0 0.7",
-        "Q1 c b 0 qq",
-        ".model qq NPN(IS=1e-15 BF=100 BR=2)",
     )
     collector, base = bjt_currents(0.7, -1.3, 1e-15, 100, 2)
-    rows.append(
-        op_fixture(
-            "bjt",
-            Category.DEVICE,
-            "Bipolar transistor, Gummel-Poon",
-            gummel,
-            {"i(vc)": -collector, "i(vb)": -base},
-            (
-                "closed form: Ebers and Moll's transport currents, no Early effect or "
-                "high injection"
-            ),
-        )
-    )
-
-    vbic = (
-        "* vbic",
-        "VC c 0 2",
-        "VB b 0 0.7",
-        "Q1 c b 0 qv",
-        (
-            ".model qv NPN(LEVEL=4 IS=1e-16 NF=1 NR=1 IBEI=1e-18 NEI=1 IBCI=1e-16 "
-            "NCI=1 TNOM=27)"
-        ),
-    )
     vbic_collector, vbic_base = vbic_currents(
         2.0,
         0.7,
@@ -1431,95 +1406,119 @@ def device_fixtures() -> list[Fixture]:
         ideal_base_emitter_current=1e-18,
         ideal_base_collector_current=1e-16,
     )
-    rows.append(
-        Fixture(
-            key="vbic",
-            category=Category.DEVICE,
-            name="Bipolar transistor, VBIC 1.2",
-            known=Known(
-                values={"i(vc)": -vbic_collector, "i(vb)": -vbic_base},
-                source=(
-                    "closed form: VBIC 1.2 transport and base currents with VBIC "
-                    "constants (k=1.380662e-23, q=1.602189e-19), default intrinsic "
-                    "resistances (RBI=RCI=RBP=0.1 ohm, causing -2.19e-6 base drop), "
-                    "and q1 smoothing floor (1 + 2.5e-9)"
+    square = 1e-4 / 2 * 10 / 2 * 1.3**2
+    semiconductors = (
+        _OpSpec(
+            "diode",
+            "Diode",
+            ("* diode", "V1 a 0 0.7", "D1 a 0 dd", ".model dd D(IS=1e-14 N=1.2)"),
+            {"i(v1)": -1e-14 * math.expm1(0.7 / (1.2 * THERMAL_VOLTAGE))},
+            "closed form: Shockley's law",
+        ),
+        _OpSpec(
+            "bjt",
+            "Bipolar transistor, Gummel-Poon",
+            (
+                "* gummel-poon",
+                "VC c 0 2",
+                "VB b 0 0.7",
+                "Q1 c b 0 qq",
+                ".model qq NPN(IS=1e-15 BF=100 BR=2)",
+            ),
+            {"i(vc)": -collector, "i(vb)": -base},
+            (
+                "closed form: Ebers and Moll's transport currents, no Early effect or "
+                "high injection"
+            ),
+        ),
+        # VBIC computes its thermal voltage with constants of its own in both engines:
+        # ngspice must run at 27.0 C (300.15 K) itself so Arrhenius scaling from
+        # TNOM=27 does not shift currents by +6.53e-6.
+        _OpSpec(
+            "vbic",
+            "Bipolar transistor, VBIC 1.2",
+            (
+                "* vbic",
+                "VC c 0 2",
+                "VB b 0 0.7",
+                "Q1 c b 0 qv",
+                (
+                    ".model qv NPN(LEVEL=4 IS=1e-16 NF=1 NR=1 IBEI=1e-18 NEI=1 "
+                    "IBCI=1e-16 NCI=1 TNOM=27)"
                 ),
             ),
-            jolty=Op(vbic, ("i(vc)", "i(vb)")).jolty,
-            spice=dataclasses.replace(
-                Op(vbic, ("i(vc)", "i(vb)")).spice(),
-                # VBIC computes its thermal voltage with constants of its own in both
-                # engines: ngspice must run at 27.0 C (300.15 K) itself so Arrhenius
-                # scaling from TNOM=27 does not shift currents by +6.53e-6.
-                temperature=ngspice.same_kelvins(ROOM),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, BJT levels 11 and 12: VBIC 1.3, "
-                    "not 1.2, its card's level not ngspice's 4; the dialect of "
-                    "branch xyce writes it"
-                ),
+            {"i(vc)": -vbic_collector, "i(vb)": -vbic_base},
+            (
+                "closed form: VBIC 1.2 transport and base currents with VBIC "
+                "constants (k=1.380662e-23, q=1.602189e-19), default intrinsic "
+                "resistances (RBI=RCI=RBP=0.1 ohm, causing -2.19e-6 base drop), "
+                "and q1 smoothing floor (1 + 2.5e-9)"
             ),
-        )
-    )
-
-    jfet = (
-        "* jfet",
-        "VD d 0 5",
-        "VG g 0 -1",
-        "J1 d g 0 jj",
-        ".model jj NJF(VTO=-2 BETA=1e-3 LAMBDA=0.01)",
-    )
-    rows.append(
-        op_fixture(
+            xyce=_xyce_documented(
+                ", BJT levels 11 and 12: VBIC 1.3, not 1.2, its card's level not "
+                "ngspice's 4; the dialect of branch xyce writes it"
+            ),
+            temperature=ngspice.same_kelvins(ROOM),
+        ),
+        _OpSpec(
             "jfet",
-            Category.DEVICE,
             "JFET",
-            jfet,
+            (
+                "* jfet",
+                "VD d 0 5",
+                "VG g 0 -1",
+                "J1 d g 0 jj",
+                ".model jj NJF(VTO=-2 BETA=1e-3 LAMBDA=0.01)",
+            ),
             {"i(vd)": -1e-3 * 1.05},
             "closed form: Shichman and Hodges's saturation current",
-        )
-    )
-
-    square = 1e-4 / 2 * 10 / 2 * 1.3**2
-    mos1 = (
-        "* mos1",
-        "VD d 0 3",
-        "VG g 0 2",
-        "M1 d g 0 0 mm W=10u L=2u",
-        ".model mm NMOS(LEVEL=1 VTO=0.7 KP=1e-4 LAMBDA=0.02)",
-    )
-    rows.append(
-        op_fixture(
+        ),
+        _OpSpec(
             "mos1",
-            Category.DEVICE,
             "MOSFET, level 1",
-            mos1,
+            (
+                "* mos1",
+                "VD d 0 3",
+                "VG g 0 2",
+                "M1 d g 0 0 mm W=10u L=2u",
+                ".model mm NMOS(LEVEL=1 VTO=0.7 KP=1e-4 LAMBDA=0.02)",
+            ),
             {"i(vd)": -square * 1.06},
             "closed form: the square law in saturation",
-        )
-    )
-    mos3 = (
-        "* mos3",
-        "VD d 0 3",
-        "VG g 0 2",
-        "M1 d g 0 0 mm W=10u L=2u",
-        (
-            ".model mm NMOS(LEVEL=3 VTO=0.7 KP=1e-4 GAMMA=0 THETA=0 ETA=0 DELTA=0 "
-            "VMAX=0 NFS=0)"
         ),
-    )
-    rows.append(
-        op_fixture(
+        _OpSpec(
             "mos3",
-            Category.DEVICE,
             "MOSFET, level 3",
-            mos3,
+            (
+                "* mos3",
+                "VD d 0 3",
+                "VG g 0 2",
+                "M1 d g 0 0 mm W=10u L=2u",
+                (
+                    ".model mm NMOS(LEVEL=3 VTO=0.7 KP=1e-4 GAMMA=0 THETA=0 ETA=0 "
+                    "DELTA=0 VMAX=0 NFS=0)"
+                ),
+            ),
             {"i(vd)": -square},
             (
                 "closed form: level 3 with no body effect, mobility degradation or "
                 "velocity saturation, and no substrate doping for its channel-length "
                 "modulation, is the square law"
             ),
+        ),
+    )
+    rows.extend(
+        op_fixture(
+            spec.key,
+            Category.DEVICE,
+            spec.name,
+            spec.deck,
+            spec.known,
+            spec.source,
+            xyce=spec.xyce,
+            temperature=spec.temperature,
         )
+        for spec in semiconductors
     )
     rows.extend(built_devices())
     return rows
@@ -1593,37 +1592,45 @@ def built_fixture(  # noqa: PLR0913 - a row's names, its circuit and what reads 
 
 def built_devices() -> list[Fixture]:
     """The rows of the devices jolty's SPICE reader does not read, built instead."""
-    rows: list[Fixture] = []
-    vdmos = devices.vdmos(
-        threshold_voltage=2 * V, transconductance_parameter=0.5 * A / V**2
+    on, off = 100.0, 16e3
+    memristor_known = Known(
+        values={"i(vpositive)": -0.5 / (on + 0.25 * (off - on))},
+        source="closed form: its resistance at its state, held at an operating point",
     )
-    rows.append(
-        built_fixture(
+    memristor_ngspice = _ngspice_unsupported(
+        ", §8.2.29 Memristor: XSPICE's memristor code model, another law; "
+        "jolty's export writes it as a behavioral current"
+    )
+    memristor_xyce = _xyce_unsupported(
+        ", Memristor: levels 2 (TEAM), 3 (Yakopcic) and 4 (PEM), not this law"
+    )
+    lit = 1e-6 + (5 / 10) ** 0.6 / 10e3
+    # Default BSIM3v3.3 (tox=15 nm) has Vth ~= 1.815 V; (1.5 V, 1.2 V) sits in deep
+    # weak inversion (~1.95 pA, 77% gmin leakage). At (3.0 V, 3.0 V) it is solidly in
+    # strong-inversion saturation (overdrive +1.19 V, Vdsat ~= 0.58 V, Id ~= 0.328 mA).
+    specs = (
+        _BuiltSpec(
             "vdmos",
             "VDMOS",
-            forced("vdmos", vdmos, {"drain": 5.0, "gate": 4.0, "source": 0.0}),
+            devices.vdmos(
+                threshold_voltage=2 * V, transconductance_parameter=0.5 * A / V**2
+            ),
+            {"drain": 5.0, "gate": 4.0, "source": 0.0},
             ("i(vdrain)",),
             Known(
                 source="ngspice 47's VDMOS, the model's defining implementation",
                 reference=Simulator.NGSPICE_SPARSE,
             ),
-            xyce=Documented(
-                "Xyce Reference Guide 7.10, MOSFET level 18 (VDMOS), whose card "
-                "is not ngspice's; the dialect of branch xyce writes it"
+            _xyce_documented(
+                ", MOSFET level 18 (VDMOS), whose card is not ngspice's; the dialect "
+                "of branch xyce writes it"
             ),
-        )
-    )
-    # Default BSIM3v3.3 (tox=15 nm) has Vth ~= 1.815 V; (1.5 V, 1.2 V) sits in deep
-    # weak inversion (~1.95 pA, 77% gmin leakage). At (3.0 V, 3.0 V) it is solidly in
-    # strong-inversion saturation (overdrive +1.19 V, Vdsat ~= 0.58 V, Id ~= 0.328 mA).
-    bsim3 = devices.bsim3(channel="n", width=10e-6 * m_, length=1e-6 * m_)
-    rows.append(
-        built_fixture(
+        ),
+        _BuiltSpec(
             "bsim3",
             "BSIM3v3.3",
-            forced(
-                "bsim3", bsim3, {"drain": 3.0, "gate": 3.0, "source": 0.0, "bulk": 0.0}
-            ),
+            devices.bsim3(channel="n", width=10e-6 * m_, length=1e-6 * m_),
+            {"drain": 3.0, "gate": 3.0, "source": 0.0, "bulk": 0.0},
             ("i(vdrain)",),
             Known(
                 source=(
@@ -1632,23 +1639,19 @@ def built_devices() -> list[Fixture]:
                 ),
                 reference=Simulator.NGSPICE_SPARSE,
             ),
-            xyce=Documented(
-                "Xyce Reference Guide 7.10, MOSFET level 9 (BSIM3v3.2.2); no "
-                "fixture runs it: another version than jolty's 3.3"
+            _xyce_documented(
+                ", MOSFET level 9 (BSIM3v3.2.2); no fixture runs it: another version "
+                "than jolty's 3.3"
             ),
             # BSIM3 computes with constants of its own: ngspice runs at the kelvins
             # themselves, as the differential tests run it.
             temperature=ngspice.same_kelvins(ROOM),
-        )
-    )
-    bsim4 = devices.bsim4(channel="n", width=10e-6 * m_, length=1e-6 * m_)
-    rows.append(
-        built_fixture(
+        ),
+        _BuiltSpec(
             "bsim4",
             "BSIM4 4.5",
-            forced(
-                "bsim4", bsim4, {"drain": 1.5, "gate": 1.2, "source": 0.0, "bulk": 0.0}
-            ),
+            devices.bsim4(channel="n", width=10e-6 * m_, length=1e-6 * m_),
+            {"drain": 1.5, "gate": 1.2, "source": 0.0, "bulk": 0.0},
             ("i(vdrain)",),
             Known(
                 source=(
@@ -1657,15 +1660,11 @@ def built_devices() -> list[Fixture]:
                 ),
                 reference=Simulator.NGSPICE_SPARSE,
             ),
-            xyce=Documented(
-                "Xyce Reference Guide 7.10, MOSFET level 14: BSIM4 4.6.1, 4.7.0 "
-                "and 4.8.2, not 4.5"
+            _xyce_documented(
+                ", MOSFET level 14: BSIM4 4.6.1, 4.7.0 and 4.8.2, not 4.5"
             ),
-        )
-    )
-    on, off = 100.0, 16e3
-    for key, title, device in (
-        (
+        ),
+        _BuiltSpec(
             "memristor-vteam",
             "Memristor, VTEAM",
             devices.voltage_controlled_memristor(
@@ -1677,8 +1676,13 @@ def built_devices() -> list[Fixture]:
                 off_rate=1e3 / s,
                 state=0.25,
             ),
+            {"positive": 0.5, "negative": 0.0},
+            ("i(vpositive)",),
+            memristor_known,
+            memristor_xyce,
+            ngspice_note=memristor_ngspice,
         ),
-        (
+        _BuiltSpec(
             "memristor-hp",
             "Memristor, HP's linear ion drift",
             devices.current_controlled_memristor(
@@ -1687,54 +1691,27 @@ def built_devices() -> list[Fixture]:
                 charge=1e-6 * A * s,
                 state=0.25,
             ),
+            {"positive": 0.5, "negative": 0.0},
+            ("i(vpositive)",),
+            memristor_known,
+            memristor_xyce,
+            ngspice_note=memristor_ngspice,
         ),
-    ):
-        resistance = on + 0.25 * (off - on)
-        rows.append(
-            built_fixture(
-                key,
-                title,
-                forced(key, device, {"positive": 0.5, "negative": 0.0}),
-                ("i(vpositive)",),
-                Known(
-                    values={"i(vpositive)": -0.5 / resistance},
-                    source=(
-                        "closed form: its resistance at its state, held at an "
-                        "operating point"
-                    ),
-                ),
-                ngspice_note=Unsupported(
-                    "ngspice 47 manual, §8.2.29 Memristor: XSPICE's memristor "
-                    "code model, another law; jolty's export writes it as a "
-                    "behavioral current"
-                ),
-                xyce=Unsupported(
-                    "Xyce Reference Guide 7.10, Memristor: levels 2 (TEAM), 3 "
-                    "(Yakopcic) and 4 (PEM), not this law"
-                ),
-            )
-        )
-    cell = devices.photocell(10e3 * ohm)
-    lit = 1e-6 + (5 / 10) ** 0.6 / 10e3
-    rows.append(
-        built_fixture(
+        _BuiltSpec(
             "photocell",
             "Photocell",
-            forced(
-                "photocell",
-                cell,
-                {"a": 1.0, "b": 0.0, "light_positive": 5.0, "light_negative": 0.0},
-            ),
+            devices.photocell(10e3 * ohm),
+            {"a": 1.0, "b": 0.0, "light_positive": 5.0, "light_negative": 0.0},
             ("i(va)",),
             Known(
                 values={"i(va)": -lit}, source="closed form: 1/r_dark + (E/E0)^gamma/r"
             ),
-            ngspice_note=Unsupported(
-                "ngspice 47 manual, chapter 7 Device Models: no photocell; "
-                "jolty's export writes it as a behavioral current"
+            _xyce_unsupported(", its devices: no photocell"),
+            ngspice_note=_ngspice_unsupported(
+                ", chapter 7 Device Models: no photocell; jolty's export writes it as "
+                "a behavioral current"
             ),
-            xyce=Unsupported("Xyce Reference Guide 7.10, its devices: no photocell"),
-        )
+        ),
     )
 
     c, ground = _builder("heat")
@@ -1748,35 +1725,41 @@ def built_devices() -> list[Fixture]:
         found = simulation(heated).run(OperatingPoint(), TIGHT)
         return {"rise(hot)": complex(found.rise("hot"))}
 
-    rows.append(
+    return [
+        *(
+            built_fixture(
+                spec.key,
+                spec.name,
+                forced(spec.key, spec.device, spec.terminals),
+                spec.reads,
+                spec.known,
+                ngspice_note=spec.ngspice_note,
+                xyce=spec.xyce,
+                temperature=spec.temperature,
+            )
+            for spec in specs
+        ),
         Fixture(
             key="thermal",
             category=Category.DEVICE,
             name="Thermal network",
             known=Known(values={"rise(hot)": 50.0}, source="closed form: P·R_th"),
             jolty=rise,
-            spice=Spice(
-                deck=(),
-                ngspice=Unsupported(
-                    "ngspice 47 manual, chapter 7 Device Models: no thermal "
-                    "elements; self-heating inside its VBIC and BSIM models alone"
+            spice=_unrun_spice(
+                _ngspice_unsupported(
+                    ", chapter 7 Device Models: no thermal elements; self-heating "
+                    "inside its VBIC and BSIM models alone"
                 ),
-                xyce=Unsupported(
-                    "Xyce Reference Guide 7.10, its devices: no thermal elements"
-                ),
-                reads={},
+                _xyce_unsupported(", its devices: no thermal elements"),
             ),
-        )
-    )
-    rows.append(
+        ),
         _line_fixture(
             "tline", "Lossless transmission line", "T1 in 0 out 0 Z0=50 TD=5n"
-        )
-    )
-    rows.extend(switch_and_logic_devices())
-    rows.extend(missing_devices())
-    rows.extend(kit_devices())
-    return rows
+        ),
+        *switch_and_logic_devices(),
+        *missing_devices(),
+        *kit_devices(),
+    ]
 
 
 def _switch_fixture(
@@ -1785,7 +1768,7 @@ def _switch_fixture(
     *,
     subcircuit: str,
     levels: Sequence[float],
-    xyce_note: str,
+    xyce: Documented,
 ) -> Fixture:
     """A PSpice-model switch row sweeping through OFF, midpoint, and ON."""
     library_path = DECKS / "switches.lib"
@@ -1825,7 +1808,7 @@ def _switch_fixture(
         spice=Spice(
             deck=deck,
             ngspice=(ngspice_command,),
-            xyce=Documented(xyce_note),
+            xyce=xyce,
             reads=_reads(names),
             compatibility="psa",
             libraries=(library_path,),
@@ -1835,28 +1818,6 @@ def _switch_fixture(
 
 def switch_and_logic_devices() -> list[Fixture]:
     """The rows for voltage- and current-controlled switches and logic devices."""
-    rows = [
-        _switch_fixture(
-            "switch-voltage",
-            "Voltage-controlled switch (VSWITCH)",
-            subcircuit="vswitch_stage",
-            levels=(0.0, 0.5, 1.0),
-            xyce_note=(
-                "Xyce Reference Guide 7.10, VSWITCH: smooth voltage-controlled "
-                "switch with log-cubic transition; no fixture runs it here yet"
-            ),
-        ),
-        _switch_fixture(
-            "switch-current",
-            "Current-controlled switch (ISWITCH)",
-            subcircuit="iswitch_stage",
-            levels=(0.0, 1.0, 2.0),
-            xyce_note=(
-                "Xyce Reference Guide 7.10, ISWITCH: smooth current-controlled "
-                "switch with log-cubic transition; no fixture runs it here yet"
-            ),
-        ),
-    ]
 
     def run_logic() -> Values:
         builder, ground = _builder("logic")
@@ -1921,7 +1882,24 @@ def switch_and_logic_devices() -> list[Fixture]:
             "v(out)@3e-09": complex(float(np.interp(3.0e-9, waveforms.times, output))),
         }
 
-    rows.append(
+    return [
+        *(
+            _switch_fixture(
+                f"switch-{control}",
+                f"{control.capitalize()}-controlled switch ({card})",
+                subcircuit=f"{card.lower()}_stage",
+                levels=levels,
+                xyce=_xyce_documented(
+                    f", {card}: smooth {control}-controlled switch with log-cubic "
+                    "transition",
+                    pending=True,
+                ),
+            )
+            for control, card, levels in (
+                ("voltage", "VSWITCH", (0.0, 0.5, 1.0)),
+                ("current", "ISWITCH", (0.0, 1.0, 2.0)),
+            )
+        ),
         Fixture(
             key="logic",
             category=Category.DEVICE,
@@ -1941,21 +1919,19 @@ def switch_and_logic_devices() -> list[Fixture]:
                 ),
             ),
             jolty=run_logic,
-            spice=Spice(
-                deck=(),
-                ngspice=Documented(
-                    "ngspice 47 manual, chapter 8 XSPICE: digital logic code models "
-                    "and ADC/DAC bridges; no fixture runs it here yet"
+            spice=_unrun_spice(
+                _ngspice_documented(
+                    ", chapter 8 XSPICE: digital logic code models and ADC/DAC bridges",
+                    pending=True,
                 ),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, Behavioral Digital Devices (U): "
-                    "mixed-signal digital gate primitives; no fixture runs it here yet"
+                _xyce_documented(
+                    ", Behavioral Digital Devices (U): mixed-signal digital gate "
+                    "primitives",
+                    pending=True,
                 ),
-                reads={},
             ),
-        )
-    )
-    return rows
+        ),
+    ]
 
 
 def kit_devices() -> list[Fixture]:
@@ -1965,80 +1941,61 @@ def kit_devices() -> list[Fixture]:
     `tests/test_kits.py`; these rows stay `Documented` so the coverage matrix and its
     offline unit tests never require network downloads.
     """
+    prefix = "docs/guide/foundry.md & tests/test_kits.py: "
+    offline = "; external archive not fetched offline"
+    entries = (
+        (
+            "kit-sky130",
+            "SKY130",
+            sky130.VERSION[:8],
+            "(251 of 263 devices native, BSIM4 4.5, scale=1u, hsa compatibility)",
+            "with ngbehavior=hsa",
+            (
+                "open_pdks SKY130: supported via open_pdks Xyce netlists or XDM "
+                "translation"
+            ),
+        ),
+        (
+            "kit-gf180mcu",
+            "GF180MCU",
+            gf180mcu.VERSION[:8],
+            "(65 of 72 devices native, BSIM4 4.5, Gummel-Poon, diode level 3)",
+            "natively",
+            "open_pdks GF180MCU: BSIM4 models run with XDM translation",
+        ),
+        (
+            "kit-sg13g2",
+            "SG13G2",
+            sg13g2.VERSION[:8],
+            (
+                "(36 of 53 devices native including self-heated VBIC HBTs, "
+                "14 Verilog-A models)"
+            ),
+            "native devices and requires OpenVAF/OSDI for Verilog-A MOSFETs",
+            (
+                "IHP-Open-PDK SG13G2: ships dedicated Xyce model libraries for MOS, "
+                "HBT and passive devices"
+            ),
+        ),
+    )
     return [
         Fixture(
-            key="kit-sky130",
+            key=key,
             category=Category.DEVICE,
-            name="Process design kit: SKY130",
+            name=f"Process design kit: {kit_name}",
             known=None,
             jolty=Documented(
-                f"docs/guide/foundry.md & tests/test_kits.py: SKY130 pinned at "
-                f"{sky130.VERSION[:8]} (251 of 263 devices native, BSIM4 4.5, "
-                f"scale=1u, hsa compatibility); external archive not fetched offline"
+                f"{prefix}{kit_name} pinned at {version} {jolty_detail}{offline}"
             ),
-            spice=Spice(
-                deck=(),
-                ngspice=Documented(
-                    f"docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs "
-                    f"SKY130 ({sky130.VERSION[:8]}) with ngbehavior=hsa; external "
-                    f"archive not fetched offline"
+            spice=_unrun_spice(
+                Documented(
+                    f"{prefix}ngspice 47 runs {kit_name} ({version}) "
+                    f"{ngspice_detail}{offline}"
                 ),
-                xyce=Documented(
-                    "open_pdks SKY130: supported via open_pdks Xyce netlists or XDM "
-                    "translation; external archive not fetched offline"
-                ),
-                reads={},
+                Documented(f"{xyce_detail}{offline}"),
             ),
-        ),
-        Fixture(
-            key="kit-gf180mcu",
-            category=Category.DEVICE,
-            name="Process design kit: GF180MCU",
-            known=None,
-            jolty=Documented(
-                f"docs/guide/foundry.md & tests/test_kits.py: GF180MCU pinned at "
-                f"{gf180mcu.VERSION[:8]} (65 of 72 devices native, BSIM4 4.5, "
-                f"Gummel-Poon, diode level 3); external archive not fetched offline"
-            ),
-            spice=Spice(
-                deck=(),
-                ngspice=Documented(
-                    f"docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs "
-                    f"GF180MCU ({gf180mcu.VERSION[:8]}) natively; external archive "
-                    f"not fetched offline"
-                ),
-                xyce=Documented(
-                    "open_pdks GF180MCU: BSIM4 models run with XDM translation; "
-                    "external archive not fetched offline"
-                ),
-                reads={},
-            ),
-        ),
-        Fixture(
-            key="kit-sg13g2",
-            category=Category.DEVICE,
-            name="Process design kit: SG13G2",
-            known=None,
-            jolty=Documented(
-                f"docs/guide/foundry.md & tests/test_kits.py: SG13G2 pinned at "
-                f"{sg13g2.VERSION[:8]} (36 of 53 devices native including self-heated "
-                f"VBIC HBTs, 14 Verilog-A models); external archive not fetched offline"
-            ),
-            spice=Spice(
-                deck=(),
-                ngspice=Documented(
-                    f"docs/guide/foundry.md & tests/test_kits.py: ngspice 47 runs "
-                    f"SG13G2 ({sg13g2.VERSION[:8]}) native devices and requires "
-                    f"OpenVAF/OSDI for Verilog-A MOSFETs; external archive not "
-                    f"fetched offline"
-                ),
-                xyce=Documented(
-                    "IHP-Open-PDK SG13G2: ships dedicated Xyce model libraries for "
-                    "MOS, HBT and passive devices; external archive not fetched offline"
-                ),
-                reads={},
-            ),
-        ),
+        )
+        for key, kit_name, version, jolty_detail, ngspice_detail, xyce_detail in entries
     ]
 
 
@@ -2126,72 +2083,75 @@ def _forced_deck(
 
 def missing_devices() -> list[Fixture]:
     """The device rows of ngspice's that jolty lacks, its reader given their decks."""
-    rows: list[Fixture] = []
     unjudged = "none yet: the model's QA reference results are to come"
     current = {"i(vd)": Read(ngspice="i(vd)", xyce="I(VD)")}
-    for key, name, element, card, xyce in (
+    mos_2u = "M1 d g 0 0 mm W=10u L=2u"
+    mos_1u = "M1 d g 0 0 mm W=10u L=1u"
+    forced_specs: tuple[
+        tuple[
+            str, str, str, str, tuple[tuple[str, ...], str] | Unsupported | Documented
+        ],
+        ...,
+    ] = (
         (
             "mos2",
             "MOSFET, level 2",
-            "M1 d g 0 0 mm W=10u L=2u",
+            mos_2u,
             ".model mm NMOS(LEVEL=2 VTO=0.7 KP=1e-4)",
             ((".op",), "dc"),
         ),
         (
             "mos6",
             "MOSFET, level 6",
-            "M1 d g 0 0 mm W=10u L=2u",
+            mos_2u,
             ".model mm NMOS(LEVEL=6 VTO=0.7)",
             ((".op",), "dc"),
         ),
         (
             "mos9",
             "MOSFET, level 9",
-            "M1 d g 0 0 mm W=10u L=2u",
+            mos_2u,
             ".model mm NMOS(LEVEL=9 VTO=0.7 KP=1e-4)",
-            Documented("Xyce Reference Guide 7.10: level 9 is BSIM3 in Xyce"),
+            _xyce_documented(": level 9 is BSIM3 in Xyce"),
         ),
         (
             "bsimsoi",
             "BSIM-SOI 4",
-            "M1 d g 0 0 mm W=10u L=1u",
+            mos_1u,
             ".model mm NMOS(LEVEL=10)",
-            Documented("Xyce Reference Guide 7.10, MOSFET levels 10 and 70: BSIM-SOI"),
+            _xyce_documented(", MOSFET levels 10 and 70: BSIM-SOI"),
         ),
         (
             "hisim2",
             "HiSIM2",
-            "M1 d g 0 0 mm W=10u L=1u",
+            mos_1u,
             ".model mm NMOS(LEVEL=68)",
-            Unsupported("Xyce Reference Guide 7.10, its MOSFET levels: no HiSIM"),
+            _xyce_unsupported(", its MOSFET levels: no HiSIM"),
         ),
         (
             "hicum",
             "HICUM/L2",
             "Q1 d g 0 qq",
             ".model qq NPN(LEVEL=8)",
-            Documented(
-                "Xyce Reference Guide 7.10, BJT level 234: HICUM/L2 through ADMS"
-            ),
+            _xyce_documented(", BJT level 234: HICUM/L2 through ADMS"),
         ),
         (
             "mesfet",
             "MESFET, Statz",
             "Z1 d g 0 zz",
             ".model zz NMF(LEVEL=1 VTO=-2 BETA=1e-3)",
-            Documented("Xyce Reference Guide 7.10, MESFET (Z) level 1"),
+            _xyce_documented(", MESFET (Z) level 1"),
         ),
         (
             "jfet2",
             "JFET, level 2 (Parker and Skellern)",
             "J1 d g 0 jj",
             ".model jj NJF(LEVEL=2)",
-            Documented(
-                "Xyce Reference Guide 7.10, JFET level 2 (Shockley), another model"
-            ),
+            _xyce_documented(", JFET level 2 (Shockley), another model"),
         ),
-    ):
-        rows.append(
+    )
+    return [
+        *(
             ngspice_only(
                 key,
                 name,
@@ -2202,53 +2162,59 @@ def missing_devices() -> list[Fixture]:
                 unjudged,
                 xyce=xyce,
             )
-        )
-
-    rows.append(
+            for key, name, element, card, xyce in forced_specs
+        ),
         _line_fixture(
             "ltra",
             "Lossy transmission line (LTRA), lossless",
             "O1 in 0 out 0 lmod",
             (".model lmod LTRA(R=0 G=0 L=250n C=100p LEN=1)",),
-        )
-    )
-    rows.append(
-        ngspice_only(
-            "urc",
-            "Distributed RC line (URC)",
-            (
-                "* urc",
-                "U1 a out 0 umod L=1m",
-                ".model umod URC(RPERL=1k CPERL=1p)",
-                "V1 a 0 1",
-                "R2 out 0 1",
-            ),
-            ("op",),
-            {"v(out)": Read(ngspice="v(out)", xyce="V(OUT)")},
-            {"v(out)": 0.5},
-            "closed form: the line's DC resistance, RPERL·L, over a load of the same",
-            xyce=Unsupported("Xyce Reference Guide 7.10, its devices: no URC"),
-        )
-    )
-    rows.append(
-        ngspice_only(
-            "xspice",
-            "XSPICE code models",
-            (
-                "* xspice",
-                "A1 a o g1",
-                ".model g1 gain(gain=3)",
-                "V1 a 0 1",
-                "R1 o 0 1k",
-            ),
-            ("op",),
-            {"v(o)": Read(ngspice="v(o)", xyce="V(O)")},
-            {"v(o)": 3.0},
-            "closed form: a gain block's output",
-            xyce=Unsupported("Xyce Reference Guide 7.10: no XSPICE code models"),
-        )
-    )
-    rows.append(
+        ),
+        *(
+            ngspice_only(
+                key,
+                name,
+                deck,
+                ("op",),
+                _reads(tuple(known)),
+                known,
+                source,
+                xyce=_xyce_unsupported(xyce_detail),
+            )
+            for key, name, deck, known, source, xyce_detail in (
+                (
+                    "urc",
+                    "Distributed RC line (URC)",
+                    (
+                        "* urc",
+                        "U1 a out 0 umod L=1m",
+                        ".model umod URC(RPERL=1k CPERL=1p)",
+                        "V1 a 0 1",
+                        "R2 out 0 1",
+                    ),
+                    {"v(out)": 0.5},
+                    (
+                        "closed form: the line's DC resistance, RPERL·L, over a load "
+                        "of the same"
+                    ),
+                    ", its devices: no URC",
+                ),
+                (
+                    "xspice",
+                    "XSPICE code models",
+                    (
+                        "* xspice",
+                        "A1 a o g1",
+                        ".model g1 gain(gain=3)",
+                        "V1 a 0 1",
+                        "R1 o 0 1k",
+                    ),
+                    {"v(o)": 3.0},
+                    "closed form: a gain block's output",
+                    ": no XSPICE code models",
+                ),
+            )
+        ),
         Fixture(
             key="osdi",
             category=Category.DEVICE,
@@ -2259,30 +2225,27 @@ def missing_devices() -> list[Fixture]:
                 OperatingPoint(),
                 (),
             ),
-            spice=Spice(
-                deck=(),
-                ngspice=Documented(
-                    "ngspice 47 manual, §9.2 OSDI/OpenVAF: a model compiled by "
-                    "OpenVAF, which is not installed here"
+            spice=_unrun_spice(
+                _ngspice_documented(
+                    ", §9.2 OSDI/OpenVAF: a model compiled by OpenVAF, which is not "
+                    "installed here"
                 ),
-                xyce=Unsupported(
-                    "Xyce Reference Guide 7.10: no OSDI; Verilog-A only as "
-                    "ADMS-compiled C++ models built into it"
+                _xyce_unsupported(
+                    ": no OSDI; Verilog-A only as ADMS-compiled C++ models built "
+                    "into it"
                 ),
-                reads={},
             ),
-        )
-    )
-    return rows
+        ),
+    ]
 
 
 def syntax() -> list[Fixture]:
     """The rows of SPICE's syntax, each a deck every simulator reads."""
-    out = {"v(out)": 2.0}
-    return [
-        op_fixture(
+    out: Values = {"v(out)": 2.0}
+    divider = "closed form: a divider"
+    specs: tuple[tuple[str, str, tuple[str, ...], Values, str], ...] = (
+        (
             "subckt",
-            Category.SYNTAX,
             "Subcircuits with parameters",
             (
                 "* subcircuit",
@@ -2296,9 +2259,8 @@ def syntax() -> list[Fixture]:
             out,
             "closed form: a halving divider",
         ),
-        op_fixture(
+        (
             "param",
-            Category.SYNTAX,
             ".param reading other parameters",
             (
                 "* parameters",
@@ -2308,11 +2270,10 @@ def syntax() -> list[Fixture]:
                 "R2 out 0 {lower}",
             ),
             out,
-            "closed form: a divider",
+            divider,
         ),
-        op_fixture(
+        (
             "expressions",
-            Category.SYNTAX,
             "Expressions with functions",
             (
                 "* expressions",
@@ -2321,11 +2282,10 @@ def syntax() -> list[Fixture]:
                 "R2 out 0 {max(1k, 0.5k)}",
             ),
             out,
-            "closed form: a divider",
+            divider,
         ),
-        op_fixture(
+        (
             "func",
-            Category.SYNTAX,
             ".func",
             (
                 "* functions",
@@ -2335,11 +2295,10 @@ def syntax() -> list[Fixture]:
                 "R2 out 0 1k",
             ),
             out,
-            "closed form: a divider",
+            divider,
         ),
-        op_fixture(
+        (
             "lib",
-            Category.SYNTAX,
             ".lib sections",
             (
                 "* sections",
@@ -2349,11 +2308,10 @@ def syntax() -> list[Fixture]:
                 "R2 out 0 {lower}",
             ),
             out,
-            "closed form: a divider",
+            divider,
         ),
-        op_fixture(
+        (
             "include",
-            Category.SYNTAX,
             ".include",
             (
                 "* includes",
@@ -2363,11 +2321,10 @@ def syntax() -> list[Fixture]:
                 "R2 out 0 {lower}",
             ),
             out,
-            "closed form: a divider",
+            divider,
         ),
-        op_fixture(
+        (
             "poly",
-            Category.SYNTAX,
             "POLY sources",
             (
                 "* poly",
@@ -2379,9 +2336,8 @@ def syntax() -> list[Fixture]:
             {"v(out)": 2.75},
             "closed form: 1 + 2v + 3v²",
         ),
-        op_fixture(
+        (
             "table",
-            Category.SYNTAX,
             "TABLE sources",
             (
                 "* table",
@@ -2393,9 +2349,8 @@ def syntax() -> list[Fixture]:
             out,
             "closed form: a straight line between two points",
         ),
-        op_fixture(
+        (
             "ako",
-            Category.SYNTAX,
             "Model cards inheriting by AKO",
             (
                 "* ako",
@@ -2407,14 +2362,18 @@ def syntax() -> list[Fixture]:
             {"i(v1)": -1e-14 * math.expm1(0.7 / (1.2 * THERMAL_VOLTAGE))},
             "closed form: Shockley's law with the inherited saturation current",
         ),
+    )
+    return [
+        *(
+            op_fixture(key, Category.SYNTAX, name, deck, known, source)
+            for key, name, deck, known, source in specs
+        ),
         *_state_and_kit_syntax(),
     ]
 
 
 def _state_and_kit_syntax() -> list[Fixture]:
     """The rows for ``.ic``, ``.nodeset``, and offline process-kit library syntax."""
-    rows: list[Fixture] = []
-
     initial_condition_deck = ("* ic", "R1 out 0 1k", "C1 out 0 1n", ".ic v(out)=1")
     decay_times = (0.0, 0.5e-6, 1e-6, 2e-6, 3e-6)
     decay_names = tuple(f"v(out)@{time!r}" for time in decay_times)
@@ -2431,38 +2390,6 @@ def _state_and_kit_syntax() -> list[Fixture]:
             TIGHT,
         )
         return sampled(waveforms, decay_names)
-
-    rows.append(
-        Fixture(
-            key="ic",
-            category=Category.SYNTAX,
-            name="Initial conditions (.ic)",
-            known=Known(
-                values={
-                    name: math.exp(-time / RC_TAU)
-                    for name, time in zip(decay_names, decay_times, strict=True)
-                },
-                source=(
-                    "closed form: RC discharge `exp(-t / (R * C))` from "
-                    "`v(out)(0) = 1 V`"
-                ),
-                tolerance=INTEGRATED,
-            ),
-            jolty=run_initial_conditions,
-            spice=Spice(
-                deck=initial_condition_deck,
-                ngspice=("tran 10n 4u 0 10n",),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, .IC: transient initial node "
-                    "voltages; no fixture runs it here yet"
-                ),
-                reads={
-                    name: Read(ngspice="v(out)", xyce="V(OUT)", time=time)
-                    for name, time in zip(decay_names, decay_times, strict=True)
-                },
-            ),
-        )
-    )
 
     nodeset_deck = (
         "* nodeset",
@@ -2483,31 +2410,6 @@ def _state_and_kit_syntax() -> list[Fixture]:
         )
         found = simulation(built).run(OperatingPoint(), options)
         return {"v(x)": complex(found.voltage("x"))}
-
-    rows.append(
-        Fixture(
-            key="nodeset",
-            category=Category.SYNTAX,
-            name="Operating-point guess (.nodeset)",
-            known=Known(
-                values={"v(x)": latch_root},
-                source=(
-                    "closed form: positive root of `v = 2 * tanh(v)`, selected over "
-                    "the trivial root `v = 0` by `.nodeset v(x)=1.5`"
-                ),
-            ),
-            jolty=run_nodeset,
-            spice=Spice(
-                deck=nodeset_deck,
-                ngspice=("op",),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, .NODESET: operating-point initial "
-                    "guesses; no fixture runs it here yet"
-                ),
-                reads=_reads(("v(x)",)),
-            ),
-        )
-    )
 
     kit_directory = DECKS / "pdk"
     globals_path = kit_directory / "globals.spice"
@@ -2546,7 +2448,56 @@ def _state_and_kit_syntax() -> list[Fixture]:
         built = circuit(library.component("bench"))
         return solved(built, OperatingPoint(), ("v(out)", "i(vd)"))
 
-    rows.append(
+    return [
+        Fixture(
+            key="ic",
+            category=Category.SYNTAX,
+            name="Initial conditions (.ic)",
+            known=Known(
+                values={
+                    name: math.exp(-time / RC_TAU)
+                    for name, time in zip(decay_names, decay_times, strict=True)
+                },
+                source=(
+                    "closed form: RC discharge `exp(-t / (R * C))` from "
+                    "`v(out)(0) = 1 V`"
+                ),
+                tolerance=INTEGRATED,
+            ),
+            jolty=run_initial_conditions,
+            spice=Spice(
+                deck=initial_condition_deck,
+                ngspice=("tran 10n 4u 0 10n",),
+                xyce=_xyce_documented(
+                    ", .IC: transient initial node voltages", pending=True
+                ),
+                reads={
+                    name: Read(ngspice="v(out)", xyce="V(OUT)", time=time)
+                    for name, time in zip(decay_names, decay_times, strict=True)
+                },
+            ),
+        ),
+        Fixture(
+            key="nodeset",
+            category=Category.SYNTAX,
+            name="Operating-point guess (.nodeset)",
+            known=Known(
+                values={"v(x)": latch_root},
+                source=(
+                    "closed form: positive root of `v = 2 * tanh(v)`, selected over "
+                    "the trivial root `v = 0` by `.nodeset v(x)=1.5`"
+                ),
+            ),
+            jolty=run_nodeset,
+            spice=Spice(
+                deck=nodeset_deck,
+                ngspice=("op",),
+                xyce=_xyce_documented(
+                    ", .NODESET: operating-point initial guesses", pending=True
+                ),
+                reads=_reads(("v(x)",)),
+            ),
+        ),
         Fixture(
             key="pdk-library",
             category=Category.SYNTAX,
@@ -2563,9 +2514,9 @@ def _state_and_kit_syntax() -> list[Fixture]:
             spice=Spice(
                 deck=library_deck,
                 ngspice=("op",),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, .LIB, .INCLUDE, .OPTIONS, .PARAM "
-                    "and binned models; no fixture runs it here yet"
+                xyce=_xyce_documented(
+                    ", .LIB, .INCLUDE, .OPTIONS, .PARAM and binned models",
+                    pending=True,
                 ),
                 reads=_reads(("v(out)", "i(vd)")),
                 # Default ROOM keeps ngspice temp == tnom so M1's LEVEL=1 KP and VTO
@@ -2575,9 +2526,8 @@ def _state_and_kit_syntax() -> list[Fixture]:
                 libraries=(globals_path,),
                 sections=((corners_path, "tt"),),
             ),
-        )
-    )
-    return rows
+        ),
+    ]
 
 
 def raw_divider() -> Values:
@@ -2592,28 +2542,6 @@ def raw_divider() -> Values:
 
 def outputs() -> list[Fixture]:
     """The rows of outputs: SPICE's raw file, and a measurement of a waveform."""
-    rows = [
-        Fixture(
-            key="raw",
-            category=Category.OUTPUT,
-            name="SPICE raw files",
-            known=Known(
-                values={"v(out)": divider_out()},
-                source="closed form: a divider's ratio, read back from the raw file",
-            ),
-            jolty=raw_divider,
-            spice=Spice(
-                deck=divider_deck(),
-                ngspice=("op",),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, the command line's -r: a SPICE "
-                    "raw file; no fixture reads it here, the fixtures read its CSV"
-                ),
-                reads=_reads(("v(out)",)),
-            ),
-        )
-    ]
-
     # When `rc_step`'s output first rises through 0.5 V: the root of its closed form.
     low, high = RAMP[0], RAMP[0] + 10 * RC_TAU
     for _ in range(200):
@@ -2628,7 +2556,43 @@ def outputs() -> list[Fixture]:
         (verdict,) = evaluate(Specs([requirement]), ["step"], {"step": found})
         return {"t(cross)": complex(verdict.value or math.nan)}
 
-    rows.append(
+    fourier_deck = (
+        "* four",
+        "V1 n1 0 SIN(0 1 1k)",
+        "V2 n2 n1 SIN(0 0.03 2k)",
+        "V3 out n2 SIN(0 0.04 3k)",
+        "R1 out 0 1k",
+    )
+
+    def run_fourier() -> Values:
+        waveforms = simulation(deck_circuit(fourier_deck)).run(
+            Transient(2 * ms, max_step=2 * us), TIGHT
+        )
+        requirement = distortion("tran", "out", fundamental=1 * kHz, harmonics=9) <= 0
+        (verdict,) = evaluate(Specs([requirement]), ["tran"], {"tran": waveforms})
+        distortion_decibels = verdict.value if verdict.value is not None else math.nan
+        return {"thd": complex(100.0 * 10.0 ** (distortion_decibels / 20.0))}
+
+    return [
+        Fixture(
+            key="raw",
+            category=Category.OUTPUT,
+            name="SPICE raw files",
+            known=Known(
+                values={"v(out)": divider_out()},
+                source="closed form: a divider's ratio, read back from the raw file",
+            ),
+            jolty=raw_divider,
+            spice=Spice(
+                deck=divider_deck(),
+                ngspice=("op",),
+                xyce=_xyce_documented(
+                    ", the command line's -r: a SPICE raw file; no fixture reads it "
+                    "here, the fixtures read its CSV"
+                ),
+                reads=_reads(("v(out)",)),
+            ),
+        ),
         Fixture(
             key="measure",
             category=Category.OUTPUT,
@@ -2653,27 +2617,7 @@ def outputs() -> list[Fixture]:
                     "t(cross)": Read(ngspice="printed:tcross", xyce="printed:tcross")
                 },
             ),
-        )
-    )
-
-    fourier_deck = (
-        "* four",
-        "V1 n1 0 SIN(0 1 1k)",
-        "V2 n2 n1 SIN(0 0.03 2k)",
-        "V3 out n2 SIN(0 0.04 3k)",
-        "R1 out 0 1k",
-    )
-
-    def run_fourier() -> Values:
-        waveforms = simulation(deck_circuit(fourier_deck)).run(
-            Transient(2 * ms, max_step=2 * us), TIGHT
-        )
-        requirement = distortion("tran", "out", fundamental=1 * kHz, harmonics=9) <= 0
-        (verdict,) = evaluate(Specs([requirement]), ["tran"], {"tran": waveforms})
-        distortion_decibels = verdict.value if verdict.value is not None else math.nan
-        return {"thd": complex(100.0 * 10.0 ** (distortion_decibels / 20.0))}
-
-    rows.append(
+        ),
         Fixture(
             key="four",
             category=Category.OUTPUT,
@@ -2690,15 +2634,13 @@ def outputs() -> list[Fixture]:
             spice=Spice(
                 deck=fourier_deck,
                 ngspice=("tran 2u 2m 0 2u\nfourier 1k v(out)",),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, .FOUR: Fourier analysis written "
-                    "to a .four file; no fixture runs it here yet"
+                xyce=_xyce_documented(
+                    ", .FOUR: Fourier analysis written to a .four file", pending=True
                 ),
                 reads={"thd": Read(ngspice="printed:THD")},
             ),
-        )
-    )
-    return rows
+        ),
+    ]
 
 
 def monte_carlo() -> Fixture:
@@ -2745,16 +2687,12 @@ def monte_carlo() -> Fixture:
             "each within its 10 % and every sample's apart",
         ),
         jolty=sampled_runs,
-        spice=Spice(
-            deck=(),
-            ngspice=Documented(
-                "ngspice 47 manual, §18.5 Monte-Carlo Simulation: through its "
-                "control language; no fixture runs it here yet"
+        spice=_unrun_spice(
+            _ngspice_documented(
+                ", §18.5 Monte-Carlo Simulation: through its control language",
+                pending=True,
             ),
-            xyce=Documented(
-                "Xyce Reference Guide 7.10, .SAMPLING; no fixture runs it here yet"
-            ),
-            reads={},
+            _xyce_documented(", .SAMPLING", pending=True),
         ),
     )
 
@@ -2835,21 +2773,26 @@ def specs():
 """
 
 
+def _run_plan_script(filename: str, source: str, label: str) -> Built:
+    """Runs an inline plan script in a temporary directory and checks it built."""
+    with tempfile.TemporaryDirectory() as directory:
+        script_path = Path(directory) / filename
+        script_path.write_text(source, encoding="utf-8")
+        outcome = run_plan(
+            Job(script=script_path, plan=script_path, max_unknowns=10),
+            Path(directory),
+        )
+    if not isinstance(outcome, Built):
+        message = f"{label} plan did not build: {outcome}"
+        raise TypeError(message)
+    return outcome
+
+
 def extended_analyses() -> list[Fixture]:
     """The v2 analysis rows: corners, worst case, .disto, .sp, and transient noise."""
-    rows: list[Fixture] = []
 
     def run_corners() -> Values:
-        with tempfile.TemporaryDirectory() as directory:
-            script_path = Path(directory) / "corners.py"
-            script_path.write_text(_CORNERS_SCRIPT, encoding="utf-8")
-            outcome = run_plan(
-                Job(script=script_path, plan=script_path, max_unknowns=10),
-                Path(directory),
-            )
-        if not isinstance(outcome, Built):
-            message = f"corners plan did not build: {outcome}"
-            raise TypeError(message)
+        outcome = _run_plan_script("corners.py", _CORNERS_SCRIPT, "corners")
         report = outcome.analyses[0]
         if not isinstance(report, OperatingPointReport):
             message = f"expected operating point report, got {type(report).__name__}"
@@ -2866,9 +2809,41 @@ def extended_analyses() -> list[Fixture]:
             ),
         }
 
+    def run_worst_case() -> Values:
+        outcome = _run_plan_script("worst_case.py", _WORST_CASE_SCRIPT, "worst-case")
+        if outcome.worst_case is None:
+            message = "worst-case plan produced no worst-case verdicts"
+            raise RuntimeError(message)
+        lowest, highest = outcome.worst_case.verdicts
+        return {
+            "v(out)@low": complex(
+                lowest.value if lowest.value is not None else math.nan
+            ),
+            "v(out)@high": complex(
+                highest.value if highest.value is not None else math.nan
+            ),
+        }
+
     cold_resistance = 1e3 * (1.0 + 0.01 * (-40.0 - 27.0))
     hot_resistance = 1e3 * (1.0 + 0.01 * (90.0 - 27.0))
-    rows.append(
+    distortion_deck = (
+        "* disto",
+        "I1 0 out DC 1m DISTOF1 1m",
+        "D1 out 0 dd",
+        ".model dd D(IS=1e-14 N=1)",
+    )
+    scattering_deck = (
+        "* sp",
+        "V1 p1 0 DC 0 AC 1 portnum 1 z0 50",
+        "R1 p1 p2 100",
+        "V2 p2 0 DC 0 portnum 2 z0 50",
+    )
+    transient_noise_deck = (
+        "* trnoise",
+        "V1 out 0 DC 0 TRNOISE(1m 10n 0 0)",
+        "R1 out 0 1k",
+    )
+    return [
         Fixture(
             key="corners",
             category=Category.ANALYSIS,
@@ -2885,47 +2860,18 @@ def extended_analyses() -> list[Fixture]:
                 ),
             ),
             jolty=run_corners,
-            spice=Spice(
-                deck=(),
-                ngspice=Documented(
-                    "ngspice 47 manual, §18.5 / control language: corners run by "
-                    "altering temperature and parameters in a control loop; no "
-                    "fixture runs it here yet"
+            spice=_unrun_spice(
+                _ngspice_documented(
+                    ", §18.5 / control language: corners run by altering temperature "
+                    "and parameters in a control loop",
+                    pending=True,
                 ),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, .STEP: sweeps parameters and "
-                    "temperature over combinations; no fixture runs it here yet"
+                _xyce_documented(
+                    ", .STEP: sweeps parameters and temperature over combinations",
+                    pending=True,
                 ),
-                reads={},
             ),
-        )
-    )
-
-    def run_worst_case() -> Values:
-        with tempfile.TemporaryDirectory() as directory:
-            script_path = Path(directory) / "worst_case.py"
-            script_path.write_text(_WORST_CASE_SCRIPT, encoding="utf-8")
-            outcome = run_plan(
-                Job(script=script_path, plan=script_path, max_unknowns=10),
-                Path(directory),
-            )
-        if not isinstance(outcome, Built):
-            message = f"worst-case plan did not build: {outcome}"
-            raise TypeError(message)
-        if outcome.worst_case is None:
-            message = "worst-case plan produced no worst-case verdicts"
-            raise RuntimeError(message)
-        lowest, highest = outcome.worst_case.verdicts
-        return {
-            "v(out)@low": complex(
-                lowest.value if lowest.value is not None else math.nan
-            ),
-            "v(out)@high": complex(
-                highest.value if highest.value is not None else math.nan
-            ),
-        }
-
-    rows.append(
+        ),
         Fixture(
             key="worst-case",
             category=Category.ANALYSIS,
@@ -2941,24 +2887,13 @@ def extended_analyses() -> list[Fixture]:
                 ),
             ),
             jolty=run_worst_case,
-            spice=Spice(
-                deck=(),
-                ngspice=Unsupported(
+            spice=_unrun_spice(
+                Unsupported(
                     NGSPICE_ANALYSES + "; no built-in worst-case tolerance analysis"
                 ),
-                xyce=Unsupported(XYCE_COMMANDS),
-                reads={},
+                Unsupported(XYCE_COMMANDS),
             ),
-        )
-    )
-
-    distortion_deck = (
-        "* disto",
-        "I1 0 out DC 1m DISTOF1 1m",
-        "D1 out 0 dd",
-        ".model dd D(IS=1e-14 N=1)",
-    )
-    rows.append(
+        ),
         Fixture(
             key="disto",
             category=Category.ANALYSIS,
@@ -2990,16 +2925,7 @@ def extended_analyses() -> list[Fixture]:
                     "v(hd3)": Read(ngspice="v(out)", plot=1, complex=True),
                 },
             ),
-        )
-    )
-
-    scattering_deck = (
-        "* sp",
-        "V1 p1 0 DC 0 AC 1 portnum 1 z0 50",
-        "R1 p1 p2 100",
-        "V2 p2 0 DC 0 portnum 2 z0 50",
-    )
-    rows.append(
+        ),
         Fixture(
             key="sp",
             category=Category.ANALYSIS,
@@ -3016,27 +2942,17 @@ def extended_analyses() -> list[Fixture]:
             spice=Spice(
                 deck=scattering_deck,
                 ngspice=("sp lin 1 1Meg 1Meg",),
-                xyce=Documented(
-                    "Xyce Reference Guide 7.10, .LIN: linear multi-port "
-                    "S-parameter extraction with P port devices; no fixture runs "
-                    "it here yet"
+                xyce=_xyce_documented(
+                    ", .LIN: linear multi-port S-parameter extraction with P port "
+                    "devices",
+                    pending=True,
                 ),
                 reads={
-                    "s(1,1)": Read(ngspice="v(s_1_1)", complex=True),
-                    "s(2,1)": Read(ngspice="v(s_2_1)", complex=True),
-                    "s(1,2)": Read(ngspice="v(s_1_2)", complex=True),
-                    "s(2,2)": Read(ngspice="v(s_2_2)", complex=True),
+                    f"s({row},{col})": Read(ngspice=f"v(s_{row}_{col})", complex=True)
+                    for row, col in ((1, 1), (2, 1), (1, 2), (2, 2))
                 },
             ),
-        )
-    )
-
-    transient_noise_deck = (
-        "* trnoise",
-        "V1 out 0 DC 0 TRNOISE(1m 10n 0 0)",
-        "R1 out 0 1k",
-    )
-    rows.append(
+        ),
         Fixture(
             key="trnoise",
             category=Category.ANALYSIS,
@@ -3051,15 +2967,13 @@ def extended_analyses() -> list[Fixture]:
             spice=Spice(
                 deck=transient_noise_deck,
                 ngspice=("tran 10n 1u 0 10n",),
-                xyce=Unsupported(
-                    "Xyce Reference Guide 7.10, Netlist Commands: no native "
-                    "TRNOISE transient noise source"
+                xyce=_xyce_unsupported(
+                    ", Netlist Commands: no native TRNOISE transient noise source"
                 ),
                 reads={"v(out)@5e-07": Read(ngspice="v(out)", time=5e-7)},
             ),
-        )
-    )
-    return rows
+        ),
+    ]
 
 
 def fixtures() -> list[Fixture]:

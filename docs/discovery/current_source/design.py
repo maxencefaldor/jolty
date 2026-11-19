@@ -10,11 +10,6 @@ falls 0.3 %/K with temperature. Simulate it with
 ``jolty simulate docs/discovery/current_source/design.py``.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import candidates
 
 from jolty import Component, Corner, Plan, Specs

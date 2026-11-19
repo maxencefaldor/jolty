@@ -15,25 +15,11 @@ within 5 %.
 
 import runpy
 from collections.abc import Mapping, Sequence
-from functools import partial
 from pathlib import Path
 
 import numpy as np
 from arms import Arm
-from scoring import (
-    CORNERS,
-    Board,
-    Corner,
-    benched,
-    cornered,
-    count_devices,
-    design,
-    disallowed,
-    given,
-    integrated,
-    tolerate,
-    unmet,
-)
+from scoring import CORNERS, Board, Corner, DesignSpec, integrated, score_design, unmet
 from verdict import Shortfall, Verdict
 
 from jolty import Builder, Component, Role, circuit, component, devices
@@ -134,24 +120,21 @@ def score(task: Path, work: Path, arm: Arm) -> Verdict:
     """The verdict on the cubic `work` against `task`, as `arm` writes it."""
     patented = runpy.run_path(str(task / "patent.py"))["cubic"]()
     patent = {corner: errors(patented, Board(corner=corner)) for corner in CORNERS}
-    made = design(task, work, "design", arm)
-    if isinstance(made, Shortfall):
-        return Verdict(met=False, shortfalls=(made,))
-    built = benched(made, PORTS, lambda: bench(made))
-    if isinstance(built, Shortfall):
-        return Verdict(met=False, shortfalls=(built,))
-    reasons = disallowed(built, given(task, arm, "npn"), ALLOWED)
-    measured = partial(measure, made, patent)
-    measurements, short = cornered(measured, shortfalls)
-    reasons += short
-    if not reasons:
-        spread, reasons = tolerate(built, measured, shortfalls, integrated)
-        measurements |= spread
-    measurements |= {
-        f"patent's error {name}": error
-        for name, error in zip(NAMES, patent[CORNERS[0]], strict=True)
-    }
-    measurements["devices"] = float(count_devices(built, "X1"))
-    return Verdict(
-        met=not reasons, measurements=measurements, shortfalls=tuple(reasons)
+    return score_design(
+        task,
+        work,
+        arm,
+        DesignSpec(
+            ports=PORTS,
+            bench=bench,
+            measure=lambda made, board: measure(made, patent, board),
+            shortfalls=shortfalls,
+            parts=("npn",),
+            allowed=ALLOWED,
+            spread=integrated,
+            extra_measurements={
+                f"patent's error {name}": error
+                for name, error in zip(NAMES, patent[CORNERS[0]], strict=True)
+            },
+        ),
     )

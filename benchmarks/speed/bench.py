@@ -130,6 +130,8 @@ from measuring import (
     Median,
     Provenance,
     Suite,
+    aligned_row,
+    aligned_table,
     available_memory_bytes,
     commit,
     duration,
@@ -137,6 +139,7 @@ from measuring import (
     git,
     load,
     load_average,
+    markdown_table,
     median,
     memory,
     provenance,
@@ -760,39 +763,78 @@ class CopyOptions:
 
 
 @dataclass(frozen=True, slots=True)
-class _CopyWorker:
-    """One isolated `timing.py` child process used by `concurrent_copies`."""
+class TimingWorker:
+    """One isolated `timing.py` child process for concurrent copies or build timing."""
 
     process: subprocess.Popen[str]
     requests: IO[str]
     answers: IO[str]
+    jolty_path: Path
+    label: str = "timing worker"
+    built: Build | None = None
 
     @classmethod
-    def start(cls, python_executable: str) -> _CopyWorker:
+    def start(
+        cls,
+        python_executable: str | Path = sys.executable,
+        *,
+        env: Mapping[str, str] | None = None,
+        label: str = "concurrent copy worker",
+    ) -> TimingWorker:
         """Starts a fresh `timing.py` child process and waits for its handshake.
 
         Raises:
             RuntimeError: When the child fails to start or exits before handshaking.
         """
-        process = subprocess.Popen(  # noqa: S603 - active Python interpreter
-            [python_executable, str(SPEED / "timing.py")],
+        process = subprocess.Popen(  # noqa: S603 - active or build Python interpreter
+            [str(python_executable), str(SPEED / "timing.py")],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
             cwd=ROOT,
+            env=env,
         )
         if process.stdin is None or process.stdout is None:
             process.terminate()
             process.wait()
-            message = "concurrent copy worker started without stdio pipes"
+            message = f"{label} started without stdio pipes"
             raise RuntimeError(message)
-        worker = cls(process, process.stdin, process.stdout)
-        said = worker.answers.readline()
+        said = process.stdout.readline()
         if not said:
-            worker.close()
-            message = "concurrent copy worker exited before completing startup"
+            with contextlib.suppress(OSError):
+                process.stdin.close()
+            process.wait()
+            with contextlib.suppress(OSError):
+                process.stdout.close()
+            message = f"{label} exited before completing startup"
             raise RuntimeError(message)
-        return worker
+        jolty_path = Path(json.loads(said)["jolty"]).resolve()
+        return cls(process, process.stdin, process.stdout, jolty_path, label=label)
+
+    @classmethod
+    def for_build(cls, built: Build, padding: int) -> TimingWorker:
+        """Starts the worker of `built` after verifying it imported `built`'s jolty.
+
+        Its environment holds a variable of `padding` bytes besides this process's.
+
+        Raises:
+            SystemExit: When it imported another jolty, or could not start.
+        """
+        interpreter = built.path / ".venv" / "bin" / "python"
+        environment = outside() | {"JOLTY_BENCH_PADDING": "x" * padding}
+        try:
+            worker = cls.start(
+                interpreter, env=environment, label=f"{built.revision}'s process"
+            )
+        except RuntimeError as error:
+            raise SystemExit(str(error)) from error
+        if not worker.jolty_path.is_relative_to(built.path.resolve()):
+            worker.close()
+            message = (
+                f"{built.revision}'s process imported jolty from {worker.jolty_path}"
+            )
+            raise SystemExit(message)
+        return dataclasses.replace(worker, built=built)
 
     def prepare(self, line: str) -> None:
         """Pre-loads a fixture in the worker before timing starts.
@@ -804,7 +846,7 @@ class _CopyWorker:
         self.requests.flush()
         answer = self.answers.readline()
         if not answer or not json.loads(answer).get("ready"):
-            message = f"concurrent copy worker failed to prepare: {answer!r}"
+            message = f"{self.label} failed to prepare: {answer!r}"
             raise RuntimeError(message)
 
     def run_line(self, line: str) -> Run:
@@ -817,16 +859,30 @@ class _CopyWorker:
         self.requests.flush()
         answer = self.answers.readline()
         if not answer:
-            message = "concurrent copy worker exited while executing a run"
+            message = f"{self.label} exited while executing a run"
             raise RuntimeError(message)
         return Run(**json.loads(answer))
 
-    def close(self) -> None:
+    def time(self, request: Request) -> Run:
+        """One run of `request` in the worker, and its seconds.
+
+        Raises:
+            SystemExit: When a build worker exits instead of answering.
+        """
+        try:
+            return self.run_line(json.dumps(dataclasses.asdict(request)) + "\n")
+        except RuntimeError as error:
+            if self.built is not None:
+                message = f"{self.built.revision}'s process ended running {request}"
+                raise SystemExit(message) from error
+            raise
+
+    def close(self, *, timeout: float | None = 5.0) -> None:
         """Closes stdio pipes and reaps the worker process cleanly."""
         with contextlib.suppress(OSError):
             self.requests.close()
         try:
-            self.process.wait(timeout=5.0)
+            self.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             self.process.terminate()
             self.process.wait()
@@ -835,9 +891,12 @@ class _CopyWorker:
                 self.answers.close()
 
 
+Worker = TimingWorker
+
+
 def _synchronized_round(
     executor: concurrent.futures.ThreadPoolExecutor,
-    workers: Sequence[_CopyWorker],
+    workers: Sequence[TimingWorker],
     request_line: str,
 ) -> tuple[float, list[Run]]:
     """Releases all `workers` at a barrier and returns `(makespan, runs)`."""
@@ -849,7 +908,7 @@ def _synchronized_round(
 
     barrier = threading.Barrier(len(workers), action=mark_start)
 
-    def run_copy(worker: _CopyWorker) -> Run:
+    def run_copy(worker: TimingWorker) -> Run:
         barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
         return worker.run_line(request_line)
 
@@ -911,11 +970,11 @@ def concurrent_copies(
     request_payload = dataclasses.asdict(request)
     prepare_line = json.dumps(request_payload | {"prepare": True}) + "\n"
     request_line = json.dumps(request_payload) + "\n"
-    workers: list[_CopyWorker] = []
+    workers: list[TimingWorker] = []
     workers_lock = threading.Lock()
 
-    def start_worker(_index: int) -> _CopyWorker:
-        worker = _CopyWorker.start(chosen.python_executable)
+    def start_worker(_index: int) -> TimingWorker:
+        worker = TimingWorker.start(chosen.python_executable)
         with workers_lock:
             workers.append(worker)
         return worker
@@ -1073,10 +1132,7 @@ def format_scaling_table(name: str, summary: str, rows: Sequence[ScalingRow]) ->
         widths.append(12)
     heads.extend(["", "results"])
     widths.extend([11, 16])
-    lines = [
-        f"\n{name}, serially and spread by the default parallelism, {summary}:",
-        table(heads, widths),
-    ]
+    data_rows: list[list[str]] = []
     notes: list[str] = []
     for index, row in enumerate(rows):
         cells: list[str] = [
@@ -1100,8 +1156,12 @@ def format_scaling_table(name: str, summary: str, rows: Sequence[ScalingRow]) ->
                 row.fingerprint,
             ]
         )
-        lines.append(table(cells, widths))
-    lines.extend(notes)
+        data_rows.append(cells)
+    lines = [
+        f"\n{name}, serially and spread by the default parallelism, {summary}:",
+        aligned_table(heads, data_rows, widths),
+        *notes,
+    ]
     return "\n".join(lines)
 
 
@@ -1916,15 +1976,13 @@ def view_table(cells: Mapping[str, Mapping[str, Cell]]) -> str:
     configurations = list(dict.fromkeys(c for row in cells.values() for c in row))
     options = {c: row[c].options for row in cells.values() for c in row}
     rows = [
-        ["fixture", *configurations],
-        ["---"] * (len(configurations) + 1),
         ["options", *(options[c] for c in configurations)],
+        *(
+            [f"`{name}`", *(entry(row[c]) if c in row else "" for c in configurations)]
+            for name, row in cells.items()
+        ),
     ]
-    rows += [
-        [f"`{name}`", *(entry(row[c]) if c in row else "" for c in configurations)]
-        for name, row in cells.items()
-    ]
-    return "\n".join("| " + " | ".join(row) + " |" for row in rows)
+    return markdown_table(["fixture", *configurations], rows)
 
 
 def baseline(given: str | None) -> Path | None:
@@ -1975,14 +2033,14 @@ def format_speed_table(timings: Mapping[str, Timing]) -> str:
     if has_memory:
         heads.append("peak memory")
         widths.append(12)
-    lines = ["\nspeed summary:", table(heads, widths)]
+    data_rows = []
     for key, each in timings.items():
-        cells = [key, interval(each.wall_median())]
+        row = [key, interval(each.wall_median())]
         if has_memory:
-            bytes_used = each.peak_memory_bytes
-            cells.append("" if bytes_used is None else memory(bytes_used))
-        lines.append(table(cells, widths))
-    return "\n".join(lines)
+            peak = each.peak_memory_bytes
+            row.append("" if peak is None else memory(peak))
+        data_rows.append(row)
+    return "\n".join(["\nspeed summary:", aligned_table(heads, data_rows, widths)])
 
 
 def format_against_table(
@@ -2003,11 +2061,8 @@ def format_against_table(
     if has_memory:
         heads.append("peak memory")
         widths.append(22)
-    lines = [
-        f"\nagainst {name}, medians with their {CONFIDENCE:.0%} intervals:",
-        table(heads, widths),
-    ]
     named = 0
+    data_rows: list[list[str]] = []
     for key in shared:
         old, new = before[key].wall_median(), now[key].wall_median()
         verdict = decided(old, new)
@@ -2024,8 +2079,12 @@ def format_against_table(
             cells.append(
                 _memory_delta(before[key].peak_memory_bytes, now[key].peak_memory_bytes)
             )
-        lines.append(table(cells, widths))
-    lines.append(f"{named} of {len(shared)} changed, their intervals apart")
+        data_rows.append(cells)
+    lines = [
+        f"\nagainst {name}, medians with their {CONFIDENCE:.0%} intervals:",
+        aligned_table(heads, data_rows, widths),
+        f"{named} of {len(shared)} changed, their intervals apart",
+    ]
     return "\n".join(lines)
 
 
@@ -2186,9 +2245,7 @@ SIZE: Final = {"inverter_chain": "inverters", "rc_mesh": "side", "bjt_amp": "a d
 
 def table(cells: Sequence[str], widths: Sequence[int]) -> str:
     """A row of `cells`, each right-aligned to its width, two spaces apart."""
-    return "  ".join(
-        f"{cell:>{width}}" for cell, width in zip(cells, widths, strict=True)
-    ).rstrip()
+    return aligned_row(cells, widths)
 
 
 MARKS: Final = {
@@ -2608,70 +2665,6 @@ def build(revision: str, directory: Path, taken: Iterable[Path]) -> Build:
     return Build(revision, found, path)
 
 
-@dataclass(frozen=True, slots=True)
-class Worker:
-    """A process of a build's interpreter, which times runs as `timing.serve` does."""
-
-    built: Build
-    process: subprocess.Popen[str]
-    requests: IO[str]
-    answers: IO[str]
-
-    @classmethod
-    def start(cls, built: Build, padding: int) -> Worker:
-        """The worker of `built`, once it has said that it imported the build's jolty.
-
-        Its environment holds a variable of `padding` bytes besides this process's.
-
-        Raises:
-            SystemExit: When it imported another jolty, or could not start.
-        """
-        interpreter = built.path / ".venv" / "bin" / "python"
-        process = subprocess.Popen(  # noqa: S603 - the build's own interpreter
-            [str(interpreter), str(SPEED / "timing.py")],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            text=True,
-            cwd=ROOT,
-            env=outside() | {"JOLTY_BENCH_PADDING": "x" * padding},
-        )
-        if process.stdin is None or process.stdout is None:
-            message = f"{built.revision}'s process has no pipes"
-            raise SystemExit(message)
-        worker = cls(built, process, process.stdin, process.stdout)
-        said = worker.answers.readline()
-        if not said:
-            message = f"{built.revision}'s process ended before it imported jolty"
-            raise SystemExit(message)
-        imported = Path(json.loads(said)["jolty"]).resolve()
-        if not imported.is_relative_to(built.path.resolve()):
-            message = f"{built.revision}'s process imported jolty from {imported}"
-            raise SystemExit(message)
-        return worker
-
-    def time(self, request: Request) -> Run:
-        """One run of `request` in the build, and its seconds.
-
-        Raises:
-            SystemExit: When the process ended instead of answering.
-        """
-        self.requests.write(json.dumps(dataclasses.asdict(request)) + "\n")
-        self.requests.flush()
-        answer = self.answers.readline()
-        if not answer:
-            message = f"{self.built.revision}'s process ended running {request}"
-            raise SystemExit(message)
-        return Run(**json.loads(answer))
-
-    def close(self) -> None:
-        """Ends the process, once it has read every request."""
-        self.requests.close()
-        try:
-            self.process.wait()
-        finally:
-            self.answers.close()
-
-
 def afresh(built: Build, request: Request, padding: Callable[[], int]) -> Run:
     """One run of `request` in a process of `built` of its own, after one to warm up.
 
@@ -2687,12 +2680,12 @@ def afresh(built: Build, request: Request, padding: Callable[[], int]) -> Run:
     offset of the stack within a page then occurs, and these effects widen each
     build's interval rather than move its median.
     """
-    worker = Worker.start(built, padding())
+    worker = TimingWorker.for_build(built, padding())
     try:
         worker.time(request)
         return worker.time(request)
     finally:
-        worker.close()
+        worker.close(timeout=None)
 
 
 def builds_compared(arguments: Bench) -> None:
@@ -2784,19 +2777,17 @@ def comparison(
     their load.
     """
     first, second = pair
-    rows = [
-        [
-            "Time",
-            "Clock",
-            f"`{first.revision}` ({first.commit[:12]})",
-            f"`{second.revision}` ({second.commit[:12]})",
-            "Change",
-            "Resolution",
-            "Verdict",
-            "Rounds and load",
-        ]
+    headers = [
+        "Time",
+        "Clock",
+        f"`{first.revision}` ({first.commit[:12]})",
+        f"`{second.revision}` ({second.commit[:12]})",
+        "Change",
+        "Resolution",
+        "Verdict",
+        "Rounds and load",
     ]
-    rows.append(["---"] * len(rows[0]))
+    rows: list[list[str]] = []
     named: list[str] = []
     for key, rounds in measured.items():
         before, now = rounds.timings
@@ -2822,7 +2813,7 @@ def comparison(
                     rounds.summary(),
                 ]
             )
-    lines = ["| " + " | ".join(row) + " |" for row in rows]
+    lines = [markdown_table(headers, rows)]
     memory_rows: list[list[str]] = []
     for key, rounds in measured.items():
         old_bytes = rounds.timings[0].peak_memory_bytes
@@ -2843,18 +2834,13 @@ def comparison(
             ]
         )
     if memory_rows:
-        memory_header = [
-            [
-                "Peak memory",
-                f"`{first.revision}` ({first.commit[:12]})",
-                f"`{second.revision}` ({second.commit[:12]})",
-                "Change",
-            ],
-            ["---", "---", "---", "---"],
-            *memory_rows,
+        memory_headers = [
+            "Peak memory",
+            f"`{first.revision}` ({first.commit[:12]})",
+            f"`{second.revision}` ({second.commit[:12]})",
+            "Change",
         ]
-        lines.append("")
-        lines.extend("| " + " | ".join(row) + " |" for row in memory_header)
+        lines.extend(["", markdown_table(memory_headers, memory_rows)])
     lines.append("")
     lines.append(
         f"Each time is the median of its rounds, with its {CONFIDENCE:.0%} interval; "

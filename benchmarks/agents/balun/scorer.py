@@ -30,23 +30,11 @@ source. The distortion's sine has the 10 mV amplitude of his frequency sweeps. P
 are compared on the circle, so that -179° lies 1° from 180°.
 """
 
-from functools import partial
 from pathlib import Path
 
 import numpy as np
 from arms import Arm
-from scoring import (
-    Board,
-    benched,
-    cornered,
-    count_devices,
-    design,
-    disallowed,
-    discrete,
-    given,
-    tolerate,
-    unmet,
-)
+from scoring import Board, DesignSpec, discrete, score_design, unmet
 from verdict import Shortfall, Verdict
 
 from jolty import (
@@ -197,21 +185,20 @@ def shortfalls(found: dict[str, float]) -> list[Shortfall]:
 
 def score(task: Path, work: Path, arm: Arm) -> Verdict:
     """The verdict on the balun in `work`, as `arm` writes it."""
-    made = design(task, work, "design", arm)
-    if isinstance(made, Shortfall):
-        return Verdict(met=False, shortfalls=(made,))
-    built = benched(made, PORTS, lambda: bench(made))
-    if isinstance(built, Shortfall):
-        return Verdict(met=False, shortfalls=(built,))
-    reasons = disallowed(built, given(task, arm, "npn", "pnp"), ALLOWED)
-    measured = partial(measure, made)
-    measurements, short = cornered(measured, shortfalls)
-    reasons += short
-    if not reasons:
-        spread, reasons = tolerate(built, measured, shortfalls, discrete)
-        measurements |= spread
-    measurements |= {f"evolved {name}": value for name, value in EVOLVED.items()}
-    measurements["devices"] = float(count_devices(built, "X1"))
-    return Verdict(
-        met=not reasons, measurements=measurements, shortfalls=tuple(reasons)
+    return score_design(
+        task,
+        work,
+        arm,
+        DesignSpec(
+            ports=PORTS,
+            bench=bench,
+            measure=measure,
+            shortfalls=shortfalls,
+            parts=("npn", "pnp"),
+            allowed=ALLOWED,
+            spread=discrete,
+            extra_measurements={
+                f"evolved {name}": value for name, value in EVOLVED.items()
+            },
+        ),
     )

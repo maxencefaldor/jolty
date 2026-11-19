@@ -10,11 +10,6 @@ capacitors, every one notches deeper than 65 dB between 45 Hz and 55 Hz. Simulat
 with ``jolty simulate docs/discovery/notch/design.py``.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import candidates
 
 from jolty import Component, MonteCarlo, Plan, Specs

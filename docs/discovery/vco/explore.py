@@ -4,14 +4,8 @@
 Each frequency is compared with the line through the origin that fits them all.
 """
 
-import sys
-from pathlib import Path
-
-import numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import candidates
+import numpy as np
 
 from jolty import Component, Simulation, Transient, circuit
 from jolty.results import TransientResult

@@ -40,42 +40,22 @@ from typing import Final
 import numpy as np
 from pydantic import BaseModel, Field
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "precision"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "speed"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "speed" / "circuits"))
+
+from fixtures import fixtures as precision_fixtures
+from suite import DEFAULTS, Prepared, Setting, run_jolty, score
+from timing import load_fixture, planned
+
+from jolty import Simulation, cli, results
+
 BENCHMARKS: Final = Path(__file__).resolve().parent
 ROOT: Final = BENCHMARKS.parent
 PRECISION_DIRECTORY: Final = BENCHMARKS / "precision"
 SPEED_DIRECTORY: Final = BENCHMARKS / "speed"
 CIRCUITS_DIRECTORY: Final = SPEED_DIRECTORY / "circuits"
-
-for _path in (
-    BENCHMARKS,
-    PRECISION_DIRECTORY,
-    SPEED_DIRECTORY,
-    CIRCUITS_DIRECTORY,
-):
-    _text = str(_path)
-    if _text not in sys.path:
-        sys.path.insert(0, _text)
-
-from fixtures import (  # noqa: E402 - benchmark sibling dirs added to sys.path above
-    fixtures as precision_fixtures,
-)
-from suite import (  # noqa: E402 - benchmark sibling dirs added to sys.path above
-    DEFAULTS,
-    Prepared,
-    Setting,
-    run_jolty,
-    score,
-)
-from timing import (  # noqa: E402 - benchmark sibling dirs added to sys.path above
-    load_fixture,
-    planned,
-)
-
-from jolty import (  # noqa: E402 - follows sys.path bootstrap for sibling modules
-    Simulation,
-    cli,
-    results,
-)
 
 BASELINE_PATH: Final = BENCHMARKS / "deterministic.json"
 """Committed per-platform baseline of deterministic counts, digits and fingerprints."""
@@ -210,26 +190,14 @@ def extract_counts(result: results.AnalysisResult) -> AnalysisCounts:
                 iterations=int(sum(result.iterations)),
                 fingerprint=fingerprint,
             )
-        case results.PeriodicSteadyStateResult():
+        case results.TransientResult() | results.PeriodicSteadyStateResult():
             statistics = result.statistics
             work = statistics.work
-            return AnalysisCounts(
-                strategy=str(statistics.initial),
-                accepted=int(statistics.accepted),
-                rejected=int(statistics.rejected),
-                landed=int(statistics.landed),
-                transient_iterations=int(statistics.iterations),
-                work_iterations=None if work is None else int(work.iterations),
-                factorizations=None if work is None else int(work.factorizations),
-                refactorizations=None if work is None else int(work.refactorizations),
-                fallbacks=None if work is None else int(work.fallbacks),
-                reuses=None if work is None else int(work.reuses),
-                periods=int(result.periods),
-                fingerprint=fingerprint,
+            periods = (
+                int(result.periods)
+                if isinstance(result, results.PeriodicSteadyStateResult)
+                else None
             )
-        case results.TransientResult():
-            statistics = result.statistics
-            work = statistics.work
             return AnalysisCounts(
                 strategy=str(statistics.initial),
                 accepted=int(statistics.accepted),
@@ -241,6 +209,7 @@ def extract_counts(result: results.AnalysisResult) -> AnalysisCounts:
                 refactorizations=None if work is None else int(work.refactorizations),
                 fallbacks=None if work is None else int(work.fallbacks),
                 reuses=None if work is None else int(work.reuses),
+                periods=periods,
                 fingerprint=fingerprint,
             )
         case results.AcResult() | results.NoiseResult() | results.PoleZeroResult():

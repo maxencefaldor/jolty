@@ -8,25 +8,18 @@ into three bits. A ramp from 0 to 3.3 V walks the code from 0 to 7. Simulate it 
 ``jolty simulate examples/flash_adc.py``.
 """
 
+from common import SUPPLY, comparator
+
 from jolty import Builder, Component, Plan, Role, Specs, component, devices
 from jolty.plan import Transient
 from jolty.specs import value
 from jolty.units import V, fF, kohm, mV, ns, ps, us
 from jolty.waveforms import Piecewise
 
-SUPPLY = 3.3
 BITS = 3
 TAPS = 2**BITS - 1
 RAMP = 8e-6
 """How long the input takes to rise from 0 V to the reference, in seconds."""
-
-
-def comparator() -> devices.Device:
-    """A comparator, its output the supply or ground as `in` is above `ref` or not."""
-    half = SUPPLY / 2
-    return devices.behavioral_voltage_source(
-        f"{half} + {half} * tanh(v(in, ref) / 1e-3)"
-    )
 
 
 @component

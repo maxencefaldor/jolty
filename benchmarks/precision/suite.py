@@ -49,6 +49,7 @@ from measuring import (
     duration,
     load,
     load_average,
+    markdown_table,
     provenance,
     save,
 )
@@ -63,6 +64,7 @@ from simulators import (
     Xyce,
     command,
     netlist,
+    ngspice_options_line,
     runner,
     stopped,
 )
@@ -318,7 +320,7 @@ def run_ngspice(
     given = [
         f"{SPICE_NAMES[name]}={value!r}" for name, value in setting.tolerances().items()
     ]
-    options = f".options {' '.join(given)}" if given else ngspice.NO_OPTIONS
+    options = ngspice_options_line(given, fallback=ngspice.NO_OPTIONS)
     (raw,) = runner.runs(lines, (commands,), options=options)
     if raw.printed.count(runner.solver) < repeats:
         message = f"ngspice did not run {runner.simulator}'s solver:\n{raw.printed}"
@@ -861,15 +863,15 @@ def defaults_table(document: SuiteResults) -> str:
     simulators = simulators_in(document)
     heads = ["fixture", "output", *(str(simulator) for simulator in simulators)]
     rows = [
-        "| " + " | ".join(heads) + " |",
-        "| " + " | ".join("---" for _ in heads) + " |",
+        [
+            f"`{name}`",
+            f"{output.name}, {output.score}",
+            *(_default(measured, output, each) for each in simulators),
+        ]
+        for name, measured in document.fixtures.items()
+        for output in measured.outputs
     ]
-    for name, measured in document.fixtures.items():
-        for output in measured.outputs:
-            cells = [f"`{name}`", f"{output.name}, {output.score}"]
-            cells += [_default(measured, output, each) for each in simulators]
-            rows.append("| " + " | ".join(cells) + " |")
-    return "\n".join(rows)
+    return markdown_table(heads, rows)
 
 
 def _default(
@@ -905,10 +907,7 @@ def equal_error_table(document: SuiteResults, digits: float | None) -> str:
     """
     simulators = simulators_in(document)
     heads = ["fixture", "output", "target", *(str(each) for each in simulators)]
-    rows = [
-        "| " + " | ".join(heads) + " |",
-        "| " + " | ".join("---" for _ in heads) + " |",
-    ]
+    rows: list[list[str]] = []
     for name, measured in document.fixtures.items():
         for output in measured.outputs:
             scored = {
@@ -926,12 +925,12 @@ def equal_error_table(document: SuiteResults, digits: float | None) -> str:
             ]
             target = digits if digits is not None else min(reached, default=math.nan)
             cells = [f"`{name}`", f"{output.name}, {output.score}", f"{target:.1f}"]
-            cells += [
+            cells.extend(
                 _equal_error(measured.runs, simulator, scored[simulator], target)
                 for simulator in simulators
-            ]
-            rows.append("| " + " | ".join(cells) + " |")
-    return "\n".join(rows)
+            )
+            rows.append(cells)
+    return markdown_table(heads, rows)
 
 
 def _equal_error(

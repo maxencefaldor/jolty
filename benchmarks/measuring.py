@@ -9,7 +9,8 @@ suites themselves (`Suite`), `load_average`, `commit`, `machine`, `provenance`,
 `results_path` in each suite's `results_directory`, and `format_json`, `save` and
 `load` for the results files; `duration`, how the suites print a time; `memory`, how
 they print a byte count; `ru_maxrss_to_bytes`, `peak_memory_bytes` and
-`available_memory_bytes` for resident memory; and `median`, the median of a time's runs
+`available_memory_bytes` for resident memory; `markdown_table`, `aligned_row` and
+`aligned_table` for reporting tables; and `median`, the median of a time's runs
 with the interval that holds the true median at `CONFIDENCE`.
 """
 
@@ -21,7 +22,7 @@ import resource
 import statistics
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from fractions import Fraction
@@ -557,3 +558,35 @@ def memory(byte_count: int) -> str:
         if byte_count >= factor:
             return f"{byte_count / factor:.4g} {unit}"
     return f"{byte_count} B"
+
+
+def markdown_table(headers: Sequence[str], rows: Iterable[Sequence[str]]) -> str:
+    """Formats `headers` and `rows` as a GitHub-flavored Markdown table.
+
+    Examples:
+        >>> markdown_table(["A", "B"], [["1", "2"]]).splitlines()
+        ['| A | B |', '| --- | --- |', '| 1 | 2 |']
+    """
+    all_rows: list[Sequence[str]] = [headers, ["---"] * len(headers), *rows]
+    return "\n".join("| " + " | ".join(row) + " |" for row in all_rows)
+
+
+def aligned_row(cells: Sequence[str], widths: Sequence[int]) -> str:
+    """Formats a row of `cells`, each right-aligned to its width, two spaces apart.
+
+    Examples:
+        >>> aligned_row(["a", "1"], [3, 4])
+        '  a     1'
+    """
+    return "  ".join(
+        f"{cell:>{width}}" for cell, width in zip(cells, widths, strict=True)
+    ).rstrip()
+
+
+def aligned_table(
+    headers: Sequence[str],
+    rows: Iterable[Sequence[str]],
+    widths: Sequence[int],
+) -> str:
+    """Formats `headers` and `rows` as right-aligned fixed-width columns."""
+    return "\n".join(aligned_row(row, widths) for row in (headers, *rows))
