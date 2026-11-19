@@ -2,135 +2,93 @@
 
 use std::cmp::Ordering;
 
-/// An operation of one operand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Unary {
-    Negate,
-    Not,
-    Abs,
-    Sqrt,
-    Exp,
-    Ln,
-    Log10,
-    Sin,
-    Cos,
-    Tan,
-    Asin,
-    Acos,
-    Atan,
-    Sinh,
-    Cosh,
-    Tanh,
-    Asinh,
-    Acosh,
-    Atanh,
-    Floor,
-    Ceil,
-    Sign,
-    Step,
-    Ramp,
+/// Defines [`Unary`] along with its `name`, `named`, and `value` dispatch for the standard
+/// `f64` methods and the non-method unary operations.
+macro_rules! define_unary {
+    ($($variant:ident => $method:ident $(| $alias:literal)*),* $(,)?) => {
+        /// An operation of one operand.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(crate) enum Unary {
+            Negate,
+            Not,
+            $($variant,)*
+            Sign,
+            Step,
+            Ramp,
+        }
+
+        impl Unary {
+            /// The operation's name in the language: its function's, or its operator's, `-` for
+            /// the sign and `!` for the negation; `ln` for the natural logarithm, which `log`
+            /// names too.
+            pub(crate) const fn name(self) -> &'static str {
+                match self {
+                    Self::Negate => "-",
+                    Self::Not => "!",
+                    $(Self::$variant => stringify!($method),)*
+                    Self::Sign => "sgn",
+                    Self::Step => "u",
+                    Self::Ramp => "uramp",
+                }
+            }
+
+            /// The function called `name`, if one of one argument is.
+            pub(crate) fn named(name: &str) -> Option<Self> {
+                Some(match name {
+                    $(stringify!($method) $(| $alias)* => Self::$variant,)*
+                    "sgn" => Self::Sign,
+                    "u" => Self::Step,
+                    "uramp" => Self::Ramp,
+                    _ => return None,
+                })
+            }
+
+            /// The operation's value at `x`.
+            pub(crate) fn value(self, x: f64) -> f64 {
+                match self {
+                    Self::Negate => -x,
+                    Self::Not => truth(x == 0.0),
+                    $(Self::$variant => x.$method(),)*
+                    Self::Sign => sign(x),
+                    Self::Step => {
+                        if x > 0.0 {
+                            1.0
+                        } else if x < 0.0 {
+                            0.0
+                        } else {
+                            0.5
+                        }
+                    }
+                    Self::Ramp => x.max(0.0),
+                }
+            }
+        }
+    };
+}
+
+define_unary! {
+    Abs => abs,
+    Sqrt => sqrt,
+    Exp => exp,
+    Ln => ln | "log",
+    Log10 => log10,
+    Sin => sin,
+    Cos => cos,
+    Tan => tan,
+    Asin => asin,
+    Acos => acos,
+    Atan => atan,
+    Sinh => sinh,
+    Cosh => cosh,
+    Tanh => tanh,
+    Asinh => asinh,
+    Acosh => acosh,
+    Atanh => atanh,
+    Floor => floor,
+    Ceil => ceil,
 }
 
 impl Unary {
-    /// The operation's name in the language: its function's, or its operator's, `-` for
-    /// the sign and `!` for the negation; `ln` for the natural logarithm, which `log`
-    /// names too.
-    pub(crate) const fn name(self) -> &'static str {
-        match self {
-            Self::Negate => "-",
-            Self::Not => "!",
-            Self::Abs => "abs",
-            Self::Sqrt => "sqrt",
-            Self::Exp => "exp",
-            Self::Ln => "ln",
-            Self::Log10 => "log10",
-            Self::Sin => "sin",
-            Self::Cos => "cos",
-            Self::Tan => "tan",
-            Self::Asin => "asin",
-            Self::Acos => "acos",
-            Self::Atan => "atan",
-            Self::Sinh => "sinh",
-            Self::Cosh => "cosh",
-            Self::Tanh => "tanh",
-            Self::Asinh => "asinh",
-            Self::Acosh => "acosh",
-            Self::Atanh => "atanh",
-            Self::Floor => "floor",
-            Self::Ceil => "ceil",
-            Self::Sign => "sgn",
-            Self::Step => "u",
-            Self::Ramp => "uramp",
-        }
-    }
-
-    /// The function called `name`, if one of one argument is.
-    pub(crate) fn named(name: &str) -> Option<Self> {
-        Some(match name {
-            "abs" => Self::Abs,
-            "sqrt" => Self::Sqrt,
-            "exp" => Self::Exp,
-            "ln" | "log" => Self::Ln,
-            "log10" => Self::Log10,
-            "sin" => Self::Sin,
-            "cos" => Self::Cos,
-            "tan" => Self::Tan,
-            "asin" => Self::Asin,
-            "acos" => Self::Acos,
-            "atan" => Self::Atan,
-            "sinh" => Self::Sinh,
-            "cosh" => Self::Cosh,
-            "tanh" => Self::Tanh,
-            "asinh" => Self::Asinh,
-            "acosh" => Self::Acosh,
-            "atanh" => Self::Atanh,
-            "floor" => Self::Floor,
-            "ceil" => Self::Ceil,
-            "sgn" => Self::Sign,
-            "u" => Self::Step,
-            "uramp" => Self::Ramp,
-            _ => return None,
-        })
-    }
-
-    /// The operation's value at `x`.
-    pub(crate) fn value(self, x: f64) -> f64 {
-        match self {
-            Self::Negate => -x,
-            Self::Not => truth(x == 0.0),
-            Self::Abs => x.abs(),
-            Self::Sqrt => x.sqrt(),
-            Self::Exp => x.exp(),
-            Self::Ln => x.ln(),
-            Self::Log10 => x.log10(),
-            Self::Sin => x.sin(),
-            Self::Cos => x.cos(),
-            Self::Tan => x.tan(),
-            Self::Asin => x.asin(),
-            Self::Acos => x.acos(),
-            Self::Atan => x.atan(),
-            Self::Sinh => x.sinh(),
-            Self::Cosh => x.cosh(),
-            Self::Tanh => x.tanh(),
-            Self::Asinh => x.asinh(),
-            Self::Acosh => x.acosh(),
-            Self::Atanh => x.atanh(),
-            Self::Floor => x.floor(),
-            Self::Ceil => x.ceil(),
-            Self::Sign => sign(x),
-            Self::Step => {
-                if x > 0.0 {
-                    1.0
-                } else if x < 0.0 {
-                    0.0
-                } else {
-                    0.5
-                }
-            }
-            Self::Ramp => x.max(0.0),
-        }
-    }
-
     /// The operation's derivative at `x`, where its value is `value`.
     pub(crate) fn slope(self, x: f64, value: f64) -> f64 {
         match self {
@@ -259,20 +217,8 @@ impl Binary {
             Self::Multiply => a * b,
             Self::Divide => a / b,
             Self::Power => a.powf(b),
-            Self::Min => {
-                if b < a {
-                    b
-                } else {
-                    a
-                }
-            }
-            Self::Max => {
-                if b > a {
-                    b
-                } else {
-                    a
-                }
-            }
+            Self::Min => pick(b < a, a, b),
+            Self::Max => pick(b > a, a, b),
             Self::Less => truth(a < b),
             Self::LessEqual => truth(a <= b),
             Self::Greater => truth(a > b),
@@ -301,20 +247,8 @@ impl Binary {
                 let exponent = if a > 0.0 { value * a.ln() } else { 0.0 };
                 (base, exponent)
             }
-            Self::Min => {
-                if b < a {
-                    (0.0, 1.0)
-                } else {
-                    (1.0, 0.0)
-                }
-            }
-            Self::Max => {
-                if b > a {
-                    (0.0, 1.0)
-                } else {
-                    (1.0, 0.0)
-                }
-            }
+            Self::Min => pick(b < a, (1.0, 0.0), (0.0, 1.0)),
+            Self::Max => pick(b > a, (1.0, 0.0), (0.0, 1.0)),
             Self::Less
             | Self::LessEqual
             | Self::Greater
@@ -364,6 +298,11 @@ impl Binary {
             }
         }
     }
+}
+
+/// Returns `second` when `take_second` holds, otherwise `first`.
+fn pick<T>(take_second: bool, first: T, second: T) -> T {
+    if take_second { second } else { first }
 }
 
 /// `1` for true, `0` for false.

@@ -23,13 +23,8 @@
 use rayon::prelude::*;
 
 use super::dissection::{Dissection, Node};
-use super::numeric::{PIVOT_TOLERANCE, Triangle};
-use super::{LinearError, Scalar};
-
-/// No index: a row not pivoted yet.
-///
-/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index.
-const NONE: usize = usize::MAX;
+use super::numeric::{ColumnFactors, PIVOT_TOLERANCE, Triangle};
+use super::{LinearError, NONE, Scalar};
 
 /// The factors of a dissected block: each node's, in the order of the dissection's nodes.
 #[derive(Clone)]
@@ -175,12 +170,7 @@ impl<T: Scalar> Tree<T> {
         self.parts
             .iter()
             .map(|part| match part {
-                Part::Interior(interior) => {
-                    interior.lower.indices.len()
-                        + interior.upper.indices.len()
-                        + interior.pivots.len()
-                        + interior.outer.indices.len()
-                }
+                Part::Interior(interior) => interior.factors.entries() + interior.outer.entries(),
                 Part::Front(front) => {
                     let size = front.rows.len();
                     front.steps * (2 * size - front.steps)
@@ -190,9 +180,10 @@ impl<T: Scalar> Tree<T> {
     }
 
     /// Solves the block's system with the scratch space `scratch`, its subtrees spread as
-    /// the module says for two `threads` or more: from the right-hand side by row of the ordered matrix in `given`,
-    /// the solution by column in `solution`, the block's positions of the ordered matrix;
-    /// or, `transposed`, from the right-hand side by column, the solution by row.
+    /// the module says for two `threads` or more: from the right-hand side by row of the
+    /// ordered matrix in `given`, the solution by column in `solution`, the block's
+    /// positions of the ordered matrix; or, `transposed`, from the right-hand side by
+    /// column, the solution by row.
     pub(super) fn solve(
         &self,
         dissection: &Dissection,
@@ -210,15 +201,9 @@ impl<T: Scalar> Tree<T> {
             &|(index, _), space, below, _| {
                 let node = &nodes[index];
                 let below = (self.parts.as_slice(), below, node.earliest);
-                match (&self.parts[index], transposed) {
-                    (Part::Interior(interior), false) => interior.forward(node, given, space),
-                    (Part::Interior(interior), true) => {
-                        interior.forward_transposed(node, given, space);
-                    }
-                    (Part::Front(front), false) => front.forward(node, given, space, below),
-                    (Part::Front(front), true) => {
-                        front.forward_transposed(node, given, space, below);
-                    }
+                match &self.parts[index] {
+                    Part::Interior(interior) => interior.forward(node, given, space, transposed),
+                    Part::Front(front) => front.forward(node, given, space, below, transposed),
                 }
                 Ok::<bool, std::convert::Infallible>(false)
             },
@@ -230,16 +215,13 @@ impl<T: Scalar> Tree<T> {
             solution,
             &|index, space, below, solution| {
                 let node = &nodes[index];
-                match (&self.parts[index], transposed) {
-                    (Part::Interior(interior), false) => interior.backward(node, space, solution),
-                    (Part::Interior(interior), true) => {
-                        interior.backward_transposed(node, space, solution);
+                let parts = self.parts.as_slice();
+                match &parts[index] {
+                    Part::Interior(interior) => {
+                        interior.backward(node, space, solution, transposed);
                     }
-                    (Part::Front(front), false) => {
-                        front.backward(node, space, (&self.parts[..], below), solution);
-                    }
-                    (Part::Front(front), true) => {
-                        front.backward_transposed(node, space, (&self.parts[..], below), solution);
+                    Part::Front(front) => {
+                        front.backward(node, space, (parts, below), solution, transposed);
                     }
                 }
             },
@@ -492,18 +474,10 @@ fn downward_all<S: Send, T: Send>(
 struct Interior<T> {
     /// Whether it keeps the pivots of its last factorization.
     complete: bool,
-    /// The row of the frame pivoted at each step.
-    pivot_rows: Vec<usize>,
+    /// The column-by-column sparse `L U` factors and elimination workspace.
+    factors: ColumnFactors<T>,
     /// The column of the frame eliminated at each step.
     pivot_columns: Vec<usize>,
-    /// The step whose pivot each row of the frame is, or `NONE`.
-    steps: Vec<usize>,
-    /// `L` below its unit diagonal, by step: each entry's row of the frame.
-    lower: Triangle<T>,
-    /// `U` above its diagonal, by step: each entry's step, in the order of the eliminations.
-    upper: Triangle<T>,
-    /// The pivots, by step.
-    pivots: Vec<T>,
     /// The own columns delayed, in order.
     delayed: Vec<usize>,
     /// The rows of the update: the own rows not pivoted, in order, then the border's.
@@ -516,40 +490,20 @@ struct Interior<T> {
     /// The positions of the rows and of the columns delayed.
     delayed_rows: Vec<usize>,
     delayed_columns: Vec<usize>,
-    /// The column being eliminated, by row of the frame: zero outside it.
-    work: Vec<T>,
-    /// The search that last visited each row.
-    marks: Vec<usize>,
-    /// The number of the search being made.
-    stamp: usize,
-    /// The rows the search is visiting, each with its next entry of `L` to follow.
-    visits: Vec<(usize, usize)>,
-    /// The rows of the column being eliminated, in an order whose reverse puts every row
-    /// after each row whose elimination changes it.
-    reach: Vec<usize>,
 }
 
 impl<T: Scalar> Default for Interior<T> {
     fn default() -> Self {
         Self {
             complete: false,
-            pivot_rows: Vec::new(),
+            factors: ColumnFactors::new(0),
             pivot_columns: Vec::new(),
-            steps: Vec::new(),
-            lower: Triangle::new(0),
-            upper: Triangle::new(0),
-            pivots: Vec::new(),
             delayed: Vec::new(),
             update_rows: Vec::new(),
             outer: Triangle::new(0),
             update: Vec::new(),
             delayed_rows: Vec::new(),
             delayed_columns: Vec::new(),
-            work: Vec::new(),
-            marks: Vec::new(),
-            stamp: 0,
-            visits: Vec::new(),
-            reach: Vec::new(),
         }
     }
 }
@@ -572,15 +526,10 @@ impl<T: Scalar> Interior<T> {
         match (self.complete, other.complete) {
             (false, false) => true,
             (true, true) => {
-                self.pivot_rows == other.pivot_rows
+                self.factors.patterns_alike(&other.factors)
                     && self.pivot_columns == other.pivot_columns
                     && self.delayed == other.delayed
-                    && self.lower.starts == other.lower.starts
-                    && self.lower.indices == other.lower.indices
-                    && self.upper.starts == other.upper.starts
-                    && self.upper.indices == other.upper.indices
-                    && self.outer.starts == other.outer.starts
-                    && self.outer.indices == other.outer.indices
+                    && self.outer.pattern_eq(&other.outer)
             }
             _ => false,
         }
@@ -591,26 +540,16 @@ impl<T: Scalar> Interior<T> {
         let own = node.size();
         let size = own + node.border.len();
         self.complete = false;
-        self.steps.clear();
-        self.steps.resize(size, NONE);
-        self.work.clear();
-        self.work.resize(size, T::ZERO);
-        self.marks.clear();
-        self.marks.resize(size, 0);
-        self.stamp = 0;
-        self.pivot_rows.clear();
+        self.factors.reset(size);
         self.pivot_columns.clear();
-        self.pivots.clear();
         self.delayed.clear();
-        self.lower.truncate(0);
-        self.upper.truncate(0);
         self.outer.truncate(0);
         for column in 0..own {
             self.eliminate(node, values, column)?;
         }
         self.update_rows.clear();
         self.update_rows
-            .extend((0..own).filter(|&row| self.steps[row] == NONE));
+            .extend((0..own).filter(|&row| self.factors.positions[row] == NONE));
         debug_assert_eq!(
             self.update_rows.len(),
             self.delayed.len(),
@@ -625,25 +564,8 @@ impl<T: Scalar> Interior<T> {
         for index in 0..width {
             let column = self.update_column(index, own);
             let entries = frame_column(node, column);
-            self.find_reach(entries);
-            for &(row, slot) in entries {
-                self.work[row] = values[slot];
-            }
-            self.outer.reserve(self.reach.len())?;
-            for &row in self.reach.iter().rev() {
-                let step = self.steps[row];
-                if step == NONE {
-                    continue;
-                }
-                let multiplier = self.work[row];
-                self.work[row] = T::ZERO;
-                self.outer.push(step, multiplier);
-                let (indices, factors) = self.lower.column(step);
-                for (&index, &factor) in indices.iter().zip(factors) {
-                    self.work[index] -= factor * multiplier;
-                }
-            }
-            self.outer.close();
+            self.factors.scatter_and_solve(entries, values, own + index);
+            self.factors.store_upper_into(&mut self.outer)?;
             self.gather(index);
         }
         self.delayed_rows.clear();
@@ -663,58 +585,15 @@ impl<T: Scalar> Interior<T> {
     /// matched with the column, else on its own row of the largest magnitude, if either
     /// reaches the threshold, and else delaying it.
     fn eliminate(&mut self, node: &Node, values: &[T], column: usize) -> Result<(), LinearError> {
-        let own = node.size();
         let entries = node.columns.of(column);
-        self.find_reach(entries);
-        for &(row, slot) in entries {
-            self.work[row] = values[slot];
-        }
-        self.push_reach();
-        let (mut largest, mut best, mut chosen) = (0.0, 0.0, NONE);
-        for &row in self.reach.iter().rev() {
-            if self.steps[row] == NONE {
-                let magnitude = self.work[row].magnitude();
-                largest = f64::max(largest, magnitude);
-                if row < own && magnitude > best {
-                    (best, chosen) = (magnitude, row);
-                }
-            }
-        }
-        let least = PIVOT_TOLERANCE * largest;
-        // The ordering expects the row it matched with this column as the pivot.
-        let diagonal = self.work[column].magnitude();
-        if self.steps[column] == NONE && diagonal > 0.0 && diagonal >= least {
-            chosen = column;
-        } else if chosen == NONE || best < least {
-            for &row in &self.reach {
-                self.work[row] = T::ZERO;
-            }
+        let step = self.factors.pivots.len();
+        let found = self.factors.eliminate_column(entries, values, (column, step, node.size()))?;
+        let Some((chosen, pivot)) = found else {
             self.delayed.push(column);
             return Ok(());
-        }
-        self.upper.reserve(self.reach.len())?;
-        self.lower.reserve(self.reach.len())?;
-        let step = self.pivots.len();
-        for &row in self.reach.iter().rev() {
-            let earlier = self.steps[row];
-            if earlier != NONE {
-                self.upper.push(earlier, self.work[row]);
-                self.work[row] = T::ZERO;
-            }
-        }
-        let pivot = self.work[chosen];
-        self.work[chosen] = T::ZERO;
-        self.steps[chosen] = step;
-        for &row in &self.reach {
-            if self.steps[row] == NONE {
-                self.lower.push(row, self.work[row] / pivot);
-                self.work[row] = T::ZERO;
-            }
-        }
-        self.lower.close();
-        self.upper.close();
-        self.pivots.push(pivot);
-        self.pivot_rows.push(chosen);
+        };
+        self.factors.pivots.push(pivot);
+        self.factors.pivot_rows.push(chosen);
         self.pivot_columns.push(column);
         Ok(())
     }
@@ -734,64 +613,8 @@ impl<T: Scalar> Interior<T> {
         let width = self.update_rows.len();
         let column = &mut self.update[index * width..(index + 1) * width];
         for (value, &row) in column.iter_mut().zip(&self.update_rows) {
-            *value = self.work[row];
-            self.work[row] = T::ZERO;
-        }
-    }
-
-    /// Eliminates, from the column being eliminated, each pivot its reach holds, in the
-    /// reach's reverse order.
-    fn push_reach(&mut self) {
-        for &row in self.reach.iter().rev() {
-            let step = self.steps[row];
-            if step == NONE {
-                continue;
-            }
-            let multiplier = self.work[row];
-            let (indices, factors) = self.lower.column(step);
-            for (&index, &factor) in indices.iter().zip(factors) {
-                self.work[index] -= factor * multiplier;
-            }
-        }
-    }
-
-    /// Finds the rows of the column of the frame whose entries are `entries` once the steps
-    /// so far eliminate it: those of its entries and every row an entry of `L` reaches from
-    /// them, in `reach`.
-    fn find_reach(&mut self, entries: &[(usize, usize)]) {
-        self.stamp += 1;
-        let stamp = self.stamp;
-        self.reach.clear();
-        for &(start, _) in entries {
-            if self.marks[start] == stamp {
-                continue;
-            }
-            self.marks[start] = stamp;
-            self.visits.push((start, self.first_entry(start)));
-            while let Some(visit) = self.visits.last_mut() {
-                let (row, entry) = *visit;
-                let step = self.steps[row];
-                if step != NONE && entry < self.lower.starts[step + 1] {
-                    visit.1 += 1;
-                    let next = self.lower.indices[entry];
-                    if self.marks[next] != stamp {
-                        self.marks[next] = stamp;
-                        let first = self.first_entry(next);
-                        self.visits.push((next, first));
-                    }
-                } else {
-                    self.visits.pop();
-                    self.reach.push(row);
-                }
-            }
-        }
-    }
-
-    /// Where the entries of `L` to follow from `row` start: its step's, if it is a pivot.
-    fn first_entry(&self, row: usize) -> usize {
-        match self.steps[row] {
-            NONE => 0,
-            step => self.lower.starts[step],
+            *value = self.factors.work[row];
+            self.factors.work[row] = T::ZERO;
         }
     }
 
@@ -799,65 +622,31 @@ impl<T: Scalar> Interior<T> {
     /// pivots. Returns whether every pivot reaches the threshold; the factors are those of
     /// a search that chose them.
     fn refactor(&mut self, node: &Node, values: &[T]) -> bool {
-        for step in 0..self.pivots.len() {
-            for &(row, slot) in node.columns.of(self.pivot_columns[step]) {
-                self.work[row] = values[slot];
-            }
-            for entry in self.upper.starts[step]..self.upper.starts[step + 1] {
-                let earlier = self.upper.indices[entry];
-                let row = self.pivot_rows[earlier];
-                let multiplier = self.work[row];
-                self.work[row] = T::ZERO;
-                self.upper.values[entry] = multiplier;
-                let (indices, factors) = self.lower.column(earlier);
-                for (&index, &factor) in indices.iter().zip(factors) {
-                    self.work[index] -= factor * multiplier;
-                }
-            }
-            let row = self.pivot_rows[step];
-            let pivot = self.work[row];
-            self.work[row] = T::ZERO;
-            let below = self.lower.starts[step]..self.lower.starts[step + 1];
-            let largest = self.lower.indices[below.clone()]
-                .iter()
-                .map(|&index| self.work[index].magnitude())
-                .fold(0.0, f64::max);
-            let magnitude = pivot.magnitude();
-            let passes = magnitude > 0.0 && magnitude >= PIVOT_TOLERANCE * largest;
-            for entry in below {
-                let index = self.lower.indices[entry];
-                self.lower.values[entry] = self.work[index] / pivot;
-                self.work[index] = T::ZERO;
-            }
-            if !passes {
+        for step in 0..self.factors.pivots.len() {
+            let entries = node.columns.of(self.pivot_columns[step]);
+            let Some(pivot) = self.factors.refactor_column(entries, values, step) else {
                 return false;
-            }
-            self.pivots[step] = pivot;
+            };
+            self.factors.pivots[step] = pivot;
         }
         let own = node.size();
         for index in 0..self.update_rows.len() {
-            for &(row, slot) in frame_column(node, self.update_column(index, own)) {
-                self.work[row] = values[slot];
-            }
-            for entry in self.outer.starts[index]..self.outer.starts[index + 1] {
-                let step = self.outer.indices[entry];
-                let row = self.pivot_rows[step];
-                let multiplier = self.work[row];
-                self.work[row] = T::ZERO;
-                self.outer.values[entry] = multiplier;
-                let (indices, factors) = self.lower.column(step);
-                for (&index, &factor) in indices.iter().zip(factors) {
-                    self.work[index] -= factor * multiplier;
-                }
-            }
+            let entries = frame_column(node, self.update_column(index, own));
+            self.outer.replay(
+                (entries, values),
+                (&self.factors.pivot_rows, &self.factors.lower),
+                &mut self.factors.work,
+                index,
+            );
             self.gather(index);
         }
         true
     }
 
-    /// The pass up of a solve: from the right-hand side by row in `given`, each step's
-    /// value, and the values of its update's rows for its parent.
-    fn forward(&self, node: &Node, given: &[T], space: &mut Scratch<T>) {
+    /// The pass up of a solve (or transposed solve when `transposed`): from the right-hand
+    /// side in `given`, each step's value, and the values of its update's rows (or columns)
+    /// for its parent.
+    fn forward(&self, node: &Node, given: &[T], space: &mut Scratch<T>, transposed: bool) {
         let own = node.size();
         let Scratch {
             frame, steps, up, ..
@@ -866,89 +655,55 @@ impl<T: Scalar> Interior<T> {
         frame.extend_from_slice(&given[node.own..node.end]);
         frame.resize(own + node.border.len(), T::ZERO);
         steps.clear();
-        for (step, &row) in self.pivot_rows.iter().enumerate() {
-            let value = frame[row];
-            steps.push(value);
-            let (indices, factors) = self.lower.column(step);
-            for (&index, &factor) in indices.iter().zip(factors) {
-                frame[index] -= factor * value;
-            }
-        }
         up.clear();
-        up.extend(self.update_rows.iter().map(|&row| frame[row]));
+        if transposed {
+            for step in 0..self.factors.pivots.len() {
+                let rhs = frame[self.pivot_columns[step]];
+                let value = self.factors.upper.subtract_dot(step, rhs, steps);
+                steps.push(value / self.factors.pivots[step]);
+            }
+            for index in 0..self.update_rows.len() {
+                let rhs = frame[self.update_column(index, own)];
+                up.push(self.outer.subtract_dot(index, rhs, steps));
+            }
+        } else {
+            for (step, &row) in self.factors.pivot_rows.iter().enumerate() {
+                let value = frame[row];
+                steps.push(value);
+                self.factors.lower.subtract(step, value, frame);
+            }
+            up.extend(self.update_rows.iter().map(|&row| frame[row]));
+        }
     }
 
-    /// The pass down of a solve: from the values of its update's columns its parent left,
-    /// the solution at its own columns, in `solution`, its subtree's.
-    fn backward(&self, node: &Node, space: &mut Scratch<T>, solution: &mut [T]) {
-        let Scratch { steps, down, .. } = space;
-        for index in (0..down.len()).rev() {
-            let value = down[index];
-            let (indices, factors) = self.outer.column(index);
-            for (&step, &factor) in indices.iter().zip(factors) {
-                steps[step] -= factor * value;
-            }
-        }
+    /// The pass down of a solve (or transposed solve when `transposed`): from the values of
+    /// its update its parent left, the solution at its own columns (or rows) in `solution`,
+    /// its subtree's.
+    fn backward(&self, node: &Node, space: &mut Scratch<T>, solution: &mut [T], transposed: bool) {
         let offset = node.own - node.first;
-        for step in (0..self.pivots.len()).rev() {
-            let value = steps[step] / self.pivots[step];
-            solution[offset + self.pivot_columns[step]] = value;
-            let (indices, factors) = self.upper.column(step);
-            for (&earlier, &factor) in indices.iter().zip(factors) {
-                steps[earlier] -= factor * value;
+        if transposed {
+            let Scratch {
+                frame, steps, down, ..
+            } = space;
+            for (&row, &value) in self.update_rows.iter().zip(down.iter()) {
+                frame[row] = value;
             }
-        }
-    }
-
-    /// The pass up of a transposed solve: from the right-hand side by column in `given`,
-    /// each step's value, and the values of its update's columns for its parent.
-    fn forward_transposed(&self, node: &Node, given: &[T], space: &mut Scratch<T>) {
-        let own = node.size();
-        let Scratch {
-            frame, steps, up, ..
-        } = space;
-        frame.clear();
-        frame.extend_from_slice(&given[node.own..node.end]);
-        frame.resize(own + node.border.len(), T::ZERO);
-        steps.clear();
-        for step in 0..self.pivots.len() {
-            let mut value = frame[self.pivot_columns[step]];
-            let (indices, factors) = self.upper.column(step);
-            for (&earlier, &factor) in indices.iter().zip(factors) {
-                value -= factor * steps[earlier];
+            for step in (0..self.factors.pivots.len()).rev() {
+                let value = self.factors.lower.subtract_dot(step, steps[step], frame);
+                let row = self.factors.pivot_rows[step];
+                frame[row] = value;
+                solution[offset + row] = value;
             }
-            steps.push(value / self.pivots[step]);
-        }
-        up.clear();
-        for index in 0..self.update_rows.len() {
-            let mut value = frame[self.update_column(index, own)];
-            let (indices, factors) = self.outer.column(index);
-            for (&step, &factor) in indices.iter().zip(factors) {
-                value -= factor * steps[step];
+        } else {
+            let Scratch { steps, down, .. } = space;
+            for index in (0..down.len()).rev() {
+                self.outer.subtract(index, down[index], steps);
             }
-            up.push(value);
-        }
-    }
-
-    /// The pass down of a transposed solve: from the values of its update's rows its parent
-    /// left, the solution at its own rows, in `solution`, its subtree's.
-    fn backward_transposed(&self, node: &Node, space: &mut Scratch<T>, solution: &mut [T]) {
-        let Scratch {
-            frame, steps, down, ..
-        } = space;
-        for (&row, &value) in self.update_rows.iter().zip(down.iter()) {
-            frame[row] = value;
-        }
-        let offset = node.own - node.first;
-        for step in (0..self.pivots.len()).rev() {
-            let mut value = steps[step];
-            let (indices, factors) = self.lower.column(step);
-            for (&index, &factor) in indices.iter().zip(factors) {
-                value -= factor * frame[index];
+            for step in (0..self.factors.pivots.len()).rev() {
+                let value = steps[step] / self.factors.pivots[step];
+                solution[offset + self.pivot_columns[step]] = value;
+                self.factors.upper.subtract(step, value, steps);
             }
-            let row = self.pivot_rows[step];
-            frame[row] = value;
-            solution[offset + row] = value;
         }
     }
 }
@@ -976,6 +731,27 @@ enum Operation {
     Pivot(usize),
     /// It delayed the column, swapped with the last not yet eliminated, at this slot.
     Delay(usize),
+}
+
+/// Replays the row (`rows = true`) or column (`rows = false`) swaps recorded in
+/// `operations` onto `values`.
+fn replay_swaps<U>(operations: &[Operation], values: &mut [U], rows: bool) {
+    let mut step = 0;
+    for &operation in operations {
+        match operation {
+            Operation::Pivot(row) => {
+                if rows {
+                    values.swap(step, row);
+                }
+                step += 1;
+            }
+            Operation::Delay(other) => {
+                if !rows {
+                    values.swap(step, other);
+                }
+            }
+        }
+    }
 }
 
 /// The factors of a separator: its frame, dense, its own rows and those its children
@@ -1213,18 +989,23 @@ impl<T: Scalar> Front<T> {
         (step, true)
     }
 
-    /// What to do with the frame's column `step`, all its earlier steps taken in, the
-    /// columns from `left` on delayed: pivot on the row the ordering matched with it, if it
-    /// reaches the threshold, else on the row of the largest magnitude that may be pivoted,
-    /// if it does, and else delay it.
-    fn choose(&self, step: usize, left: usize) -> Operation {
+    /// The frame's `step` column and the least pivot magnitude it requires.
+    fn column_threshold(&self, step: usize) -> (&[T], f64) {
         let size = self.rows.len();
         let column = &self.frame[step * size..(step + 1) * size];
         let largest = column[step..]
             .iter()
             .map(|value| value.magnitude())
             .fold(0.0, f64::max);
-        let least = PIVOT_TOLERANCE * largest;
+        (column, PIVOT_TOLERANCE * largest)
+    }
+
+    /// What to do with the frame's column `step`, all its earlier steps taken in, the
+    /// columns from `left` on delayed: pivot on the row the ordering matched with it, if it
+    /// reaches the threshold, else on the row of the largest magnitude that may be pivoted,
+    /// if it does, and else delay it.
+    fn choose(&self, step: usize, left: usize) -> Operation {
+        let (column, least) = self.column_threshold(step);
         let (mut best, mut chosen, mut diagonal) = (0.0, NONE, NONE);
         for (row, value) in column.iter().enumerate().take(self.fully).skip(step) {
             let magnitude = value.magnitude();
@@ -1250,14 +1031,9 @@ impl<T: Scalar> Front<T> {
     /// Whether the pivot of `step` reaches the threshold: at least a tenth of the largest
     /// magnitude in its column from its diagonal down, and not zero.
     fn holds(&self, step: usize) -> bool {
-        let size = self.rows.len();
-        let column = &self.frame[step * size..(step + 1) * size];
-        let largest = column[step..]
-            .iter()
-            .map(|value| value.magnitude())
-            .fold(0.0, f64::max);
+        let (column, least) = self.column_threshold(step);
         let magnitude = column[step].magnitude();
-        magnitude > 0.0 && magnitude >= PIVOT_TOLERANCE * largest
+        magnitude > 0.0 && magnitude >= least
     }
 
     /// Divides the frame's column `step` below its diagonal by its pivot: `L`'s column.
@@ -1315,22 +1091,7 @@ impl<T: Scalar> Front<T> {
         for (slots, rows) in [(&mut self.row_slots, true), (&mut self.column_slots, false)] {
             self.origins.clear();
             self.origins.extend(0..size);
-            let mut step = 0;
-            for &operation in &self.operations {
-                match operation {
-                    Operation::Pivot(row) => {
-                        if rows {
-                            self.origins.swap(step, row);
-                        }
-                        step += 1;
-                    }
-                    Operation::Delay(other) => {
-                        if !rows {
-                            self.origins.swap(step, other);
-                        }
-                    }
-                }
-            }
+            replay_swaps(&self.operations, &mut self.origins, rows);
             slots.clear();
             slots.resize(size, 0);
             for (slot, &assembled) in self.origins.iter().enumerate() {
@@ -1362,14 +1123,16 @@ impl<T: Scalar> Front<T> {
         self.columns.swap(one, other);
     }
 
-    /// The pass up of a solve: from the right-hand side by row in `given` and its
-    /// children's values, each step's value, and the values of its update's rows.
+    /// The pass up of a solve (or transposed solve when `transposed`): from the right-hand
+    /// side in `given` and its children's values, each step's value, and the values of its
+    /// update's rows (or columns).
     fn forward(
         &self,
         node: &Node,
         given: &[T],
         space: &mut Scratch<T>,
         (parts, below, base): (&[Part<T>], &[Scratch<T>], usize),
+        transposed: bool,
     ) {
         let size = self.rows.len();
         let own = node.size();
@@ -1389,35 +1152,45 @@ impl<T: Scalar> Front<T> {
             }
             offset += part.delayed_rows().len();
         }
-        // Each step swapped its rows across the whole frame, so `L`'s rows are in the
-        // order of the last: the right-hand side takes every swap first.
-        let mut step = 0;
-        for &operation in &self.operations {
-            if let Operation::Pivot(row) = operation {
-                frame.swap(step, row);
-                step += 1;
+        // Each step swapped its rows (or delayed columns) across the whole frame, so the
+        // right-hand side takes every swap first.
+        replay_swaps(&self.operations, frame, !transposed);
+        if transposed {
+            for column in 0..size {
+                let entries = &self.frame[column * size..column * size + column.min(self.steps)];
+                let mut value = frame[column];
+                for (&factor, &earlier) in entries.iter().zip(frame.iter()) {
+                    value -= factor * earlier;
+                }
+                frame[column] = if column < self.steps {
+                    value / self.frame[column * size + column]
+                } else {
+                    value
+                };
             }
-        }
-        for step in 0..self.steps {
-            let value = frame[step];
-            let multipliers = &self.frame[step * size + step + 1..(step + 1) * size];
-            for (target, &factor) in frame[step + 1..].iter_mut().zip(multipliers) {
-                *target -= factor * value;
+        } else {
+            for step in 0..self.steps {
+                let value = frame[step];
+                let multipliers = &self.frame[step * size + step + 1..(step + 1) * size];
+                for (target, &factor) in frame[step + 1..].iter_mut().zip(multipliers) {
+                    *target -= factor * value;
+                }
             }
         }
         up.clear();
         up.extend_from_slice(&frame[self.steps..]);
     }
 
-    /// The pass down of a solve: from the values of its update's columns its parent left,
-    /// the solution at its columns, in `solution`, its subtree's, and the values of its
-    /// children's updates' columns.
+    /// The pass down of a solve (or transposed solve when `transposed`): from the values of
+    /// its update its parent left, the solution at its columns (or rows) in `solution`, its
+    /// subtree's, and the values of its children's updates.
     fn backward(
         &self,
         node: &Node,
         space: &mut Scratch<T>,
         (parts, below): (&[Part<T>], &mut [Scratch<T>]),
         solution: &mut [T],
+        transposed: bool,
     ) {
         let size = self.rows.len();
         let Scratch {
@@ -1426,25 +1199,41 @@ impl<T: Scalar> Front<T> {
         steps.clear();
         steps.resize(self.steps, T::ZERO);
         steps.extend_from_slice(down);
-        for column in (self.steps..size).rev() {
-            let value = steps[column];
-            let entries = &self.frame[column * size..column * size + self.steps];
-            for (target, &factor) in frame.iter_mut().zip(entries) {
-                *target -= factor * value;
+        if transposed {
+            for step in (0..self.steps).rev() {
+                let mut value = frame[step];
+                let entries = &self.frame[step * size + step + 1..(step + 1) * size];
+                for (&factor, &later) in entries.iter().zip(&steps[step + 1..]) {
+                    value -= factor * later;
+                }
+                steps[step] = value;
+            }
+        } else {
+            for column in (self.steps..size).rev() {
+                let value = steps[column];
+                let entries = &self.frame[column * size..column * size + self.steps];
+                for (target, &factor) in frame.iter_mut().zip(entries) {
+                    *target -= factor * value;
+                }
+            }
+            for step in (0..self.steps).rev() {
+                let value = frame[step] / self.frame[step * size + step];
+                steps[step] = value;
+                let entries = &self.frame[step * size..step * size + step];
+                for (target, &factor) in frame.iter_mut().zip(entries) {
+                    *target -= factor * value;
+                }
             }
         }
-        for step in (0..self.steps).rev() {
-            let value = frame[step] / self.frame[step * size + step];
-            steps[step] = value;
-            let entries = &self.frame[step * size..step * size + step];
-            for (target, &factor) in frame.iter_mut().zip(entries) {
-                *target -= factor * value;
-            }
-        }
-        for (&position, &value) in self.columns.iter().zip(steps.iter()).take(self.steps) {
+        let (positions, slots) = if transposed {
+            (&self.rows, &self.row_slots)
+        } else {
+            (&self.columns, &self.column_slots)
+        };
+        for (&position, &value) in positions.iter().zip(steps.iter()).take(self.steps) {
             solution[position - node.first] = value;
         }
-        self.pass_down(node, (parts, below), steps, &self.column_slots);
+        self.pass_down(node, (parts, below), steps, slots);
     }
 
     /// Leaves each child the values of its update's rows or columns, from `values`, by slot
@@ -1470,86 +1259,5 @@ impl<T: Scalar> Front<T> {
             );
             offset += part.delayed_rows().len();
         }
-    }
-
-    /// The pass up of a transposed solve: from the right-hand side by column in `given` and
-    /// its children's values, each step's value, and the values of its update's columns.
-    fn forward_transposed(
-        &self,
-        node: &Node,
-        given: &[T],
-        space: &mut Scratch<T>,
-        (parts, below, base): (&[Part<T>], &[Scratch<T>], usize),
-    ) {
-        let size = self.rows.len();
-        let own = node.size();
-        let delayed_in = self.fully - own;
-        let Scratch { frame, up, .. } = space;
-        frame.clear();
-        frame.extend_from_slice(&given[node.own..node.end]);
-        frame.resize(size, T::ZERO);
-        let mut offset = own;
-        for (which, &child) in node.children.iter().enumerate() {
-            let part = &parts[child];
-            let values = &below[child - base].up;
-            for (slot, &value) in
-                Self::child_slots(node, (part, which), offset, delayed_in).zip(values.iter())
-            {
-                frame[slot] += value;
-            }
-            offset += part.delayed_rows().len();
-        }
-        let mut step = 0;
-        for &operation in &self.operations {
-            match operation {
-                Operation::Pivot(_) => step += 1,
-                Operation::Delay(other) => frame.swap(step, other),
-            }
-        }
-        for column in 0..size {
-            let entries = &self.frame[column * size..column * size + column.min(self.steps)];
-            let mut value = frame[column];
-            for (&factor, &earlier) in entries.iter().zip(frame.iter()) {
-                value -= factor * earlier;
-            }
-            frame[column] = if column < self.steps {
-                value / self.frame[column * size + column]
-            } else {
-                value
-            };
-        }
-        up.clear();
-        up.extend_from_slice(&frame[self.steps..]);
-    }
-
-    /// The pass down of a transposed solve: from the values of its update's rows its parent
-    /// left, the solution at its rows, in `solution`, its subtree's, and the values of its
-    /// children's updates' rows.
-    fn backward_transposed(
-        &self,
-        node: &Node,
-        space: &mut Scratch<T>,
-        (parts, below): (&[Part<T>], &mut [Scratch<T>]),
-        solution: &mut [T],
-    ) {
-        let size = self.rows.len();
-        let Scratch {
-            frame, steps, down, ..
-        } = space;
-        steps.clear();
-        steps.resize(self.steps, T::ZERO);
-        steps.extend_from_slice(down);
-        for step in (0..self.steps).rev() {
-            let mut value = frame[step];
-            let entries = &self.frame[step * size + step + 1..(step + 1) * size];
-            for (&factor, &later) in entries.iter().zip(&steps[step + 1..]) {
-                value -= factor * later;
-            }
-            steps[step] = value;
-        }
-        for (&position, &value) in self.rows.iter().zip(steps.iter()).take(self.steps) {
-            solution[position - node.first] = value;
-        }
-        self.pass_down(node, (parts, below), steps, &self.row_slots);
     }
 }

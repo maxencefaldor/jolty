@@ -10,6 +10,12 @@ use jolty_models::{Branch, Node};
 /// University of California, Berkeley, 1975).
 pub(crate) const REFERENCE: usize = 0;
 
+/// The most nets or instances a diagnostic names before it counts the rest.
+///
+/// Origin: jolty's own diagnostic formatting cap shared across structural and
+/// operating-point rules.
+pub(crate) const NAMED: usize = 5;
+
 /// The nodes of an elaborated circuit and the devices that join them.
 ///
 /// Nodes are numbered from the reference, at [`REFERENCE`], then one per unknown in the
@@ -98,6 +104,15 @@ pub(crate) fn index(node: Node) -> usize {
 pub(crate) fn ends(device: &Placed, branch: Branch) -> (usize, usize) {
     let nodes = device.nodes();
     (index(nodes[branch.from]), index(nodes[branch.to]))
+}
+
+/// Chooses `singular` when `count == 1`, and `many` otherwise.
+pub(crate) const fn plural(
+    count: usize,
+    singular: &'static str,
+    many: &'static str,
+) -> &'static str {
+    if count == 1 { singular } else { many }
 }
 
 /// Names in backticks, joined as prose: `` `a` ``, `` `a` and `b` ``, `` `a`, `b` and `c` ``;

@@ -13,13 +13,8 @@ use rayon::prelude::*;
 
 use super::ordering::RowsAbove;
 use super::tree::Tree;
-use super::{LinearError, Ordering, Scalar, Workspace};
+use super::{LinearError, NONE, Ordering, Scalar, Workspace};
 use crate::reduce::{self, CHUNK};
-
-/// No index: a row not yet a pivot, a row not yet visited.
-///
-/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index.
-const NONE: usize = usize::MAX;
 
 /// The least fraction of the largest candidate in its column that a pivot is: a
 /// factorization takes the ordering's diagonal entry as the pivot when it reaches this
@@ -42,11 +37,11 @@ pub(super) const PIVOT_TOLERANCE: f64 = 0.1;
 #[derive(Clone)]
 pub(super) struct Triangle<T> {
     /// Where each column's entries start, then their number.
-    pub(super) starts: Vec<usize>,
+    starts: Vec<usize>,
     /// Each entry's index: a row of the ordered matrix in `L`, a position in `U`.
-    pub(super) indices: Vec<usize>,
+    indices: Vec<usize>,
     /// Each entry's value.
-    pub(super) values: Vec<T>,
+    values: Vec<T>,
 }
 
 impl<T: Scalar> Triangle<T> {
@@ -60,10 +55,39 @@ impl<T: Scalar> Triangle<T> {
         }
     }
 
+    /// The number of stored entries.
+    pub(super) fn entries(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Whether `self` and `other` hold the same sparsity pattern.
+    pub(super) fn pattern_eq(&self, other: &Self) -> bool {
+        self.starts == other.starts && self.indices == other.indices
+    }
+
     /// The indices and values of `column`'s entries.
-    pub(super) fn column(&self, column: usize) -> (&[usize], &[T]) {
+    fn column(&self, column: usize) -> (&[usize], &[T]) {
         let range = self.starts[column]..self.starts[column + 1];
         (&self.indices[range.clone()], &self.values[range])
+    }
+
+    /// Subtracts `multiplier` times `column` from `target`.
+    #[inline]
+    pub(super) fn subtract(&self, column: usize, multiplier: T, target: &mut [T]) {
+        let (indices, factors) = self.column(column);
+        for (&index, &factor) in indices.iter().zip(factors) {
+            target[index] -= factor * multiplier;
+        }
+    }
+
+    /// Returns `value` minus the dot product of `column` with `source`.
+    #[inline]
+    pub(super) fn subtract_dot(&self, column: usize, mut value: T, source: &[T]) -> T {
+        let (indices, factors) = self.column(column);
+        for (&index, &factor) in indices.iter().zip(factors) {
+            value -= factor * source[index];
+        }
+        value
     }
 
     /// Keeps the first `columns` columns.
@@ -75,21 +99,290 @@ impl<T: Scalar> Triangle<T> {
     }
 
     /// Makes room for `additional` more entries.
-    pub(super) fn reserve(&mut self, additional: usize) -> Result<(), LinearError> {
+    fn reserve(&mut self, additional: usize) -> Result<(), LinearError> {
         self.indices.try_reserve(additional)?;
         self.values.try_reserve(additional)?;
         Ok(())
     }
 
     /// Adds an entry to the column being built.
-    pub(super) fn push(&mut self, index: usize, value: T) {
+    fn push(&mut self, index: usize, value: T) {
         self.indices.push(index);
         self.values.push(value);
     }
 
     /// Closes the column being built.
-    pub(super) fn close(&mut self) {
+    fn close(&mut self) {
         self.starts.push(self.indices.len());
+    }
+
+    /// Moves the pivoted entries of `reach` from `work` into `self` in reverse postorder.
+    fn drain_pivoted(&mut self, reach: &[usize], positions: &[usize], work: &mut [T]) {
+        for &row in reach.iter().rev() {
+            let earlier = positions[row];
+            if earlier != NONE {
+                self.push(earlier, work[row]);
+                work[row] = T::ZERO;
+            }
+        }
+    }
+
+    /// Scatters `entries` from `values` into `work` and replays `column` of `self` through
+    /// `lower` and `pivot_rows`, overwriting `self.values` and clearing each replayed pivot
+    /// row in `work`.
+    pub(super) fn replay(
+        &mut self,
+        (entries, values): (&[(usize, usize)], &[T]),
+        (pivot_rows, lower): (&[usize], &Self),
+        work: &mut [T],
+        column: usize,
+    ) {
+        for &(row, slot) in entries {
+            work[row] = values[slot];
+        }
+        for entry in self.starts[column]..self.starts[column + 1] {
+            let earlier = self.indices[entry];
+            let row = pivot_rows[earlier];
+            let multiplier = work[row];
+            work[row] = T::ZERO;
+            self.values[entry] = multiplier;
+            lower.subtract(earlier, multiplier, work);
+        }
+    }
+}
+
+/// Column-by-column sparse `L U` factors and Gilbert-Peierls elimination workspace, shared
+/// by full diagonal blocks ([`Numeric`]) and dissected interiors.
+#[derive(Clone)]
+pub(super) struct ColumnFactors<T> {
+    /// The row pivoted at each step or position.
+    pub(super) pivot_rows: Vec<usize>,
+    /// The step or position whose pivot each row is, or [`NONE`].
+    pub(super) positions: Vec<usize>,
+    /// `L` below its unit diagonal.
+    pub(super) lower: Triangle<T>,
+    /// `U` above its diagonal, each column's entries in the order of their eliminations.
+    pub(super) upper: Triangle<T>,
+    /// The diagonal of `U`: the pivots.
+    pub(super) pivots: Vec<T>,
+    /// The column being eliminated, by row: zero outside it.
+    pub(super) work: Vec<T>,
+    /// The stamp of the search that last visited each row.
+    marks: Vec<usize>,
+    /// The rows being visited by the search, each with its next entry of `L` to follow.
+    visits: Vec<(usize, usize)>,
+    /// The rows of the column being eliminated, in an order whose reverse puts every row
+    /// after each row whose elimination changes it.
+    reach: Vec<usize>,
+}
+
+impl<T: Scalar> ColumnFactors<T> {
+    /// Allocates empty factors and workspace for `dimension` rows and columns.
+    pub(super) fn new(dimension: usize) -> Self {
+        Self {
+            pivot_rows: vec![NONE; dimension],
+            positions: vec![NONE; dimension],
+            lower: Triangle::new(dimension),
+            upper: Triangle::new(dimension),
+            pivots: vec![T::ZERO; dimension],
+            work: vec![T::ZERO; dimension],
+            marks: vec![NONE; dimension],
+            visits: Vec::with_capacity(dimension),
+            reach: Vec::with_capacity(dimension),
+        }
+    }
+
+    /// Resets the factors and workspace for a fresh search over `size` frame rows.
+    pub(super) fn reset(&mut self, size: usize) {
+        self.positions.clear();
+        self.positions.resize(size, NONE);
+        self.work.clear();
+        self.work.resize(size, T::ZERO);
+        self.marks.clear();
+        self.marks.resize(size, NONE);
+        self.pivot_rows.clear();
+        self.pivots.clear();
+        self.lower.truncate(0);
+        self.upper.truncate(0);
+    }
+
+    /// Whether `self` and `other` hold the same pivot rows and triangular sparsity patterns.
+    pub(super) fn patterns_alike(&self, other: &Self) -> bool {
+        self.pivot_rows == other.pivot_rows
+            && self.lower.pattern_eq(&other.lower)
+            && self.upper.pattern_eq(&other.upper)
+    }
+
+    /// The number of entries of `L` below its diagonal and of `U` on and above it.
+    pub(super) fn entries(&self) -> usize {
+        let pivoted = self.pivot_rows.iter().filter(|&&row| row != NONE).count();
+        self.lower.entries() + self.upper.entries() + pivoted
+    }
+
+    /// Leaves the column being eliminated zero.
+    fn clear_reach(&mut self) {
+        for &row in &self.reach {
+            self.work[row] = T::ZERO;
+        }
+    }
+
+    /// Finds the reach of `entries` under `stamp`, scatters `values` into `work`, and
+    /// eliminates every earlier pivot in reverse postorder.
+    pub(super) fn scatter_and_solve(
+        &mut self,
+        entries: &[(usize, usize)],
+        values: &[T],
+        stamp: usize,
+    ) {
+        self.find_reach(entries, stamp);
+        for &(row, slot) in entries {
+            self.work[row] = values[slot];
+        }
+        for &row in self.reach.iter().rev() {
+            let position = self.positions[row];
+            if position != NONE {
+                let multiplier = self.work[row];
+                self.lower.subtract(position, multiplier, &mut self.work);
+            }
+        }
+    }
+
+    /// Drains the pivoted rows of `reach` from `work` into `target` in reverse postorder
+    /// and closes the column.
+    pub(super) fn store_upper_into(&mut self, target: &mut Triangle<T>) -> Result<(), LinearError> {
+        if let Err(error) = target.reserve(self.reach.len()) {
+            self.clear_reach();
+            return Err(error);
+        }
+        target.drain_pivoted(&self.reach, &self.positions, &mut self.work);
+        target.close();
+        Ok(())
+    }
+
+    /// Eliminates `column` (with entries `entries` in `values`) into `step`, choosing a
+    /// pivot among rows below `allowed`. Returns `Ok(Some((pivot_row, pivot)))` when a
+    /// pivot meets [`PIVOT_TOLERANCE`], or `Ok(None)` (leaving `work` zero) when none does.
+    pub(super) fn eliminate_column(
+        &mut self,
+        entries: &[(usize, usize)],
+        values: &[T],
+        (column, step, allowed): (usize, usize, usize),
+    ) -> Result<Option<(usize, T)>, LinearError> {
+        self.scatter_and_solve(entries, values, column);
+        let (mut largest, mut best, mut chosen) = (0.0, 0.0, NONE);
+        for &row in self.reach.iter().rev() {
+            if self.positions[row] == NONE {
+                let magnitude = self.work[row].magnitude();
+                largest = f64::max(largest, magnitude);
+                if row < allowed && magnitude > best {
+                    (best, chosen) = (magnitude, row);
+                }
+            }
+        }
+        let least = PIVOT_TOLERANCE * largest;
+        // The ordering expects the row it matched with this column as the pivot.
+        let diagonal = self.work[column].magnitude();
+        let chosen = if self.positions[column] == NONE && diagonal > 0.0 && diagonal >= least {
+            column
+        } else if chosen != NONE && best >= least {
+            chosen
+        } else {
+            self.clear_reach();
+            return Ok(None);
+        };
+        if let Err(error) = self
+            .upper
+            .reserve(self.reach.len())
+            .and_then(|()| self.lower.reserve(self.reach.len()))
+        {
+            self.clear_reach();
+            return Err(error);
+        }
+        self.upper.drain_pivoted(&self.reach, &self.positions, &mut self.work);
+        let pivot = self.work[chosen];
+        self.work[chosen] = T::ZERO;
+        self.positions[chosen] = step;
+        for &row in &self.reach {
+            if self.positions[row] == NONE {
+                self.lower.push(row, self.work[row] / pivot);
+                self.work[row] = T::ZERO;
+            }
+        }
+        self.lower.close();
+        self.upper.close();
+        Ok(Some((chosen, pivot)))
+    }
+
+    /// Replays one already-pivoted column (`step`): scatters `entries`, eliminates against
+    /// `upper` and `lower`, scales `lower`'s column by the pivot while clearing `work`, and
+    /// returns `Some(pivot)` when it still meets [`PIVOT_TOLERANCE`].
+    pub(super) fn refactor_column(
+        &mut self,
+        entries: &[(usize, usize)],
+        values: &[T],
+        step: usize,
+    ) -> Option<T> {
+        self.upper.replay(
+            (entries, values),
+            (&self.pivot_rows, &self.lower),
+            &mut self.work,
+            step,
+        );
+        let row = self.pivot_rows[step];
+        let pivot = self.work[row];
+        self.work[row] = T::ZERO;
+        // The largest entry below the pivot, as each is divided by it.
+        let mut largest = 0.0;
+        let below = self.lower.starts[step]..self.lower.starts[step + 1];
+        for (&index, value) in self.lower.indices[below.clone()]
+            .iter()
+            .zip(&mut self.lower.values[below])
+        {
+            let entry = self.work[index];
+            largest = f64::max(largest, entry.magnitude());
+            *value = entry / pivot;
+            self.work[index] = T::ZERO;
+        }
+        let magnitude = pivot.magnitude();
+        (magnitude > 0.0 && magnitude >= PIVOT_TOLERANCE * largest).then_some(pivot)
+    }
+
+    /// Finds the rows reached from `entries` through `lower` under visit `stamp`, storing
+    /// them in `reach` in postorder.
+    fn find_reach(&mut self, entries: &[(usize, usize)], stamp: usize) {
+        self.reach.clear();
+        for &(start, _) in entries {
+            if self.marks[start] == stamp {
+                continue;
+            }
+            self.marks[start] = stamp;
+            self.visits.push((start, self.first_entry(start)));
+            while let Some(visit) = self.visits.last_mut() {
+                let (row, entry) = *visit;
+                let position = self.positions[row];
+                if position != NONE && entry < self.lower.starts[position + 1] {
+                    visit.1 += 1;
+                    let next = self.lower.indices[entry];
+                    if self.marks[next] != stamp {
+                        self.marks[next] = stamp;
+                        let first = self.first_entry(next);
+                        self.visits.push((next, first));
+                    }
+                } else {
+                    self.visits.pop();
+                    self.reach.push(row);
+                }
+            }
+        }
+    }
+
+    /// Where the entries of `L` to follow from `row` start: its pivot's column, if it is a
+    /// pivot.
+    fn first_entry(&self, row: usize) -> usize {
+        match self.positions[row] {
+            NONE => 0,
+            position => self.lower.starts[position],
+        }
     }
 }
 
@@ -112,27 +405,10 @@ pub(super) enum Factorization {
 pub(super) struct Numeric<T> {
     /// The factors of each dissected block, in the ordering's order.
     trees: Vec<Tree<T>>,
-    /// The row of the ordered matrix that is each position's pivot.
-    pivot_rows: Vec<usize>,
-    /// The position whose pivot each row of the ordered matrix is, or `NONE`.
-    positions: Vec<usize>,
-    /// `L` below its unit diagonal.
-    lower: Triangle<T>,
-    /// `U` above its diagonal, each column's entries in the order of their eliminations.
-    upper: Triangle<T>,
-    /// The diagonal of `U`: the pivots.
-    pivots: Vec<T>,
+    /// The column-by-column factors and workspace of the non-dissected blocks.
+    factors: ColumnFactors<T>,
     /// Whether every position has its pivot, so that a refactorization can keep them.
     complete: bool,
-    /// The column being eliminated, by row: zero outside it.
-    work: Vec<T>,
-    /// The column whose search last visited each row.
-    marks: Vec<usize>,
-    /// The rows being visited by the search, each with its next entry of `L` to follow.
-    visits: Vec<(usize, usize)>,
-    /// The rows of the column being eliminated, in an order whose reverse puts every row
-    /// after each row whose elimination changes it.
-    reach: Vec<usize>,
 }
 
 impl<T: Scalar> Numeric<T> {
@@ -141,16 +417,8 @@ impl<T: Scalar> Numeric<T> {
         let dimension = ordering.factored().dimension();
         Self {
             trees: ordering.dissections().iter().map(Tree::new).collect(),
-            pivot_rows: vec![NONE; dimension],
-            positions: vec![NONE; dimension],
-            lower: Triangle::new(dimension),
-            upper: Triangle::new(dimension),
-            pivots: vec![T::ZERO; dimension],
+            factors: ColumnFactors::new(dimension),
             complete: false,
-            work: vec![T::ZERO; dimension],
-            marks: vec![NONE; dimension],
-            visits: Vec::with_capacity(dimension),
-            reach: Vec::with_capacity(dimension),
         }
     }
 
@@ -173,11 +441,7 @@ impl<T: Scalar> Numeric<T> {
         match (self.complete, other.complete) {
             (false, false) => true,
             (true, true) => {
-                self.pivot_rows == other.pivot_rows
-                    && self.lower.starts == other.lower.starts
-                    && self.lower.indices == other.lower.indices
-                    && self.upper.starts == other.upper.starts
-                    && self.upper.indices == other.upper.indices
+                self.factors.patterns_alike(&other.factors)
                     && self
                         .trees
                         .iter()
@@ -197,8 +461,7 @@ impl<T: Scalar> Numeric<T> {
     /// The number of entries of `L` below its diagonal and of `U` on and above it.
     pub(super) fn entries(&self) -> usize {
         let dissected: usize = self.trees.iter().map(Tree::entries).sum();
-        let positions = self.pivot_rows.iter().filter(|&&row| row != NONE).count();
-        self.lower.indices.len() + self.upper.indices.len() + positions + dissected
+        self.factors.entries() + dissected
     }
 
     /// Factors the matrix of `ordering`'s pattern whose values are `values`, keeping the
@@ -223,24 +486,24 @@ impl<T: Scalar> Numeric<T> {
         self.complete = false;
         if let Some(first) = first {
             if afresh {
-                self.positions.fill(NONE);
+                self.factors.positions.fill(NONE);
             } else {
-                for &row in &self.pivot_rows[first..] {
+                for &row in &self.factors.pivot_rows[first..] {
                     if row != NONE {
-                        self.positions[row] = NONE;
+                        self.factors.positions[row] = NONE;
                     }
                 }
             }
-            self.lower.truncate(first);
-            self.upper.truncate(first);
-            self.marks.fill(NONE);
+            self.factors.lower.truncate(first);
+            self.factors.upper.truncate(first);
+            self.factors.marks.fill(NONE);
             for (block, range) in ordering.block_starts().windows(2).enumerate() {
                 let dissected = ordering.dissection(block).is_some();
                 for column in range[0].max(first)..range[1] {
                     if dissected {
-                        self.pivot_rows[column] = NONE;
-                        self.lower.close();
-                        self.upper.close();
+                        self.factors.pivot_rows[column] = NONE;
+                        self.factors.lower.close();
+                        self.factors.upper.close();
                     } else {
                         self.eliminate(ordering, values, column)?;
                     }
@@ -275,53 +538,16 @@ impl<T: Scalar> Numeric<T> {
     /// when every pivot reaches its tolerance, and else the first position whose pivot does
     /// not, the factors before it found.
     fn refactor(&mut self, ordering: &Ordering, values: &[T]) -> Option<usize> {
-        let Self {
-            work,
-            upper,
-            lower,
-            pivot_rows,
-            pivots,
-            ..
-        } = self;
         for (block, range) in ordering.block_starts().windows(2).enumerate() {
             if ordering.dissection(block).is_some() {
                 continue;
             }
             for column in range[0]..range[1] {
-                for &(row, slot) in ordering.within(column) {
-                    work[row] = values[slot];
-                }
-                for entry in upper.starts[column]..upper.starts[column + 1] {
-                    let position = upper.indices[entry];
-                    let row = pivot_rows[position];
-                    let multiplier = work[row];
-                    work[row] = T::ZERO;
-                    upper.values[entry] = multiplier;
-                    let (indices, factors) = lower.column(position);
-                    for (&index, &factor) in indices.iter().zip(factors) {
-                        work[index] -= factor * multiplier;
-                    }
-                }
-                let row = pivot_rows[column];
-                let pivot = work[row];
-                work[row] = T::ZERO;
-                // The largest entry below the pivot, as each is divided by it.
-                let mut largest = 0.0;
-                let below = lower.starts[column]..lower.starts[column + 1];
-                for (&index, value) in lower.indices[below.clone()]
-                    .iter()
-                    .zip(&mut lower.values[below])
-                {
-                    let entry = work[index];
-                    largest = f64::max(largest, entry.magnitude());
-                    *value = entry / pivot;
-                    work[index] = T::ZERO;
-                }
-                let magnitude = pivot.magnitude();
-                if !(magnitude > 0.0 && magnitude >= PIVOT_TOLERANCE * largest) {
+                let entries = ordering.within(column);
+                let Some(pivot) = self.factors.refactor_column(entries, values, column) else {
                     return Some(column);
-                }
-                pivots[column] = pivot;
+                };
+                self.factors.pivots[column] = pivot;
             }
         }
         None
@@ -334,115 +560,17 @@ impl<T: Scalar> Numeric<T> {
         values: &[T],
         column: usize,
     ) -> Result<(), LinearError> {
-        self.find_reach(ordering, column);
-        for &(row, slot) in ordering.within(column) {
-            self.work[row] = values[slot];
-        }
-        for &row in self.reach.iter().rev() {
-            let position = self.positions[row];
-            if position == NONE {
-                continue;
-            }
-            let multiplier = self.work[row];
-            let (indices, factors) = self.lower.column(position);
-            for (&index, &factor) in indices.iter().zip(factors) {
-                self.work[index] -= factor * multiplier;
-            }
-        }
-        if let Err(error) = self
-            .upper
-            .reserve(self.reach.len())
-            .and_then(|()| self.lower.reserve(self.reach.len()))
-        {
-            self.clear_reach();
-            return Err(error);
-        }
-        let (mut largest, mut chosen) = (0.0, NONE);
-        for &row in self.reach.iter().rev() {
-            let position = self.positions[row];
-            if position == NONE {
-                let magnitude = self.work[row].magnitude();
-                if magnitude > largest {
-                    largest = magnitude;
-                    chosen = row;
-                }
-            } else {
-                self.upper.push(position, self.work[row]);
-                self.work[row] = T::ZERO;
-            }
-        }
-        // The ordering expects the row it matched with this column as the pivot.
-        if chosen != NONE
-            && self.positions[column] == NONE
-            && self.work[column].magnitude() >= PIVOT_TOLERANCE * largest
-        {
-            chosen = column;
-        }
-        if chosen == NONE {
-            self.clear_reach();
+        let entries = ordering.within(column);
+        let allowed = self.factors.work.len();
+        let found = self.factors.eliminate_column(entries, values, (column, column, allowed))?;
+        let Some((chosen, pivot)) = found else {
             return Err(LinearError::Singular {
                 columns: vec![ordering.columns()[column]],
             });
-        }
-        let pivot = self.work[chosen];
-        self.work[chosen] = T::ZERO;
-        self.pivot_rows[column] = chosen;
-        self.positions[chosen] = column;
-        self.pivots[column] = pivot;
-        for &row in &self.reach {
-            if self.positions[row] == NONE {
-                self.lower.push(row, self.work[row] / pivot);
-                self.work[row] = T::ZERO;
-            }
-        }
-        self.lower.close();
-        self.upper.close();
+        };
+        self.factors.pivot_rows[column] = chosen;
+        self.factors.pivots[column] = pivot;
         Ok(())
-    }
-
-    /// Leaves the column being eliminated zero.
-    fn clear_reach(&mut self) {
-        for &row in &self.reach {
-            self.work[row] = T::ZERO;
-        }
-    }
-
-    /// Finds the rows of `column` of `L U`: those of the matrix's column and every row an
-    /// entry of `L` reaches from them, in `reach`.
-    fn find_reach(&mut self, ordering: &Ordering, column: usize) {
-        self.reach.clear();
-        for &(start, _) in ordering.within(column) {
-            if self.marks[start] == column {
-                continue;
-            }
-            self.marks[start] = column;
-            self.visits.push((start, self.first_entry(start)));
-            while let Some(visit) = self.visits.last_mut() {
-                let (row, entry) = *visit;
-                let position = self.positions[row];
-                if position != NONE && entry < self.lower.starts[position + 1] {
-                    visit.1 += 1;
-                    let next = self.lower.indices[entry];
-                    if self.marks[next] != column {
-                        self.marks[next] = column;
-                        let first = self.first_entry(next);
-                        self.visits.push((next, first));
-                    }
-                } else {
-                    self.visits.pop();
-                    self.reach.push(row);
-                }
-            }
-        }
-    }
-
-    /// Where the entries of `L` to follow from `row` start: its pivot's column's, if it is
-    /// a pivot.
-    fn first_entry(&self, row: usize) -> usize {
-        match self.positions[row] {
-            NONE => 0,
-            position => self.lower.starts[position],
-        }
     }
 
     /// Solves `A x = rhs` and leaves `x` in `rhs`, for the matrix of `ordering`'s pattern
@@ -475,20 +603,14 @@ impl<T: Scalar> Numeric<T> {
                 );
             } else {
                 for position in positions.clone() {
-                    let value = by_row[self.pivot_rows[position]];
+                    let value = by_row[self.factors.pivot_rows[position]];
                     by_position[position] = value;
-                    let (indices, factors) = self.lower.column(position);
-                    for (&index, &factor) in indices.iter().zip(factors) {
-                        by_row[index] -= factor * value;
-                    }
+                    self.factors.lower.subtract(position, value, by_row);
                 }
                 for position in positions.clone().rev() {
-                    let value = by_position[position] / self.pivots[position];
+                    let value = by_position[position] / self.factors.pivots[position];
                     by_position[position] = value;
-                    let (indices, factors) = self.upper.column(position);
-                    for (&index, &factor) in indices.iter().zip(factors) {
-                        by_position[index] -= factor * value;
-                    }
+                    self.factors.upper.subtract(position, value, by_position);
                 }
             }
             take_in_above(
@@ -547,20 +669,14 @@ impl<T: Scalar> Numeric<T> {
             }
             for position in positions.clone() {
                 let above = ordering.above(position);
-                let mut value = take_in(above, by_position[position], (values, by_row), threads);
-                let (indices, factors) = self.upper.column(position);
-                for (&index, &factor) in indices.iter().zip(factors) {
-                    value -= factor * by_position[index];
-                }
-                by_position[position] = value / self.pivots[position];
+                let value = take_in(above, by_position[position], (values, by_row), threads);
+                let value = self.factors.upper.subtract_dot(position, value, by_position);
+                by_position[position] = value / self.factors.pivots[position];
             }
             for position in positions.rev() {
-                let mut value = by_position[position];
-                let (indices, factors) = self.lower.column(position);
-                for (&index, &factor) in indices.iter().zip(factors) {
-                    value -= factor * by_row[index];
-                }
-                by_row[self.pivot_rows[position]] = value;
+                let rhs = by_position[position];
+                let value = self.factors.lower.subtract_dot(position, rhs, by_row);
+                by_row[self.factors.pivot_rows[position]] = value;
             }
         }
         gather(rhs, by_row, ordering.row_positions(), threads);
@@ -706,14 +822,14 @@ mod tests {
             numeric.factor(&ordering, &first, 1),
             Ok(Factorization::Searched)
         );
-        assert_eq!(numeric.pivot_rows, [0, 1, 2]);
+        assert_eq!(numeric.factors.pivot_rows, [0, 1, 2]);
         assert_eq!(numeric.refactor(&ordering, &first), None);
         assert_eq!(numeric.refactor(&ordering, &second), Some(1));
         assert_eq!(
             numeric.factor(&ordering, &second, 1),
             Ok(Factorization::FellBack)
         );
-        assert_eq!(numeric.pivot_rows, [0, 2, 1]);
+        assert_eq!(numeric.factors.pivot_rows, [0, 2, 1]);
         // The factors solve the second matrix's system: its residual is a rounding.
         let wanted = [1.0, -2.0, 3.0];
         let mut x = wanted;

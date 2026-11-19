@@ -7,7 +7,7 @@ use jolty_engine::{
 };
 use jolty_models::Nature;
 
-use crate::structure::{list, prose};
+use crate::structure::{NAMED, list, prose};
 use crate::{Diagnostic, Level, Rule};
 
 /// The most unknowns of a circuit the checks linearize: the dense pencil of 500 unknowns
@@ -24,11 +24,6 @@ pub const MOST_LINEARIZED: usize = 500;
 /// Origin: jolty's own 50% (`-6 dB`) prominence threshold for diagnostic focus (matches the
 /// condition strings of `MULTIPLE_OPERATING_POINTS` and `UNSTABLE_POLE`).
 const LARGEST: f64 = 0.5;
-
-/// The most nets a diagnostic names before it counts the rest.
-///
-/// Origin: jolty's own diagnostic formatting cap, matching `NAMED = 5` in `rules.rs`.
-const NAMED: usize = 5;
 
 /// The fraction of the larger of a node's voltage and [`VOLT`] that doubling gmin may move
 /// it by before `gmin-dependence` names it.
@@ -127,18 +122,58 @@ pub fn check_operating_point(
     Ok(diagnostics)
 }
 
-/// The diagnostic of the nets at `values` that doubling gmin `moves` too far, if any.
-fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Option<Diagnostic> {
-    let mut nets: Vec<(&str, f64, f64)> = simulator
+/// The external voltage unknowns of `simulator`, paired with their values in `items`.
+fn voltage_nets<T>(
+    simulator: &Simulator,
+    items: impl IntoIterator<Item = T>,
+) -> impl Iterator<Item = (&str, T)> {
+    simulator
         .unknowns()
         .iter()
-        .zip(values.iter().zip(moves))
-        .filter(|(unknown, (value, moved))| {
-            unknown.nature == Nature::Voltage
-                && !unknown.name.contains(':')
-                && moved.abs() > GMIN_MOVE * value.abs().max(VOLT)
-        })
-        .map(|(unknown, (&value, &moved))| (unknown.name.as_str(), value, moved))
+        .zip(items)
+        .filter(|(unknown, _)| unknown.nature == Nature::Voltage && !unknown.name.contains(':'))
+        .map(|(unknown, item)| (unknown.name.as_str(), item))
+}
+
+/// Keeps the entries whose score is at least [`LARGEST`] times the maximum, sorted by
+/// decreasing score, dropping all entries when the maximum is zero.
+fn retain_prominent<T>(entries: &mut Vec<(f64, T)>) {
+    let largest = entries.iter().map(|&(score, _)| score).fold(0.0, f64::max);
+    if largest == 0.0 {
+        entries.clear();
+    } else {
+        entries.retain(|&(score, _)| score >= LARGEST * largest);
+    }
+    entries.sort_by(|a, b| b.0.total_cmp(&a.0));
+}
+
+/// Builds an operating-point diagnostic for `rule`, appending `clause` and `named` to
+/// `prefix` when `named` is non-empty.
+fn net_diagnostic<'a>(
+    rule: &Rule,
+    prefix: &str,
+    clause: &str,
+    named: &str,
+    nets: impl IntoIterator<Item = &'a str>,
+) -> Diagnostic {
+    let message = if named.is_empty() {
+        prefix.to_owned()
+    } else {
+        format!("{prefix}{clause}{named}")
+    };
+    Diagnostic {
+        rule: rule.name,
+        message,
+        instances: Vec::new(),
+        nets: nets.into_iter().map(str::to_owned).collect(),
+    }
+}
+
+/// The diagnostic of the nets at `values` that doubling gmin `moves` too far, if any.
+fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Option<Diagnostic> {
+    let mut nets: Vec<(&str, f64, f64)> = voltage_nets(simulator, values.iter().zip(moves))
+        .filter(|&(_, (&value, &moved))| moved.abs() > GMIN_MOVE * value.abs().max(VOLT))
+        .map(|(net, (&value, &moved))| (net, value, moved))
         .collect();
     if nets.is_empty() {
         return None;
@@ -147,14 +182,13 @@ fn gmin_dependence(simulator: &Simulator, values: &[f64], moves: &[f64]) -> Opti
     let named = prose(&nets, NAMED, |&(net, value, moved)| {
         format!("`{net}` from {value:?} V by {moved:?} V")
     });
-    Some(Diagnostic {
-        rule: GMIN_DEPENDENCE.name,
-        message: format!(
-            "the operating point depends on gmin: to first order, doubling it moves {named}"
-        ),
-        instances: Vec::new(),
-        nets: nets.iter().map(|&(net, ..)| net.to_owned()).collect(),
-    })
+    Some(net_diagnostic(
+        &GMIN_DEPENDENCE,
+        "the operating point depends on gmin: to first order, doubling it moves ",
+        "",
+        &named,
+        nets.iter().map(|&(net, ..)| net),
+    ))
 }
 
 /// The diagnostic of the DC solution `other` besides the operating point `point`.
@@ -163,106 +197,61 @@ fn multiple_operating_points(
     point: &OperatingPointResult,
     other: &OperatingPointResult,
 ) -> Diagnostic {
-    let mut nets: Vec<(&str, f64, f64)> = simulator
-        .unknowns()
-        .iter()
-        .zip(point.values.iter().zip(&other.values))
-        .filter(|(unknown, _)| unknown.nature == Nature::Voltage && !unknown.name.contains(':'))
-        .map(|(unknown, (&value, &another))| (unknown.name.as_str(), value, another))
-        .collect();
-    let difference = |&(_, value, another): &(&str, f64, f64)| (another - value).abs();
-    let largest = nets.iter().map(difference).fold(0.0, f64::max);
-    if largest == 0.0 {
-        nets.clear();
-    } else {
-        nets.retain(|net| difference(net) >= LARGEST * largest);
-    }
-    nets.sort_by(|a, b| difference(b).total_cmp(&difference(a)));
-    let named = prose(&nets, NAMED, |&(net, value, another)| {
+    let mut nets: Vec<(f64, (&str, f64, f64))> =
+        voltage_nets(simulator, point.values.iter().zip(&other.values))
+            .map(|(net, (&value, &another))| ((another - value).abs(), (net, value, another)))
+            .collect();
+    retain_prominent(&mut nets);
+    let named = prose(&nets, NAMED, |&(_, (net, value, another))| {
         format!("`{net}` at {another:?} V rather than {value:?} V")
     });
-    let place = if named.is_empty() {
-        String::new()
-    } else {
-        format!(", where {named}")
-    };
-    Diagnostic {
-        rule: MULTIPLE_OPERATING_POINTS.name,
-        message: format!("the circuit has another DC solution{place}"),
-        instances: Vec::new(),
-        nets: nets.iter().map(|&(net, ..)| net.to_owned()).collect(),
-    }
+    net_diagnostic(
+        &MULTIPLE_OPERATING_POINTS,
+        "the circuit has another DC solution",
+        ", where ",
+        &named,
+        nets.iter().map(|&(_, (net, ..))| net),
+    )
 }
 
 /// The diagnostic of the growing `mode`.
 fn unstable_pole(simulator: &Simulator, mode: &Mode) -> Diagnostic {
-    let mut nets: Vec<(f64, &str)> = simulator
-        .unknowns()
-        .iter()
-        .zip(&mode.shape)
-        .filter(|(unknown, _)| unknown.nature == Nature::Voltage && !unknown.name.contains(':'))
-        .map(|(unknown, amplitude)| (amplitude.norm(), unknown.name.as_str()))
+    let mut nets: Vec<(f64, &str)> = voltage_nets(simulator, &mode.shape)
+        .map(|(net, amplitude)| (amplitude.norm(), net))
         .collect();
-    let largest = nets
-        .iter()
-        .map(|&(amplitude, _)| amplitude)
-        .fold(0.0, f64::max);
-    if largest == 0.0 {
-        nets.clear();
-    } else {
-        nets.retain(|&(amplitude, _)| amplitude >= LARGEST * largest);
-    }
-    nets.sort_by(|a, b| b.0.total_cmp(&a.0));
+    retain_prominent(&mut nets);
     let named = list(nets.iter().map(|&(_, net)| net), NAMED);
     let Mode { pole, .. } = mode;
     let growth = if pole.im > 0.0 {
         format!(
-            "its poles at {:?} ± {:?}j rad/s have a positive real part, so an oscillation \
-             near {:?} Hz grows from it",
+            "the operating point is unstable: its poles at {:?} ± {:?}j rad/s have a positive \
+             real part, so an oscillation near {:?} Hz grows from it",
             pole.re,
             pole.im,
             pole.im / TAU
         )
     } else {
         format!(
-            "its pole at {:?} rad/s is positive, so a disturbance grows from it",
+            "the operating point is unstable: its pole at {:?} rad/s is positive, so a \
+             disturbance grows from it",
             pole.re
         )
     };
-    let place = if named.is_empty() {
-        String::new()
-    } else {
-        format!(", largest at {named}")
-    };
-    Diagnostic {
-        rule: UNSTABLE_POLE.name,
-        message: format!("the operating point is unstable: {growth}{place}"),
-        instances: Vec::new(),
-        nets: nets.iter().map(|&(_, net)| net.to_owned()).collect(),
-    }
+    net_diagnostic(
+        &UNSTABLE_POLE,
+        &growth,
+        ", largest at ",
+        &named,
+        nets.iter().map(|&(_, net)| net),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use jolty_engine::Conditions;
-    use jolty_ir::Circuit;
-    use jolty_models::Library;
     use serde_json::{Value, json};
 
     use super::*;
-
-    /// A simulator of a circuit whose top component has a ground port `0` and places
-    /// `instances`.
-    fn simulator(instances: &Value) -> Simulator {
-        let document = json!({
-            "format": "jolty-circuit", "version": 4, "top": "test",
-            "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
-                                    "instances": instances}}
-        });
-        let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("an elaborated circuit")
-    }
+    use crate::testing::simulator;
 
     /// The diagnostics at the operating point of a circuit whose top component has a ground
     /// port `0` and places `instances`.

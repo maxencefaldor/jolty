@@ -135,13 +135,7 @@ pub(crate) fn evaluate(
             Instruction::Unary(operation, x) => operation.value(values[*x]),
             Instruction::Binary(operation, a, b) => operation.value(values[*a], values[*b]),
             Instruction::Limit([x, a, b]) => limit(values[*x], values[*a], values[*b]).0,
-            Instruction::Conditional([condition, then, otherwise]) => {
-                values[if values[*condition] == 0.0 {
-                    *otherwise
-                } else {
-                    *then
-                }]
-            }
+            Instruction::Conditional(operands) => values[choose(*operands, values)],
             Instruction::Table(x, points) => {
                 let applied = values[*x];
                 let (used, stepped) = if points.limits {
@@ -183,18 +177,8 @@ pub(crate) fn evaluate(
                 adjoints[*a] += adjoint * slope_a;
                 adjoints[*b] += adjoint * slope_b;
             }
-            Instruction::Limit([x, a, b]) => {
-                let chosen = limit(values[*x], values[*a], values[*b]).1;
-                adjoints[[*x, *a, *b][chosen]] += adjoint;
-            }
-            Instruction::Conditional([condition, then, otherwise]) => {
-                let chosen = if values[*condition] == 0.0 {
-                    *otherwise
-                } else {
-                    *then
-                };
-                adjoints[chosen] += adjoint;
-            }
+            Instruction::Limit(operands) => adjoints[limit_chosen(*operands, values)] += adjoint,
+            Instruction::Conditional(operands) => adjoints[choose(*operands, values)] += adjoint,
             Instruction::Table(x, _) => adjoints[*x] += adjoint * slopes[index],
         }
     }
@@ -267,17 +251,8 @@ fn along_forward(
                     sum
                 }
             }
-            Instruction::Limit([x, a, b]) => {
-                let chosen = limit(values[*x], values[*a], values[*b]).1;
-                tangents[[*x, *a, *b][chosen]]
-            }
-            Instruction::Conditional([condition, then, otherwise]) => {
-                tangents[if values[*condition] == 0.0 {
-                    *otherwise
-                } else {
-                    *then
-                }]
-            }
+            Instruction::Limit(operands) => tangents[limit_chosen(*operands, values)],
+            Instruction::Conditional(operands) => tangents[choose(*operands, values)],
             Instruction::Table(x, _) => {
                 if tangents[*x] == 0.0 {
                     0.0
@@ -355,17 +330,11 @@ fn along_backward(
                     }
                 }
             }
-            Instruction::Limit([x, a, b]) => {
-                let chosen = limit(values[*x], values[*a], values[*b]).1;
-                adjoint_tangents[[*x, *a, *b][chosen]] += adjoint_tangent;
+            Instruction::Limit(operands) => {
+                adjoint_tangents[limit_chosen(*operands, values)] += adjoint_tangent;
             }
-            Instruction::Conditional([condition, then, otherwise]) => {
-                let chosen = if values[*condition] == 0.0 {
-                    *otherwise
-                } else {
-                    *then
-                };
-                adjoint_tangents[chosen] += adjoint_tangent;
+            Instruction::Conditional(operands) => {
+                adjoint_tangents[choose(*operands, values)] += adjoint_tangent;
             }
             Instruction::Table(x, _) => {
                 let mut delta = 0.0;
@@ -429,17 +398,30 @@ pub(crate) fn choices(tape: &[Instruction], values: &[f64], found: &mut Vec<Choi
                 }
             }
             Instruction::Limit(arguments) => arguments.iter().for_each(|&x| read[x] = true),
-            Instruction::Conditional([condition, then, otherwise]) => {
-                read[*condition] = true;
-                read[if values[*condition] == 0.0 {
-                    *otherwise
-                } else {
-                    *then
-                }] = true;
+            Instruction::Conditional(operands) => {
+                read[operands[0]] = true;
+                read[choose(*operands, values)] = true;
             }
             Instruction::Table(x, _) => read[*x] = true,
         }
     }
+}
+
+/// The branch index selected by `Conditional([condition, then, otherwise])`.
+#[inline]
+fn choose([condition, then, otherwise]: [usize; 3], values: &[f64]) -> usize {
+    if values[condition] == 0.0 {
+        otherwise
+    } else {
+        then
+    }
+}
+
+/// The operand index selected by `Limit([x, a, b])`.
+#[inline]
+fn limit_chosen(operands: [usize; 3], values: &[f64]) -> usize {
+    let [x, a, b] = operands;
+    operands[limit(values[x], values[a], values[b]).1]
 }
 
 /// `x` held between `a` and `b`, in either order, as SPICE's `limit` holds it, and which of

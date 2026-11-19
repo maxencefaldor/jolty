@@ -296,84 +296,51 @@ impl Parser {
             stack.push(Pending::Binary(precedence, operation, current));
             return Ok(Step::NextOperand);
         }
-        match &self.peek().kind {
-            Kind::Symbol(Symbol::Power) => {
-                let column = self.peek().column;
-                self.push_nested(stack, Pending::Power(current), column)?;
-                self.position += 1;
+        if let Kind::Symbol(symbol @ (Symbol::Power | Symbol::Question)) = self.peek().kind {
+            let column = self.peek().column;
+            let pending = if symbol == Symbol::Power {
+                Pending::Power(current)
+            } else {
+                Pending::Question(reduce(stack, current, &mut self.depth, 1))
+            };
+            self.push_nested(stack, pending, column)?;
+            self.position += 1;
+            return Ok(Step::NextOperand);
+        }
+        current = reduce(stack, current, &mut self.depth, 0);
+        if let Some(Pending::Call { arguments, .. }) = stack.last_mut()
+            && self.accept(Symbol::Comma)
+        {
+            arguments.push(current);
+            return Ok(Step::NextOperand);
+        }
+        match stack.pop() {
+            Some(Pending::Question(condition)) if self.accept(Symbol::Colon) => {
+                stack.push(Pending::Colon {
+                    condition,
+                    then: current,
+                });
                 Ok(Step::NextOperand)
             }
-            Kind::Symbol(Symbol::Question) => {
-                current = reduce(stack, current, &mut self.depth, 1);
-                let column = self.peek().column;
-                self.push_nested(stack, Pending::Question(current), column)?;
-                self.position += 1;
-                Ok(Step::NextOperand)
+            Some(Pending::Question(_)) => Err(expected_symbol(Symbol::Colon, self.peek())),
+            Some(Pending::Group) if self.accept(Symbol::Close) => {
+                self.depth -= 1;
+                Ok(Step::Continue(current))
             }
-            Kind::Symbol(Symbol::Colon) => {
-                current = reduce(stack, current, &mut self.depth, 0);
-                match stack.pop() {
-                    Some(Pending::Question(condition)) => {
-                        self.position += 1;
-                        stack.push(Pending::Colon {
-                            condition,
-                            then: current,
-                        });
-                        Ok(Step::NextOperand)
-                    }
-                    Some(Pending::Group | Pending::Call { .. }) => {
-                        Err(expected_symbol(Symbol::Close, self.peek()))
-                    }
-                    _ => Err(expected_operator(self.peek())),
-                }
+            Some(Pending::Call {
+                name,
+                column,
+                mut arguments,
+            }) if self.accept(Symbol::Close) => {
+                self.depth -= 1;
+                arguments.push(current);
+                Ok(Step::Continue(finish_call(&name, arguments, column)?))
             }
-            Kind::Symbol(Symbol::Comma) => {
-                current = reduce(stack, current, &mut self.depth, 0);
-                match stack.last_mut() {
-                    Some(Pending::Call { arguments, .. }) => {
-                        self.position += 1;
-                        arguments.push(current);
-                        Ok(Step::NextOperand)
-                    }
-                    Some(Pending::Question(_)) => Err(expected_symbol(Symbol::Colon, self.peek())),
-                    Some(Pending::Group) => Err(expected_symbol(Symbol::Close, self.peek())),
-                    _ => Err(expected_operator(self.peek())),
-                }
+            Some(Pending::Group | Pending::Call { .. }) => {
+                Err(expected_symbol(Symbol::Close, self.peek()))
             }
-            Kind::Symbol(Symbol::Close) => {
-                current = reduce(stack, current, &mut self.depth, 0);
-                match stack.pop() {
-                    Some(Pending::Group) => {
-                        self.position += 1;
-                        self.depth -= 1;
-                        Ok(Step::Continue(current))
-                    }
-                    Some(Pending::Call {
-                        name,
-                        column,
-                        mut arguments,
-                    }) => {
-                        self.position += 1;
-                        self.depth -= 1;
-                        arguments.push(current);
-                        Ok(Step::Continue(finish_call(&name, arguments, column)?))
-                    }
-                    Some(Pending::Question(_)) => Err(expected_symbol(Symbol::Colon, self.peek())),
-                    _ => Err(expected_operator(self.peek())),
-                }
-            }
-            _ => {
-                current = reduce(stack, current, &mut self.depth, 0);
-                let token = self.peek();
-                match stack.last() {
-                    None if token.kind == Kind::End => Ok(Step::Done(current)),
-                    Some(Pending::Question(_)) => Err(expected_symbol(Symbol::Colon, token)),
-                    Some(Pending::Group | Pending::Call { .. }) => {
-                        Err(expected_symbol(Symbol::Close, token))
-                    }
-                    _ => Err(expected_operator(token)),
-                }
-            }
+            _ if self.peek().kind == Kind::End => Ok(Step::Done(current)),
+            _ => Err(expected_operator(self.peek())),
         }
     }
 

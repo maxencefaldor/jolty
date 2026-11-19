@@ -14,12 +14,8 @@
 //! a node's own after its children's, so that no entry joins two subtrees of one node and
 //! each subtree factors on its own.
 
+use super::NONE;
 use super::ordering::Entries;
-
-/// No index: a vertex in no level yet, a row in no border.
-///
-/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index.
-const NONE: usize = usize::MAX;
 
 /// A symmetric graph on the vertices of a block, by adjacency lists.
 pub(super) struct Graph {

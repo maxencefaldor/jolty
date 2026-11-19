@@ -8,15 +8,10 @@ use dyn_stack::{MemBuffer, MemStack};
 use faer::sparse::SymbolicSparseColMatRef;
 use faer::sparse::linalg::amd;
 
-use super::LinearError;
 use super::condensation::Condensation;
 use super::dissection::{self, Dissection, Graph};
+use super::{LinearError, NONE};
 use crate::Pattern;
-
-/// No index: an unmatched row or column, an unvisited vertex.
-///
-/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index.
-const NONE: usize = usize::MAX;
 
 /// The analysis of a [`Pattern`] that every factorization of its matrices shares, real or
 /// complex: a permutation of its rows and one of its columns, and the block triangular form
@@ -314,6 +309,32 @@ impl Ordering {
         Ok(ordering)
     }
 
+    /// A structurally singular ordering whose undetermined columns are `undetermined`.
+    fn singular(
+        pattern: Arc<Pattern>,
+        undetermined: Vec<usize>,
+        dissecting: Option<Dissecting>,
+    ) -> Self {
+        let dimension = pattern.dimension();
+        let identity: Vec<usize> = (0..dimension).collect();
+        Self {
+            pattern,
+            condensation: None,
+            undetermined,
+            rows: identity.clone(),
+            columns: identity.clone(),
+            row_positions: identity.clone(),
+            column_positions: identity,
+            blocks: vec![0, dimension],
+            within: Entries::empty(dimension),
+            above: Entries::empty(dimension),
+            across: Across::empty(1),
+            dissecting,
+            dissections: Vec::new(),
+            dissected: vec![NONE],
+        }
+    }
+
     /// Analyzes `pattern`, dissecting the blocks `dissecting` names, if given.
     fn analyze(pattern: Arc<Pattern>, dissecting: Option<Dissecting>) -> Result<Self, LinearError> {
         let dimension = pattern.dimension();
@@ -321,30 +342,9 @@ impl Ordering {
         let (starts, rows) = (structure.col_ptr(), structure.row_idx());
         let matched = match maximum_transversal(dimension, starts, rows) {
             Ok(matched) => matched,
-            Err(undetermined) => {
-                let identity: Vec<usize> = (0..dimension).collect();
-                return Ok(Self {
-                    pattern,
-                    condensation: None,
-                    undetermined,
-                    rows: identity.clone(),
-                    columns: identity.clone(),
-                    row_positions: identity.clone(),
-                    column_positions: identity,
-                    blocks: vec![0, dimension],
-                    within: Entries::empty(dimension),
-                    above: Entries::empty(dimension),
-                    across: Across::empty(1),
-                    dissecting,
-                    dissections: Vec::new(),
-                    dissected: vec![NONE],
-                });
-            }
+            Err(undetermined) => return Ok(Self::singular(pattern, undetermined, dissecting)),
         };
-        let mut column_of_row = vec![NONE; dimension];
-        for (column, &row) in matched.iter().enumerate() {
-            column_of_row[row] = column;
-        }
+        let column_of_row = invert(&matched);
         let (mut columns, blocks) = block_triangular(dimension, starts, rows, &column_of_row);
         let mut local = vec![NONE; dimension];
         // The tree of each dissected block, by block.
@@ -362,10 +362,7 @@ impl Ordering {
             }
         }
         let ordered_rows: Vec<usize> = columns.iter().map(|&column| matched[column]).collect();
-        let mut position_of_row = vec![NONE; dimension];
-        for (position, &row) in ordered_rows.iter().enumerate() {
-            position_of_row[row] = position;
-        }
+        let position_of_row = invert(&ordered_rows);
         let (mut within, mut above) = (Entries::empty(0), Entries::empty(0));
         for block in blocks.windows(2) {
             for &column in &columns[block[0]..block[1]] {
@@ -394,10 +391,7 @@ impl Ordering {
                 })
             })
             .collect();
-        let mut column_positions = vec![NONE; dimension];
-        for (position, &column) in columns.iter().enumerate() {
-            column_positions[column] = position;
-        }
+        let column_positions = invert(&columns);
         Ok(Self {
             pattern,
             condensation: None,
@@ -717,6 +711,38 @@ fn block_triangular(
     (order, blocks)
 }
 
+/// The inverse of the permutation `order` of `0..order.len()`.
+fn invert(order: &[usize]) -> Vec<usize> {
+    let mut inverse = vec![NONE; order.len()];
+    for (position, &item) in order.iter().enumerate() {
+        inverse[item] = position;
+    }
+    inverse
+}
+
+/// Writes each column's index within `block` into `local`.
+fn index_block(block: &[usize], local: &mut [usize]) {
+    for (index, &column) in block.iter().enumerate() {
+        local[column] = index;
+    }
+}
+
+/// Local indices within `block` of the matched columns in `column` of `(starts, rows)`.
+fn block_neighbours(
+    block: &[usize],
+    local: &[usize],
+    (starts, rows): (&[usize], &[usize]),
+    column_of_row: &[usize],
+    column: usize,
+) -> impl Iterator<Item = usize> {
+    let entries = &rows[starts[column]..starts[column + 1]];
+    entries.iter().filter_map(move |&row| {
+        let matched = column_of_row[row];
+        let index = local[matched];
+        (block.get(index) == Some(&matched)).then_some(index)
+    })
+}
+
 /// Orders the columns of one diagonal `block` by nested dissection into interiors of at
 /// most `most` columns, each then reordered by the minimum degree, and returns the nodes
 /// of its tree in postorder; or leaves it as it is and returns `None` when it does not
@@ -728,18 +754,11 @@ fn dissect(
     column_of_row: &[usize],
     most: usize,
 ) -> Result<Option<Vec<dissection::Found>>, LinearError> {
-    for (index, &column) in block.iter().enumerate() {
-        local[column] = index;
-    }
+    index_block(block, local);
     let lists: Vec<Vec<usize>> = block
         .iter()
         .map(|&column| {
-            rows[starts[column]..starts[column + 1]]
-                .iter()
-                .map(|&row| column_of_row[row])
-                .filter(|&matched| block.get(local[matched]) == Some(&matched))
-                .map(|matched| local[matched])
-                .collect()
+            block_neighbours(block, local, (starts, rows), column_of_row, column).collect()
         })
         .collect();
     let found = dissection::dissect(&Graph::symmetric(&lists), most);
@@ -828,18 +847,11 @@ fn multiply_adds(
     column_of_row: &[usize],
 ) -> u128 {
     let size = block.len();
-    for (index, &column) in block.iter().enumerate() {
-        local[column] = index;
-    }
+    index_block(block, local);
     // Each position's neighbours before it, in the pattern plus its transpose.
     let mut earlier: Vec<Vec<usize>> = vec![Vec::new(); size];
     for (position, &column) in block.iter().enumerate() {
-        for &row in &rows[starts[column]..starts[column + 1]] {
-            let matched = column_of_row[row];
-            if block.get(local[matched]) != Some(&matched) {
-                continue;
-            }
-            let other = local[matched];
+        for other in block_neighbours(block, local, (starts, rows), column_of_row, column) {
             match other.cmp(&position) {
                 std::cmp::Ordering::Less => earlier[position].push(other),
                 std::cmp::Ordering::Greater => earlier[other].push(position),
@@ -894,20 +906,14 @@ fn reduce_fill(
     if size <= 2 {
         return Ok(());
     }
-    for (index, &column) in block.iter().enumerate() {
-        local[column] = index;
-    }
+    index_block(block, local);
     let mut block_starts = Vec::with_capacity(size + 1);
     let mut block_rows = Vec::new();
     block_starts.push(0);
     for &column in block.iter() {
         let first = block_rows.len();
-        for &row in &rows[starts[column]..starts[column + 1]] {
-            let matched = column_of_row[row];
-            if block.get(local[matched]) == Some(&matched) {
-                block_rows.push(local[matched]);
-            }
-        }
+        let neighbours = block_neighbours(block, local, (starts, rows), column_of_row, column);
+        block_rows.extend(neighbours);
         block_rows[first..].sort_unstable();
         block_starts.push(block_rows.len());
     }

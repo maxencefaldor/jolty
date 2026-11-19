@@ -7,13 +7,8 @@ use jolty_models::BranchKind;
 
 use crate::point::{GMIN_DEPENDENCE, MULTIPLE_OPERATING_POINTS, UNSTABLE_POLE};
 use crate::preferred::Series;
-use crate::structure::{REFERENCE, Structure, ends, index, list};
+use crate::structure::{NAMED, REFERENCE, Structure, ends, index, list, plural};
 use crate::{Diagnostic, Level, Rule};
-
-/// The most nodes or instances a message names before it counts the rest.
-///
-/// Origin: jolty's own diagnostic formatting cap, matching `NAMED = 5` in `point.rs`.
-const NAMED: usize = 5;
 
 /// Rule definition for `unconnected-terminal` (structural connectivity check; `AGENTS.md`,
 /// "Rules, as in ty").
@@ -89,6 +84,15 @@ const DRIVER_CONFLICT: Rule = Rule {
                 levels, the net's level is unknown.",
 };
 
+/// Rule definition for `floating-input` (mixed-signal undriven-net check; `AGENTS.md`,
+/// "Rules, as in ty").
+const FLOATING_INPUT: Rule = Rule {
+    name: "floating-input",
+    level: Level::Error,
+    condition: "Logic inputs read a logic net that no output drives, so its level is always \
+                unknown. A net that a single input joins is left to unconnected-terminal.",
+};
+
 /// Rule definition for `non-standard-value` (preferred-value check against IEC 60063 E
 /// series; `AGENTS.md`, "Rules, as in ty").
 const NON_STANDARD_VALUE: Rule = Rule {
@@ -97,15 +101,6 @@ const NON_STANDARD_VALUE: Rule = Rule {
     condition: "A resistor's resistance is in no E series of IEC 60063 from E3 to E192, or a \
                 capacitor's capacitance or an inductor's inductance in none from E3 to E24, \
                 but for rounding: no standard part has the value.",
-};
-
-/// Rule definition for `floating-input` (mixed-signal undriven-net check; `AGENTS.md`,
-/// "Rules, as in ty").
-const FLOATING_INPUT: Rule = Rule {
-    name: "floating-input",
-    level: Level::Error,
-    condition: "Logic inputs read a logic net that no output drives, so its level is always \
-                unknown. A net that a single input joins is left to unconnected-terminal.",
 };
 
 /// Every rule, in the order a check reports them.
@@ -133,40 +128,41 @@ pub(crate) fn unconnected_terminals(structure: &Structure<'_>, diagnostics: &mut
         let node = index(node);
         (node != REFERENCE && structure.degree(node) == 1).then(|| structure.name(node))
     };
-    let simulator = structure.simulator();
-    let mut found: Vec<(String, &Location, &str)> = Vec::new();
+    let mut record = |terminal: &str, at: &Location, net: &str| {
+        diagnostics.push(Diagnostic {
+            rule: UNCONNECTED_TERMINAL.name,
+            message: format!("terminal `{terminal}` of `{}` connects to nothing", at.path),
+            instances: vec![at.clone()],
+            nets: vec![net.to_owned()],
+        });
+    };
     for (number, device) in structure.devices().iter().enumerate() {
         if structure.is_element(number) {
             continue;
         }
         for (terminal, &node) in device.terminals().iter().zip(device.nodes()) {
             if let Some(net) = alone(node) {
-                found.push((terminal.clone(), device.location(), net));
+                record(terminal, device.location(), net);
             }
         }
     }
+    let simulator = structure.simulator();
     for device in simulator.logic_devices() {
         let names = device.pins().names();
         let pins = device.inputs().iter().chain(device.outputs());
         for (name, &net) in names.iter().zip(pins) {
             let joined = &simulator.logic_nets()[net];
             if joined.sources.len() + joined.loads.len() == 1 {
-                found.push((name.clone(), device.location(), &joined.name));
+                record(name, device.location(), &joined.name);
             }
         }
         let terminals = &names[names.len() - device.nodes().len()..];
         for (terminal, &node) in terminals.iter().zip(device.nodes()) {
             if let Some(net) = alone(node) {
-                found.push((terminal.clone(), device.location(), net));
+                record(terminal, device.location(), net);
             }
         }
     }
-    diagnostics.extend(found.into_iter().map(|(terminal, at, net)| Diagnostic {
-        rule: UNCONNECTED_TERMINAL.name,
-        message: format!("terminal `{terminal}` of `{}` connects to nothing", at.path),
-        instances: vec![at.clone()],
-        nets: vec![net.to_owned()],
-    }));
 }
 
 /// Where the logic device or connect element at `end` is.
@@ -388,26 +384,12 @@ pub(crate) fn no_dc_paths(
     floating: &[Group],
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    for group in floating {
-        if !group.sources.is_empty() {
-            continue;
-        }
-        let names = group.names(structure);
-        let verb = if group.nodes.len() == 1 {
-            "has"
-        } else {
-            "have"
-        };
-        diagnostics.push(Diagnostic {
-            rule: NO_DC_PATH.name,
-            message: format!(
-                "{} {verb} no DC path to `{}`",
-                list(names.iter().copied(), NAMED),
-                structure.name(REFERENCE),
-            ),
-            instances: group.locations(structure),
-            nets: names.iter().map(|&name| name.to_owned()).collect(),
-        });
+    for group in floating.iter().filter(|group| group.sources.is_empty()) {
+        diagnostics.push(group.diagnostic(
+            structure,
+            &NO_DC_PATH,
+            |nets, verb, reference| format!("{nets} {verb} no DC path to `{reference}`"),
+        ));
     }
 }
 
@@ -418,37 +400,18 @@ pub(crate) fn current_cutsets(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let devices = structure.devices();
-    for group in floating {
-        if group.sources.is_empty() {
-            continue;
-        }
-        let names = group.names(structure);
-        let sources: Vec<&str> = group
-            .sources
-            .iter()
-            .map(|&source| devices[source].path())
-            .collect();
-        let drive = if sources.len() == 1 {
-            "drives"
-        } else {
-            "drive"
+    for group in floating.iter().filter(|group| !group.sources.is_empty()) {
+        let sources = list(
+            group.sources.iter().map(|&source| devices[source].path()),
+            NAMED,
+        );
+        let drive = plural(group.sources.len(), "drives", "drive");
+        let message = |nets: &str, verb: &str, reference: &str| {
+            format!(
+                "{sources} {drive} current into {nets}, which {verb} no DC path to `{reference}`"
+            )
         };
-        let verb = if group.nodes.len() == 1 {
-            "has"
-        } else {
-            "have"
-        };
-        diagnostics.push(Diagnostic {
-            rule: CURRENT_CUTSET.name,
-            message: format!(
-                "{} {drive} current into {}, which {verb} no DC path to `{}`",
-                list(sources.iter().copied(), NAMED),
-                list(names.iter().copied(), NAMED),
-                structure.name(REFERENCE),
-            ),
-            instances: group.locations(structure),
-            nets: names.iter().map(|&name| name.to_owned()).collect(),
-        });
+        diagnostics.push(group.diagnostic(structure, &CURRENT_CUTSET, message));
     }
 }
 
@@ -463,19 +426,33 @@ pub(crate) struct Group {
 }
 
 impl Group {
-    fn names<'a>(&self, structure: &Structure<'a>) -> Vec<&'a str> {
-        self.nodes
+    /// Builds the diagnostic for `rule` on this floating group, formatting its message from
+    /// the listed net names, the singular or plural verb (`has`/`have`), and the reference
+    /// net name.
+    fn diagnostic(
+        &self,
+        structure: &Structure<'_>,
+        rule: &Rule,
+        message: impl FnOnce(&str, &str, &str) -> String,
+    ) -> Diagnostic {
+        let names: Vec<&str> = self
+            .nodes
             .iter()
             .map(|&node| structure.name(node))
-            .collect()
-    }
-
-    fn locations(&self, structure: &Structure<'_>) -> Vec<Location> {
+            .collect();
+        let listed = list(names.iter().copied(), NAMED);
+        let verb = plural(self.nodes.len(), "has", "have");
         let devices = structure.devices();
-        self.devices
-            .iter()
-            .map(|&device| devices[device].location().clone())
-            .collect()
+        Diagnostic {
+            rule: rule.name,
+            message: message(&listed, verb, structure.name(REFERENCE)),
+            instances: self
+                .devices
+                .iter()
+                .map(|&device| devices[device].location().clone())
+                .collect(),
+            nets: names.into_iter().map(str::to_owned).collect(),
+        }
     }
 }
 
@@ -595,13 +572,11 @@ pub(crate) fn non_standard_values(simulator: &Simulator, diagnostics: &mut Vec<D
 
 #[cfg(test)]
 mod tests {
-    use jolty_engine::{Conditions, Simulator};
-    use jolty_ir::Circuit;
-    use jolty_models::Library;
     use serde_json::{Value, json};
 
     use super::*;
     use crate::check;
+    use crate::testing::simulator;
 
     /// A device instance: its name, its model, its parameters and the net of each terminal.
     struct Device {
@@ -626,15 +601,7 @@ mod tests {
                        "parameters": device.parameters, "terminals": terminals})
             })
             .collect();
-        let document = json!({
-            "format": "jolty-circuit", "version": 4, "top": "test",
-            "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
-                                    "instances": instances}}
-        });
-        let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
-        let simulator = Simulator::new(&circuit, &Library::standard(), &Conditions::default())
-            .expect("an elaborated circuit");
-        check(&simulator)
+        check(&simulator(&Value::Array(instances)))
     }
 
     fn device(
@@ -1061,6 +1028,40 @@ mod tests {
             );
             assert!(rule.condition.ends_with('.'));
         }
+    }
+
+    #[test]
+    fn check_reports_structural_rules_in_rules_order() {
+        let found = diagnostics(&[
+            voltage("V1", "in", "0"),
+            voltage("V2", "in", "0"),
+            voltage("V_short", "in", "in"),
+            resistor("R_open", "in", "dangling"),
+            capacitor("C_short", "in", "in"),
+            capacitor("C1", "in", "float_n"),
+            capacitor("C2", "float_n", "0"),
+            current("I1", "0", "cutset_n"),
+            capacitor("C3", "cutset_n", "0"),
+            logic_source("A", "conflict"),
+            logic_source("B", "conflict"),
+            gate("U1", vec![("a", "conflict"), ("b", "c"), ("y", "b")]),
+            gate("U2", vec![("a", "b"), ("y", "c")]),
+            gate("U3", vec![("a", "undriven"), ("b", "e"), ("y", "d")]),
+            gate("U4", vec![("a", "undriven"), ("b", "d"), ("y", "e")]),
+            device(
+                "R_odd",
+                "resistor",
+                json!({"resistance": 4812.3}),
+                ["in", "0"],
+            ),
+        ]);
+        let operating_point = [GMIN_DEPENDENCE, MULTIPLE_OPERATING_POINTS, UNSTABLE_POLE];
+        let expected: Vec<&str> = RULES
+            .iter()
+            .filter(|rule| !operating_point.contains(rule))
+            .map(|rule| rule.name)
+            .collect();
+        assert_eq!(rules(&found), expected);
     }
 
     #[test]

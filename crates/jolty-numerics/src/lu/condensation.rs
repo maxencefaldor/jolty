@@ -6,14 +6,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
-use super::{LinearError, Scalar};
+use super::{LinearError, NONE, Scalar};
 use crate::{Entry, Pattern, PatternBuilder};
-
-/// No index: a row or a column eliminated, or one kept.
-///
-/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index (allocations are
-/// bounded by `isize::MAX`).
-const NONE: usize = usize::MAX;
 
 /// Which unknowns of a pattern's matrices are eliminated before the sparse factorization,
 /// each by its pivot, and the pattern of the unknowns kept.

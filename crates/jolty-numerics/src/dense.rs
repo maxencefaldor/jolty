@@ -45,7 +45,7 @@ pub fn solve_in_range(
     let Some(decomposed) = Decomposed::new(a, n)? else {
         return Ok(0);
     };
-    let projected = decomposed.projected(rhs);
+    let projected = project(decomposed.svd.U(), rhs);
     let values = &decomposed.values;
     let mut rank = decomposed.rounded_rank();
     let mut left_out: f64 = projected[rank..].iter().map(|part| part * part).sum();
@@ -90,7 +90,7 @@ pub fn solve_each_in_range(a: &[f64], columns: &mut [Vec<f64>]) -> Result<usize,
     let rank = decomposed.rounded_rank();
     let kept = decomposed.kept(rank)?;
     for column in columns {
-        let solution = kept.solve(&decomposed.projected(column));
+        let solution = kept.solve(&project(decomposed.svd.U(), column));
         finite(&solution)?;
         column.copy_from_slice(&solution);
     }
@@ -153,12 +153,6 @@ impl Decomposed {
             .count()
     }
 
-    /// `Uᵀ b`, the parts of `b` along each column of `U`.
-    fn projected(&self, rhs: &[f64]) -> Vec<f64> {
-        let u = self.svd.U();
-        (0..rhs.len()).map(|k| dot(u.col(k), rhs)).collect()
-    }
-
     /// What solving in the range keeps of the first `rank` singular values.
     fn kept(&self, rank: usize) -> Result<Kept<'_>, LinearError> {
         let reduced = if rank == self.values.len() {
@@ -196,7 +190,7 @@ impl Kept<'_> {
         };
         let within = truncated(
             (inner.V(), values, rounding),
-            &inner_projected(inner, projected, self.rank),
+            &project(inner.U(), &projected[..self.rank]),
         );
         (0..u.nrows())
             .map(|row| (0..self.rank).map(|k| u[(row, k)] * within[k]).sum::<f64>())
@@ -204,12 +198,11 @@ impl Kept<'_> {
     }
 }
 
-/// The parts along the reduced system's left singular vectors of the first `rank` of
-/// `projected`.
-fn inner_projected(inner: &Svd<f64>, projected: &[f64], rank: usize) -> Vec<f64> {
-    let u = inner.U();
-    (0..rank)
-        .map(|k| dot(u.col(k), &projected[..rank]))
+/// `uᵀ vector`, the dot product of each of the first `vector.len()` columns of `u` with
+/// `vector`.
+fn project(u: MatRef<'_, f64>, vector: &[f64]) -> Vec<f64> {
+    (0..vector.len())
+        .map(|column| u.col(column).iter().zip(vector).map(|(x, y)| x * y).sum())
         .collect()
 }
 
@@ -228,11 +221,6 @@ fn truncated((v, values, cutoff): (MatRef<'_, f64>, &[f64], f64), projected: &[f
         }
     }
     solution
-}
-
-/// The dot product of a column and a vector of its length.
-fn dot(column: faer::ColRef<'_, f64>, vector: &[f64]) -> f64 {
-    column.iter().zip(vector).map(|(x, y)| x * y).sum()
 }
 
 #[cfg(test)]

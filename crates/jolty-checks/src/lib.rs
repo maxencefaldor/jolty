@@ -118,3 +118,24 @@ pub fn check(simulator: &Simulator) -> Vec<Diagnostic> {
     rules::non_standard_values(simulator, &mut diagnostics);
     diagnostics
 }
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use jolty_engine::{Conditions, Simulator};
+    use jolty_ir::Circuit;
+    use jolty_models::Library;
+    use serde_json::{Value, json};
+
+    /// A simulator of a circuit whose top component has a ground port `0` and places
+    /// `instances`.
+    pub(crate) fn simulator(instances: &Value) -> Simulator {
+        let document = json!({
+            "format": "jolty-circuit", "version": 4, "top": "test",
+            "components": {"test": {"ports": [{"name": "0", "role": "ground"}],
+                                    "instances": instances}}
+        });
+        let circuit = Circuit::from_json(&document.to_string()).expect("a valid circuit");
+        Simulator::new(&circuit, &Library::standard(), &Conditions::default())
+            .expect("an elaborated circuit")
+    }
+}

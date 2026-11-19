@@ -12,6 +12,9 @@
 
 use num_complex::Complex64;
 
+/// Additive identity of complex numbers (`0.0 + 0.0i`).
+const ZERO: Complex64 = Complex64::new(0.0, 0.0);
+
 /// A generalized eigenvalue of a pencil `(A, B)`, `alpha / beta`, kept as its pair so that
 /// an infinite one, whose `beta` is zero, keeps its place.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -150,14 +153,13 @@ fn norm1(value: Complex64) -> f64 {
 /// "Algorithm 978: Safe scaling in the level 1 BLAS", ACM TOMS 44(1), 2017), which scales
 /// to neither overflow nor underflow.
 fn rotation(first: Complex64, second: Complex64) -> (f64, Complex64, Complex64) {
-    let zero = Complex64::new(0.0, 0.0);
     let (safe_min, safe_max) = (f64::MIN_POSITIVE, f64::MIN_POSITIVE.recip());
     let root_min = safe_min.sqrt();
-    if second == zero {
-        return (1.0, zero, first);
+    if second == ZERO {
+        return (1.0, ZERO, first);
     }
     let second_size = second.re.abs().max(second.im.abs());
-    if first == zero {
+    if first == ZERO {
         let radius = if second.re == 0.0 || second.im == 0.0 {
             second_size
         } else if second_size > root_min && second_size < (safe_max / 2.0).sqrt() {
@@ -242,7 +244,7 @@ fn triangularize(h: &mut Square, t: &mut Square) {
         for row in (column + 1..order).rev() {
             let (cosine, sine, radius) = rotation(t.at(row - 1, column), t.at(row, column));
             t.set(row - 1, column, radius);
-            t.set(row, column, Complex64::new(0.0, 0.0));
+            t.set(row, column, ZERO);
             t.rotate_rows((row - 1, row), column + 1..order, (cosine, sine));
             h.rotate_rows((row - 1, row), 0..order, (cosine, sine));
         }
@@ -253,19 +255,18 @@ fn triangularize(h: &mut Square, t: &mut Square) {
 /// and of columns, as LAPACK's ZGGHRD.
 fn reduce_to_hessenberg(h: &mut Square, t: &mut Square) {
     let order = h.n;
-    let zero = Complex64::new(0.0, 0.0);
     for column in 0..order.saturating_sub(2) {
         for row in (column + 2..order).rev() {
             // Rotate rows `row - 1` and `row` to zero h's entry in `column`.
             let (cosine, sine, radius) = rotation(h.at(row - 1, column), h.at(row, column));
             h.set(row - 1, column, radius);
-            h.set(row, column, zero);
+            h.set(row, column, ZERO);
             h.rotate_rows((row - 1, row), column + 1..order, (cosine, sine));
             t.rotate_rows((row - 1, row), row - 1..order, (cosine, sine));
             // Rotate columns `row` and `row - 1` to zero the entry it put below t's diagonal.
             let (cosine, sine, radius) = rotation(t.at(row, row), t.at(row, row - 1));
             t.set(row, row, radius);
-            t.set(row, row - 1, zero);
+            t.set(row, row - 1, ZERO);
             h.rotate_columns((row, row - 1), 0..order, (cosine, sine));
             t.rotate_columns((row, row - 1), 0..row, (cosine, sine));
         }
@@ -300,11 +301,10 @@ struct Scales {
 /// as LAPACK's ZHGEQZ computes them without the Schur form.
 fn qz(h: &mut Square, t: &mut Square) -> Result<Vec<Eigenvalue>, PencilError> {
     let n = h.n;
-    let zero = Complex64::new(0.0, 0.0);
     let mut eigenvalues = vec![
         Eigenvalue {
-            alpha: zero,
-            beta: zero
+            alpha: ZERO,
+            beta: ZERO
         };
         n
     ];
@@ -322,7 +322,7 @@ fn qz(h: &mut Square, t: &mut Square) -> Result<Vec<Eigenvalue>, PencilError> {
     // `last` are found. `sweeps` counts the sweeps since the last eigenvalue was found, and
     // `exceptional` accumulates the exceptional shifts taken meanwhile.
     let (mut first, mut last) = (0, n - 1);
-    let (mut sweeps, mut exceptional) = (0_usize, zero);
+    let (mut sweeps, mut exceptional) = (0_usize, ZERO);
     for _ in 0..30 * n {
         match split(h, t, (first, last), scales) {
             Split::Sweep(top) => {
@@ -335,7 +335,7 @@ fn qz(h: &mut Square, t: &mut Square) -> Result<Vec<Eigenvalue>, PencilError> {
             Split::Infinite => {
                 let (cosine, sine, radius) = rotation(h.at(last, last), h.at(last, last - 1));
                 h.set(last, last, radius);
-                h.set(last, last - 1, zero);
+                h.set(last, last - 1, ZERO);
                 h.rotate_columns((last, last - 1), first..last, (cosine, sine));
                 t.rotate_columns((last, last - 1), first..last, (cosine, sine));
             }
@@ -348,7 +348,7 @@ fn qz(h: &mut Square, t: &mut Square) -> Result<Vec<Eigenvalue>, PencilError> {
             t.set(last, last, Complex64::new(magnitude, 0.0));
             h.set(last, last, h.at(last, last) * sign);
         } else {
-            t.set(last, last, zero);
+            t.set(last, last, ZERO);
         }
         eigenvalues[last] = Eigenvalue {
             alpha: h.at(last, last),
@@ -359,7 +359,7 @@ fn qz(h: &mut Square, t: &mut Square) -> Result<Vec<Eigenvalue>, PencilError> {
         }
         last -= 1;
         sweeps = 0;
-        exceptional = zero;
+        exceptional = ZERO;
         if first > last {
             first = 0;
         }
@@ -370,7 +370,6 @@ fn qz(h: &mut Square, t: &mut Square) -> Result<Vec<Eigenvalue>, PencilError> {
 /// Where the active block of rows `first` to `last` splits, deflating an infinite
 /// eigenvalue found within it by rotations that chase its zero out of the block.
 fn split(h: &mut Square, t: &mut Square, (first, last): (usize, usize), scales: Scales) -> Split {
-    let zero = Complex64::new(0.0, 0.0);
     // Whether the subdiagonal entry of `row` is negligible beside its diagonal neighbours.
     let negligible = |h: &Square, row: usize| {
         norm1(h.at(row, row - 1))
@@ -381,21 +380,21 @@ fn split(h: &mut Square, t: &mut Square, (first, last): (usize, usize), scales: 
         return Split::Found;
     }
     if negligible(h, last) {
-        h.set(last, last - 1, zero);
+        h.set(last, last - 1, ZERO);
         return Split::Found;
     }
     if t.at(last, last).norm() <= scales.t_tolerance {
-        t.set(last, last, zero);
+        t.set(last, last, ZERO);
         return Split::Infinite;
     }
     let mut row = last - 1;
     loop {
         let splits = row == 0 || negligible(h, row);
         if splits && row > 0 {
-            h.set(row, row - 1, zero);
+            h.set(row, row - 1, ZERO);
         }
         if t.at(row, row).norm() < scales.t_tolerance {
-            t.set(row, row, zero);
+            t.set(row, row, ZERO);
             return infinite_within(h, t, row, splits, (first, last), scales);
         }
         if splits {
@@ -415,7 +414,6 @@ fn infinite_within(
     (first, last): (usize, usize),
     scales: Scales,
 ) -> Split {
-    let zero = Complex64::new(0.0, 0.0);
     // Two consecutive subdiagonal entries small enough together also split the block.
     let mut both_small = !splits
         && norm1(h.at(row, row - 1)) * (scales.h_scale * norm1(h.at(row + 1, row)))
@@ -426,7 +424,7 @@ fn infinite_within(
         for k in row..last {
             let (cosine, sine, radius) = rotation(h.at(k, k), h.at(k + 1, k));
             h.set(k, k, radius);
-            h.set(k + 1, k, zero);
+            h.set(k + 1, k, ZERO);
             h.rotate_rows((k, k + 1), k + 1..last + 1, (cosine, sine));
             t.rotate_rows((k, k + 1), k + 1..last + 1, (cosine, sine));
             if both_small {
@@ -440,7 +438,7 @@ fn infinite_within(
                     Split::Sweep(k + 1)
                 };
             }
-            t.set(k + 1, k + 1, zero);
+            t.set(k + 1, k + 1, ZERO);
         }
         return Split::Infinite;
     }
@@ -448,14 +446,14 @@ fn infinite_within(
     for k in row..last {
         let (cosine, sine, radius) = rotation(t.at(k, k + 1), t.at(k + 1, k + 1));
         t.set(k, k + 1, radius);
-        t.set(k + 1, k + 1, zero);
+        t.set(k + 1, k + 1, ZERO);
         if k + 1 < last {
             t.rotate_rows((k, k + 1), k + 2..last + 1, (cosine, sine));
         }
         h.rotate_rows((k, k + 1), k - 1..last + 1, (cosine, sine));
         let (cosine, sine, radius) = rotation(h.at(k + 1, k), h.at(k + 1, k - 1));
         h.set(k + 1, k, radius);
-        h.set(k + 1, k - 1, zero);
+        h.set(k + 1, k - 1, ZERO);
         h.rotate_columns((k, k - 1), first..k + 1, (cosine, sine));
         t.rotate_columns((k, k - 1), first..k, (cosine, sine));
     }
@@ -486,7 +484,7 @@ fn shift(
         let abi12 = ad12 - u12 * ad11;
         let mut shift = abi22;
         let product = abi12.sqrt() * ad21.sqrt();
-        if product != Complex64::new(0.0, 0.0) {
+        if product != ZERO {
             let half = 0.5 * (ad11 - shift);
             let half_size = norm1(half);
             let size = norm1(product).max(half_size);
@@ -520,7 +518,6 @@ fn sweep(
     shift: Complex64,
     scales: Scales,
 ) {
-    let zero = Complex64::new(0.0, 0.0);
     let (hs, ts) = (scales.h_scale, scales.t_scale);
     let mut start = first;
     let mut lead = hs * h.at(first, first) - shift * (ts * t.at(first, first));
@@ -543,14 +540,14 @@ fn sweep(
         if row > start {
             let (c, s, radius) = rotation(h.at(row, row - 1), h.at(row + 1, row - 1));
             h.set(row, row - 1, radius);
-            h.set(row + 1, row - 1, zero);
+            h.set(row + 1, row - 1, ZERO);
             (cosine, sine) = (c, s);
         }
         h.rotate_rows((row, row + 1), row..last + 1, (cosine, sine));
         t.rotate_rows((row, row + 1), row..last + 1, (cosine, sine));
         let (c, s, radius) = rotation(t.at(row + 1, row + 1), t.at(row + 1, row));
         t.set(row + 1, row + 1, radius);
-        t.set(row + 1, row, zero);
+        t.set(row + 1, row, ZERO);
         h.rotate_columns((row + 1, row), first..(row + 2).min(last) + 1, (c, s));
         t.rotate_columns((row + 1, row), first..row + 1, (c, s));
     }

@@ -46,6 +46,12 @@ use self::tree::Scratch;
 use crate::Pattern;
 use crate::reduce::CHUNK;
 
+/// No index: an absent row, column, vertex, pivot, or slot.
+///
+/// Origin: sentinel `usize::MAX`, unreachable by any valid Rust `Vec` index (allocations are
+/// bounded by `isize::MAX`).
+const NONE: usize = usize::MAX;
+
 /// A scalar the sparse solver works in: `f64` for DC and transient analyses, [`Complex64`]
 /// for small-signal analyses.
 pub trait Scalar:
