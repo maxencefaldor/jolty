@@ -1619,13 +1619,19 @@ mod tests {
         let n_vtm = probe.n.value * prepared.core.vtm;
         let gate = probe.vth.value - 28.0 * n_vtm;
         let inversion = |vgs: f64| {
-            let vars = Dual::variables([vgs, 1.0, 0.0]);
-            let channel = prepared.core.evaluate(vars);
-            prepared.core.intrinsic(vars[1], vars[2], &channel).inversion
+            let variables = Dual::variables([vgs, 1.0, 0.0]);
+            let channel = prepared.core.evaluate(variables);
+            prepared
+                .core
+                .intrinsic(variables[1], variables[2], &channel)
+                .inversion
         };
         let step = 1e-6;
         let center = inversion(gate);
-        assert!(center < 0.0, "expected negative inversion charge, got {center:e}");
+        assert!(
+            center < 0.0,
+            "expected negative inversion charge, got {center:e}"
+        );
         let slope = (inversion(gate + step) - inversion(gate - step)) / (2.0 * step * center);
         let expected = 1.0 / n_vtm;
         assert!(
