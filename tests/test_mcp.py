@@ -368,7 +368,7 @@ def test_instructions_name_every_public_spec_measure() -> None:
     expected = _public_functions_returning(
         REPOSITORY_ROOT / "src" / "jolty" / "specs" / "_measures.py", {"Measure"}
     )
-    assert len(expected) == 23
+    assert len(expected) == 24
     assert set(expected).issubset(set(specs.__all__))
     missing = [name for name in expected if f"- {name}(" not in INSTRUCTIONS]
     assert not missing, f"missing spec measures in MCP instructions: {missing}"

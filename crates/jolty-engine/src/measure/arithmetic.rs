@@ -76,6 +76,108 @@ fn search(key: f64, points: &[f64], guess: usize) -> Found {
     Found::At(low.saturating_sub(1))
 }
 
+/// Linearly interpolated value at one coordinate along ascending `(points, values)`,
+/// paired with exact sample weights and local axis slope.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct InterpolatedPoint {
+    /// Interpolated scalar value, matching [`interpolate`] bit-for-bit.
+    pub(super) value: f64,
+    /// Primary sample `(index, weight)`.
+    pub(super) first: (usize, f64),
+    /// Secondary sample `(index, weight)` when strictly inside an interval.
+    pub(super) second: Option<(usize, f64)>,
+    /// Local derivative `dy / dx` on the active interval, or `0.0` at clamped endpoints.
+    pub(super) slope: f64,
+}
+
+/// Evaluates linear interpolation of `(points, values)` at scalar `x` and returns the
+/// value together with exact sample weights and local slope.
+pub(super) fn interpolate_weights(x: f64, points: &[f64], values: &[f64]) -> InterpolatedPoint {
+    let len = points.len().min(values.len());
+    let (points, values) = (&points[..len], &values[..len]);
+    let (Some(&left), Some(&right)) = (values.first(), values.last()) else {
+        return InterpolatedPoint {
+            value: f64::NAN,
+            first: (0, 0.0),
+            second: None,
+            slope: 0.0,
+        };
+    };
+    if x.is_nan() {
+        return InterpolatedPoint {
+            value: x,
+            first: (0, 0.0),
+            second: None,
+            slope: 0.0,
+        };
+    }
+    if len == 1 {
+        let value = if x < points[0] {
+            left
+        } else if x > points[0] {
+            right
+        } else {
+            values[0]
+        };
+        return InterpolatedPoint {
+            value,
+            first: (0, 1.0),
+            second: None,
+            slope: 0.0,
+        };
+    }
+    match search(x, points, 0) {
+        Found::Below => InterpolatedPoint {
+            value: left,
+            first: (0, 1.0),
+            second: None,
+            slope: 0.0,
+        },
+        Found::Above => InterpolatedPoint {
+            value: right,
+            first: (len - 1, 1.0),
+            second: None,
+            slope: 0.0,
+        },
+        Found::At(found) => {
+            if found == len - 1 {
+                let slope =
+                    (values[len - 1] - values[len - 2]) / (points[len - 1] - points[len - 2]);
+                return InterpolatedPoint {
+                    value: values[found],
+                    first: (found, 1.0),
+                    second: None,
+                    slope,
+                };
+            }
+            let span = points[found + 1] - points[found];
+            let slope = (values[found + 1] - values[found]) / span;
+            if same(points[found], x) {
+                return InterpolatedPoint {
+                    value: values[found],
+                    first: (found, 1.0),
+                    second: None,
+                    slope,
+                };
+            }
+            let mut value = slope.mul_add(x - points[found], values[found]);
+            if value.is_nan() {
+                value = slope.mul_add(x - points[found + 1], values[found + 1]);
+                if value.is_nan() && same(values[found], values[found + 1]) {
+                    value = values[found];
+                }
+            }
+            let alpha = (x - points[found]) / span;
+            InterpolatedPoint {
+                value,
+                first: (found, 1.0 - alpha),
+                second: Some((found + 1, alpha)),
+                slope,
+            }
+        }
+    }
+}
+
 /// Interpolates `(points, values)` linearly at each coordinate in `at`, mirroring `NumPy`'s
 /// `interp` (`arr_interp` in `compiled_base.c`).
 ///
@@ -386,6 +488,36 @@ pub(crate) fn exact_sum(values: impl IntoIterator<Item = f64>) -> Result<f64, Su
     Ok(high)
 }
 
+/// Returns the index and value of the maximum of `values`, matching [`maximum`], or `None`
+/// when `values` is empty or contains `NaN`.
+pub(super) fn maximum_index(values: &[f64]) -> Option<(usize, f64)> {
+    extreme_index(values, |value, best| {
+        value > best || (same(value, best) && best.is_sign_negative())
+    })
+}
+
+/// Returns the index and value of the minimum of `values`, matching [`minimum`], or `None`
+/// when `values` is empty or contains `NaN`.
+pub(super) fn minimum_index(values: &[f64]) -> Option<(usize, f64)> {
+    extreme_index(values, |value, best| {
+        value < best || (same(value, best) && value.is_sign_negative())
+    })
+}
+
+/// Reduces `values` under comparator `beats`, returning `None` on empty input or `NaN`.
+fn extreme_index(values: &[f64], beats: impl Fn(f64, f64) -> bool) -> Option<(usize, f64)> {
+    let mut best: Option<(usize, f64)> = None;
+    for (index, &value) in values.iter().enumerate() {
+        if value.is_nan() {
+            return None;
+        }
+        if best.is_none_or(|(_, current)| beats(value, current)) {
+            best = Some((index, value));
+        }
+    }
+    best
+}
+
 /// Returns the maximum of `values` matching `NumPy`'s `max`, propagating `NaN` and preferring
 /// `+0.0` over `-0.0` (or `NaN` when empty).
 pub(crate) fn maximum(values: &[f64]) -> f64 {
@@ -425,18 +557,30 @@ pub(crate) fn trapezoid(points: &[f64], values: &[f64]) -> f64 {
     })
 }
 
-/// Yields linearly interpolated coordinates where `(points, values)` crosses `threshold` in
-/// direction `edge`, matching jolty's Python `_crossings`.
-pub(crate) fn crossings<'a>(
+/// One linearly interpolated threshold crossing within segment `[index, index + 1]`.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Crossing {
+    /// Lower sample index of the bracketing segment.
+    pub(super) index: usize,
+    /// Interpolated axis coordinate of the crossing.
+    pub(super) point: f64,
+    /// Fractional offset in `(0, 1]` from `points[index]` to `points[index + 1]`.
+    pub(super) fraction: f64,
+}
+
+/// Yields indexed linearly interpolated crossings where `(points, values)` crosses
+/// `threshold` in direction `edge`.
+pub(super) fn indexed_crossings<'a>(
     points: &'a [f64],
     values: &'a [f64],
     threshold: f64,
     edge: Edge,
-) -> impl Iterator<Item = f64> + 'a {
+) -> impl Iterator<Item = Crossing> + 'a {
     points
         .windows(2)
         .zip(values.windows(2))
-        .filter_map(move |(around, pair)| {
+        .enumerate()
+        .filter_map(move |(index, (around, pair))| {
             let (below, above) = (pair[0] - threshold, pair[1] - threshold);
             let rising = below < 0.0 && above >= 0.0;
             let falling = below > 0.0 && above <= 0.0;
@@ -447,9 +591,25 @@ pub(crate) fn crossings<'a>(
             };
             crossed.then(|| {
                 let fraction = below / (below - above);
-                around[0] + fraction * (around[1] - around[0])
+                let point = around[0] + fraction * (around[1] - around[0]);
+                Crossing {
+                    index,
+                    point,
+                    fraction,
+                }
             })
         })
+}
+
+/// Yields linearly interpolated coordinates where `(points, values)` crosses `threshold` in
+/// direction `edge`, matching jolty's Python `_crossings`.
+pub(crate) fn crossings<'a>(
+    points: &'a [f64],
+    values: &'a [f64],
+    threshold: f64,
+    edge: Edge,
+) -> impl Iterator<Item = f64> + 'a {
+    indexed_crossings(points, values, threshold, edge).map(|crossing| crossing.point)
 }
 
 /// Computes ascending sort indices for `values`, placing `NaN` last and preserving relative
@@ -546,6 +706,101 @@ pub fn integrate(
             .map(|(ends, densities)| segment(ends[0], ends[1], densities[0], densities[1])),
     )
     .map_err(MeasureError::Sum)
+}
+
+/// Threshold on `|growth|` below which the power-law noise segment factor derivative
+/// `((g - 1) e^g + 1) / g^2` switches to its fifth-order Maclaurin polynomial.
+///
+/// Derivation: the omitted `g^5 / 840` term is below `1.2e-23` for `|g| < 1e-4` (seven
+/// orders of magnitude below IEEE 754 `f64::EPSILON`), while direct subtraction loses
+/// roughly eight significant digits at `|g| = 1e-4`.
+const SEGMENT_TAYLOR_THRESHOLD: f64 = 1e-4;
+
+/// Power-law interpolated noise density at one frequency paired with exact sample weights
+/// with respect to the bracketing densities.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PowerLawPoint {
+    /// Interpolated density value, matching [`power_law`] bit-for-bit.
+    pub(super) value: f64,
+    /// Primary sorted sample `(index, weight)`.
+    pub(super) first: (usize, f64),
+    /// Optional secondary sorted sample `(index, weight)`.
+    pub(super) second: Option<(usize, f64)>,
+}
+
+/// Evaluates [`power_law`] at `at` over ascending `(points, values)` alongside exact partial
+/// derivatives with respect to the bracketing sample densities.
+pub(super) fn power_law_weights(points: &[f64], values: &[f64], at: f64) -> PowerLawPoint {
+    let count = points.len();
+    let index = points
+        .partition_point(|&point| point < at)
+        .max(1)
+        .min(count - 1);
+    let before = index.checked_sub(1).unwrap_or(count - 1);
+    let (first, last) = (points[before], points[index]);
+    let (low, high) = (values[before], values[index]);
+    if same(at, first) {
+        return PowerLawPoint {
+            value: low,
+            first: (before, 1.0),
+            second: None,
+        };
+    }
+    if same(at, last) {
+        return PowerLawPoint {
+            value: high,
+            first: (index, 1.0),
+            second: None,
+        };
+    }
+    if low <= 0.0 || high <= 0.0 {
+        let value = low + (high - low) * (at - first) / (last - first);
+        let fraction = (at - first) / (last - first);
+        return PowerLawPoint {
+            value,
+            first: (before, 1.0 - fraction),
+            second: Some((index, fraction)),
+        };
+    }
+    let value = low * ((high / low).ln() * (at / first).ln() / (last / first).ln()).exp();
+    let exponent = (at / first).ln() / (last / first).ln();
+    PowerLawPoint {
+        value,
+        first: (before, (1.0 - exponent) * value / low),
+        second: Some((index, exponent * value / high)),
+    }
+}
+
+/// Evaluates [`segment`] alongside its exact partial derivatives `(area, d_low, d_high)`.
+pub(super) fn segment_weights(first: f64, last: f64, low: f64, high: f64) -> (f64, f64, f64) {
+    if low <= 0.0 || high <= 0.0 {
+        let span = last - first;
+        #[expect(
+            clippy::manual_midpoint,
+            reason = "jolty's `0.5 * (low + high)`, which overflows where `f64::midpoint` would not"
+        )]
+        let mean = 0.5 * (low + high);
+        let half = 0.5 * span;
+        return (mean * span, half, half);
+    }
+    let span = (last / first).ln();
+    let growth = (high / low).ln() + span;
+    let factor = if growth == 0.0 {
+        1.0
+    } else {
+        growth.exp_m1() / growth
+    };
+    let factor_derivative = if growth.abs() < SEGMENT_TAYLOR_THRESHOLD {
+        // Maclaurin series of `d/dg [(e^g - 1)/g] = sum_{m>=0} (m + 1) g^m / (m + 2)!`.
+        ((((1.0 / 144.0) * growth + 1.0 / 30.0) * growth + 1.0 / 8.0) * growth + 1.0 / 3.0) * growth
+            + 0.5
+    } else {
+        (growth.exp() - factor) / growth
+    };
+    let area = low * first * span * factor;
+    let derivative_low = first * span * (factor - factor_derivative);
+    let derivative_high = (first * span * low / high) * factor_derivative;
+    (area, derivative_low, derivative_high)
 }
 
 /// Interpolates density at `at` between adjacent ascending `points` using power-law scaling

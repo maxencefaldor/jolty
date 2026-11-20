@@ -9,7 +9,8 @@
 use std::borrow::Cow;
 
 use jolty_engine::measure::{
-    self, AnalysisResult, Edge, MeasureError as Failure, Signal, SumError, Table, Transfer, Window,
+    self, AnalysisResult, Edge, MeasureCotangent, MeasureError as Failure, Signal, SumError, Table,
+    Transfer, Window,
 };
 use numpy::ndarray::ArrayView2;
 use numpy::{Complex64, Element, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1};
@@ -33,6 +34,19 @@ type PyTransfer = Option<(PySignal, Option<PySignal>)>;
 
 /// Time window passed from Python: `(start, stop)`, where `None` selects the axis endpoint.
 type PyWindow = (Option<f64>, Option<f64>);
+
+/// Sparse real cotangent returned to Python: `(value, [(point, unknown, weight)], period)`.
+type PyRealCotangent = (f64, Vec<(usize, usize, f64)>, f64);
+
+/// Sparse complex table cotangent returned to Python: `(value, [(point, unknown, real, imag)])`.
+type PyComplexCotangent = (f64, Vec<(usize, usize, f64, f64)>);
+
+/// Sparse complex vector cotangent returned to Python: `(value, [(point, real, imag)])`.
+type PyPointComplexCotangent = (f64, Vec<(usize, f64, f64)>);
+
+/// Sparse noise cotangent returned to Python:
+/// `(value, [(point, density_weight)], [(point, gain_real, gain_imag)])`.
+type PyNoiseCotangent = (f64, Vec<(usize, f64)>, Vec<(usize, f64, f64)>);
 
 /// Scalar measurement evaluated directly on engine analysis results.
 #[pyclass(module = "jolty._core", frozen)]
@@ -190,6 +204,9 @@ measure! {
         /// Creates a measure returning integrated RMS noise from `start` to `stop`,
         /// input-referred when `referred` is true.
         integrated_noise(start: Option<f64>, stop: Option<f64>, referred: bool) => IntegratedNoise;
+        /// Creates a measure returning the steady-state period of a periodic steady-state
+        /// analysis in seconds.
+        period() => Period;
         /// Creates a measure returning the number of DC operating-point solutions found.
         solutions() => Solutions;
         /// Creates a measure returning the minimum damping ratio across all poles.
@@ -272,10 +289,151 @@ measure! {
             })
         }
 
+        /// Evaluates the measure on a periodic steady state's `times`, `values` matrix,
+        /// and `period` in seconds.
+        fn read_periodic_steady_state(
+            &self,
+            times: &Bound<'_, PyArray1<f64>>,
+            values: &Bound<'_, PyArray2<f64>>,
+            period: f64,
+        ) -> PyResult<f64> {
+            self.read_table(times, values, |times, values| {
+                AnalysisResult::PeriodicSteadyState {
+                    times,
+                    values,
+                    period,
+                }
+            })
+        }
+
         /// Evaluates the measure on an operating-points search returning `count` DC
         /// solutions.
         fn read_operating_points(&self, count: usize) -> PyResult<f64> {
             self.read(&AnalysisResult::OperatingPoints(count))
+        }
+
+        /// Evaluates the measure and its sparse real cotangent on an operating point's
+        /// `values` vector.
+        fn cotangent_operating_point(
+            &self,
+            values: &Bound<'_, PyArray1<f64>>,
+        ) -> PyResult<PyRealCotangent> {
+            let outcome = with_slice(values, |values| {
+                self.cotangent(&AnalysisResult::OperatingPoint(values))
+            })?;
+            unpack_real(outcome)
+        }
+
+        /// Evaluates the measure and its sparse real cotangent on a DC sweep's `swept` axis
+        /// and `values` matrix.
+        fn cotangent_dc_sweep(
+            &self,
+            swept: &Bound<'_, PyArray1<f64>>,
+            values: &Bound<'_, PyArray2<f64>>,
+        ) -> PyResult<PyRealCotangent> {
+            let outcome = self.cotangent_table(swept, values, |swept, values| {
+                AnalysisResult::DcSweep { swept, values }
+            })?;
+            unpack_real(outcome)
+        }
+
+        /// Evaluates the measure and its sparse real cotangent on a transient's `times` axis
+        /// and `values` matrix.
+        fn cotangent_transient(
+            &self,
+            times: &Bound<'_, PyArray1<f64>>,
+            values: &Bound<'_, PyArray2<f64>>,
+        ) -> PyResult<PyRealCotangent> {
+            let outcome = self.cotangent_table(times, values, |times, values| {
+                AnalysisResult::Transient { times, values }
+            })?;
+            unpack_real(outcome)
+        }
+
+        /// Evaluates the measure and its sparse real cotangent (including autonomous period
+        /// sensitivity) on a periodic steady state's `times`, `values`, and `period`.
+        fn cotangent_periodic_steady_state(
+            &self,
+            times: &Bound<'_, PyArray1<f64>>,
+            values: &Bound<'_, PyArray2<f64>>,
+            period: f64,
+        ) -> PyResult<PyRealCotangent> {
+            let outcome = self.cotangent_table(times, values, |times, values| {
+                AnalysisResult::PeriodicSteadyState {
+                    times,
+                    values,
+                    period,
+                }
+            })?;
+            unpack_real(outcome)
+        }
+
+        /// Evaluates the measure and its sparse bilinear complex cotangent on an AC
+        /// response's `frequencies` axis and complex `values` matrix.
+        fn cotangent_ac(
+            &self,
+            frequencies: &Bound<'_, PyArray1<f64>>,
+            values: &Bound<'_, PyArray2<Complex64>>,
+        ) -> PyResult<PyComplexCotangent> {
+            let outcome = self.cotangent_table(frequencies, values, |frequencies, values| {
+                AnalysisResult::Ac {
+                    frequencies,
+                    values,
+                }
+            })?;
+            unpack_complex(outcome)
+        }
+
+        /// Evaluates the measure and its sparse bilinear complex cotangent on a stability
+        /// loop gain's `frequencies` and complex `gains`.
+        fn cotangent_stability(
+            &self,
+            frequencies: &Bound<'_, PyArray1<f64>>,
+            gains: &Bound<'_, PyArray1<Complex64>>,
+        ) -> PyResult<PyPointComplexCotangent> {
+            let outcome = with_slices(frequencies, gains, |frequencies, gains| {
+                self.cotangent(&AnalysisResult::Stability { frequencies, gains })
+            })?;
+            unpack_point_complex(outcome)
+        }
+
+        /// Evaluates the measure and its sparse cotangent on a noise analysis's
+        /// `frequencies`, `densities`, and optional input-referred `gains`.
+        fn cotangent_noise(
+            &self,
+            frequencies: &Bound<'_, PyArray1<f64>>,
+            densities: &Bound<'_, PyArray1<f64>>,
+            gains: Option<&Bound<'_, PyArray1<Complex64>>>,
+        ) -> PyResult<PyNoiseCotangent> {
+            let outcome = with_slices(frequencies, densities, |frequencies, densities| {
+                let gains = gains.map(PyArrayMethods::readonly);
+                let gains = gains.as_ref().map(slice);
+                self.cotangent(&AnalysisResult::Noise {
+                    frequencies,
+                    densities,
+                    gains: gains.as_deref(),
+                })
+            })?;
+            unpack_noise(outcome)
+        }
+
+        /// Evaluates the measure and its sparse bilinear complex cotangent on a pole-zero
+        /// analysis's `poles` vector.
+        fn cotangent_pole_zero(
+            &self,
+            poles: &Bound<'_, PyArray1<Complex64>>,
+        ) -> PyResult<PyPointComplexCotangent> {
+            let outcome = with_slice(poles, |poles| {
+                self.cotangent(&AnalysisResult::PoleZero(poles))
+            })?;
+            unpack_point_complex(outcome)
+        }
+
+        /// Evaluates the measure's cotangent on an operating-points search (raises
+        /// `MeasureError` because operating-point counts are discrete).
+        fn cotangent_operating_points(&self, count: usize) -> PyResult<PyRealCotangent> {
+            let outcome = self.cotangent(&AnalysisResult::OperatingPoints(count))?;
+            unpack_real(outcome)
         }
 
         fn __repr__(&self) -> String {
@@ -299,6 +457,71 @@ impl Measure {
         let rows = Rows(values.as_array());
         let table: &dyn Table<T> = &rows;
         self.read(&build(&slice(&axis), table))
+    }
+
+    fn cotangent(&self, results: &AnalysisResult<'_>) -> PyResult<(f64, MeasureCotangent)> {
+        self.0.cotangent(results).map_err(failure)
+    }
+
+    fn cotangent_table<T: Element + Copy>(
+        &self,
+        axis: &Bound<'_, PyArray1<f64>>,
+        values: &Bound<'_, PyArray2<T>>,
+        build: impl for<'a> FnOnce(&'a [f64], &'a dyn Table<T>) -> AnalysisResult<'a>,
+    ) -> PyResult<(f64, MeasureCotangent)> {
+        let (axis, values) = (axis.readonly(), values.readonly());
+        let rows = Rows(values.as_array());
+        let table: &dyn Table<T> = &rows;
+        self.cotangent(&build(&slice(&axis), table))
+    }
+}
+
+fn unpack_real((value, cotangent): (f64, MeasureCotangent)) -> PyResult<PyRealCotangent> {
+    match cotangent {
+        MeasureCotangent::Real { entries, period } => Ok((value, entries, period)),
+        _ => Err(failure(Failure::Kind)),
+    }
+}
+
+fn unpack_complex((value, cotangent): (f64, MeasureCotangent)) -> PyResult<PyComplexCotangent> {
+    match cotangent {
+        MeasureCotangent::Complex { entries } => Ok((
+            value,
+            entries
+                .into_iter()
+                .map(|(point, unknown, weight)| (point, unknown, weight.re, weight.im))
+                .collect(),
+        )),
+        _ => Err(failure(Failure::Kind)),
+    }
+}
+
+fn unpack_point_complex(
+    (value, cotangent): (f64, MeasureCotangent),
+) -> PyResult<PyPointComplexCotangent> {
+    match cotangent {
+        MeasureCotangent::Loop { entries } | MeasureCotangent::Poles { entries } => Ok((
+            value,
+            entries
+                .into_iter()
+                .map(|(point, weight)| (point, weight.re, weight.im))
+                .collect(),
+        )),
+        _ => Err(failure(Failure::Kind)),
+    }
+}
+
+fn unpack_noise((value, cotangent): (f64, MeasureCotangent)) -> PyResult<PyNoiseCotangent> {
+    match cotangent {
+        MeasureCotangent::Noise { densities, gains } => Ok((
+            value,
+            densities,
+            gains
+                .into_iter()
+                .map(|(point, weight)| (point, weight.re, weight.im))
+                .collect(),
+        )),
+        _ => Err(failure(Failure::Kind)),
     }
 }
 
@@ -393,6 +616,7 @@ pub(crate) fn reason(error: Failure) -> (&'static str, Vec<f64>) {
         Failure::EmptyBand => "empty_band",
         Failure::NoPoles => "no_poles",
         Failure::Unreferred => "unreferred",
+        Failure::NotDifferentiable => "not_differentiable",
     };
     (name, Vec::new())
 }

@@ -937,6 +937,28 @@ def integrated_noise(
     return _native(analysis, described, None, resolve, check)
 
 
+def period(analysis: str) -> Measure:
+    """Measures the steady-state period of a periodic steady-state analysis.
+
+    Args:
+        analysis: Plan key naming the target periodic steady-state analysis.
+
+    Returns:
+        Measure evaluating steady-state period in seconds.
+    """
+
+    def resolve(result: results.AnalysisResult) -> ResolvedMeasure:
+        if not isinstance(result, results.PeriodicSteadyStateResult):
+            message = (
+                "period reads a periodic steady state, "
+                f"not {results.result_kind(result)}"
+            )
+            raise MeasureError(message)
+        return ResolvedMeasure(_core.Measure.period(), TIME, _explain())
+
+    return _native(analysis, "period", None, resolve)
+
+
 def solutions(analysis: str) -> Measure:
     """Counts DC solutions found by an operating-points search, as a plain number.
 
@@ -1535,6 +1557,7 @@ _MALFORMED: Final[_Explainer] = {
     "unknown": lambda _: "the result holds fewer unknowns than its circuit",
     "kind": lambda _: "the engine reads no result of this kind",
     "unreferred": lambda _: "the noise analysis names no source to refer its noise to",
+    "not_differentiable": lambda _: "the measure is not differentiable at this result",
 }
 """Fallback error formatters for malformed engine result payloads."""
 
@@ -1685,7 +1708,7 @@ _MEASURE_SPECS: dict[str, MeasureSpec] = {
     ),
     **{
         factory.__name__: MeasureSpec("plain", frozenset(), factory)
-        for factory in (solutions, damping, dominant_pole)
+        for factory in (period, solutions, damping, dominant_pole)
     },
 }
 

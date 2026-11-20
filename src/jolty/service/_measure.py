@@ -179,11 +179,7 @@ def check_options(request: MeasureRequest) -> None:
     Raises:
         JoltyError: When an option inapplicable to the chosen measure is supplied.
     """
-    allowed = (
-        frozenset()
-        if request.measure == "period"
-        else specs.MEASURES[request.measure].options
-    )
+    allowed = specs.MEASURES[request.measure].options
     extra = [
         name
         for name in _MEASURE_OPTION_FIELDS
@@ -285,12 +281,6 @@ def _read_measure(
     max_unknowns: int,
 ) -> tuple[str, specs.Reading]:
     """Constructs and reads the requested measure against `result`."""
-    if request.measure == "period":
-        if not isinstance(result, results.PeriodicSteadyStateResult):
-            kind = results.result_kind(result)
-            message = f"period reads a periodic steady state, not {kind}"
-            raise JoltyError(message)
-        return f"period in {analysis_name}", specs.Reading(result.period, TIME)
     try:
         built = _build_measure(request, analysis_name, result, max_unknowns)
         reading = built.read(result)

@@ -14,7 +14,7 @@ import numpy as np
 import numpy.typing as npt
 from pydantic import JsonValue
 
-from jolty import _core, checks, devices, ir
+from jolty import _core, checks, devices, ir, specs
 from jolty.builder import Component, circuit
 from jolty.devices import Device, ParameterValue
 from jolty.errors import ElaborationError, SimulationError
@@ -56,7 +56,12 @@ type Differentiable = (
 type Gradient = dict[str, dict[str, float | complex]]
 """Parameter gradient mapping keyed by instance path and parameter name."""
 
-type Pullback = Callable[[Mapping[str, npt.ArrayLike]], Gradient]
+type CotangentInput = (
+    Mapping[str, npt.ArrayLike] | specs.RealCotangent | specs.ComplexCotangent
+)
+"""Dense output cotangent mapping or sparse measure cotangent passed to `Pullback`."""
+
+type Pullback = Callable[[CotangentInput], Gradient]
 """Adjoint pullback from [`vjp`][jolty.simulate.vjp] returning parameter gradients."""
 
 PERIOD: Final = "the period"
@@ -624,6 +629,7 @@ class Function:
         options: Options | None = None,
         *,
         subcircuits: Mapping[str, SubcircuitPlacement] | None = None,
+        temperature: Quantity | None = None,
     ) -> None:
         """Initializes a differentiable analysis function for `circuit_or_top`.
 
@@ -634,9 +640,11 @@ class Function:
             subcircuits: Optional mapping from placed SPICE subcircuit instance paths
                 to [`SubcircuitPlacement`][jolty.spice.SubcircuitPlacement] bindings,
                 enabling exact differentiation through SPICE subcircuit parameters.
+            temperature: Optional ambient temperature, defaulting to 27 °C when ``None``.
 
         Raises:
             ElaborationError: Lists every problem reported during elaboration.
+            DimensionError: When `temperature` does not carry temperature dimensions.
             TypeError: When `analysis` is not a differentiable analysis type.
             ValueError: When a `subcircuits` binding does not match the circuit.
         """
@@ -664,7 +672,8 @@ class Function:
         )
         bound, canonical_devices = _bind_subcircuits(raw_circuit, subcircuits)
         self.elaborated = Elaborated(
-            _canonicalize_circuit(raw_circuit, canonical_devices)
+            _canonicalize_circuit(raw_circuit, canonical_devices),
+            temperature=temperature,
         )
         self.analysis = analysis
         self.options = Options() if options is None else options
@@ -942,21 +951,56 @@ class Function:
         points = _values(outcome)[0].shape[0]
         settings = self._settings()
 
-        def pull(cotangent: Mapping[str, npt.ArrayLike]) -> Gradient:
+        def pull(cotangent: CotangentInput) -> Gradient:
             """Evaluates parameter gradients for `cotangent`, keyed by instance."""
-            values, period = _cotangents(
-                cotangent,
-                columns,
-                (points, len(columns)),
-                phasors=phasors,
-                oscillates=self.oscillates,
-            )
-            try:
-                found = core.pull_back(
-                    pullback, values, float(period), settings, engine_pool()
+            if isinstance(cotangent, specs.RealCotangent):
+                if phasors:
+                    message = (
+                        "a small-signal response pullback takes complex cotangents, "
+                        "not RealCotangent"
+                    )
+                    raise ValueError(message)
+                try:
+                    found: npt.NDArray[np.float64] | npt.NDArray[np.complex128] = (
+                        core.pull_back_real(
+                            pullback,
+                            [(list(cotangent.entries), cotangent.period)],
+                            settings,
+                            engine_pool(),
+                        )[0]
+                    )
+                except _core.SimulationError as error:
+                    raise SimulationError(str(error)) from None
+            elif isinstance(cotangent, specs.ComplexCotangent):
+                if not phasors:
+                    message = (
+                        "a real analysis pullback takes real cotangents, "
+                        "not ComplexCotangent"
+                    )
+                    raise ValueError(message)
+                try:
+                    found = core.pull_back_complex(
+                        pullback,
+                        [list(cotangent.entries)],
+                        settings,
+                        engine_pool(),
+                    )[0].real
+                except _core.SimulationError as error:
+                    raise SimulationError(str(error)) from None
+            else:
+                values, period = _cotangents(
+                    cotangent,
+                    columns,
+                    (points, len(columns)),
+                    phasors=phasors,
+                    oscillates=self.oscillates,
                 )
-            except _core.SimulationError as error:
-                raise SimulationError(str(error)) from None
+                try:
+                    found = core.pull_back(
+                        pullback, values, float(period), settings, engine_pool()
+                    )
+                except _core.SimulationError as error:
+                    raise SimulationError(str(error)) from None
             primitive_gradients: Gradient = {}
             for (path, name), value in zip(
                 primitive_names, found.tolist(), strict=True
@@ -964,6 +1008,9 @@ class Function:
                 primitive_gradients.setdefault(path, {})[name] = value
             if not evaluated:
                 return primitive_gradients
+            complex_result = phasors and not isinstance(
+                cotangent, specs.ComplexCotangent
+            )
             pulled: Gradient = {}
             for path, named in parameters.items():
                 subcircuit = evaluated.get(path)
@@ -973,7 +1020,7 @@ class Function:
                     }
                 else:
                     pulled[path] = _contract_subcircuit(
-                        subcircuit, primitive_gradients, phasors=phasors
+                        subcircuit, primitive_gradients, phasors=complex_result
                     )
             return pulled
 
@@ -1264,6 +1311,7 @@ def function(
     options: Options | None = None,
     *,
     subcircuits: Mapping[str, SubcircuitPlacement] | None = None,
+    temperature: Quantity | None = None,
 ) -> Function:
     """Creates a differentiable [`Function`][jolty.simulate.Function] for `analysis`.
 
@@ -1278,15 +1326,23 @@ def function(
         options: Optional solver tolerances, iteration limits, and nodesets.
         subcircuits: Optional mapping from placed subcircuit paths to
             [`SubcircuitPlacement`][jolty.spice.SubcircuitPlacement] bindings.
+        temperature: Optional ambient temperature, defaulting to 27 °C when ``None``.
 
     Returns:
         Callable `Function` evaluating `analysis` at parameter overrides.
 
     Raises:
         ElaborationError: Lists every problem reported during circuit elaboration.
+        DimensionError: When `temperature` does not carry temperature dimensions.
         ValueError: When a `subcircuits` binding does not match the circuit.
     """
-    return Function(circuit_or_top, analysis, options, subcircuits=subcircuits)
+    return Function(
+        circuit_or_top,
+        analysis,
+        options,
+        subcircuits=subcircuits,
+        temperature=temperature,
+    )
 
 
 def jvp(

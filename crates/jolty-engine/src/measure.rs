@@ -23,14 +23,16 @@
 //! ```
 
 mod arithmetic;
+mod cotangent;
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use jolty_numerics::Complex64;
 
 use crate::{
-    AcResult, DcSweepResult, NoiseResult, OperatingPointResult, PoleZeroResult, StabilityResult,
-    TransientResult,
+    AcResult, Cotangent, Cotangents, DcSweepResult, NoiseResult, OperatingPointResult,
+    PeriodicSteadyStateResult, PoleZeroResult, StabilityResult, TransientResult,
 };
 
 pub(crate) use arithmetic::trapezoid;
@@ -269,6 +271,8 @@ pub enum Measure {
         /// Flag selecting input-referred noise over output noise.
         referred: bool,
     },
+    /// Steady-state period of a periodic steady-state analysis, in seconds.
+    Period,
     /// Count of distinct DC solutions returned by an operating-points search.
     Solutions,
     /// Minimum damping ratio across all poles of a pole-zero analysis.
@@ -309,13 +313,22 @@ pub enum AnalysisResult<'a> {
         /// The values, one row per swept value.
         values: &'a dyn Table<f64>,
     },
-    /// A transient, or one period of a periodic steady state: its times, and the unknowns'
-    /// values at each.
+    /// A transient: its times, and the unknowns' values at each.
     Transient {
         /// The times.
         times: &'a [f64],
         /// The values, one row per time.
         values: &'a dyn Table<f64>,
+    },
+    /// One period of a periodic steady state: its times, unknown values, and steady-state
+    /// period in seconds.
+    PeriodicSteadyState {
+        /// The times across one period.
+        times: &'a [f64],
+        /// The values, one row per time.
+        values: &'a dyn Table<f64>,
+        /// The steady-state period in seconds.
+        period: f64,
     },
     /// A small-signal response: its frequencies, and the unknowns' phasors at each.
     Ac {
@@ -355,7 +368,7 @@ impl<'a> AnalysisResult<'a> {
             crate::AnalysisResult::DcSweep(sweep) => sweep.into(),
             crate::AnalysisResult::Ac(response) => response.into(),
             crate::AnalysisResult::Transient(waveforms) => waveforms.into(),
-            crate::AnalysisResult::PeriodicSteadyState(found) => (&found.transient).into(),
+            crate::AnalysisResult::PeriodicSteadyState(found) => found.into(),
             crate::AnalysisResult::Sensitivity(_)
             | crate::AnalysisResult::Mismatch(_)
             | crate::AnalysisResult::TransferFunction(_) => {
@@ -389,6 +402,16 @@ impl<'a> From<&'a TransientResult> for AnalysisResult<'a> {
         Self::Transient {
             times: &waveforms.times,
             values: &waveforms.values,
+        }
+    }
+}
+
+impl<'a> From<&'a PeriodicSteadyStateResult> for AnalysisResult<'a> {
+    fn from(found: &'a PeriodicSteadyStateResult) -> Self {
+        Self::PeriodicSteadyState {
+            times: &found.transient.times,
+            values: &found.transient.values,
+            period: found.period,
         }
     }
 }
@@ -540,6 +563,178 @@ pub enum MeasureError {
     /// Input-referred noise requested without a source gain vector.
     #[error("the noise analysis names no source to refer its noise to")]
     Unreferred,
+    /// Measure or evaluation point is discrete or singular and has no finite derivative.
+    #[error("the measure is not differentiable at this result")]
+    NotDifferentiable,
+}
+
+/// Sparse reverse-mode derivative of a scalar [`Measure`] with respect to its
+/// [`AnalysisResult`] inputs.
+///
+/// Complex entries follow the engine's bilinear convention `v = dL/da - j dL/db` for a real
+/// scalar `L` of complex input `z = a + jb`, so `Re(v * dz) = dL`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MeasureCotangent {
+    /// Cotangent on a real unknown table (`OperatingPoint`, `DcSweep`, `Transient`, or
+    /// `PeriodicSteadyState`).
+    Real {
+        /// Nonzero `(point, unknown, weight)` entries in ascending `(point, unknown)` order.
+        entries: Vec<(usize, usize, f64)>,
+        /// Derivative with respect to an autonomous oscillator's period in seconds.
+        period: f64,
+    },
+    /// Bilinear complex cotangent on an AC response's unknown phasor table.
+    Complex {
+        /// Nonzero `(point, unknown, weight)` entries in ascending `(point, unknown)` order.
+        entries: Vec<(usize, usize, Complex64)>,
+    },
+    /// Bilinear complex cotangent on a stability analysis's loop-gain vector.
+    Loop {
+        /// Nonzero `(point, weight)` entries in ascending `point` order.
+        entries: Vec<(usize, Complex64)>,
+    },
+    /// Cotangent on a noise analysis's power densities and optional input-referred gains.
+    Noise {
+        /// Nonzero `(point, weight)` entries with respect to output power densities.
+        densities: Vec<(usize, f64)>,
+        /// Nonzero `(point, weight)` bilinear complex entries with respect to input gains.
+        gains: Vec<(usize, Complex64)>,
+    },
+    /// Bilinear complex cotangent on a pole-zero analysis's poles vector.
+    Poles {
+        /// Nonzero `(pole_index, weight)` entries in ascending `pole_index` order.
+        entries: Vec<(usize, Complex64)>,
+    },
+}
+
+impl MeasureCotangent {
+    /// Returns a copy of this cotangent with every weight scaled by `factor`.
+    #[must_use]
+    pub fn scale(&self, factor: f64) -> Self {
+        if factor == 0.0 {
+            return match self {
+                Self::Real { .. } => Self::Real {
+                    entries: Vec::new(),
+                    period: 0.0,
+                },
+                Self::Complex { .. } => Self::Complex {
+                    entries: Vec::new(),
+                },
+                Self::Loop { .. } => Self::Loop {
+                    entries: Vec::new(),
+                },
+                Self::Noise { .. } => Self::Noise {
+                    densities: Vec::new(),
+                    gains: Vec::new(),
+                },
+                Self::Poles { .. } => Self::Poles {
+                    entries: Vec::new(),
+                },
+            };
+        }
+        match self {
+            Self::Real { entries, period } => Self::Real {
+                entries: entries
+                    .iter()
+                    .map(|&(point, unknown, weight)| (point, unknown, weight * factor))
+                    .collect(),
+                period: period * factor,
+            },
+            Self::Complex { entries } => Self::Complex {
+                entries: entries
+                    .iter()
+                    .map(|&(point, unknown, weight)| (point, unknown, weight * factor))
+                    .collect(),
+            },
+            Self::Loop { entries } => Self::Loop {
+                entries: entries
+                    .iter()
+                    .map(|&(point, weight)| (point, weight * factor))
+                    .collect(),
+            },
+            Self::Noise { densities, gains } => Self::Noise {
+                densities: densities
+                    .iter()
+                    .map(|&(point, weight)| (point, weight * factor))
+                    .collect(),
+                gains: gains
+                    .iter()
+                    .map(|&(point, weight)| (point, weight * factor))
+                    .collect(),
+            },
+            Self::Poles { entries } => Self::Poles {
+                entries: entries
+                    .iter()
+                    .map(|&(index, weight)| (index, weight * factor))
+                    .collect(),
+            },
+        }
+    }
+
+    /// Expands a [`Self::Real`] cotangent into an engine real [`Cotangent`] with rows of
+    /// length `unknowns`, returning `None` for other variants.
+    #[must_use]
+    pub fn to_real_cotangent(&self, unknowns: usize) -> Option<Cotangent<f64>> {
+        let Self::Real { entries, period } = self else {
+            return None;
+        };
+        let mut points: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
+        for &(point, unknown, weight) in entries {
+            if weight == 0.0 {
+                continue;
+            }
+            let row = points.entry(point).or_insert_with(|| vec![0.0; unknowns]);
+            if let Some(slot) = row.get_mut(unknown) {
+                *slot += weight;
+            }
+        }
+        points.retain(|_, row| row.iter().any(|&value| value != 0.0));
+        Some(Cotangent {
+            points,
+            period: *period,
+        })
+    }
+
+    /// Expands a [`Self::Complex`] cotangent into an engine complex [`Cotangent`] with rows
+    /// of length `unknowns`, returning `None` for other variants.
+    #[must_use]
+    pub fn to_complex_cotangent(&self, unknowns: usize) -> Option<Cotangent<Complex64>> {
+        let Self::Complex { entries } = self else {
+            return None;
+        };
+        let zero = Complex64::default();
+        let mut points: BTreeMap<usize, Vec<Complex64>> = BTreeMap::new();
+        for &(point, unknown, weight) in entries {
+            if weight == zero {
+                continue;
+            }
+            let row = points.entry(point).or_insert_with(|| vec![zero; unknowns]);
+            if let Some(slot) = row.get_mut(unknown) {
+                *slot += weight;
+            }
+        }
+        points.retain(|_, row| row.iter().any(|&value| value != zero));
+        Some(Cotangent {
+            points,
+            period: 0.0,
+        })
+    }
+
+    /// Expands a [`Self::Real`] or [`Self::Complex`] cotangent into single-entry
+    /// [`Cotangents`] suitable for [`Simulator::pull_back`](crate::Simulator::pull_back),
+    /// returning `None` for variants without an unknown-table VJP.
+    #[must_use]
+    pub fn to_cotangents(&self, unknowns: usize) -> Option<Cotangents> {
+        match self {
+            Self::Real { .. } => self
+                .to_real_cotangent(unknowns)
+                .map(|cotangent| Cotangents::Real(vec![cotangent])),
+            Self::Complex { .. } => self
+                .to_complex_cotangent(unknowns)
+                .map(|cotangent| Cotangents::Complex(vec![cotangent])),
+            Self::Loop { .. } | Self::Noise { .. } | Self::Poles { .. } => None,
+        }
+    }
 }
 
 impl Measure {
@@ -588,6 +783,7 @@ impl Measure {
             | Self::GainMargin { transfer } => *transfer = through(*transfer)?,
             Self::NoiseDensity { .. }
             | Self::IntegratedNoise { .. }
+            | Self::Period
             | Self::Solutions
             | Self::Damping
             | Self::DominantPole => {}
@@ -685,6 +881,10 @@ impl Measure {
                 stop,
                 referred,
             } => integrated_noise(start, stop, referred, results),
+            Self::Period => match *results {
+                AnalysisResult::PeriodicSteadyState { period, .. } => Ok(period),
+                _ => Err(MeasureError::Kind),
+            },
             Self::Solutions => match results {
                 AnalysisResult::OperatingPoints(found) => Ok(count(*found)),
                 _ => Err(MeasureError::Kind),
@@ -692,6 +892,23 @@ impl Measure {
             Self::Damping => Ok(arithmetic::minimum(&dampings(poles(results)?))),
             Self::DominantPole => Ok(arithmetic::minimum(&natural_frequencies(poles(results)?))),
         }
+    }
+
+    /// Evaluates this measure on `results` alongside its exact sparse reverse-mode
+    /// [`MeasureCotangent`].
+    ///
+    /// The returned scalar matches [`Measure::measure`] on the same `results`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MeasureError::NotDifferentiable`] for discrete measures or singular points
+    /// (such as zero RMS, zero transfer phasor, or zero pole magnitude), and any evaluation
+    /// error returned by [`Measure::measure`].
+    pub fn cotangent(
+        &self,
+        results: &AnalysisResult<'_>,
+    ) -> Result<(f64, MeasureCotangent), MeasureError> {
+        cotangent::evaluate(*self, results)
     }
 }
 
@@ -967,7 +1184,12 @@ fn value(
                 Some(reference) => Ok(value - read(reference)?),
             }
         }
-        (AnalysisResult::DcSweep { .. } | AnalysisResult::Transient { .. }, Some(at)) => {
+        (
+            AnalysisResult::DcSweep { .. }
+            | AnalysisResult::Transient { .. }
+            | AnalysisResult::PeriodicSteadyState { .. },
+            Some(at),
+        ) => {
             let (points, values) = traced(signal, results, Scope::Any)?;
             let point = Axis(&points).locate(at, Point::At)?;
             Ok(interpolated(point, &points, &values))
@@ -991,7 +1213,8 @@ fn traced<'a>(
     scope: Scope,
 ) -> Result<(Cow<'a, [f64]>, Vec<f64>), MeasureError> {
     let (points, table) = match *results {
-        AnalysisResult::Transient { times, values } => (times, values),
+        AnalysisResult::Transient { times, values }
+        | AnalysisResult::PeriodicSteadyState { times, values, .. } => (times, values),
         AnalysisResult::DcSweep { swept, values } if scope == Scope::Any => (swept, values),
         _ => return Err(MeasureError::Kind),
     };

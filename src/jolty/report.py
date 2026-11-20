@@ -16,6 +16,8 @@ overall yield with its Wilson confidence interval.
 __lazy_modules__ = ["jolty.devices", "numpy"]
 
 import math
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Annotated, Final, Literal
 
@@ -1208,6 +1210,140 @@ class VariantsReport(_BatchReport):
         varied = " and ".join(self.parameters) or "nothing"
         head = f"variants: {self.runs} runs of {varied}{at}; {self.failed} failed"
         return self._describe_batch(head, self.runs)
+
+
+class SlackDerivative(ir.FrozenModel):
+    """First-order derivative of a requirement's slack with respect to one parameter."""
+
+    instance: str = Field(
+        description="Instance path of the device owning the parameter."
+    )
+    parameter: str = Field(description="Parameter name, such as resistance.")
+    derivative: float = Field(
+        description="First-order derivative of signed slack with respect to the "
+        "parameter in SI base units (positive increases slack)."
+    )
+
+
+class RequirementReport(ir.FrozenModel):
+    """Requirement verdict paired with largest slack derivatives when failing."""
+
+    verdict: Verdict
+    derivatives: tuple[SlackDerivative, ...] = Field(
+        default=(),
+        description="Largest nonzero slack derivatives by magnitude for a failing "
+        "requirement, ordered descending; empty when passing or omitted.",
+    )
+    unlisted: int = Field(
+        default=0,
+        description="Number of additional nonzero slack derivatives omitted from the "
+        "report.",
+    )
+
+    def describe(self) -> str:
+        """Formats the verdict and, when failing with derivatives, largest levers.
+
+        Returns:
+            Text identical to `Verdict.describe()` when passing or without
+            derivatives, or followed by an indented table of largest slack
+            derivatives.
+        """
+        head = self.verdict.describe()
+        if self.verdict.status != "failed" or not self.derivatives:
+            return head
+        rows = [
+            [each.instance, each.parameter, repr(each.derivative)]
+            for each in self.derivatives
+        ]
+        lines = [head, "  largest slack derivatives (first order):"]
+        lines.extend(f"  {row}" for row in _table(rows))
+        if self.unlisted:
+            lines.append(f"      ... and {self.unlisted} more")
+        return "\n".join(lines)
+
+
+def specs_report(
+    verdicts: Sequence[Verdict],
+    derivatives: Sequence[Mapping[str, Mapping[str, float]] | None] | None = None,
+    *,
+    max_derivatives: int = 5,
+) -> tuple[RequirementReport, ...]:
+    """Builds requirement reports, attaching largest slack derivatives to failures.
+
+    When `derivatives` is omitted, every entry has no derivatives and
+    [`describe_specs`][jolty.report.describe_specs] matches
+    [`specs.describe`][jolty.specs.describe] verbatim. Non-failing requirements omit
+    derivatives.
+
+    Args:
+        verdicts: Requirement verdicts in specification order.
+        derivatives: Optional per-verdict slack derivative mappings aligned with
+            `verdicts`, each mapping instance path and parameter name to
+            ``d(slack)/d(p)``.
+        max_derivatives: Maximum number of largest nonzero slack derivatives listed
+            per failing requirement.
+
+    Returns:
+        Ordered `RequirementReport` entries matching `verdicts`.
+
+    Raises:
+        ValueError: When `max_derivatives` is less than 1 or `derivatives` length
+            does not match `verdicts`.
+    """
+    if max_derivatives < 1:
+        message = f"max_derivatives is at least 1, not {max_derivatives}"
+        raise ValueError(message)
+    if derivatives is None:
+        return tuple(RequirementReport(verdict=verdict) for verdict in verdicts)
+    if len(derivatives) != len(verdicts):
+        message = (
+            f"derivatives has {len(derivatives)} entries for {len(verdicts)} verdicts"
+        )
+        raise ValueError(message)
+    built: list[RequirementReport] = []
+    for verdict, mapping in zip(verdicts, derivatives, strict=True):
+        if verdict.status != "failed" or mapping is None or not mapping:
+            built.append(RequirementReport(verdict=verdict))
+            continue
+        entries = [
+            SlackDerivative(
+                instance=instance, parameter=parameter, derivative=float(value)
+            )
+            for instance, named in mapping.items()
+            for parameter, value in named.items()
+            if value != 0.0 and math.isfinite(value)
+        ]
+        entries.sort(
+            key=lambda entry: (-abs(entry.derivative), entry.instance, entry.parameter)
+        )
+        listed = tuple(entries[:max_derivatives])
+        built.append(
+            RequirementReport(
+                verdict=verdict,
+                derivatives=listed,
+                unlisted=max(len(entries) - max_derivatives, 0),
+            )
+        )
+    return tuple(built)
+
+
+def describe_specs(reports: Sequence[RequirementReport]) -> str:
+    """Formats `reports` as text blocks followed by the status tally line.
+
+    Args:
+        reports: Requirement reports produced by `specs_report`.
+
+    Returns:
+        Multi-paragraph summary matching `specs.describe` with optional slack
+        derivatives on failing requirements.
+    """
+    counts = Counter(item.verdict.status for item in reports)
+    tally = ", ".join(
+        f"{counts[status]} {status}"
+        for status in ("passed", "marginal", "failed", "unmeasured")
+        if counts[status]
+    )
+    return "\n\n".join([*(item.describe() for item in reports), f"specs: {tally}"])
 
 
 class WorstCaseReport(ir.FrozenModel):

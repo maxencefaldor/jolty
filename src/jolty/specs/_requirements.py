@@ -149,6 +149,129 @@ class Reading:
 
 
 @dataclass(frozen=True, slots=True)
+class RealCotangent:
+    """Sparse reverse-mode derivative on a real unknown table and optional period.
+
+    Each entry in `entries` is ``(point, unknown, weight)`` in ascending order,
+    matching `OperatingPointResult`, `DcSweepResult`, `TransientResult`, or
+    `PeriodicSteadyStateResult`. `period` is the derivative with respect to an
+    autonomous oscillator's period in seconds.
+    """
+
+    entries: tuple[tuple[int, int, float], ...]
+    period: float = 0.0
+
+    def scale(self, factor: float) -> RealCotangent:
+        """Returns a copy with every entry and `period` scaled by `factor`."""
+        if factor == 0.0:
+            return RealCotangent((), 0.0)
+        return RealCotangent(
+            tuple(
+                (point, unknown, weight * factor)
+                for point, unknown, weight in self.entries
+            ),
+            self.period * factor,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ComplexCotangent:
+    """Sparse bilinear complex derivative on an AC response's unknown phasors.
+
+    Each entry in `entries` is ``(point, unknown, real, imaginary)`` following the
+    engine's bilinear convention ``v = dL/da - j dL/db``, so ``Re(v * dz) = dL``.
+    """
+
+    entries: tuple[tuple[int, int, float, float], ...]
+
+    def scale(self, factor: float) -> ComplexCotangent:
+        """Returns a copy with every complex entry scaled by `factor`."""
+        if factor == 0.0:
+            return ComplexCotangent(())
+        return ComplexCotangent(
+            tuple(
+                (point, unknown, real * factor, imaginary * factor)
+                for point, unknown, real, imaginary in self.entries
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LoopCotangent:
+    """Sparse bilinear complex derivative on a stability analysis's loop gains.
+
+    Each entry in `entries` is ``(point, real, imaginary)`` in ascending `point`
+    order using ``v = dL/da - j dL/db``.
+    """
+
+    entries: tuple[tuple[int, float, float], ...]
+
+    def scale(self, factor: float) -> LoopCotangent:
+        """Returns a copy with every complex entry scaled by `factor`."""
+        if factor == 0.0:
+            return LoopCotangent(())
+        return LoopCotangent(
+            tuple(
+                (point, real * factor, imaginary * factor)
+                for point, real, imaginary in self.entries
+            )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NoiseCotangent:
+    """Sparse derivative on a noise analysis's densities and input-referred gains.
+
+    `densities` stores ``(point, weight)`` entries with respect to output power
+    spectral densities, and `gains` stores ``(point, real, imaginary)`` bilinear
+    complex entries with respect to input-referred transfer gains.
+    """
+
+    densities: tuple[tuple[int, float], ...]
+    gains: tuple[tuple[int, float, float], ...]
+
+    def scale(self, factor: float) -> NoiseCotangent:
+        """Returns a copy with every density and gain entry scaled by `factor`."""
+        if factor == 0.0:
+            return NoiseCotangent((), ())
+        return NoiseCotangent(
+            tuple((point, weight * factor) for point, weight in self.densities),
+            tuple(
+                (point, real * factor, imaginary * factor)
+                for point, real, imaginary in self.gains
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PolesCotangent:
+    """Sparse bilinear complex derivative on a pole-zero analysis's poles vector.
+
+    Each entry in `entries` is ``(pole_index, real, imaginary)`` in ascending order
+    using ``v = dL/da - j dL/db``.
+    """
+
+    entries: tuple[tuple[int, float, float], ...]
+
+    def scale(self, factor: float) -> PolesCotangent:
+        """Returns a copy with every pole entry scaled by `factor`."""
+        if factor == 0.0:
+            return PolesCotangent(())
+        return PolesCotangent(
+            tuple(
+                (point, real * factor, imaginary * factor)
+                for point, real, imaginary in self.entries
+            )
+        )
+
+
+type MeasureCotangent = (
+    RealCotangent | ComplexCotangent | LoopCotangent | NoiseCotangent | PolesCotangent
+)
+"""Sparse reverse-mode derivative of a scalar measure or requirement slack."""
+
+
+@dataclass(frozen=True, slots=True)
 class ResolvedMeasure:
     """Engine-ready measure resolved against one result kind.
 
@@ -181,6 +304,51 @@ class ResolvedMeasure:
             raise MeasureError(self.explain(error)) from None
         return Reading(value, self.unit)
 
+    def cotangent(
+        self, result: results.AnalysisResult
+    ) -> tuple[Reading, MeasureCotangent]:
+        """Evaluates this resolved measure on `result` with its exact sparse cotangent.
+
+        Args:
+            result: Solved analysis result whose arrays are differentiated.
+
+        Returns:
+            Pair of measured `Reading` and sparse `MeasureCotangent`.
+
+        Raises:
+            MeasureError: When the measure cannot be evaluated or is not
+                differentiable at `result`.
+            ValueError: When a noise integration band lies outside the frequency range.
+        """
+        try:
+            value, cotangent = _engine_cotangent(self.measure, result)
+        except _core.MeasureError as error:
+            raise MeasureError(self.explain(error)) from None
+        return Reading(value, self.unit), cotangent
+
+
+def _engine_real(
+    measure: _core.Measure,
+    result: results.OperatingPointResult
+    | results.OperatingPointsResult
+    | results.DcSweepResult
+    | results.TransientResult,
+) -> float:
+    """Evaluates `measure` on a real-valued analysis result."""
+    match result:
+        case results.OperatingPointResult():
+            return measure.read_operating_point(_real(result.values))
+        case results.OperatingPointsResult():
+            return measure.read_operating_points(len(result.points))
+        case results.DcSweepResult():
+            return measure.read_dc_sweep(_real(result.swept), _real(result.values))
+        case results.PeriodicSteadyStateResult():
+            return measure.read_periodic_steady_state(
+                _real(result.times), _real(result.values), result.period
+            )
+        case results.TransientResult():
+            return measure.read_transient(_real(result.times), _real(result.values))
+
 
 def _engine(measure: _core.Measure, result: results.AnalysisResult) -> float:
     """Invokes the Rust engine evaluator for `measure` on `result` arrays.
@@ -189,27 +357,26 @@ def _engine(measure: _core.Measure, result: results.AnalysisResult) -> float:
         MeasureError: When `result` cannot be evaluated by the engine.
     """
     match result:
-        case results.OperatingPointResult():
-            value = measure.read_operating_point(_real(result.values))
-        case results.OperatingPointsResult():
-            value = measure.read_operating_points(len(result.points))
-        case results.DcSweepResult():
-            value = measure.read_dc_sweep(_real(result.swept), _real(result.values))
-        case results.TransientResult():
-            value = measure.read_transient(_real(result.times), _real(result.values))
+        case (
+            results.OperatingPointResult()
+            | results.OperatingPointsResult()
+            | results.DcSweepResult()
+            | results.TransientResult()
+        ):
+            return _engine_real(measure, result)
         case results.AcResult():
-            value = measure.read_ac(_real(result.frequencies), _complex(result.values))
+            return measure.read_ac(_real(result.frequencies), _complex(result.values))
         case results.StabilityResult():
-            value = measure.read_stability(
+            return measure.read_stability(
                 _real(result.frequencies), _complex(result.gains)
             )
         case results.NoiseResult():
             gains = None if result.input is None else _complex(result.input.gains)
-            value = measure.read_noise(
+            return measure.read_noise(
                 _real(result.frequencies), _real(result.densities), gains
             )
         case results.PoleZeroResult():
-            value = measure.read_pole_zero(_complex(result.poles))
+            return measure.read_pole_zero(_complex(result.poles))
         case (
             results.SensitivityResult()
             | results.MismatchResult()
@@ -219,7 +386,82 @@ def _engine(measure: _core.Measure, result: results.AnalysisResult) -> float:
             # is resolved against them.
             message = f"the engine measures no {type(result).__name__}"
             raise MeasureError(message)
-    return value
+
+
+def _engine_cotangent_real(
+    measure: _core.Measure,
+    result: results.OperatingPointResult
+    | results.OperatingPointsResult
+    | results.DcSweepResult
+    | results.TransientResult,
+) -> tuple[float, RealCotangent]:
+    """Evaluates `measure` and its real cotangent on a real-valued analysis result."""
+    match result:
+        case results.OperatingPointResult():
+            value, entries, period = measure.cotangent_operating_point(
+                _real(result.values)
+            )
+        case results.OperatingPointsResult():
+            value, entries, period = measure.cotangent_operating_points(
+                len(result.points)
+            )
+        case results.DcSweepResult():
+            value, entries, period = measure.cotangent_dc_sweep(
+                _real(result.swept), _real(result.values)
+            )
+        case results.PeriodicSteadyStateResult():
+            value, entries, period = measure.cotangent_periodic_steady_state(
+                _real(result.times), _real(result.values), result.period
+            )
+        case results.TransientResult():
+            value, entries, period = measure.cotangent_transient(
+                _real(result.times), _real(result.values)
+            )
+    return value, RealCotangent(tuple(entries), period)
+
+
+def _engine_cotangent(
+    measure: _core.Measure, result: results.AnalysisResult
+) -> tuple[float, MeasureCotangent]:
+    """Invokes the Rust engine cotangent evaluator for `measure` on `result` arrays.
+
+    Raises:
+        MeasureError: When `result` cannot be evaluated by the engine.
+    """
+    match result:
+        case (
+            results.OperatingPointResult()
+            | results.OperatingPointsResult()
+            | results.DcSweepResult()
+            | results.TransientResult()
+        ):
+            return _engine_cotangent_real(measure, result)
+        case results.AcResult():
+            value, complex_entries = measure.cotangent_ac(
+                _real(result.frequencies), _complex(result.values)
+            )
+            return value, ComplexCotangent(tuple(complex_entries))
+        case results.StabilityResult():
+            value, loop_entries = measure.cotangent_stability(
+                _real(result.frequencies), _complex(result.gains)
+            )
+            return value, LoopCotangent(tuple(loop_entries))
+        case results.NoiseResult():
+            gains = None if result.input is None else _complex(result.input.gains)
+            value, densities, gain_entries = measure.cotangent_noise(
+                _real(result.frequencies), _real(result.densities), gains
+            )
+            return value, NoiseCotangent(tuple(densities), tuple(gain_entries))
+        case results.PoleZeroResult():
+            value, pole_entries = measure.cotangent_pole_zero(_complex(result.poles))
+            return value, PolesCotangent(tuple(pole_entries))
+        case (
+            results.SensitivityResult()
+            | results.MismatchResult()
+            | results.TransferFunctionResult()
+        ):
+            message = f"the engine measures no {type(result).__name__}"
+            raise MeasureError(message)
 
 
 def _real(values: np.typing.ArrayLike) -> results.Real:
@@ -291,6 +533,28 @@ class Measure:
         return Requirement(
             self, center - spread, center + spread, source_location=caller()
         )
+
+    def cotangent(
+        self, result: results.AnalysisResult
+    ) -> tuple[Reading, MeasureCotangent]:
+        """Evaluates this measure on `result` alongside its exact sparse cotangent.
+
+        Args:
+            result: Solved analysis result whose arrays are differentiated.
+
+        Returns:
+            Pair of measured `Reading` and sparse `MeasureCotangent`.
+
+        Raises:
+            MeasureError: When the measure is a custom Python measure, incompatible
+                with `result`, or not differentiable at `result`.
+        """
+        if self.resolved is None:
+            message = (
+                f"{self} has no engine cotangent because it is a custom Python measure"
+            )
+            raise MeasureError(message)
+        return self.resolved(result).cotangent(result)
 
     @override
     def __str__(self) -> str:
@@ -385,6 +649,28 @@ class Requirement:
         """
         return replace(self, margin=_quantity(margin))
 
+    def _judge_with_sign(self, reading: Reading) -> tuple[Status, float, float]:
+        """Evaluates `reading` and returns `(status, slack, sign)`.
+
+        `sign` is `+1.0` when the lower bound governs slack and `-1.0` when the upper
+        bound governs slack (breaking exact midpoint ties toward the lower bound).
+        """
+        slack = math.inf
+        sign = 1.0
+        if self.minimum is not None:
+            slack = reading.value - _against(self.minimum, reading, "the minimum")
+        if self.maximum is not None:
+            upper_slack = _against(self.maximum, reading, "the maximum") - reading.value
+            if upper_slack < slack:
+                slack = upper_slack
+                sign = -1.0
+        margin = (
+            0.0 if self.margin is None else _against(self.margin, reading, "the margin")
+        )
+        if slack < 0:
+            return "failed", slack, sign
+        return ("marginal" if slack < margin else "passed"), slack, sign
+
     def judge(self, reading: Reading) -> tuple[Status, float]:
         """Evaluates `reading` against the bounds and returns `(status, slack)`.
 
@@ -397,19 +683,35 @@ class Requirement:
         Raises:
             DimensionError: When a bound or margin does not match the reading unit.
         """
-        slack = math.inf
-        if self.minimum is not None:
-            slack = reading.value - _against(self.minimum, reading, "the minimum")
-        if self.maximum is not None:
-            slack = min(
-                slack, _against(self.maximum, reading, "the maximum") - reading.value
-            )
-        margin = (
-            0.0 if self.margin is None else _against(self.margin, reading, "the margin")
-        )
-        if slack < 0:
-            return "failed", slack
-        return ("marginal" if slack < margin else "passed"), slack
+        status, slack, _ = self._judge_with_sign(reading)
+        return status, slack
+
+    def slack_cotangent(
+        self, result: results.AnalysisResult
+    ) -> tuple[Status, float, MeasureCotangent]:
+        """Evaluates `result` and returns `(status, slack, cotangent)` for slack.
+
+        The returned cotangent is the sparse reverse-mode derivative of signed slack
+        with respect to `result`: `+1` times the measure cotangent when the lower
+        bound is active and `-1` times it when the upper bound is active (breaking
+        exact midpoint ties on two-sided requirements toward the lower bound).
+
+        Args:
+            result: Solved analysis result whose arrays are differentiated.
+
+        Returns:
+            Triple of requirement `Status`, signed slack in SI base units, and sparse
+            `MeasureCotangent` for signed slack.
+
+        Raises:
+            DimensionError: When a bound or margin does not match the reading unit.
+            MeasureError: When the measure cannot be evaluated or differentiated at
+                `result`.
+        """
+        reading, measure_cotangent = self.measure.cotangent(result)
+        status, slack, sign = self._judge_with_sign(reading)
+        cotangent = measure_cotangent if sign > 0 else measure_cotangent.scale(sign)
+        return status, slack, cotangent
 
     def _text(self, bound: Quantity) -> str:
         return _format_bound(self.measure, bound)

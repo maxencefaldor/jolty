@@ -182,6 +182,7 @@ enum CauseKey {
     SumIndeterminate,
     NoPoles,
     Unreferred,
+    NotDifferentiable,
 }
 
 impl From<Cause> for CauseKey {
@@ -228,6 +229,7 @@ impl From<Cause> for CauseKey {
                 MeasureError::Sum(SumError::Indeterminate) => Self::SumIndeterminate,
                 MeasureError::NoPoles => Self::NoPoles,
                 MeasureError::Unreferred => Self::Unreferred,
+                MeasureError::NotDifferentiable => Self::NotDifferentiable,
             },
         }
     }

@@ -87,3 +87,28 @@ pub(crate) fn cotangent<T: Element + Copy + Default + PartialEq>(
         .collect();
     Cotangent { points, period }
 }
+
+/// Builds a [`Cotangent`] of width `unknowns` from sparse `(point, unknown, weight)` entries
+/// and oscillator `period`, rejecting out-of-range unknown indices.
+pub(crate) fn sparse_cotangent<T: Copy + Default + PartialEq + std::ops::AddAssign>(
+    entries: &[(usize, usize, T)],
+    period: f64,
+    unknowns: usize,
+) -> PyResult<Cotangent<T>> {
+    let zero = T::default();
+    let mut points: BTreeMap<usize, Vec<T>> = BTreeMap::new();
+    for &(point, unknown, weight) in entries {
+        if unknown >= unknowns {
+            return Err(crate::SimulationError::new_err(format!(
+                "a cotangent unknown index {unknown} is out of range for {unknowns} unknowns"
+            )));
+        }
+        if weight == zero {
+            continue;
+        }
+        let row = points.entry(point).or_insert_with(|| vec![zero; unknowns]);
+        row[unknown] += weight;
+    }
+    points.retain(|_, row| row.iter().any(|value| *value != zero));
+    Ok(Cotangent { points, period })
+}

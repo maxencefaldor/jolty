@@ -79,6 +79,94 @@ round(float(loss_value), 3)  # 0.25
 ```
 
 For batched transients or driven periodic steady states under `jax.vmap`, pass explicit `breakpoints` so every sample returns a fixed waveform shape.
+
+## 4. Size across specs and corners with smooth minimax
+
+Compose `jolty.function`, `slack_derivatives`, and `scipy.optimize.minimize` to maximize worst-case requirement slack across operating corners.
+Log-sum-exp smoothly approximates the worst normalized slack while keeping exact analytical gradients from one backward pass per corner.
+
+```python
+import math
+
+import numpy as np
+from scipy.optimize import minimize
+
+from jolty import Ac, Builder, Role, component, devices, function
+from jolty.plan import decade
+from jolty.simulate import slack_derivatives
+from jolty.specs import bandwidth, gain
+from jolty.units import K, MHz, V, celsius, kHz, kohm, nF
+
+
+@component
+def rc_filter(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    resistor = c.place(
+        devices.resistor(2 * kohm, temperature_coefficient=4e-3 / K), name="R1"
+    )
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
+    c.connect(source.positive, resistor.a, name="in")
+    c.connect(resistor.b, capacitor.a, name="out")
+    c.connect(capacitor.b, source.negative, ground)
+
+
+bode = Ac("V1", decade(1 * kHz, 10 * MHz, 20))
+corners = [
+    function(rc_filter(), bode, temperature=celsius(temperature))
+    for temperature in (-40, 125)
+]
+stopband_limit = -14.0
+requirements = (
+    bandwidth("bode", "out") >= 80 * kHz,
+    gain("bode", "out", at=1 * MHz) <= stopband_limit,
+)
+scales = (80e3, abs(stopband_limit))
+
+
+def objective(log_values: np.ndarray) -> tuple[float, np.ndarray]:
+    resistance, capacitance = math.exp(log_values[0]), math.exp(log_values[1])
+    parameters = {"R1": {"resistance": resistance}, "C1": {"capacitance": capacitance}}
+    slacks, gradients = [], []
+    for corner in corners:
+        for item, scale in zip(
+            slack_derivatives(corner, parameters, requirements), scales, strict=True
+        ):
+            slack = 0.0 if item.verdict.slack is None else item.verdict.slack
+            slacks.append(slack / scale)
+            gradients.append(
+                [
+                    item.derivatives["R1"]["resistance"] * resistance / scale,
+                    item.derivatives["C1"]["capacitance"] * capacitance / scale,
+                ]
+            )
+    beta = 20.0
+    scaled = -beta * np.array(slacks)
+    shift = float(np.max(scaled))
+    weights = np.exp(scaled - shift)
+    total = float(np.sum(weights))
+    return (shift + math.log(total)) / beta, -(weights / total) @ np.array(gradients)
+
+
+bounds = [(math.log(200.0), math.log(10e3)), (math.log(0.2e-9), math.log(5e-9))]
+solved = minimize(
+    objective,
+    [math.log(2e3), math.log(1e-9)],
+    method="L-BFGS-B",
+    jac=True,
+    bounds=bounds,
+)
+sized = {
+    "R1": {"resistance": math.exp(solved.x[0])},
+    "C1": {"capacitance": math.exp(solved.x[1])},
+}
+all(
+    item.verdict.status == "passed"
+    for corner in corners
+    for item in slack_derivatives(corner, sized, requirements)
+)  # True
+```
+
 See [Sensitivities](../guide/simulation.md#sensitivities) for AC complex cotangents, transient adjoints, and oscillator period derivatives.
 
 ## 4. Differentiate SPICE and PDK subcircuits

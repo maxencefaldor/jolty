@@ -16,12 +16,12 @@ mod variants;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use jolty_engine::{
-    Analysis, Cotangents, Differentiated, Options, ParameterCotangents, Record, Sensitivity,
-    SimulationError as EngineError,
+    Analysis, Cotangent, Cotangents, Differentiated, Options, ParameterCotangents, Record,
+    Sensitivity, SimulationError as EngineError,
 };
 use jolty_ir::Circuit;
 use jolty_models::{Library, Model, ParameterError, ParameterKind};
-use numpy::{Complex64, PyArray1, PyReadonlyArray2};
+use numpy::{Complex64, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray2};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyValueError};
 use pyo3::prelude::*;
@@ -31,8 +31,15 @@ use crate::convert::{
     diagnostics_to_python, excursions_to_python, jvp_to_python, quantity_name, result_to_python,
 };
 use crate::helpers::{
-    cotangent, elaboration_result, lock_unpoisoned, parse_json, simulation_result, value_result,
+    cotangent, elaboration_result, lock_unpoisoned, parse_json, simulation_result,
+    sparse_cotangent, value_result,
 };
+
+/// Sparse real cotangent passed from Python: `([(point, unknown, weight)], period)`.
+type PySparseRealCotangent = (Vec<(usize, usize, f64)>, f64);
+
+/// Sparse complex cotangent passed from Python: `[(point, unknown, real, imaginary)]`.
+type PySparseComplexCotangent = Vec<(usize, usize, f64, f64)>;
 
 /// Global allocator using mimalloc per-thread heaps for concurrent batch allocations.
 ///
@@ -627,6 +634,85 @@ impl Simulator {
                 Ok(PyArray1::from_vec(py, rows.pop().unwrap_or_default()).into_any())
             }
         }
+    }
+
+    /// Pulls multiple sparse real cotangents `(entries, period)` back to parameters in one
+    /// backward pass, returning an array of shape `(len(cotangents), len(parameters))`.
+    fn pull_back_real<'py>(
+        &self,
+        py: Python<'py>,
+        pullback: &Pullback,
+        cotangents: Vec<PySparseRealCotangent>,
+        options: &str,
+        pool: &Pool,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let options: Options = parse_json!(options)?;
+        let unknowns = self.lock().unknowns().len();
+        let count = cotangents.len();
+        let parameter_count = pullback.inner.parameters.len();
+        let built: Vec<Cotangent<f64>> = cotangents
+            .into_iter()
+            .map(|(entries, period)| sparse_cotangent(&entries, period, unknowns))
+            .collect::<PyResult<_>>()?;
+        let wrapped = Cotangents::Real(built);
+        let found = self.simulate(
+            py,
+            pool,
+            &options,
+            |_| true,
+            |simulator, options| simulator.pull_back(&pullback.inner, &wrapped, options),
+        )?;
+        let ParameterCotangents::Real(rows) = found else {
+            return Err(SimulationError::new_err(
+                "real cotangents returned non-real parameter derivatives",
+            ));
+        };
+        let flat: Vec<f64> = rows.into_iter().flatten().collect();
+        PyArray1::from_vec(py, flat).reshape([count, parameter_count])
+    }
+
+    /// Pulls multiple sparse complex cotangents `[(point, unknown, real, imaginary)]` back to
+    /// parameters in one backward pass, returning an array of shape
+    /// `(len(cotangents), len(parameters))`.
+    fn pull_back_complex<'py>(
+        &self,
+        py: Python<'py>,
+        pullback: &Pullback,
+        cotangents: Vec<PySparseComplexCotangent>,
+        options: &str,
+        pool: &Pool,
+    ) -> PyResult<Bound<'py, PyArray2<Complex64>>> {
+        let options: Options = parse_json!(options)?;
+        let unknowns = self.lock().unknowns().len();
+        let count = cotangents.len();
+        let parameter_count = pullback.inner.parameters.len();
+        let built: Vec<Cotangent<Complex64>> = cotangents
+            .into_iter()
+            .map(|entries| {
+                let complex_entries: Vec<(usize, usize, Complex64)> = entries
+                    .into_iter()
+                    .map(|(point, unknown, real, imaginary)| {
+                        (point, unknown, Complex64::new(real, imaginary))
+                    })
+                    .collect();
+                sparse_cotangent(&complex_entries, 0.0, unknowns)
+            })
+            .collect::<PyResult<_>>()?;
+        let wrapped = Cotangents::Complex(built);
+        let found = self.simulate(
+            py,
+            pool,
+            &options,
+            |_| true,
+            |simulator, options| simulator.pull_back(&pullback.inner, &wrapped, options),
+        )?;
+        let ParameterCotangents::Complex(rows) = found else {
+            return Err(SimulationError::new_err(
+                "complex cotangents returned non-complex parameter derivatives",
+            ));
+        };
+        let flat: Vec<Complex64> = rows.into_iter().flatten().collect();
+        PyArray1::from_vec(py, flat).reshape([count, parameter_count])
     }
 
     /// Runs JSON `analysis` under JSON `options`, releasing the interpreter inside `pool`
