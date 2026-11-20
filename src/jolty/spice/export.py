@@ -355,6 +355,7 @@ ELEMENTS = {
     "behavioral_voltage_source": Element("B", ("positive", "negative")),
     "behavioral_current_source": Element("B", ("positive", "negative")),
     "behavioral_capacitor": Element("C", ("positive", "negative")),
+    "behavioral_resistor": Element("R", ("positive", "negative")),
     "voltage_controlled_switch": Element("B", _CONTROLLED),
     "current_controlled_switch": Element("B", _CONTROLLED),
     "photocell": Element("B", ("a", "b", "light_positive", "light_negative")),
@@ -783,6 +784,7 @@ _EXPRESSED: Final = frozenset(
         "behavioral_voltage_source",
         "behavioral_current_source",
         "behavioral_capacitor",
+        "behavioral_resistor",
         "voltage_controlled_switch",
         "current_controlled_switch",
         "photocell",
@@ -842,6 +844,7 @@ def _cool(parameters: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
 _WARMED: Final = frozenset(
     {
         "resistor",
+        "behavioral_resistor",
         "capacitor",
         "inductor",
         "coupled_inductors",
@@ -1020,13 +1023,9 @@ def _device(
             "behavioral_voltage_source"
             | "behavioral_current_source"
             | "behavioral_capacitor"
+            | "behavioral_resistor"
         ):
-            expression, senses = _behavior(instance, ground)
-            lines.extend(senses)
-            # ngspice makes a capacitor of a charge `Q=` a current of its rate of
-            # change (`inpcom.c`, lines 6937 to 6950).
-            output = _BEHAVIORAL_OUTPUTS[model]
-            value = f"{output}={{{expression}}}"
+            value = _behavioral_value(instance, model, values, ground, lines)
         case "voltage_controlled_switch" | "current_controlled_switch":
             nodes, value = _switch(instance, model, values, nodes.split(), lines)
         case (
@@ -1061,8 +1060,31 @@ _BEHAVIORAL_OUTPUTS: Final = {
     "behavioral_voltage_source": "V",
     "behavioral_current_source": "I",
     "behavioral_capacitor": "Q",
+    "behavioral_resistor": "R",
 }
-"""SPICE behavioral expression output keywords (`V`, `I`, or `Q`) by model."""
+"""SPICE behavioral expression output keywords (`V`, `I`, `Q`, or `R`) by model."""
+
+
+def _behavioral_value(
+    instance: ir.Instance,
+    model: str,
+    values: Mapping[str, JsonValue],
+    ground: str,
+    lines: list[str],
+) -> str:
+    """Formats a behavioral source, capacitor, or resistor SPICE value clause."""
+    expression, senses = _behavior(instance, ground)
+    lines.extend(senses)
+    # ngspice makes a capacitor of a charge `Q=` a current of its rate of change
+    # (`inpcom.c`, lines 6937 to 6950).
+    output = _BEHAVIORAL_OUTPUTS[model]
+    written = f"{output}={{{expression}}}"
+    if model != "behavioral_resistor":
+        return written
+    rest = [(key, amount) for key, amount in values.items() if key != "expression"]
+    drift = _passive_drift(model, rest, "")
+    return " ".join([written, *drift])
+
 
 _KEYWORDED: Final = {"transmission_line": TRANSMISSION_LINE}
 """Device models whose SPICE values are formatted as `KEY=value` arguments."""

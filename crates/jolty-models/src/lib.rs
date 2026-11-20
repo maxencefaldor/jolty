@@ -49,7 +49,7 @@ pub use group::{
 pub use jolty_expressions::Choice;
 pub use kernel::behavioral::{
     Behavior, BehavioralCapacitor, BehavioralCurrentSource, BehavioralParameters,
-    BehavioralVoltageSource,
+    BehavioralResistor, BehavioralResistorParameters, BehavioralVoltageSource,
 };
 pub use kernel::bjt::{
     BipolarCapacitanceTemperatureModel, BipolarTemperatureModel, BipolarTransistor,
@@ -136,6 +136,7 @@ impl Library {
         let mut library = Self::default();
         library.add(Differentiable::<BehavioralCapacitor>::new());
         library.add(Differentiable::<BehavioralCurrentSource>::new());
+        library.add(Thermal::<BehavioralResistor>::new());
         library.add(Differentiable::<BehavioralVoltageSource>::new());
         library.add(Thermal::<BipolarTransistor>::new());
         library.add(Thermal::<Bsim3>::new());
@@ -253,6 +254,11 @@ mod tests {
             (
                 "behavioral_current_source",
                 json!({"expression": "1e-3 * v(a, b) + i(p)"}),
+            ),
+            (
+                "behavioral_resistor",
+                json!({"expression": "1e3 * (1 + 0.1 * tanh(v(positive, negative)))",
+                    "temperature_coefficient": 1e-3}),
             ),
             (
                 "behavioral_voltage_source",
@@ -514,6 +520,7 @@ mod tests {
             [
                 "behavioral_capacitor",
                 "behavioral_current_source",
+                "behavioral_resistor",
                 "behavioral_voltage_source",
                 "bipolar_transistor",
                 "bsim3",
@@ -617,6 +624,7 @@ mod tests {
         assert_eq!(
             declared,
             [
+                "behavioral_resistor",
                 "bipolar_transistor",
                 "bsim3",
                 "bsim4",

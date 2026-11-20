@@ -492,6 +492,22 @@ impl Expression {
         &self.variables
     }
 
+    /// Evaluates this expression at `variables` (in [`Expression::variables`] order) without
+    /// step limiting or derivatives, returning the scalar result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `variables` does not hold one value per variable.
+    #[must_use]
+    pub fn value(&self, variables: &[f64]) -> f64 {
+        assert_eq!(
+            variables.len(),
+            self.variables.len(),
+            "one value per variable"
+        );
+        tape::value(&self.tape, variables)
+    }
+
     /// Evaluates this expression at `variables` (in [`Expression::variables`] order), writes
     /// its partial derivatives into `gradient`, and returns the scalar result.
     ///
@@ -1342,5 +1358,27 @@ mod tests {
         let fourth = expression.evaluate(&[0.25], &mut workspace, &mut gradient);
         assert!(close(fourth, 0.5));
         assert!(close(gradient[0], 1.0));
+    }
+
+    #[test]
+    fn value_matches_unlimited_evaluate_for_inline_and_heap_tapes() {
+        let short = "limit(v(a), -1, 1) + if(v(b) > 0, rounded_table(v(a), 0.1, 0, 1, 2, 3), 2)";
+        let parsed: Expression = short.parse().expect("valid");
+        let (expected, _) = evaluate(short, &[0.5, 1.0]);
+        assert_eq!(parsed.value(&[0.5, 1.0]).to_bits(), expected.to_bits());
+        let (other, _) = evaluate(short, &[0.5, -1.0]);
+        assert_eq!(parsed.value(&[0.5, -1.0]).to_bits(), other.to_bits());
+
+        // Exceeds the 32-instruction inline stack buffer in `tape::value`.
+        let long = (1..=40)
+            .map(|index| format!("sin(v(a) + {index})"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let parsed_long: Expression = long.parse().expect("valid");
+        let (expected_long, _) = evaluate(&long, &[0.25]);
+        assert_eq!(
+            parsed_long.value(&[0.25]).to_bits(),
+            expected_long.to_bits()
+        );
     }
 }

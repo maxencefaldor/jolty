@@ -164,8 +164,8 @@ class Device:
         Self-heating adds a ``thermal`` terminal connecting to a thermal net or to
         ambient ground. The device operates at the simulation temperature plus the
         thermal net temperature rise, injecting total dissipated electrical power into
-        that thermal net. Supported models are resistors, diodes, JFETs, bipolar
-        transistors, VBICs, MOSFETs, VDMOS devices, BSIM3, and BSIM4.
+        that thermal net. Supported models are resistors, behavioral resistors, diodes,
+        JFETs, bipolar transistors, VBICs, MOSFETs, VDMOS devices, BSIM3, and BSIM4.
 
         Returns:
             Copy of the device exposing an electrothermal ``thermal`` terminal.
@@ -1250,6 +1250,50 @@ def behavioral_capacitor(expression: str) -> Device:
         ('positive', 'negative')
     """
     return device("behavioral_capacitor", {"expression": expression})
+
+
+def behavioral_resistor(
+    expression: str,
+    *,
+    temperature_coefficient: Quantity | None = None,
+    quadratic_temperature_coefficient: Quantity | None = None,
+    nominal_temperature: Quantity | None = None,
+) -> Device:
+    """Creates a behavioral resistor whose nominal resistance follows `expression`.
+
+    Expression syntax (in ohms at `nominal_temperature`) and terminal ordering match
+    [`behavioral_voltage_source`][jolty.devices.behavioral_voltage_source]. Effective
+    resistance scales with simulation temperature as
+    ``R_expr * (1 + tc1 * dT + tc2 * dT**2)`` where ``dT = T - nominal_temperature``.
+    The device conducts ``v(positive, negative) / R_eff`` and emits Johnson-Nyquist
+    thermal noise ``4kT / R_eff`` across ``positive`` and ``negative`` whenever
+    ``R_eff > 0``.
+
+    Args:
+        expression: SI nominal resistance expression in ohms.
+        temperature_coefficient: Linear temperature coefficient ``tc1`` in K⁻¹.
+        quadratic_temperature_coefficient: Quadratic temperature coefficient ``tc2``
+            in K⁻².
+        nominal_temperature: Measurement temperature at which `expression` applies;
+            defaults to 27 °C.
+
+    Returns:
+        Behavioral resistor `Device` with expression-derived terminals.
+
+    Raises:
+        DimensionError: If a temperature parameter has the wrong physical dimension.
+        ValueError: If `expression` cannot be parsed or evaluates to a non-positive
+            constant resistance.
+
+    Examples:
+        >>> from jolty.units import K
+        >>> behavioral_resistor(
+        ...     "1e3 * (1 + 0.1 * v(positive, negative))",
+        ...     temperature_coefficient=1e-3 / K,
+        ... ).terminals
+        ('positive', 'negative')
+    """
+    return _device("behavioral_resistor", locals())
 
 
 def voltage_controlled_switch(

@@ -752,6 +752,72 @@ mod tests {
         ("bsim4", &["charge_partition"]),
     ];
 
+    /// Extra parameter configurations exercised by the `Lift`-vs-`serde` test: every
+    /// `Waveform` variant, multi-winding `coupled_inductors`, `thermal: true`, and
+    /// own-temperature overrides.
+    const EXTRA_LIFT_CASES: &[(&str, &str)] = &[
+        // Every Waveform variant, including pulse with period None and Some.
+        ("voltage_source", r#"{"waveform": {"dc": 3.3}}"#),
+        (
+            "voltage_source",
+            r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 1e-8,
+                "rise": 1e-9, "fall": 2e-9, "width": 1e-6}}}"#,
+        ),
+        (
+            "voltage_source",
+            r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 1e-8,
+                "rise": 1e-9, "fall": 2e-9, "width": 1e-6, "period": 1e-5}}}"#,
+        ),
+        (
+            "voltage_source",
+            r#"{"waveform": {"sine": {"offset": 1.2, "amplitude": 0.5, "frequency": 1e6,
+                "delay": 1e-7, "damping": 1e4, "phase": 0.25}}}"#,
+        ),
+        (
+            "voltage_source",
+            r#"{"waveform": {"piecewise": {"points": [[0, 0], [1e-6, 1.5], [2e-6, -0.5]]}}}"#,
+        ),
+        (
+            "voltage_source",
+            r#"{"waveform": {"exponential": {"initial": 0, "pulsed": 5,
+                "rise_delay": 1e-9, "rise_time_constant": 1e-8,
+                "fall_delay": 2e-7, "fall_time_constant": 3e-8}}}"#,
+        ),
+        // Multi-winding coupled inductors exercising Vec indices and integer winding pairs.
+        (
+            "coupled_inductors",
+            r#"{"windings": [{"inductance": 1e-3}, {"inductance": 2e-3}, {"inductance": 3e-3}],
+                "couplings": [
+                    {"windings": [1, 2], "coefficient": 0.8},
+                    {"windings": [2, 3], "coefficient": 0.6}
+                ]}"#,
+        ),
+        // Self-heating and Surrounded own-temperature overrides.
+        (
+            "behavioral_resistor",
+            r#"{"expression": "1e3 * (1 + 0.1 * tanh(v(positive, negative)))",
+                "thermal": true, "temperature": 350}"#,
+        ),
+        ("diode", r#"{"saturation_current": 2e-14, "thermal": true}"#),
+        (
+            "resistor",
+            r#"{"resistance": 1000, "thermal": true, "temperature": 350}"#,
+        ),
+        (
+            "mosfet",
+            r#"{"level": 3, "channel": "p", "thermal": true, "temperature_offset": 15}"#,
+        ),
+        (
+            "bipolar_transistor",
+            r#"{"polarity": "pnp", "thermal": true}"#,
+        ),
+        ("jfet", r#"{"channel": "p", "thermal": true}"#),
+        ("vbic", r#"{"polarity": "pnp", "thermal": true}"#),
+        ("bsim3", r#"{"channel": "p", "thermal": true}"#),
+        ("vdmos", r#"{"channel": "p", "thermal": true}"#),
+        ("bsim4", r#"{"channel": "p", "thermal": true}"#),
+    ];
+
     /// Verifies that every analog model's `Lift` visits the exact set of real parameter
     /// paths written by `serde`, with bit-for-bit identical values and no duplicates.
     /// Covers `CASES`, all `Option<R>` fields as `None` and `Some(...)`, every `Waveform`
@@ -797,65 +863,7 @@ mod tests {
             "expected optional real parameters across BSIM/BJT/diode models, \
              got {total_optional_populated}"
         );
-
-        let extra: &[(&str, &str)] = &[
-            // Every Waveform variant, including pulse with period None and Some.
-            ("voltage_source", r#"{"waveform": {"dc": 3.3}}"#),
-            (
-                "voltage_source",
-                r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 1e-8,
-                    "rise": 1e-9, "fall": 2e-9, "width": 1e-6}}}"#,
-            ),
-            (
-                "voltage_source",
-                r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 5, "delay": 1e-8,
-                    "rise": 1e-9, "fall": 2e-9, "width": 1e-6, "period": 1e-5}}}"#,
-            ),
-            (
-                "voltage_source",
-                r#"{"waveform": {"sine": {"offset": 1.2, "amplitude": 0.5, "frequency": 1e6,
-                    "delay": 1e-7, "damping": 1e4, "phase": 0.25}}}"#,
-            ),
-            (
-                "voltage_source",
-                r#"{"waveform": {"piecewise": {"points": [[0, 0], [1e-6, 1.5], [2e-6, -0.5]]}}}"#,
-            ),
-            (
-                "voltage_source",
-                r#"{"waveform": {"exponential": {"initial": 0, "pulsed": 5,
-                    "rise_delay": 1e-9, "rise_time_constant": 1e-8,
-                    "fall_delay": 2e-7, "fall_time_constant": 3e-8}}}"#,
-            ),
-            // Multi-winding coupled inductors exercising Vec indices and integer winding pairs.
-            (
-                "coupled_inductors",
-                r#"{"windings": [{"inductance": 1e-3}, {"inductance": 2e-3}, {"inductance": 3e-3}],
-                    "couplings": [
-                        {"windings": [1, 2], "coefficient": 0.8},
-                        {"windings": [2, 3], "coefficient": 0.6}
-                    ]}"#,
-            ),
-            // Self-heating and Surrounded own-temperature overrides.
-            ("diode", r#"{"saturation_current": 2e-14, "thermal": true}"#),
-            (
-                "resistor",
-                r#"{"resistance": 1000, "thermal": true, "temperature": 350}"#,
-            ),
-            (
-                "mosfet",
-                r#"{"level": 3, "channel": "p", "thermal": true, "temperature_offset": 15}"#,
-            ),
-            (
-                "bipolar_transistor",
-                r#"{"polarity": "pnp", "thermal": true}"#,
-            ),
-            ("jfet", r#"{"channel": "p", "thermal": true}"#),
-            ("vbic", r#"{"polarity": "pnp", "thermal": true}"#),
-            ("bsim3", r#"{"channel": "p", "thermal": true}"#),
-            ("vdmos", r#"{"channel": "p", "thermal": true}"#),
-            ("bsim4", r#"{"channel": "p", "thermal": true}"#),
-        ];
-        for &(name, parameters) in extra {
+        for &(name, parameters) in EXTRA_LIFT_CASES {
             let model = library.get(name).expect("a model of the library");
             assert_lift_matches_serde(&**model, parameters, selectors_for(name));
         }
@@ -1151,6 +1159,10 @@ mod tests {
         "source_perimeter": 5e-6, "cgsl": 1e-10, "cgdl": 1.2e-10, "dwg": -5e-9,
         "dwb": 3e-9}"#;
 
+    const BEHAVIORAL_RESISTOR_HEATED: &str = r#"{"expression": "1e3 * (1 + 0.2 * tanh(v(positive, negative)) + 0.1 * tanh(v(control)))",
+        "temperature_coefficient": 4e-3, "quadratic_temperature_coefficient": 1e-5,
+        "nominal_temperature": 290}"#;
+
     const DIODE_HEATED: &str = r#"{"saturation_current": 1e-14, "series_resistance": 2,
         "junction_capacitance": 2e-12, "transit_time": 1e-9}"#;
 
@@ -1170,6 +1182,12 @@ mod tests {
 
     /// Plain heated cases: `(model, cool_parameters, biases, rises)`.
     const HEATED_BASE: &[HeatedCase<'_>] = &[
+        (
+            "behavioral_resistor",
+            BEHAVIORAL_RESISTOR_HEATED,
+            &[&[3.0, 1.0, 0.5], &[2.5, -0.5, -0.4]],
+            &[10.0, 80.0],
+        ),
         (
             "diode",
             DIODE_HEATED,

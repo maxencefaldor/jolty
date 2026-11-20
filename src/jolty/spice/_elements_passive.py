@@ -7,7 +7,6 @@ from typing import Final
 
 from pydantic import JsonValue
 
-from jolty import _core
 from jolty.spice import models
 from jolty.spice._initial import DeviceVoltage
 from jolty.spice._params import (
@@ -113,7 +112,18 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
     stored = frozenset({"q"}) if model == "capacitor" else frozenset()
     initial = frozenset({"ic"}) if model in {"capacitor", "inductor"} else frozenset()
     allowed = frozenset(
-        {element_letter, "m", "tc", "temp", "dtemp", *drifts, *sized, *stored, *initial}
+        {
+            element_letter,
+            "m",
+            "tc",
+            "temp",
+            "dtemp",
+            *(("tnom",) if model == "resistor" else ()),
+            *drifts,
+            *sized,
+            *stored,
+            *initial,
+        }
     )
 
     def translated(translation: Translation, statement: Statement) -> None:
@@ -171,11 +181,8 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
         value = value * copies if model == "capacitor" else value / copies
         _check_passive_value(statement, model, parameter, value)
         given |= _coefficients(translation, statement, assigned, drifts)
-        temperatures = {
-            name: single_keyword(translation.value, statement, name, words)
-            for name, words in assigned.items()
-            if name in {"temp", "dtemp"}
-        }
+        nominal, temperatures = _element_temperatures(translation, statement, assigned)
+        given |= nominal
         parameters: dict[str, JsonValue] = {parameter: value}
         parameters |= _temperatures(given, statement, allow_tref=model == "resistor")
         parameters |= models.own_temperature(given, temperatures, statement)
@@ -263,8 +270,8 @@ def _behaves(
     """Translates behavioral passive elements and returns whether one was matched.
 
     Handles capacitors with explicit ``Q=`` charge expressions, voltage-dependent
-    capacitors integrated into charge, and expression-defined resistors rendered as
-    behavioral current sources.
+    capacitors integrated into charge, and expression-defined resistors lowered to
+    behavioral resistors.
 
     Raises:
         SpiceError: When ``Q`` has multiple tokens or the behavioral form is
@@ -309,12 +316,13 @@ def _value_of_voltage(
     resistance: Expression,
     assigned: Mapping[str, list[str]],
 ) -> None:
-    """Translates a voltage- or current-dependent resistor into a behavioral current.
+    """Translates a voltage- or current-dependent resistor into a behavioral resistor.
 
-    Matches ngspice ``I = m · V(a, b) / (R · (1 + TC1 · ΔT + TC2 · ΔT²))``
-    (``inpcom.c``, lines 6149-6151, 6825-6870; ``asrcload.c``, lines 41-51). Ignores
-    model cards and geometry, evaluates ``ΔT`` relative to 27 °C at library
-    temperature, and emits no thermal noise.
+    Preserves ``TC``/``TC1``/``TC2``, ``TNOM``, ``TEMP``/``DTEMP``, and multiplicity
+    ``M`` dynamically so resistance scales with simulation temperature as
+    ``(R / m) * (1 + TC1 * dT + TC2 * dT**2)`` and emits Johnson-Nyquist thermal
+    noise ``4kT / R_eff`` whenever ``R_eff > 0``. Ignores model cards and geometry,
+    matching ngspice ``inpcom.c`` (lines 6825 to 6870).
 
     Raises:
         SpiceError: When the element is an inductor or sets unsupported coefficients
@@ -329,7 +337,10 @@ def _value_of_voltage(
         )
         raise statement.fail(message)
     given = _coefficients(
-        translation, statement, assigned, frozenset(models.PASSIVE_DRIFT)
+        translation,
+        statement,
+        assigned,
+        frozenset(models.PASSIVE_DRIFT) | frozenset(models.PASSIVE_CURVATURE),
     )
     unread = sorted(set(given) - {"tc1", "tc2"})
     if unread:
@@ -338,13 +349,8 @@ def _value_of_voltage(
             "voltage or a current"
         )
         raise statement.fail(message)
-    rise = translation.library.temperature - _core.REFERENCE_TEMPERATURE
-    factor = 1 + given.get("tc1", 0.0) * rise + given.get("tc2", 0.0) * (rise * rise)
-    if factor == 0 or not math.isfinite(factor):
-        message = (
-            f"temperature factor for resistor is finite and nonzero, not {factor!r}"
-        )
-        raise statement.fail(message)
+    nominal, temperatures = _element_temperatures(translation, statement, assigned)
+    given |= nominal
     own: dict[str, float] = {}
     if "m" in assigned:
         own["m"] = single_keyword(translation.value, statement, "m", assigned["m"])
@@ -352,12 +358,17 @@ def _value_of_voltage(
     if not (copies > 0 and math.isfinite(copies)):
         message = f"the element's copies `m` is positive and finite, not {copies!r}"
         raise statement.fail(message)
-    current = Binary(
-        "*",
-        Binary("/", Voltage(nodes[0], nodes[1]), resistance),
-        Number(copies / factor),
+    scaled = resistance if copies == 1 else Binary("/", resistance, Number(copies))
+    parameters: dict[str, JsonValue] = _temperatures(
+        given, statement, allow_tref=True
+    ) | models.own_temperature({}, temperatures, statement)
+    translation.add_behavioral(
+        statement,
+        "behavioral_resistor",
+        nodes,
+        scaled,
+        parameters=parameters,
     )
-    translation.add_behavioral(statement, "behavioral_current_source", nodes, current)
 
 
 def _charge(
@@ -569,6 +580,25 @@ def _check_passive_value(
     if not (value > 0 and math.isfinite(value)):
         message = f"{parameter} is positive, not {value!r}"
         raise statement.fail(message)
+
+
+def _element_temperatures(
+    translation: Translation,
+    statement: Statement,
+    assigned: Mapping[str, list[str]],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Extracts element-level ``TNOM`` and ``TEMP``/``DTEMP`` overrides."""
+    nominal = (
+        {"tnom": single_keyword(translation.value, statement, "tnom", assigned["tnom"])}
+        if "tnom" in assigned
+        else {}
+    )
+    temperatures = {
+        name: single_keyword(translation.value, statement, name, words)
+        for name, words in assigned.items()
+        if name in {"temp", "dtemp"}
+    }
+    return nominal, temperatures
 
 
 def _temperatures(

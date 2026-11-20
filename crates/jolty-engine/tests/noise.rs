@@ -17,9 +17,11 @@ use capacitor::capacitor;
 use common::{circuit, device, resistor};
 use current::current_dc;
 use dc::voltage_dc;
-use jolty_engine::{Noise, NoiseResult, Options, SimulationError};
+use jolty_engine::{Conditions, Noise, NoiseResult, Options, SimulationError, Simulator};
 use jolty_ir::Circuit;
-use jolty_models::{BOLTZMANN, ELEMENTARY_CHARGE, Nature, REFERENCE_TEMPERATURE, thermal_voltage};
+use jolty_models::{
+    BOLTZMANN, ELEMENTARY_CHARGE, Library, Nature, REFERENCE_TEMPERATURE, thermal_voltage,
+};
 use serde_json::json;
 use sim::simulator;
 
@@ -230,5 +232,72 @@ fn rejects_what_it_cannot_measure() {
             simulator.noise(&analysis, &Options::default()),
             Err(SimulationError::InvalidAnalysis(_))
         ));
+    }
+}
+
+#[test]
+fn a_behavioral_resistors_thermal_noise_tracks_bias_and_temperature() {
+    let nominal = 1e3;
+    let alpha = 0.2;
+    let linear_coefficient = 2e-3;
+    let quadratic_coefficient = 1e-5;
+    let bias = 1e-3;
+    let driven = circuit([
+        current_dc("I1", "0", "out", bias),
+        device(
+            "BR1",
+            "behavioral_resistor",
+            json!({
+                "expression": "1e3 * (1 + 0.2 * v(positive, negative))",
+                "temperature_coefficient": linear_coefficient,
+                "quadratic_temperature_coefficient": quadratic_coefficient,
+                "nominal_temperature": REFERENCE_TEMPERATURE
+            }),
+            &[("positive", "out"), ("negative", "0")],
+        ),
+    ]);
+    let library = Library::standard();
+    let analysis = Noise {
+        output: "out".to_owned(),
+        reference: None,
+        source: None,
+        frequencies: FREQUENCIES.to_vec(),
+    };
+    let tight = Options {
+        relative_tolerance: 1e-12,
+        voltage_tolerance: 1e-14,
+        current_tolerance: 1e-16,
+        ..Options::default()
+    };
+    for temperature in [233.15, REFERENCE_TEMPERATURE, 398.15] {
+        let conditions = Conditions {
+            temperature,
+            ..Conditions::default()
+        };
+        let mut instance = Simulator::new(&driven, &library, &conditions).expect("elaborates");
+        let point = instance.operating_point(&tight).expect("converges");
+        let delta = temperature - REFERENCE_TEMPERATURE;
+        let factor = 1.0 + linear_coefficient * delta + quadratic_coefficient * delta * delta;
+        let voltage = (bias * nominal * factor) / (1.0 - bias * nominal * factor * alpha);
+        let out_index = instance
+            .unknowns()
+            .iter()
+            .position(|unknown| unknown.name == "out")
+            .expect("out unknown");
+        assert_close(point.values[out_index], voltage);
+
+        let spectrum = instance.noise(&analysis, &tight).expect("noise");
+        let effective = nominal * (1.0 + alpha * voltage) * factor;
+        let incremental_resistance = effective * (1.0 + alpha * voltage);
+        // Current noise PSD is `4kT / effective`; output voltage noise scales by `r_ac^2`.
+        let expected = (4.0 * BOLTZMANN * temperature / effective)
+            * incremental_resistance
+            * incremental_resistance;
+        for &density in &spectrum.densities {
+            assert_close(density, expected);
+        }
+        for &density in share(&spectrum, "BR1") {
+            assert_close(density, expected);
+        }
     }
 }

@@ -1,11 +1,30 @@
+use std::sync::Arc;
+
 use jolty_expressions::{Expression, Variable, Workspace};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::kernel::parts::CurrentBranch;
+use crate::dimension::{PER_KELVIN, PER_KELVIN_SQUARED, TEMPERATURE};
+use crate::kernel::junction::Temperatures;
+use crate::kernel::parts::{CurrentBranch, Pair};
 use crate::{
-    Branch, BranchKind, Choice, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+    Branch, BranchKind, Choice, Interface, Kernel, Layout, Lift, Local, NoiseSource,
+    ParameterError, ParameterKind, ParameterMetadata, REFERENCE_TEMPERATURE, Real, Stamp,
 };
+
+/// Returns the default nominal temperature at which behavioral resistor parameters are
+/// specified.
+fn reference_temperature<R: Real>() -> R {
+    R::constant(REFERENCE_TEMPERATURE)
+}
+
+/// Resistance floor applied during out-of-range trial evaluations when a behavioral
+/// resistor expression evaluates to zero or below, in ohms.
+///
+/// Chosen as `1e-12` Ω (reciprocal of SPICE's `1e-12` S `gmin` scale) so non-positive
+/// intermediate Newton iterates remain finite without dividing by zero while
+/// [`Stamp::mark_limited`] prevents convergence until resistance returns above zero.
+const MIN_RESISTANCE: f64 = 1e-12;
 
 /// Parsed behavioral [expression](jolty_expressions) depending on sensed node voltages,
 /// dedicated current-sensing port currents, and simulation time.
@@ -19,7 +38,7 @@ use crate::{
 pub struct Behavior {
     /// Original expression text as supplied in parameters.
     text: String,
-    expression: Expression,
+    expression: Arc<Expression>,
     terminals: Vec<String>,
     /// Input binding (voltage, port current, or time) for each expression variable.
     reads: Vec<Reading>,
@@ -86,7 +105,7 @@ impl TryFrom<String> for Behavior {
         }
         Ok(Self {
             text,
-            expression,
+            expression: Arc::new(expression),
             terminals,
             reads,
             ports,
@@ -230,20 +249,15 @@ impl BehavioralShape {
         self.reads.contains(&Read::Time)
     }
 
-    /// Evaluates `expression` at `at`, updating `memory` and stamping row values, exact
-    /// derivatives, and sensing-port equations into `stamp`.
-    fn add<R: Real>(
+    /// Evaluates `expression` into `room` at `at`, marking `stamp` limited if a rounded
+    /// table clamped and computing directional derivatives along unknown seeds when active.
+    fn evaluate_expression<R: Real>(
         &self,
         expression: &Expression,
-        memory: &mut BehavioralMemory,
+        room: &mut Room,
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
-    ) {
-        // Stamps the voltage-source branch voltage minus the expression value below.
-        if let Some(branch) = &self.branch {
-            branch.add(at, stamp, branch.voltage(at));
-        }
-        let Some(room) = &mut memory.0 else { return };
+    ) -> (f64, Option<[f64; crate::Seeds::MAX]>) {
         self.read(at, &mut room.values);
         if !at.limiting {
             room.workspace.forget();
@@ -290,6 +304,24 @@ impl BehavioralShape {
         } else {
             None
         };
+        (value, value_derivatives)
+    }
+
+    /// Evaluates `expression` at `at`, updating `memory` and stamping row values, exact
+    /// derivatives, and sensing-port equations into `stamp`.
+    fn add<R: Real>(
+        &self,
+        expression: &Expression,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        // Stamps the voltage-source branch voltage minus the expression value below.
+        if let Some(branch) = &self.branch {
+            branch.add(at, stamp, branch.voltage(at));
+        }
+        let Some(room) = &mut memory.0 else { return };
+        let (value, value_derivatives) = self.evaluate_expression(expression, room, at, stamp);
         self.stamp_contribution(
             stamp,
             value,
@@ -450,7 +482,7 @@ macro_rules! behavioral_kernel {
             const NAME: &'static str = $name;
             type Parameters<R: Real> = BehavioralParameters;
             type Shape = BehavioralShape;
-            type Prepared<R: Real> = Expression;
+            type Prepared<R: Real> = Arc<Expression>;
             type Memory = BehavioralMemory;
 
             fn interface<R: Real>(parameters: &BehavioralParameters) -> Interface {
@@ -460,13 +492,13 @@ macro_rules! behavioral_kernel {
             fn prepare<R: Real>(
                 parameters: &BehavioralParameters,
                 _: R,
-            ) -> Result<Expression, ParameterError> {
-                Ok(parameters.expression.expression.clone())
+            ) -> Result<Arc<Expression>, ParameterError> {
+                Ok(Arc::clone(&parameters.expression.expression))
             }
 
             fn layout<R: Real>(
                 parameters: &BehavioralParameters,
-                _: &Expression,
+                _: &Arc<Expression>,
                 layout: &mut Layout,
             ) -> Result<BehavioralShape, ParameterError> {
                 Ok($kind.shape(&parameters.expression, layout))
@@ -474,14 +506,14 @@ macro_rules! behavioral_kernel {
 
             fn memory<R: Real>(
                 shape: &BehavioralShape,
-                expression: &Expression,
+                expression: &Arc<Expression>,
             ) -> BehavioralMemory {
                 shape.memory(expression)
             }
 
             fn evaluate<R: Real>(
                 shape: &BehavioralShape,
-                expression: &Expression,
+                expression: &Arc<Expression>,
                 memory: &mut BehavioralMemory,
                 at: &Local<'_>,
                 stamp: &mut Stamp<'_, R>,
@@ -491,7 +523,7 @@ macro_rules! behavioral_kernel {
 
             fn choices<R: Real>(
                 shape: &BehavioralShape,
-                expression: &Expression,
+                expression: &Arc<Expression>,
                 memory: &mut BehavioralMemory,
                 at: &Local<'_>,
                 found: &mut Vec<Choice>,
@@ -499,7 +531,7 @@ macro_rules! behavioral_kernel {
                 shape.choices(expression, memory, at, found);
             }
 
-            fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &Expression) -> bool {
+            fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &Arc<Expression>) -> bool {
                 shape.reads_time()
             }
         }
@@ -549,12 +581,238 @@ behavioral_kernel! {
     kind: OutputKind::Charge,
 }
 
+/// Parameters for [`BehavioralResistor`].
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
+#[serde(deny_unknown_fields)]
+#[schemars(bound = "R: Serialize + JsonSchema")]
+pub struct BehavioralResistorParameters<R: Real = f64> {
+    /// Expression defining nominal resistance at `nominal_temperature`, in ohms, as a
+    /// function of sensed terminal voltages, port currents, and simulation time.
+    #[schemars(with = "String")]
+    pub expression: Behavior,
+    /// Linear temperature coefficient `tc1`, per kelvin; default 0.
+    #[serde(default)]
+    #[dimension(PER_KELVIN)]
+    pub temperature_coefficient: R,
+    /// Quadratic temperature coefficient `tc2`, per kelvin squared; default 0.
+    #[serde(default)]
+    #[dimension(PER_KELVIN_SQUARED)]
+    pub quadratic_temperature_coefficient: R,
+    /// Nominal measurement temperature, in kelvins; default 27 °C.
+    #[serde(default = "reference_temperature::<R>")]
+    #[dimension(TEMPERATURE)]
+    pub nominal_temperature: R,
+}
+
+/// Prepared parameters for [`BehavioralResistor`] at operating temperature.
+#[derive(Debug, Clone)]
+pub struct PreparedBehavioralResistor<R: Real> {
+    expression: Arc<Expression>,
+    factor: R,
+    temperature: f64,
+}
+
+/// Layout shape for [`BehavioralResistor`] combining the two-terminal conductance pair with
+/// the expression's variable bindings, sensing ports, and derivative matrix entries.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BehavioralResistorShape {
+    pair: Pair,
+    behavior: BehavioralShape,
+}
+
+/// Behavioral resistor whose nominal resistance follows an expression of sensed voltages,
+/// port currents, and time, scaled by temperature coefficients and emitting thermal noise;
+/// see [`Behavior`].
+///
+/// Conducts `v(positive, negative) / R_eff` from `positive` to `negative`, where
+/// `R_eff = R_expr · (1 + tc1 · ΔT + tc2 · ΔT²)` and `ΔT = T - nominal_temperature`.
+/// Emits Johnson-Nyquist thermal noise `4kT / R_eff` across `positive` and `negative`
+/// whenever `R_eff > 0`.
+#[derive(Debug, Clone, Copy)]
+pub struct BehavioralResistor;
+
+impl Kernel for BehavioralResistor {
+    const NAME: &'static str = "behavioral_resistor";
+    type Parameters<R: Real> = BehavioralResistorParameters<R>;
+    type Shape = BehavioralResistorShape;
+    type Prepared<R: Real> = PreparedBehavioralResistor<R>;
+    type Memory = BehavioralMemory;
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        BehavioralResistorParameters::<f64>::PARAMETER_KINDS
+    }
+
+    fn interface<R: Real>(parameters: &BehavioralResistorParameters<R>) -> Interface {
+        parameters.expression.interface(BranchKind::Conductive)
+    }
+
+    fn prepare<R: Real>(
+        parameters: &BehavioralResistorParameters<R>,
+        temperature: R,
+    ) -> Result<PreparedBehavioralResistor<R>, ParameterError> {
+        let temperatures = Temperatures::new(temperature, parameters.nominal_temperature)?;
+        let factor = temperatures.polynomial(
+            parameters.temperature_coefficient,
+            parameters.quadratic_temperature_coefficient,
+        );
+        if factor.value() == 0.0 {
+            return Err(ParameterError(format!(
+                "the temperature coefficients scale the resistance to zero at {:?} K",
+                temperatures.actual.value()
+            )));
+        }
+        if !(factor.value() > 0.0 && factor.value().is_finite()) {
+            return Err(ParameterError(format!(
+                "the temperature coefficients scale the resistance to {:?} at {:?} K",
+                factor.value(),
+                temperatures.actual.value()
+            )));
+        }
+        let expression = &parameters.expression.expression;
+        if expression.variables().is_empty() {
+            let nominal = expression.value(&[]);
+            if !(nominal > 0.0 && nominal.is_finite()) {
+                return Err(ParameterError(format!(
+                    "resistance expression evaluates to {nominal:?}, not a positive resistance"
+                )));
+            }
+        }
+        Ok(PreparedBehavioralResistor {
+            expression: Arc::clone(expression),
+            factor,
+            temperature: temperature.value(),
+        })
+    }
+
+    fn layout<R: Real>(
+        parameters: &BehavioralResistorParameters<R>,
+        _: &PreparedBehavioralResistor<R>,
+        layout: &mut Layout,
+    ) -> Result<BehavioralResistorShape, ParameterError> {
+        let [positive, negative] = OUTPUT;
+        let pair = Pair::new(layout, positive, negative);
+        let behavior = BehavioralShape::new(
+            &parameters.expression,
+            layout,
+            (vec![(positive, 1.0), (negative, -1.0)], false, None),
+        );
+        Ok(BehavioralResistorShape { pair, behavior })
+    }
+
+    fn memory<R: Real>(
+        shape: &BehavioralResistorShape,
+        prepared: &PreparedBehavioralResistor<R>,
+    ) -> BehavioralMemory {
+        shape.behavior.memory(&prepared.expression)
+    }
+
+    fn evaluate<R: Real>(
+        shape: &BehavioralResistorShape,
+        prepared: &PreparedBehavioralResistor<R>,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        stamp: &mut Stamp<'_, R>,
+    ) {
+        let Some(room) = &mut memory.0 else { return };
+        let behavior = &shape.behavior;
+        let (raw, raw_derivatives) =
+            behavior.evaluate_expression(&prepared.expression, room, at, stamp);
+        let voltage: R = shape.pair.across(at, shape.pair.voltage(at));
+        if raw <= 0.0 {
+            stamp.mark_limited();
+            let effective = R::constant(MIN_RESISTANCE) * prepared.factor;
+            let conductance = effective.recip();
+            shape.pair.add_current(stamp, voltage * conductance);
+            shape.pair.add_conductance(stamp, conductance);
+            for port in &behavior.ports {
+                port.add(at, stamp, port.voltage(at));
+            }
+            return;
+        }
+        let resistance =
+            raw_derivatives.map_or_else(|| R::constant(raw), |rates| R::seeded(raw, &rates));
+        let effective = resistance * prepared.factor;
+        let conductance = effective.recip();
+        let current = voltage * conductance;
+        shape.pair.add_current(stamp, current);
+        shape.pair.add_conductance(stamp, conductance);
+        let sensitivity = -(current / resistance);
+        for (index, (entries, &derivative)) in
+            behavior.entries.iter().zip(&room.gradient).enumerate()
+        {
+            let slope = if raw_derivatives.is_some() {
+                room.gradient_derivatives.get(index).map_or_else(
+                    || R::constant(derivative),
+                    |rates| R::seeded(derivative, rates),
+                )
+            } else {
+                R::constant(derivative)
+            };
+            let contribution = sensitivity * slope;
+            for &(entry, factor) in entries {
+                stamp.add_conductance(entry, contribution * factor);
+            }
+        }
+        for port in &behavior.ports {
+            // A short circuit: no voltage across it.
+            port.add(at, stamp, port.voltage(at));
+        }
+    }
+
+    /// Appends Johnson-Nyquist thermal noise `4kT / R_eff` across `positive` and `negative`
+    /// whenever the temperature-scaled operating-point resistance `R_eff` is positive and
+    /// finite.
+    fn noise<R: Real>(
+        shape: &BehavioralResistorShape,
+        prepared: &PreparedBehavioralResistor<R>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource>,
+    ) {
+        let mut values = vec![0.0; shape.behavior.reads.len()];
+        shape.behavior.read(at, &mut values);
+        let effective = prepared.expression.value(&values) * prepared.factor.value();
+        if effective > 0.0 {
+            let conductance = effective.recip();
+            if conductance.is_finite() {
+                sources.push(NoiseSource::thermal(
+                    "thermal",
+                    shape.pair.equations(),
+                    conductance,
+                    prepared.temperature,
+                ));
+            }
+        }
+    }
+
+    fn choices<R: Real>(
+        shape: &BehavioralResistorShape,
+        prepared: &PreparedBehavioralResistor<R>,
+        memory: &mut BehavioralMemory,
+        at: &Local<'_>,
+        found: &mut Vec<Choice>,
+    ) {
+        shape
+            .behavior
+            .choices(&prepared.expression, memory, at, found);
+    }
+
+    fn varies_in_time<R: Real>(
+        shape: &BehavioralResistorShape,
+        _: &PreparedBehavioralResistor<R>,
+    ) -> bool {
+        shape.behavior.reads_time()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::testing::{Bench, assert_close, assert_jacobians_match};
+    use crate::testing::{
+        Bench, assert_close, assert_jacobians_match, assert_parameter_gradients_match, source,
+    };
+    use crate::{BOLTZMANN, UnknownIndex};
 
     fn parameters(expression: &str) -> String {
         format!(r#"{{"expression": "{expression}"}}"#)
@@ -620,6 +878,118 @@ mod tests {
     }
 
     #[test]
+    fn a_behavioral_resistor_scales_with_voltage_and_temperature() {
+        let resistor = r#"{"expression": "1e3 * (1 + 0.1 * v(positive, negative))",
+            "temperature_coefficient": 2e-3, "quadratic_temperature_coefficient": 1e-5,
+            "nominal_temperature": 300.15}"#;
+        for temperature in [233.15, 300.15, 398.15] {
+            let mut bench = Bench::at::<BehavioralResistor>(resistor, temperature);
+            let evaluation = bench.evaluate(&[2.5, 0.5]);
+            let delta = temperature - 300.15;
+            let factor = 1.0 + 2e-3 * delta + 1e-5 * delta * delta;
+            let effective = 1e3 * (1.0 + 0.1 * 2.0) * factor;
+            let current = 2.0 / effective;
+            assert!(!evaluation.limited);
+            assert_close(&evaluation.residual, &[current, -current]);
+            assert_close(&evaluation.charge, &[0.0, 0.0]);
+        }
+        let interface =
+            BehavioralResistor::interface::<f64>(&serde_json::from_str(resistor).expect("valid"));
+        assert_eq!(
+            interface.branches[0],
+            Branch::new(0, 1, BranchKind::Conductive)
+        );
+        assert_jacobians_match::<BehavioralResistor>(resistor, &[2.5, 0.5]);
+        assert_parameter_gradients_match::<BehavioralResistor>(
+            r#"{"expression": "1e3 * (1 + 0.1 * v(positive, negative))",
+                "temperature_coefficient": 2e-3, "quadratic_temperature_coefficient": 1e-5,
+                "nominal_temperature": 290}"#,
+            &[2.5, 0.5],
+        );
+    }
+
+    #[test]
+    fn a_behavioral_resistor_makes_thermal_noise_at_effective_resistance() {
+        let resistor = r#"{"expression": "1e3 * (1 + 0.2 * v(positive, negative))",
+            "temperature_coefficient": 2e-3, "quadratic_temperature_coefficient": 1e-5,
+            "nominal_temperature": 300.15}"#;
+        for temperature in [233.15, 300.15, 398.15] {
+            let bench = Bench::at::<BehavioralResistor>(resistor, temperature);
+            let delta = temperature - 300.15;
+            let factor = 1.0 + 2e-3 * delta + 1e-5 * delta * delta;
+            for bias in [0.0, 2.0, 5.0] {
+                let sources = bench.noise(&[bias, 0.0]);
+                let noise = source(&sources, "thermal");
+                assert_eq!(
+                    noise.equations,
+                    [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(1))]
+                );
+                let effective = 1e3 * (1.0 + 0.2 * bias) * factor;
+                let expected = 4.0 * BOLTZMANN * temperature / effective;
+                assert_close(&[noise.density(1.0)], &[expected]);
+            }
+        }
+        let cold = Bench::at::<BehavioralResistor>(&parameters("1e3"), 0.0);
+        assert_close(
+            &[source(&cold.noise(&[1.0, 0.0]), "thermal").density(1.0)],
+            &[0.0],
+        );
+
+        // Non-positive runtime resistance marks the step limited and emits no thermal noise.
+        let collapsing = parameters("1e3 * (1 - v(positive, negative))");
+        let mut bench = Bench::new::<BehavioralResistor>(&collapsing);
+        for bias in [1.0, 2.0] {
+            let evaluation = bench.evaluate(&[bias, 0.0]);
+            assert!(evaluation.limited);
+            assert!(evaluation.residual.iter().all(|value| value.is_finite()));
+            assert!(
+                evaluation
+                    .conductance
+                    .iter()
+                    .flatten()
+                    .all(|value| value.is_finite())
+            );
+            assert_eq!(bench.noise(&[bias, 0.0]), []);
+        }
+    }
+
+    #[test]
+    fn a_behavioral_resistor_rejects_invalid_parameters() {
+        let zero_factor = Bench::try_at::<BehavioralResistor>(
+            r#"{"expression": "1e3", "temperature_coefficient": -0.1}"#,
+            REFERENCE_TEMPERATURE + 10.0,
+        )
+        .unwrap_err();
+        assert!(
+            zero_factor
+                .0
+                .starts_with("the temperature coefficients scale the resistance to zero")
+        );
+        let negative_factor = Bench::try_at::<BehavioralResistor>(
+            r#"{"expression": "1e3", "temperature_coefficient": -0.2}"#,
+            REFERENCE_TEMPERATURE + 10.0,
+        )
+        .unwrap_err();
+        assert!(
+            negative_factor
+                .0
+                .starts_with("the temperature coefficients scale the resistance to")
+        );
+        let zero_nominal = Bench::try_new::<BehavioralResistor>(
+            r#"{"expression": "1e3", "nominal_temperature": 0}"#,
+        )
+        .unwrap_err();
+        assert_eq!(zero_nominal.0, "nominal_temperature is positive, not 0.0");
+        for constant in ["0", "-100"] {
+            let error = Bench::try_new::<BehavioralResistor>(&parameters(constant)).unwrap_err();
+            assert!(
+                error.0.contains("not a positive resistance"),
+                "{constant}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_invalid_expressions() {
         let error = Bench::try_new::<BehavioralCurrentSource>(&parameters("1 +"))
             .expect_err("an invalid expression");
@@ -658,6 +1028,13 @@ mod tests {
             // A capacitor's capacitances are its charge's derivatives.
             assert_jacobians_match::<BehavioralCapacitor>(
                 &parameters(expression),
+                &[p, n, a, b, s, s / 2.0, current],
+            );
+            let resistor_expression = r#"{"expression": "1e3 * (2 + 0.2 * tanh(v(a, b) * i(s)) + 0.1 * tanh(v(positive, negative)))",
+                "temperature_coefficient": 2e-3, "quadratic_temperature_coefficient": 1e-5,
+                "nominal_temperature": 290}"#;
+            assert_jacobians_match::<BehavioralResistor>(
+                resistor_expression,
                 &[p, n, a, b, s, s / 2.0, current],
             );
         }

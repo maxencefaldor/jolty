@@ -43,6 +43,7 @@ from jolty.waveforms import Exponential, Piecewise, Pulse, Sine
 
 ANNOTATED_BUILDERS: tuple[tuple[str, Callable[..., devices.Device], set[str]], ...] = (
     ("resistor", devices.resistor, {"tolerance"}),
+    ("behavioral_resistor", devices.behavioral_resistor, set()),
     ("capacitor", devices.capacitor, {"tolerance"}),
     ("inductor", devices.inductor, {"tolerance"}),
     ("transmission_line", devices.transmission_line, set()),
@@ -170,6 +171,20 @@ def test_passive_and_analog_builders_validate_parameters() -> None:
     assert made_resistor.parameters["resistance"] == 1000.0
     assert made_resistor.tolerances["resistance"].relative == 0.01
 
+    made_behavioral_resistor = devices.behavioral_resistor(
+        "1e3 * (1 + 0.1 * v(positive, negative))",
+        temperature_coefficient=1e-3 / K,
+        quadratic_temperature_coefficient=1e-5 / K**2,
+        nominal_temperature=300 * K,
+    )
+    assert made_behavioral_resistor.terminals == ("positive", "negative")
+    assert made_behavioral_resistor.parameters == {
+        "expression": "1e3 * (1 + 0.1 * v(positive, negative))",
+        "temperature_coefficient": 1e-3,
+        "quadratic_temperature_coefficient": 1e-5,
+        "nominal_temperature": 300.0,
+    }
+
     made_capacitor = devices.capacitor(1 * uF, tolerance=0.05)
     assert made_capacitor.tolerances["capacitance"].relative == 0.05
     made_inductor = devices.inductor(1 * mH, tolerance=0.1)
@@ -262,6 +277,10 @@ def test_semiconductor_builders_validate_parameters() -> None:
 def test_device_builders_reject_wrong_dimension_and_non_finite_values() -> None:
     with pytest.raises(DimensionError, match="resistance"):
         devices.resistor(1 * uF)
+    with pytest.raises(DimensionError, match="temperature_coefficient"):
+        devices.behavioral_resistor("1e3", temperature_coefficient=1 * V)
+    with pytest.raises(ValueError, match="finite"):
+        devices.behavioral_resistor("1e3", temperature_coefficient=math.inf / K)
     with pytest.raises(DimensionError, match="saturation_current"):
         devices.bipolar_transistor(saturation_current=1 * V)
     with pytest.raises(ValueError, match="finite"):
@@ -308,6 +327,10 @@ def _sample_devices() -> list[devices.Device]:
         devices.behavioral_voltage_source("1"),
         devices.behavioral_current_source("1"),
         devices.behavioral_capacitor("1e-12 * v(positive, negative)"),
+        devices.behavioral_resistor(
+            "1e3 * (1 + 0.1 * v(positive, negative))",
+            temperature_coefficient=1e-3 / K,
+        ),
         devices.voltage_controlled_switch(),
         devices.current_controlled_switch(),
         devices.photocell(10 * kohm),

@@ -24,6 +24,7 @@ from jolty import (
     DimensionError,
     DownloadError,
     JoltyError,
+    Noise,
     OperatingPoint,
     Options,
     PeriodicSteadyState,
@@ -35,9 +36,12 @@ from jolty import (
     circuit,
     component,
     devices,
+    function,
     ir,
+    jvp,
     results,
     spice,
+    vjp,
 )
 from jolty.plan import TIGHT, Mismatch
 from jolty.spice import download, export, models, ngspice, sky130, xyce
@@ -1791,17 +1795,21 @@ def test_a_behavioral_expression_is_written_as_jolty_computes_it() -> None:
     assert line == f"BB1 out 0 V={{({limited}+{table})}}"
 
 
-def test_a_resistor_of_a_voltage_is_ngspices_behavioral_current() -> None:
-    """Verifies voltage-dependent resistors translate to `m*V / (f(V)*(1 + TC1*dT))`.
+def test_a_resistor_of_a_voltage_tracks_simulation_temperature_dynamically() -> None:
+    """Verifies voltage-dependent resistors lower to `behavioral_resistor`.
 
-    Matches `inpcom.c` on two 1 kΩ copies rising 10% per volt with `TC1=1e-3/K`
-    evaluated at 77 °C (50 K above 27 °C) and 2 V.
+    Sweeps a single built circuit across -40, 27, 77, and 125 °C without rebuilding the
+    circuit or SPICE library, checking `I = m * V / (R(V) * (1 + TC1*dT + TC2*dT^2))`.
     """
-    parts = spice.Library(celsius(77).value)
+    parts = spice.Library()
     parts.read(
-        ".subckt grown a\nR1 a 0 r={1k * (1 + 0.1 * abs(v(a)))} tc1=1e-3 m=2\n.ends",
+        ".subckt grown a\n"
+        "R1 a 0 r={1k * (1 + 0.1 * abs(v(a)))} tc1=1e-3 tc2=2e-5 m=2\n"
+        ".ends",
         "grown.lib",
     )
+    (instance,) = parts.component("grown").definition.instances
+    assert instance.of == ir.DeviceOf(model="behavioral_resistor")
 
     @component
     def bench(c: Builder) -> None:
@@ -1811,13 +1819,182 @@ def test_a_resistor_of_a_voltage_is_ngspices_behavioral_current() -> None:
         c.connect(source.positive, placed["a"], name="a")
         c.connect(source.negative, placed["ground"], ground)
 
-    simulation = Simulation(bench())
-    point = simulation.run(OperatingPoint())
-    current = point.values[
-        simulation.unknowns.index(results.Unknown("V1:current", "current"))
-    ]
-    # Single-iteration solve at fixed V=2 V; rel=1e-12 (~4500 eps) covers rounding.
-    assert -current == pytest.approx(4 / (1.2e3 * 1.05), rel=1e-12)
+    built = bench()
+    for degrees in (-40.0, 27.0, 77.0, 125.0):
+        simulation = Simulation(built, temperature=celsius(degrees))
+        point = simulation.run(OperatingPoint())
+        current = point.values[
+            simulation.unknowns.index(results.Unknown("V1:current", "current"))
+        ]
+        delta = degrees - 27.0
+        factor = 1.0 + 1e-3 * delta + 2e-5 * delta * delta
+        # Single-iteration solve at fixed V=2 V; rel=1e-12 (~4500 eps) covers rounding.
+        assert -current == pytest.approx(4 / (1.2e3 * factor), rel=1e-12)
+
+
+def test_behavioral_resistor_noise_and_derivatives_across_bias_and_temperature() -> (
+    None
+):
+    """Verifies `behavioral_resistor` thermal noise `4kT / R(V, T)` and JVP/VJP.
+
+    Checks both direct `devices.behavioral_resistor` construction and SPICE-imported
+    `R={...}` elements with `tc1`, `tc2`, `tnom`, and `dtemp` across biases and
+    temperatures.
+    """
+    nominal_degrees = 25.0
+    linear_coefficient = 2e-3
+    quadratic_coefficient = 1e-5
+    parts = spice.Library()
+    parts.read(
+        ".subckt nonlinear a\n"
+        "R1 a 0 r={1k * (1 + 0.2 * v(a))} tc1=2e-3 tc2=1e-5 tnom=25\n"
+        ".ends",
+        "nonlinear.lib",
+    )
+
+    for bias in (0.0, 2.0, 5.0):
+
+        @component
+        def direct_bench(c: Builder, voltage: float = bias) -> None:
+            ground = c.port("ground", Role.GROUND)
+            source = c.place(devices.voltage_source(voltage * V), name="V1")
+            resistor = c.place(
+                devices.behavioral_resistor(
+                    "1e3 * (1 + 0.2 * v(positive, negative))",
+                    temperature_coefficient=linear_coefficient / K,
+                    quadratic_temperature_coefficient=quadratic_coefficient / K**2,
+                    nominal_temperature=celsius(nominal_degrees),
+                ),
+                name="BR1",
+            )
+            c.connect(source.positive, resistor.positive, name="a")
+            c.connect(source.negative, resistor.negative, ground)
+
+        @component
+        def spice_bench(c: Builder, voltage: float = bias) -> None:
+            ground = c.port("ground", Role.GROUND)
+            source = c.place(devices.voltage_source(voltage * V), name="V1")
+            placed = c.place(parts.component("nonlinear"), name="X1")
+            c.connect(source.positive, placed["a"], name="a")
+            c.connect(source.negative, placed["ground"], ground)
+
+        direct_built = direct_bench()
+        spice_built = spice_bench()
+        for degrees in (-40.0, 27.0, 125.0):
+            temperature = celsius(degrees)
+            delta = degrees - nominal_degrees
+            factor = (
+                1.0 + linear_coefficient * delta + quadratic_coefficient * delta * delta
+            )
+            effective = 1e3 * (1.0 + 0.2 * bias) * factor
+            expected_psd = 4.0 * _core.BOLTZMANN * temperature.value / effective
+            for candidate in (direct_built, spice_built):
+                spectrum = Simulation(candidate, temperature=temperature).run(
+                    Noise("V1:current", [1e3 * Hz]), TIGHT
+                )
+                # Linear adjoint noise solve at fixed bias; rel=1e-9 covers rounding.
+                assert spectrum.densities[0] == pytest.approx(expected_psd, rel=1e-9)
+
+    hot = celsius(125.0)
+
+    @component
+    def differentiable(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(2 * V), name="V1")
+        resistor = c.place(
+            devices.behavioral_resistor(
+                "1e3 * (1 + 0.2 * v(positive, negative))",
+                temperature_coefficient=linear_coefficient / K,
+                quadratic_temperature_coefficient=quadratic_coefficient / K**2,
+                nominal_temperature=celsius(nominal_degrees),
+            ).held_at(hot),
+            name="BR1",
+        )
+        c.connect(source.positive, resistor.positive, name="a")
+        c.connect(source.negative, resistor.negative, ground)
+
+    delta = hot.value - celsius(nominal_degrees).value
+    factor = 1.0 + linear_coefficient * delta + quadratic_coefficient * delta * delta
+    nominal_resistance = 1e3 * (1.0 + 0.2 * 2.0)
+    # Current leaving V1 positive terminal is -I_resistor = -2 / (R_expr * factor).
+    d_factor_d_nominal = -(linear_coefficient + 2.0 * quadratic_coefficient * delta)
+    expected_partials = {
+        "temperature_coefficient": 2.0 * delta / (nominal_resistance * factor**2),
+        "quadratic_temperature_coefficient": (
+            2.0 * delta**2 / (nominal_resistance * factor**2)
+        ),
+        "nominal_temperature": (
+            2.0 * d_factor_d_nominal / (nominal_resistance * factor**2)
+        ),
+    }
+    point_parameters = {
+        "BR1": {
+            "temperature_coefficient": linear_coefficient,
+            "quadratic_temperature_coefficient": quadratic_coefficient,
+            "nominal_temperature": celsius(nominal_degrees).value,
+        }
+    }
+    tangents = {
+        "BR1": {
+            "temperature_coefficient": 1e-4,
+            "quadratic_temperature_coefficient": 1e-6,
+            "nominal_temperature": 0.5,
+        }
+    }
+    evaluated = function(differentiable(), OperatingPoint())
+    outputs, pushed = jvp(evaluated, point_parameters, tangents)
+    same, pull = vjp(evaluated, point_parameters)
+    assert outputs["V1:current"] == same["V1:current"]
+    pulled = pull({"V1:current": 1.0})
+    for name, expected_partial in expected_partials.items():
+        # Exact forward/adjoint derivative against closed form; rel=1e-11 covers LU.
+        assert pulled["BR1"][name] == pytest.approx(expected_partial, rel=1e-11)
+    expected_push = sum(
+        expected_partials[name] * tangents["BR1"][name] for name in expected_partials
+    )
+    # Exact directional derivative against closed form; rel=1e-11 covers LU rounding.
+    assert pushed["V1:current"] == pytest.approx(expected_push, rel=1e-11)
+
+
+def test_behavioral_resistor_spice_export_preserves_drift_and_temperature() -> None:
+    """Verifies SPICE export and re-import preserve `behavioral_resistor` settings."""
+
+    @component
+    def held(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(2 * V), name="V1")
+        resistor = c.place(
+            devices.behavioral_resistor(
+                "1e3 * (1 + 0.1 * v(positive, negative))",
+                temperature_coefficient=2e-3 / K,
+                quadratic_temperature_coefficient=1e-5 / K**2,
+            ).warmer_by(15 * K),
+            name="R1",
+        )
+        c.connect(source.positive, resistor.positive, name="a")
+        c.connect(source.negative, resistor.negative, ground)
+
+    lines = netlist(circuit(held()))
+    (resistor_line,) = [line for line in lines if line.startswith("RR1 ")]
+    assert "R={" in resistor_line
+    assert "tc1=0.002" in resistor_line
+    assert "tc2=1e-05" in resistor_line
+    assert "dtemp=" in resistor_line
+    with pytest.raises(JoltyError, match="behavioral_resistor"):
+        netlist(circuit(held()), dialect=export.XYCE)
+
+    deck = f".subckt dut a\n{resistor_line}\n.ends"
+    reimported = library(deck).component("dut")
+    (instance,) = reimported.definition.instances
+    assert instance.of == ir.DeviceOf(model="behavioral_resistor")
+    # Default pytest.approx covers decimal netlist formatting round-trip rounding.
+    assert instance.parameters["temperature_coefficient"] == pytest.approx(2e-3)
+    # Default pytest.approx covers decimal netlist formatting round-trip rounding.
+    assert instance.parameters["quadratic_temperature_coefficient"] == pytest.approx(
+        1e-5
+    )
+    # SPICE dtemp conversion scales by thermal-voltage ratio vs ngspice CODATA 2014.
+    assert instance.parameters["temperature_offset"] == pytest.approx(15.0, rel=1e-5)
 
 
 def test_resistors_and_capacitors_read_voltage_coefficients() -> None:
@@ -1852,6 +2029,10 @@ def _every_model() -> list[devices.Device]:
     return [
         devices.behavioral_capacitor("1e-12 * tanh(v(positive, negative))"),
         devices.behavioral_current_source("1e-3 * v(a, b)"),
+        devices.behavioral_resistor(
+            "1e3 * (1 + 0.1 * v(positive, negative))",
+            temperature_coefficient=1e-3 / K,
+        ),
         devices.behavioral_voltage_source("2 * i(p)"),
         devices.bipolar_transistor(polarity="pnp", forward_early_voltage=50 * V),
         devices.capacitor(1 * uF),
@@ -2416,6 +2597,14 @@ _SPICE_ROUND_TRIP: Final[dict[str, _RoundTripCase]] = {
         _AsItself(),
         (_voltage(1.2), _ground()),
         frequency=1e6,
+    ),
+    "behavioral_resistor": _RoundTripCase(
+        devices.behavioral_resistor(
+            "1e3 * (1 + 0.1 * v(positive, negative))",
+            temperature_coefficient=1e-3 / K,
+        ),
+        _AsItself(),
+        (_voltage(1.2), _ground()),
     ),
     "voltage_controlled_switch": _RoundTripCase(
         devices.voltage_controlled_switch(on_voltage=2 * V, off_voltage=0.5 * V),

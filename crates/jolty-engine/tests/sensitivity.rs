@@ -889,6 +889,17 @@ fn sensitivities_over_frequency_of_a_behavioral_circuit_match_finite_differences
             json!({"expression": "1e-12 * (v(x) + 0.3 * (v(x) ^ 2))"}),
             &[("positive", "out"), ("negative", "0"), ("x", "out")],
         ),
+        device(
+            "BR1",
+            "behavioral_resistor",
+            json!({
+                "expression": "1.5e3 * (1 + 0.2 * tanh(v(x)))",
+                "temperature_coefficient": 2e-3,
+                "quadratic_temperature_coefficient": 1e-5,
+                "nominal_temperature": 290.0
+            }),
+            &[("positive", "out"), ("negative", "0"), ("x", "out")],
+        ),
         resistor("R2", 2e3, "out", "0"),
     ]);
     let ac = Differentiated::Ac(Ac {
@@ -902,6 +913,9 @@ fn sensitivities_over_frequency_of_a_behavioral_circuit_match_finite_differences
             ("V1", "waveform.dc"),
             ("R1", "resistance"),
             ("R2", "resistance"),
+            ("BR1", "temperature_coefficient"),
+            ("BR1", "quadratic_temperature_coefficient"),
+            ("BR1", "nominal_temperature"),
         ],
         &ac,
     );

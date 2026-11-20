@@ -177,6 +177,20 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
         &[1.0, 0.0, 0.7, 0.3],
     ),
     (
+        "behavioral_resistor",
+        r#"{"expression": "1e3 * (1 + 0.2 * tanh(v(positive, negative)) + 0.1 * tanh(i(s)))",
+                "temperature_coefficient": 2e-3, "quadratic_temperature_coefficient": 1e-5,
+                "nominal_temperature": 290}"#,
+        &[1.0, 0.0, 0.0, 0.0, 2e-3],
+    ),
+    (
+        "behavioral_resistor",
+        r#"{"expression": "1e3 * (1 + 0.2 * tanh(v(positive, negative)))",
+                "temperature_coefficient": 3e-3, "quadratic_temperature_coefficient": 1e-5,
+                "thermal": true}"#,
+        &[1.0, 0.0, 5.0],
+    ),
+    (
         "current_source",
         r#"{"waveform": {"pulse": {"initial": 0, "pulsed": 1e-3,
                 "rise": 1e-9, "fall": 1e-9, "width": 1e-6, "period": 1e-5}}}"#,

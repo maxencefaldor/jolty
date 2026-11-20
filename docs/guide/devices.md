@@ -173,9 +173,10 @@ c.connect(amplifier.inp, name="signal")
 Behavioral source terminals list `positive` and `negative`, followed by every referenced voltage terminal and `p_positive`/`p_negative` pairs for every sensing port `p`.
 Each sensing port acts as a zero-volt short adding unknown `B1:p` (for `B1`), and behavioral voltage sources also add an output branch-current unknown.
 `behavioral_capacitor(expression)` stores charge `q` (in coulombs) on `positive` against `negative` with current `dq/dt` (matching Verilog-A `I(p, n) <+ ddt(q)`), conserving charge with exact capacitance derivatives.
+`behavioral_resistor(expression, ...)` defines a nominal resistance `R_expr` (in ohms at `nominal_temperature`, default 27 °C) scaled dynamically with simulation temperature by `1 + tc1 · ΔT + tc2 · ΔT²` (`temperature_coefficient` and `quadratic_temperature_coefficient`), conducting `v(positive, negative) / R_eff` and emitting Johnson-Nyquist thermal noise `4kT / R_eff` whenever `R_eff > 0`.
 The engine differentiates every expression exactly so Newton iterations and small-signal analyses observe exact slopes.
 
-When exporting to ngspice, behavioral capacitors emit `Q=` charges and all expressions translate directly from AST trees with explicit parentheses for semantic equivalence.
+When exporting to ngspice, behavioral capacitors emit `Q=` charges, behavioral resistors emit `R=` elements with `tc1`/`tc2` and instance temperature overrides, and all expressions translate directly from AST trees with explicit parentheses for semantic equivalence.
 Power operations emit `pow` (or `pwr` for odd integer exponents to preserve sign under negative bases), `limit` expands via `min`/`max` (avoiding ngspice's different `limit` function), and `table` expands into piecewise linear and parabolic-corner branches.
 
 ## Switches
@@ -275,7 +276,7 @@ Heat entering a thermal terminal is readable via `current(instance, terminal)` i
 
 ### Self-heating
 
-Calling `device.heated()` enables electrothermal coupling on resistors, diodes, JFETs, BJTs, MOSFETs, BSIM3, and VDMOS by adding a `thermal` terminal.
+Calling `device.heated()` enables electrothermal coupling on resistors, behavioral resistors, diodes, JFETs, BJTs, VBICs, MOSFETs, BSIM3, BSIM4, and VDMOS by adding a `thermal` terminal.
 The device evaluates all temperature-dependent parameters at simulation temperature plus thermal-net rise and injects electrical dissipation (`Σ v_i i_i`) into the thermal net as heat.
 Connecting a thermal resistance to ambient determines steady-state junction temperature, while an added thermal capacitance governs thermal transient dynamics:
 

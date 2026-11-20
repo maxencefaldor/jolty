@@ -110,6 +110,42 @@ pub(crate) fn compile(node: &Node) -> Vec<Instruction> {
     }
 }
 
+/// Maximum instruction count evaluated on the stack by [`value`] without heap allocation.
+///
+/// Chosen as 32 `f64` slots (256 bytes) to cover constant expressions (1 instruction) and
+/// typical PDK polynomial resistor expressions without heap allocation during preparation
+/// or noise queries, while falling back to a heap buffer for arbitrarily large tapes.
+const INLINE_TAPE: usize = 32;
+
+/// Evaluates `tape` forward into `values` at `variables` without limiting or gradients and
+/// returns the root value.
+fn value_into(tape: &[Instruction], variables: &[f64], values: &mut [f64]) -> f64 {
+    for (index, instruction) in tape.iter().enumerate() {
+        values[index] = match instruction {
+            Instruction::Constant(value) => *value,
+            Instruction::Variable(variable) => variables[*variable],
+            Instruction::Unary(operation, x) => operation.value(values[*x]),
+            Instruction::Binary(operation, a, b) => operation.value(values[*a], values[*b]),
+            Instruction::Limit([x, a, b]) => limit(values[*x], values[*a], values[*b]).0,
+            Instruction::Conditional(operands) => values[choose(*operands, values)],
+            Instruction::Table(x, points) => points.interpolate(values[*x]).0,
+        };
+    }
+    values[tape.len() - 1]
+}
+
+/// Evaluates `tape` at `variables` without step limiting or reverse-mode derivatives,
+/// returning the scalar root value.
+pub(crate) fn value(tape: &[Instruction], variables: &[f64]) -> f64 {
+    if tape.len() <= INLINE_TAPE {
+        let mut stack = [0.0; INLINE_TAPE];
+        value_into(tape, variables, &mut stack[..tape.len()])
+    } else {
+        let mut heap = vec![0.0; tape.len()];
+        value_into(tape, variables, &mut heap)
+    }
+}
+
 /// Evaluates `tape` at `variables` in `workspace`, writes the reverse-mode gradient into
 /// `gradient`, and returns the root value.
 pub(crate) fn evaluate(

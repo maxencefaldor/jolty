@@ -699,6 +699,15 @@ fn an_autonomous_periodic_steady_state_refuses_time_varying_sources() {
                 &[("positive", "n"), ("negative", "0"), ("x", "n")],
             ),
         ),
+        (
+            "BR1",
+            device(
+                "BR1",
+                "behavioral_resistor",
+                json!({"expression": "1e3 * (1 + 0.1 * sin(time))"}),
+                &[("positive", "n"), ("negative", "0")],
+            ),
+        ),
     ];
     let advice = ["use", "pass", "try", "instead", "should", "give"];
     for (name, source) in cases {

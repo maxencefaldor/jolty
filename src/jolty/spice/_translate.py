@@ -513,6 +513,8 @@ class Translation:
         model: str,
         nodes: tuple[str, str],
         expression: Expression,
+        *,
+        parameters: Mapping[str, JsonValue] | None = None,
     ) -> None:
         """Places a behavioral device of `model` between `nodes` using `expression`.
 
@@ -524,6 +526,7 @@ class Translation:
             model: Behavioral jolty device model name.
             nodes: Pair of `(positive_node, negative_node)` SPICE node tokens.
             expression: Inlined SPICE `Expression` governing the behavioral output.
+            parameters: Optional extra device parameters merged alongside `expression`.
         """
         terminals = {
             "positive": self.net(nodes[0]),
@@ -556,7 +559,10 @@ class Translation:
             check_core_depth(text)
         except SpiceError as error:
             raise statement.fail(str(error)) from None
-        self.add(statement, model, {"expression": text}, terminals)
+        combined: dict[str, JsonValue] = {"expression": text}
+        if parameters is not None:
+            combined |= parameters
+        self.add(statement, model, combined, terminals)
 
     def sense(self, source: str, statement: Statement) -> tuple[str, str]:
         """Inserts a current-sensing port in series with voltage source `source`.
