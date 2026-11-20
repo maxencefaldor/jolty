@@ -944,12 +944,13 @@ impl Emitter<'_, '_> {
             return Ok(Operand::new("R::constant(0.0)", ATOM, kind));
         };
         let limit = module.limits[index].clone();
-        let applied = voltage(self, limit.plus, limit.minus, "value");
         if self.mode == Mode::Noise {
+            let applied = voltage(self, limit.plus, limit.minus, "unknown::<R>");
             let name = self.temporary();
-            out.push(Rust::Line(format!("let {name} = R::constant({applied});")));
+            out.push(Rust::Line(format!("let {name} = {applied};")));
             return Ok(Operand::new(name, ATOM, kind));
         }
+        let applied = voltage(self, limit.plus, limit.minus, "value");
         let mut arguments = vec![format!("applied{index}"), format!("memory.limited{index}")];
         for argument in &limit.arguments {
             let operand = self.expression(argument, out)?;

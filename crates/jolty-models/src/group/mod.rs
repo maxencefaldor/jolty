@@ -32,6 +32,6 @@ mod twin;
 pub use kind::Instance;
 pub use layout::{Groups, TooLarge};
 pub use runs::{Alone, Block, Changed, Runs, Tasks};
-pub use twin::{Seeds, Twin, TwinNumber};
+pub use twin::{Seeds, Twin, TwinNoise, TwinNumber};
 
 pub(crate) use kind::Kind;

@@ -6,7 +6,7 @@ use std::fmt;
 use jolty_numerics::UNMAPPED;
 
 use super::kind::Kind;
-use crate::{Gradient, Input, Local, Stamp};
+use crate::{Gradient, Input, Local, Node, NoiseSource, Stamp, UnknownIndex};
 
 /// Forward-mode differentiation directions (seeds) for a [`Twin`], targeting either
 /// parameter paths (as named by [`jolty_ir::numbers`]) or circuit unknowns.
@@ -140,9 +140,19 @@ pub(super) trait Twinned: fmt::Debug + Send + Sync {
     /// Evaluates the twin at `at` into its dedicated gradient block.
     fn evaluate(&mut self, at: &Local<'_>);
 
+    /// Evaluates differentiable operating-point noise sources for the twin at `at`.
+    fn evaluate_noise(&mut self, at: &Local<'_>);
+
     /// Returns `(value, derivatives)` for `contribution` at local `index` from the most
     /// recent evaluation.
     fn number(&self, contribution: Contribution, index: usize) -> Option<(f64, &[f64])>;
+
+    /// Returns the number of noise sources produced by the most recent noise evaluation.
+    fn noise_len(&self) -> usize;
+
+    /// Returns the local-equation noise source at `index` from the most recent noise
+    /// evaluation.
+    fn noise_source(&self, index: usize) -> Option<TwinNoise<'_>>;
 }
 
 /// Typed sensitivity twin for kernel `K` with compile-time derivative width `SEEDS` and
@@ -152,6 +162,7 @@ pub(super) struct KernelTwin<K: Kind, const SEEDS: usize> {
     twin: K::Twin<SEEDS>,
     rows: [Vec<Gradient<SEEDS>>; 3],
     entries: [Vec<Gradient<SEEDS>>; 2],
+    noise: Vec<NoiseSource<Gradient<SEEDS>>>,
     /// Active seed count within `SEEDS`; trailing lanes stay zero.
     seeds: usize,
 }
@@ -171,6 +182,7 @@ impl<K: Kind, const SEEDS: usize> KernelTwin<K, SEEDS> {
             twin,
             rows: [zero(unknowns), zero(unknowns), zero(unknowns)],
             entries: [zero(stride), zero(stride)],
+            noise: Vec::new(),
             seeds: seeds.count(),
         }))
     }
@@ -193,6 +205,11 @@ impl<K: Kind, const SEEDS: usize> Twinned for KernelTwin<K, SEEDS> {
         K::evaluate_twin(&self.shape, &mut self.twin, at, &mut stamp);
     }
 
+    fn evaluate_noise(&mut self, at: &Local<'_>) {
+        self.noise.clear();
+        K::noise_twin(&self.shape, &mut self.twin, at, &mut self.noise);
+    }
+
     fn number(&self, contribution: Contribution, index: usize) -> Option<(f64, &[f64])> {
         let [residual, _, charge] = &self.rows;
         let [conductance, capacitance] = &self.entries;
@@ -204,6 +221,30 @@ impl<K: Kind, const SEEDS: usize> Twinned for KernelTwin<K, SEEDS> {
         };
         let number = values.get(index)?;
         Some((number.value, number.derivatives.get(..self.seeds)?))
+    }
+
+    fn noise_len(&self) -> usize {
+        self.noise.len()
+    }
+
+    fn noise_source(&self, index: usize) -> Option<TwinNoise<'_>> {
+        let source = self.noise.get(index)?;
+        Some(TwinNoise {
+            name: source.name,
+            equations: source.equations,
+            white: (
+                source.white.value,
+                source.white.derivatives.get(..self.seeds)?,
+            ),
+            flicker: (
+                source.flicker.value,
+                source.flicker.derivatives.get(..self.seeds)?,
+            ),
+            exponent: (
+                source.exponent.value,
+                source.exponent.derivatives.get(..self.seeds)?,
+            ),
+        })
     }
 }
 
@@ -225,6 +266,22 @@ pub struct Twin {
 /// Evaluated twin contribution pairing the primal value with directional derivatives across
 /// all active seeds.
 pub type TwinNumber<'a> = (f64, &'a [f64]);
+
+/// Differentiable noise source evaluated by a [`Twin`], pairing primal spectral parameters
+/// with their directional derivatives across all active seeds.
+#[derive(Debug, Clone, Copy)]
+pub struct TwinNoise<'a> {
+    /// Physical mechanism producing the noise, matching [`NoiseSource::name`].
+    pub name: &'static str,
+    /// Circuit equation pair receiving the positive and negative excitation stamps.
+    pub equations: [Node; 2],
+    /// White noise spectral density and derivatives.
+    pub white: TwinNumber<'a>,
+    /// Flicker noise spectral density at 1 Hz and derivatives.
+    pub flicker: TwinNumber<'a>,
+    /// Flicker frequency roll-off exponent and derivatives.
+    pub exponent: TwinNumber<'a>,
+}
 
 impl Twin {
     /// Builds a twin from a typed evaluator, global node and entry slot maps, and `seeds`.
@@ -260,6 +317,39 @@ impl Twin {
     pub fn evaluate_along(&mut self, input: &Input<'_>, tangents: &[Vec<f64>]) {
         let local = input.local(&self.nodes).along(tangents);
         self.evaluated.evaluate(&local);
+    }
+
+    /// Evaluates differentiable noise sources for the twin at operating point `input`.
+    pub fn evaluate_noise(&mut self, input: &Input<'_>) {
+        let local = input.local(&self.nodes).seeding(&self.seeded);
+        self.evaluated.evaluate_noise(&local);
+    }
+
+    /// Evaluates differentiable noise sources at operating point `input` while seeding global
+    /// unknowns along each tangent vector in `tangents`.
+    pub fn evaluate_noise_along(&mut self, input: &Input<'_>, tangents: &[Vec<f64>]) {
+        let local = input.local(&self.nodes).along(tangents);
+        self.evaluated.evaluate_noise(&local);
+    }
+
+    /// Iterates over circuit-mapped [`TwinNoise`] sources from the most recent noise
+    /// evaluation.
+    pub fn noise(&self) -> impl Iterator<Item = TwinNoise<'_>> + '_ {
+        (0..self.evaluated.noise_len()).filter_map(|index| {
+            let source = self.evaluated.noise_source(index)?;
+            let equations = source.equations.map(|equation| {
+                equation.and_then(|local| {
+                    self.nodes
+                        .get(local.index())
+                        .filter(|&&unknown| unknown != UNMAPPED)
+                        .map(|&unknown| UnknownIndex::new(unknown as usize))
+                })
+            });
+            Some(TwinNoise {
+                equations,
+                ..source
+            })
+        })
     }
 
     /// Returns the global unknown moved by each seed when seeding unknowns ([`UNMAPPED`] for

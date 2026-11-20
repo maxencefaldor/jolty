@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use jolty_models::{Input, Seeds, Twin};
+use jolty_models::{Input, Node, Seeds, Twin, TwinNoise};
 use jolty_numerics::{Complex64, UNMAPPED};
 
 use crate::Simulator;
@@ -17,6 +17,75 @@ use crate::options::Parallelism;
 use crate::sensitivity::Parameter;
 use crate::state::Held;
 use crate::sweep::Swept;
+
+/// Directional spectral-density derivative for a single noise source along one seed.
+#[derive(Clone, Copy)]
+pub(crate) struct NoiseRate {
+    /// Circuit equation pair receiving the positive and negative excitation stamps.
+    pub(crate) equations: [Node; 2],
+    /// Directional derivative of white noise density.
+    white_rate: f64,
+    /// Primal flicker noise density at 1 Hz.
+    flicker_value: f64,
+    /// Directional derivative of flicker noise density at 1 Hz.
+    flicker_rate: f64,
+    /// Primal flicker roll-off exponent.
+    exponent_value: f64,
+    /// Directional derivative of flicker roll-off exponent.
+    exponent_rate: f64,
+}
+
+impl NoiseRate {
+    /// Extracts the rate along `seed` from `source`, returning `None` if every rate is zero.
+    fn from_source(source: TwinNoise<'_>, seed: usize) -> Option<Self> {
+        let white_rate = source.white.1[seed];
+        let flicker_rate = source.flicker.1[seed];
+        let exponent_rate = source.exponent.1[seed];
+        if white_rate == 0.0 && flicker_rate == 0.0 && exponent_rate == 0.0 {
+            return None;
+        }
+        Some(Self {
+            equations: source.equations,
+            white_rate,
+            flicker_value: source.flicker.0,
+            flicker_rate,
+            exponent_value: source.exponent.0,
+            exponent_rate,
+        })
+    }
+
+    /// Evaluates `d(white + flicker * f^(-exponent))` at positive `frequency`.
+    #[inline]
+    pub(crate) fn density(self, frequency: f64) -> f64 {
+        if self.flicker_value == 0.0 && self.flicker_rate == 0.0 {
+            return self.white_rate;
+        }
+        let rolloff = frequency.powf(-self.exponent_value);
+        let mut rate = self.white_rate + self.flicker_rate * rolloff;
+        if self.flicker_value != 0.0 && self.exponent_rate != 0.0 {
+            rate -= self.flicker_value * rolloff * frequency.ln() * self.exponent_rate;
+        }
+        rate
+    }
+}
+
+/// Active frequency-domain weights for reverse-mode differentiation of noise sources.
+pub(crate) struct NoiseCotangentGrid<'a> {
+    /// Analysis frequencies in hertz.
+    pub(crate) frequencies: &'a [f64],
+    /// Adjoint noise transfer vectors `z_k` at frequencies where any cotangent is active.
+    pub(crate) adjoints: &'a [Option<Vec<Complex64>>],
+    /// Active `(frequency_index, effective_weight)` pairs per cotangent.
+    pub(crate) weights: &'a [Vec<(usize, f64)>],
+}
+
+/// Returns `values[positive] - values[negative]`, substituting zero for grounded (`None`)
+/// nodes.
+#[inline]
+pub(crate) fn pair_difference(values: &[Complex64], positive: Node, negative: Node) -> Complex64 {
+    let at = |node: Node| node.map_or(Complex64::default(), |unknown| values[unknown.index()]);
+    at(positive) - at(negative)
+}
 
 /// Parameter perturbation direction on a single device.
 struct Direction {
@@ -128,6 +197,88 @@ impl Twins {
         );
     }
 
+    /// Evaluates differentiable noise sources for every twin at operating point `x` and
+    /// `gmin` across `parallelism`.
+    pub(crate) fn evaluate_noise(&mut self, x: &[f64], gmin: f64, parallelism: &Parallelism) {
+        parallelism.spread(
+            &mut self.chunks,
+            || (),
+            |(), chunk| {
+                chunk.twin.evaluate_noise(&unlimited(x, None, gmin));
+            },
+        );
+    }
+
+    /// Accumulates direct parameter gradients of noise-source spectral densities weighted by
+    /// `grid` across every active column, returning `[column][cotangent]`.
+    pub(crate) fn noise_dots(
+        &mut self,
+        grid: &NoiseCotangentGrid<'_>,
+        parallelism: &Parallelism,
+    ) -> Vec<Vec<f64>> {
+        let fixed = &self.fixed;
+        let cotangent_count = grid.weights.len();
+        let by_chunk = parallelism.spread(
+            &mut self.chunks,
+            || (),
+            |(), chunk| {
+                let mut chunk_sums: Vec<(usize, Vec<f64>)> = chunk
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &column)| !fixed[column])
+                    .map(|(seed, _)| (seed, vec![0.0; cotangent_count]))
+                    .collect();
+                if chunk_sums.is_empty() {
+                    return Vec::new();
+                }
+                for source in chunk.twin.noise() {
+                    let has_flicker_rate = source.flicker.1.iter().any(|&rate| rate != 0.0);
+                    for (cotangent, active) in grid.weights.iter().enumerate() {
+                        if active.is_empty() {
+                            continue;
+                        }
+                        let (weight_white, weight_flicker, weight_exponent) = noise_source_weights(
+                            source.equations,
+                            source.flicker.0,
+                            has_flicker_rate,
+                            source.exponent.0,
+                            grid,
+                            active,
+                        );
+                        if weight_white == 0.0 && weight_flicker == 0.0 && weight_exponent == 0.0 {
+                            continue;
+                        }
+                        for (seed, sums) in &mut chunk_sums {
+                            sums[cotangent] += weight_white * source.white.1[*seed]
+                                + weight_flicker * source.flicker.1[*seed]
+                                + weight_exponent * source.exponent.1[*seed];
+                        }
+                    }
+                }
+                chunk_sums
+                    .into_iter()
+                    .map(|(seed, sums)| (chunk.columns[seed], sums))
+                    .collect::<Vec<_>>()
+            },
+        );
+        let mut found = vec![vec![0.0; cotangent_count]; self.len()];
+        for (column, sums) in by_chunk.into_iter().flatten() {
+            found[column] = sums;
+        }
+        found
+    }
+
+    /// Iterates over nonzero spectral-density [`NoiseRate`] entries for `column` from the
+    /// most recent [`Twins::evaluate_noise`] call.
+    pub(crate) fn noise_rates(&self, column: usize) -> impl Iterator<Item = NoiseRate> + '_ {
+        let Place { chunk, seed } = self.places[column];
+        self.chunks[chunk]
+            .twin
+            .noise()
+            .filter_map(move |source| NoiseRate::from_source(source, seed))
+    }
+
     /// Computes `sign * a^T ∂f/∂p` or `sign * a^T ∂q/∂p` (selected by `part`) for every
     /// column and adjoint vector in `vectors`, returning zero for sweep-held columns.
     pub(crate) fn dots(
@@ -222,6 +373,25 @@ impl Twins {
         }
     }
 
+    /// Accumulates `scale * (∂G/∂p + jω ∂C/∂p)ᵀ z` for `column` at angular frequency
+    /// `omega` and adjoint weights `z` into `into`.
+    pub(crate) fn add_transposed_product(
+        &self,
+        column: usize,
+        positions: &[(usize, usize)],
+        scale: f64,
+        omega: f64,
+        z: &[Complex64],
+        into: &mut [Complex64],
+    ) {
+        let Place { chunk, seed } = self.places[column];
+        for (slot, (_, conductance), (_, capacitance)) in self.chunks[chunk].twin.entries() {
+            let (row, column) = positions[slot];
+            let derivative = Complex64::new(conductance[seed], omega * capacitance[seed]);
+            into[column] += derivative * z[row] * scale;
+        }
+    }
+
     /// Freezes columns overridden by a DC sweep on `swept` and rebuilds remaining twins on
     /// that device excluding the held parameter.
     pub(crate) fn hold(&mut self, simulator: &Simulator, swept: &Swept, parameter: Option<&str>) {
@@ -259,6 +429,42 @@ impl Twins {
             }
         }
     }
+}
+
+/// Accumulates `(weight_white, weight_flicker, weight_exponent)` across `active`
+/// `(frequency_index, effective_weight)` pairs for a noise source on `equations`.
+fn noise_source_weights(
+    equations: [Node; 2],
+    flicker_value: f64,
+    has_flicker_rate: bool,
+    exponent_value: f64,
+    grid: &NoiseCotangentGrid<'_>,
+    active: &[(usize, f64)],
+) -> (f64, f64, f64) {
+    let [positive, negative] = equations;
+    let track_flicker = flicker_value != 0.0 || has_flicker_rate;
+    let mut weight_white = 0.0;
+    let mut weight_flicker = 0.0;
+    let mut weight_exponent = 0.0;
+    for &(frequency_index, effective_weight) in active {
+        let Some(adjoint) = grid.adjoints[frequency_index].as_deref() else {
+            continue;
+        };
+        let factor = effective_weight * pair_difference(adjoint, positive, negative).norm_sqr();
+        if factor == 0.0 {
+            continue;
+        }
+        weight_white += factor;
+        if track_flicker {
+            let frequency = grid.frequencies[frequency_index];
+            let rolloff = frequency.powf(-exponent_value);
+            weight_flicker += factor * rolloff;
+            if flicker_value != 0.0 {
+                weight_exponent -= factor * flicker_value * rolloff * frequency.ln();
+            }
+        }
+    }
+    (weight_white, weight_flicker, weight_exponent)
 }
 
 /// Builds an evaluation [`Input`] at `x`, `time`, and `gmin` with voltage limiting
@@ -603,25 +809,166 @@ impl Simulator {
         moved
     }
 
+    /// Computes directional noise-source spectral derivatives along each operating-point
+    /// shift vector in `shifts` over `noisy` devices.
+    pub(crate) fn noise_along(
+        &self,
+        noisy: &[usize],
+        x: &[f64],
+        shifts: &[Vec<f64>],
+        gmin: f64,
+        parallelism: &Parallelism,
+    ) -> Vec<Vec<NoiseRate>> {
+        let mut moved: Vec<Vec<NoiseRate>> = vec![Vec::new(); shifts.len()];
+        if shifts.is_empty() || noisy.is_empty() {
+            return moved;
+        }
+        let origins = self.origins();
+        let mut tasks = Vec::new();
+        for &device in noisy {
+            let origin = origins.of(device);
+            let instance = (&origin.kernel(), origins.temperature);
+            for (chunk_index, chunk) in shifts.chunks(Seeds::MAX).enumerate() {
+                if let Some(seeds) = Seeds::tangents(chunk.len())
+                    && let Some(twin) =
+                        self.state
+                            .runs
+                            .twin(&self.elaborated.groups, device, instance, &seeds)
+                {
+                    tasks.push((chunk_index * Seeds::MAX, chunk, twin));
+                }
+            }
+        }
+        let input = unlimited(x, None, gmin);
+        parallelism.spread(
+            &mut tasks,
+            || (),
+            |(), (_, chunk, twin)| {
+                twin.evaluate_noise_along(&input, chunk);
+            },
+        );
+        for (first, chunk, twin) in &tasks {
+            for source in twin.noise() {
+                for offset in 0..chunk.len() {
+                    if let Some(rate) = NoiseRate::from_source(source, offset) {
+                        moved[first + offset].push(rate);
+                    }
+                }
+            }
+        }
+        moved
+    }
+
+    /// Computes unknown gradients of `Σ_m Σ_k w_k |z_{k,m}|² s_m(f_k; x)` at operating point
+    /// `x` across unknown-seeded twins of `noisy` devices.
+    pub(crate) fn noise_cotangents(
+        &self,
+        noisy: &[usize],
+        x: &[f64],
+        grid: &NoiseCotangentGrid<'_>,
+        gmin: f64,
+        parallelism: &Parallelism,
+    ) -> Vec<Option<Vec<f64>>> {
+        let dimension = self.elaborated.unknowns.len();
+        let mut gradients: Vec<Option<Vec<f64>>> = grid
+            .weights
+            .iter()
+            .map(|active| (!active.is_empty()).then(|| vec![0.0; dimension]))
+            .collect();
+        if noisy.is_empty() || gradients.iter().all(Option::is_none) {
+            return gradients;
+        }
+        let origins = self.origins();
+        let mut twins: Vec<Twin> = noisy
+            .iter()
+            .flat_map(|&device| {
+                let origin = origins.of(device);
+                let instance = (&origin.kernel(), origins.temperature);
+                self.state
+                    .runs
+                    .unknown_twins(&self.elaborated.groups, device, instance)
+            })
+            .collect();
+        let input = unlimited(x, None, gmin);
+        let by_twin = parallelism.spread(
+            &mut twins,
+            || (),
+            |(), twin| {
+                twin.evaluate_noise(&input);
+                let seeded = twin.seeded();
+                let mut local = vec![vec![0.0; seeded.len()]; grid.weights.len()];
+                for source in twin.noise() {
+                    let has_flicker_rate = source.flicker.1.iter().any(|&rate| rate != 0.0);
+                    for (cotangent, active) in grid.weights.iter().enumerate() {
+                        if active.is_empty() {
+                            continue;
+                        }
+                        let (weight_white, weight_flicker, weight_exponent) = noise_source_weights(
+                            source.equations,
+                            source.flicker.0,
+                            has_flicker_rate,
+                            source.exponent.0,
+                            grid,
+                            active,
+                        );
+                        if weight_white == 0.0 && weight_flicker == 0.0 && weight_exponent == 0.0 {
+                            continue;
+                        }
+                        for (slot, sum) in local[cotangent].iter_mut().enumerate() {
+                            *sum += weight_white * source.white.1[slot]
+                                + weight_flicker * source.flicker.1[slot]
+                                + weight_exponent * source.exponent.1[slot];
+                        }
+                    }
+                }
+                let mut twin_terms = vec![Vec::new(); grid.weights.len()];
+                for (cotangent, sums) in local.into_iter().enumerate() {
+                    for (&unknown, sum) in seeded.iter().zip(sums) {
+                        if unknown != UNMAPPED && sum != 0.0 {
+                            twin_terms[cotangent].push((unknown as usize, sum));
+                        }
+                    }
+                }
+                twin_terms
+            },
+        );
+        for twin_terms in by_twin {
+            for (gradient, terms) in gradients.iter_mut().zip(twin_terms) {
+                if let Some(gradient) = gradient {
+                    for (unknown, term) in terms {
+                        gradient[unknown] += term;
+                    }
+                }
+            }
+        }
+        gradients
+    }
+
     /// Computes unknown gradients of `Σ_s (W_G[s] G[s](x) + W_C[s] C[s](x))` at `x` for
     /// each active weight pair `(W_G, W_C)` indexed by `slots` across `twins`.
-    pub(crate) fn entries_cotangents(
+    pub(crate) fn entries_cotangents<T>(
         &self,
         twins: &mut [Twin],
         slots: &[usize],
         x: &[f64],
-        weights: &[Option<(Vec<Complex64>, Vec<Complex64>)>],
+        weights: &[Option<(Vec<T>, Vec<T>)>],
         gmin: f64,
         parallelism: &Parallelism,
-    ) -> Vec<Option<Vec<Complex64>>> {
+    ) -> Vec<Option<Vec<T>>>
+    where
+        T: Copy
+            + Default
+            + PartialEq
+            + Send
+            + Sync
+            + std::ops::Add<Output = T>
+            + std::ops::AddAssign
+            + std::ops::Mul<f64, Output = T>,
+    {
         let dimension = self.elaborated.unknowns.len();
-        let mut gradients: Vec<Option<Vec<Complex64>>> = weights
+        let mut gradients: Vec<Option<Vec<T>>> = weights
             .iter()
-            .map(|weight| {
-                weight
-                    .as_ref()
-                    .map(|_| vec![Complex64::default(); dimension])
-            })
+            .map(|weight| weight.as_ref().map(|_| vec![T::default(); dimension]))
             .collect();
         if slots.is_empty() || gradients.iter().all(Option::is_none) {
             return gradients;
@@ -633,7 +980,7 @@ impl Simulator {
             |(), twin| {
                 twin.evaluate(&input);
                 let seeded = twin.seeded();
-                let mut local = vec![vec![Complex64::default(); seeded.len()]; weights.len()];
+                let mut local = vec![vec![T::default(); seeded.len()]; weights.len()];
                 for (slot, (_, conductance), (_, capacitance)) in twin.entries() {
                     let Ok(packed) = slots.binary_search(&slot) else {
                         continue;
@@ -644,9 +991,7 @@ impl Simulator {
                         };
                         let (by_conductance, by_capacitance) =
                             (weight_conductance[packed], weight_capacitance[packed]);
-                        if by_conductance == Complex64::default()
-                            && by_capacitance == Complex64::default()
-                        {
+                        if by_conductance == T::default() && by_capacitance == T::default() {
                             continue;
                         }
                         for (sum, (&conductance_rate, &capacitance_rate)) in local[cotangent]
@@ -661,7 +1006,7 @@ impl Simulator {
                 let mut twin_terms = vec![Vec::new(); weights.len()];
                 for (cotangent, sums) in local.into_iter().enumerate() {
                     for (&unknown, sum) in seeded.iter().zip(sums) {
-                        if unknown != UNMAPPED && sum != Complex64::default() {
+                        if unknown != UNMAPPED && sum != T::default() {
                             twin_terms[cotangent].push((unknown as usize, sum));
                         }
                     }

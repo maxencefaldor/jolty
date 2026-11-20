@@ -257,6 +257,14 @@ pub(crate) trait Kind: Send + Sync + 'static {
         stamp: &mut Stamp<'_, Gradient<SEEDS>>,
     );
 
+    /// Appends differentiable operating-point noise sources for sensitivity `twin` at `at`.
+    fn noise_twin<const SEEDS: usize>(
+        shape: &Self::Shape,
+        twin: &mut Self::Twin<SEEDS>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource<Gradient<SEEDS>>>,
+    );
+
     /// Collects every `(path, value)` pair visited by [`crate::Lift`] on `parameters` in
     /// traversal order.
     #[cfg(any(test, feature = "testing"))]
@@ -340,6 +348,15 @@ impl<K: Kernel> Kind for K {
         stamp: &mut Stamp<'_, Gradient<SEEDS>>,
     ) {
         K::evaluate(shape, prepared, memory, at, stamp);
+    }
+
+    fn noise_twin<const SEEDS: usize>(
+        shape: &K::Shape,
+        (prepared, _): &mut Self::Twin<SEEDS>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource<Gradient<SEEDS>>>,
+    ) {
+        K::noise(shape, prepared, at, sources);
     }
 
     #[cfg(any(test, feature = "testing"))]

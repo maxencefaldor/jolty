@@ -171,7 +171,7 @@ pub struct PreparedMemristor<R: Real> {
     control: Control<R>,
     /// Initial state held at operating-point analyses.
     initial: R,
-    temperature: f64,
+    temperature: R,
 }
 
 /// Memristor evaluation memory storing the most recent resistance and state rate (NaN
@@ -212,7 +212,7 @@ impl<R: Real> PreparedMemristor<R> {
             memristance,
             control,
             initial,
-            temperature: temperature.value(),
+            temperature,
         })
     }
 }
@@ -283,9 +283,9 @@ impl MemristorShape {
         &self,
         prepared: &PreparedMemristor<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
-        let state = Dual::<R, 0>::number(at.value(self.state));
+        let state = Dual::<R, 0>::constant(at.unknown(self.state));
         let conductance = prepared.memristance.conductance(state).value;
         let [positive, negative] = POSITIVE_NEGATIVE;
         sources.push(NoiseSource::thermal(
@@ -294,7 +294,7 @@ impl MemristorShape {
                 Some(UnknownIndex::new(positive)),
                 Some(UnknownIndex::new(negative)),
             ],
-            conductance.value(),
+            conductance,
             prepared.temperature,
         ));
     }
@@ -444,7 +444,7 @@ impl Kernel for VoltageControlledMemristor {
         shape: &MemristorShape,
         prepared: &PreparedMemristor<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         shape.noise(prepared, at, sources);
     }
@@ -561,7 +561,7 @@ impl Kernel for CurrentControlledMemristor {
         shape: &MemristorShape,
         prepared: &PreparedMemristor<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         shape.noise(prepared, at, sources);
     }

@@ -7,12 +7,20 @@
 //! `-` contributes `|z_+ - z_-|^2` times its spectral density, and dividing total output
 //! noise by squared source gain gives input-referred noise.
 
-use jolty_models::{Input, Nature, Node, NoiseSource};
+use jolty_models::{Input, Nature, Node, NoiseSource, UnknownIndex};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
 use crate::ac::{over_frequencies, selector_vector};
 use crate::{OperatingPointResult, Options, SimulationError, Simulator};
+
+/// Output name for one-sided output noise spectral density (`V²/Hz` or `A²/Hz`) in
+/// sensitivity, mismatch, and derivative analyses.
+pub const NOISE_DENSITY: &str = "density";
+
+/// Output name for one-sided input-referred noise spectral density (`V²/Hz` or `A²/Hz`)
+/// when [`Noise::source`] is set.
+pub const REFERRED_NOISE: &str = "referred";
 
 /// A noise analysis: the noise density at an output, at each frequency, and how much each
 /// device's noise sources add to it.
@@ -85,7 +93,73 @@ pub struct NoiseContribution {
     pub densities: Vec<f64>,
 }
 
+/// Validated output selector and optional input-referred source excitation for [`Noise`].
+pub(crate) struct NoiseSetup {
+    /// Selected output unknown, or `None` for ground.
+    pub(crate) output: Option<UnknownIndex>,
+    /// Optional reference unknown for differential output voltage.
+    pub(crate) reference: Option<UnknownIndex>,
+    /// Physical quantity of the output.
+    pub(crate) nature: Nature,
+    /// Preallocated input-referred metadata when `noise.source` is set.
+    pub(crate) input: Option<NoiseInput>,
+    /// Unit excitation vector of `noise.source`, empty when no source is specified.
+    pub(crate) level: Vec<f64>,
+}
+
 impl Simulator {
+    /// Validates `noise` output, reference, optional source, and frequencies, returning the
+    /// prepared selector and source excitation.
+    pub(crate) fn noise_setup(&self, noise: &Noise) -> Result<NoiseSetup, SimulationError> {
+        let (output, reference, nature) =
+            self.measured(&noise.output, noise.reference.as_deref())?;
+        let (input, level) = match &noise.source {
+            Some(path) => {
+                let index = self.source_index(path)?;
+                let level = self.source_excitation(index);
+                let input = NoiseInput {
+                    source: path.clone(),
+                    nature: self.source_nature(index),
+                    gains: Vec::with_capacity(noise.frequencies.len()),
+                };
+                (Some(input), level)
+            }
+            None => (None, Vec::new()),
+        };
+        if let Some(frequency) = noise
+            .frequencies
+            .iter()
+            .find(|frequency| !(**frequency > 0.0 && frequency.is_finite()))
+        {
+            return Err(SimulationError::InvalidAnalysis(format!(
+                "noise frequencies require positive finite values; got {frequency:?}"
+            )));
+        }
+        Ok(NoiseSetup {
+            output,
+            reference,
+            nature,
+            input,
+            level,
+        })
+    }
+
+    /// Collects all device noise sources at `state` together with the placement-ordered
+    /// indices of devices that emitted at least one source.
+    pub(crate) fn noise_at(&self, state: &Input<'_>) -> (Vec<NoiseSource>, Vec<usize>) {
+        let mut sources = Vec::new();
+        let mut noisy = Vec::new();
+        let groups = &self.elaborated.groups;
+        for index in 0..self.elaborated.devices.len() {
+            let before = sources.len();
+            self.state.runs.noise(groups, index, state, &mut sources);
+            if sources.len() > before {
+                noisy.push(index);
+            }
+        }
+        (sources, noisy)
+    }
+
     /// Collects all device noise sources at `state` in placement order along with
     /// preallocated [`NoiseContribution`] buffers for `frequencies` points.
     fn noise_sources(
@@ -125,31 +199,14 @@ impl Simulator {
     ) -> Result<NoiseResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
-            let (output, reference, nature) =
-                self.measured(&noise.output, noise.reference.as_deref())?;
+            let NoiseSetup {
+                output,
+                reference,
+                nature,
+                mut input,
+                level,
+            } = self.noise_setup(noise)?;
             let unknowns = self.elaborated.unknowns.len();
-            let (mut input, level) = match &noise.source {
-                Some(path) => {
-                    let index = self.source_index(path)?;
-                    let level = self.source_excitation(index);
-                    let input = NoiseInput {
-                        source: path.clone(),
-                        nature: self.source_nature(index),
-                        gains: Vec::with_capacity(noise.frequencies.len()),
-                    };
-                    (Some(input), level)
-                }
-                None => (None, Vec::new()),
-            };
-            if let Some(frequency) = noise
-                .frequencies
-                .iter()
-                .find(|frequency| !(**frequency > 0.0 && frequency.is_finite()))
-            {
-                return Err(SimulationError::InvalidAnalysis(format!(
-                    "noise frequencies require positive finite values; got {frequency:?}"
-                )));
-            }
             let operating_point = self.linearize(&noise.frequencies, options)?;
             let state = Input::new(&operating_point.values, None, options.gmin);
             let (sources, mut contributions) = self.noise_sources(&state, noise.frequencies.len());

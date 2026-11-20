@@ -18,12 +18,14 @@ from jolty.plan import (
     LOOP_GAIN,
     Ac,
     DcSweep,
+    Noise,
     OperatingPoint,
     Options,
     PeriodicSteadyState,
     Stability,
     Transient,
     differentiated,
+    noise_outputs,
 )
 from jolty.simulate._decode import (
     elaborating,
@@ -42,7 +44,7 @@ type Outputs = dict[str, npt.NDArray[np.float64] | npt.NDArray[np.complex128] | 
 """Analysis output mapping from output name to values, plus `PERIOD` if autonomous."""
 
 type Differentiable = (
-    OperatingPoint | DcSweep | Ac | Stability | Transient | PeriodicSteadyState
+    OperatingPoint | DcSweep | Ac | Stability | Noise | Transient | PeriodicSteadyState
 )
 """Analysis types supported by [`Function`][jolty.simulate.Function]."""
 
@@ -232,11 +234,18 @@ class Function:
         """
         if not isinstance(
             analysis,
-            OperatingPoint | DcSweep | Ac | Stability | Transient | PeriodicSteadyState,
+            OperatingPoint
+            | DcSweep
+            | Ac
+            | Stability
+            | Noise
+            | Transient
+            | PeriodicSteadyState,
         ):
             message = (
                 "a function runs an operating point, a DC sweep, a small-signal "
-                "response, a stability analysis, a transient or a periodic steady "
+                "response, a stability analysis, a noise analysis, a transient or a "
+                "periodic steady "
                 f"state, not {type(analysis).__name__}"
             )
             raise TypeError(message)
@@ -277,6 +286,8 @@ class Function:
         """Returns output names for a specific simulator `core` in column order."""
         if isinstance(self.analysis, Stability):
             return (LOOP_GAIN,)
+        if isinstance(self.analysis, Noise):
+            return noise_outputs(self.analysis)
         return tuple(name for name, _ in core.unknowns)
 
     def _outputs(self, core: _core.Simulator, outcome: _core.AnalysisResult) -> Outputs:
@@ -403,6 +414,8 @@ class Function:
         """Output array names returned by this function in engine column order."""
         if isinstance(self.analysis, Stability):
             return (LOOP_GAIN,)
+        if isinstance(self.analysis, Noise):
+            return noise_outputs(self.analysis)
         return self.unknowns
 
     @property
@@ -573,7 +586,7 @@ def _cotangents(
 def _values(
     outcome: _core.AnalysisResult,
 ) -> tuple[npt.NDArray[np.float64] | npt.NDArray[np.complex128], float | None]:
-    """Extracts the 2D unknown array and optional period from an engine `outcome`."""
+    """Extracts the 2D output array and optional period from an engine `outcome`."""
     match outcome["kind"]:
         case "periodic_steady_state":
             return np.atleast_2d(outcome["values"]), outcome["period"]
@@ -581,6 +594,14 @@ def _values(
             return np.atleast_2d(outcome["values"]), None
         case "stability":
             return outcome["gains"][:, np.newaxis], None
+        case "noise":
+            densities = np.asarray(outcome["densities"], dtype=np.float64)
+            if (noise_input := outcome["input"]) is not None:
+                referred = _core.referred(
+                    densities, np.asarray(noise_input["gains"], dtype=np.complex128)
+                )
+                return np.column_stack([densities, referred]), None
+            return densities[:, np.newaxis], None
         case other:
             message = f"a function runs no {other} analysis"
             raise SimulationError(message)

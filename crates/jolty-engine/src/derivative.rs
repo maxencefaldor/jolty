@@ -17,7 +17,11 @@
 //! gain `T = -u / (1 + u)` (`dT/du = -1 / (1 + u)²`, `u = x_s[entered] - x_i[carried]`) from
 //! the same factored `G + jωC` matrix, propagating both injections through the shared
 //! operating-point bias path. Phasor pullbacks are bilinear (`vᵀ dx/dp`), so real losses
-//! over `x = a + jb` take the real part with `v = ∂L/∂a - j ∂L/∂b`.
+//! over `x = a + jb` take the real part with `v = ∂L/∂a - j ∂L/∂b`. Noise analysis solves
+//! the adjoint transfer system `(G + jωC)ᵀ z = e`, differentiating both transfer weights `z`
+//! and device spectral densities `s_m(f; x, p)` across direct parameter terms and
+//! operating-point shifts, with reverse mode solving one forward system `(G + jωC) w = r`
+//! per active cotangent and one transposed DC solve `Gᵀ μ = g_mat - g_src`.
 //!
 //! Transient steps solve `f(x) + α q(x) + h = 0`. JVP runs the forward direct method
 //! (Hocevar, Yang, Trick, and Epler, *IEEE Trans. CAD* 4(4), 1985), solving
@@ -37,21 +41,23 @@
 
 use std::collections::BTreeMap;
 
-use jolty_models::UnknownIndex;
+use jolty_models::{Input, NoiseSource, UnknownIndex};
 use jolty_numerics::{Complex64, Pattern, Scalar, solve_each_in_range};
 
-use crate::ac::over_frequencies;
+use crate::ac::{over_frequencies, selector_vector};
 use crate::newton::{add_product, factor_step_jacobian, force_row};
+use crate::noise::NoiseSetup;
 use crate::options::{Parallelism, float_count};
 use crate::periodic::{DENSE_MATRICES, ShootingSystem};
 use crate::sensitivity::{Derivatives, Differentiated, Parameter};
 use crate::solver::Factors;
 use crate::stability::Probe;
 use crate::transient::{Carried, StepFormula, StepPoint, Tangent, TangentLinear};
-use crate::twins::{Part, Twins};
+use crate::twins::{NoiseCotangentGrid, NoiseRate, Part, Twins, pair_difference};
 use crate::{
-    AcResult, AnalysisResult, DcSweep, DcSweepResult, Options, PeriodicSteadyStateResult,
-    SimulationError, Simulator, StabilityResult, Transient, TransientResult,
+    AcResult, AnalysisResult, DcSweep, DcSweepResult, Noise, NoiseResult, Options,
+    PeriodicSteadyStateResult, SimulationError, Simulator, StabilityResult, Transient,
+    TransientResult,
 };
 
 /// Analysis label for frequency-domain differentiation in delay-line refusals.
@@ -99,7 +105,7 @@ pub struct Cotangent<T> {
 /// Collection of real or complex cotangents matching an analysis output type.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cotangents {
-    /// Cotangents for real-valued analyses (DC, sweep, transient, or periodic steady state).
+    /// Cotangents for real-valued analyses (DC, sweep, noise, transient, or periodic steady state).
     Real(Vec<Cotangent<f64>>),
     /// Cotangents for complex AC and stability analyses.
     Complex(Vec<Cotangent<Complex64>>),
@@ -134,6 +140,8 @@ pub(crate) enum Saved {
     Nothing,
     /// DC sweep configuration needed to replay held sweep values.
     DcSweep(DcSweep),
+    /// Noise analysis configuration needed to rebuild selector and source excitation.
+    Noise(Noise),
     /// Initial-state boundary mode and accepted step formulas for transient replay.
     Transient(Start, Vec<StepFormula>),
     /// Accepted period step formulas and bordered shooting system for periodic replay.
@@ -556,6 +564,51 @@ impl StabilityPullContext<'_> {
             slot_products,
         }))
     }
+
+/// Shared immutable context for per-frequency noise forward-mode tangents.
+struct NoiseTangentContext<'a> {
+    dimension: usize,
+    setup: &'a NoiseSetup,
+    spectrum: &'a NoiseResult,
+    sources: &'a [NoiseSource],
+    twins: &'a Twins,
+    positions: &'a [(usize, usize)],
+    directions: &'a [Vec<f64>],
+    matrix_biases: &'a [Vec<(usize, f64, f64)>],
+    noise_biases: &'a [Vec<NoiseRate>],
+    kept: &'a [usize],
+}
+
+/// Shared immutable context for per-frequency noise reverse-mode pullbacks.
+struct NoisePullContext<'a> {
+    dimension: usize,
+    setup: &'a NoiseSetup,
+    spectrum: &'a NoiseResult,
+    sources: &'a [NoiseSource],
+    twins: &'a Twins,
+    positions: &'a [(usize, usize)],
+    cotangents: &'a [Cotangent<f64>],
+}
+
+/// Inputs for folding operating-point matrix and noise-source gradients in
+/// [`Simulator::pull_noise`].
+struct NoiseOperatingPull<'a> {
+    nonlinear: NonlinearTwins<'a>,
+    noisy: &'a [usize],
+    operating: &'a [f64],
+    matrix_weights: &'a [Option<(Vec<f64>, Vec<f64>)>],
+    grid: &'a NoiseCotangentGrid<'a>,
+}
+
+/// Per-cotangent pullback output at a single noise frequency: `(cotangent, omega,
+/// effective_weight, forward_adjoint, direct_matrix_terms)`.
+type NoisePullEntry = (usize, f64, f64, Vec<Complex64>, Vec<f64>);
+
+/// Collected frequency-domain pullback weights for operating-point and noise-source folding.
+struct NoisePullWeights {
+    matrix: Vec<Option<(Vec<f64>, Vec<f64>)>>,
+    adjoints: Vec<Option<Vec<Complex64>>>,
+    sources: Vec<Vec<(usize, f64)>>,
 }
 
 impl Adjoint {
@@ -642,11 +695,12 @@ impl Simulator {
             let (twins, directions) = self
                 .tangent_twins(named, tangents)
                 .map_err(|unread| SimulationError::UnknownParameters(named_of(&unread)))?;
-            let kept: Vec<usize> = if matches!(analysis, Differentiated::Stability(_)) {
-                vec![0]
-            } else {
-                (0..self.elaborated.unknowns.len()).collect()
+            let width = match analysis {
+                Differentiated::Stability(_) => 1,
+                Differentiated::Noise(noise) => 1 + usize::from(noise.source.is_some()),
+                _ => self.elaborated.unknowns.len(),
             };
+            let kept: Vec<usize> = (0..width).collect();
             let pushed = self.push_forward(analysis, twins, directions, &kept, options)?;
             Ok(JvpResult {
                 parameters: pushed.twins.parameters,
@@ -788,6 +842,16 @@ impl Simulator {
         }
     }
 
+    /// Returns the number of output entries per point for `result` (`1` for stability, `1` or
+    /// `2` for noise, or the circuit unknown count for all other analyses).
+    pub(crate) fn output_width(&self, result: &AnalysisResult) -> usize {
+        match result {
+            AnalysisResult::Stability(_) => 1,
+            AnalysisResult::Noise(spectrum) => 1 + usize::from(spectrum.input.is_some()),
+            _ => self.elaborated.unknowns.len(),
+        }
+    }
+
     /// Validates that `cotangents` have finite entries matching the point and output counts
     /// of `result`.
     fn checked(
@@ -796,20 +860,27 @@ impl Simulator {
         cotangents: &Cotangents,
     ) -> Result<(), SimulationError> {
         let points = points(result);
-        let (outputs, label) = if matches!(result, AnalysisResult::Stability(_)) {
-            (1, "output")
-        } else {
-            (self.elaborated.unknowns.len(), "unknowns")
-        };
+        let width = self.output_width(result);
         let fit = match cotangents {
-            Cotangents::Real(each) => cotangents_fit(each, points, outputs),
-            Cotangents::Complex(each) => cotangents_fit(each, points, outputs),
+            Cotangents::Real(each) => cotangents_fit(each, points, width),
+            Cotangents::Complex(each) => cotangents_fit(each, points, width),
         };
         if fit {
             Ok(())
         } else {
+            let noun = match result {
+                AnalysisResult::Stability(_) => "output",
+                AnalysisResult::Noise(_) => {
+                    if width == 1 {
+                        "output"
+                    } else {
+                        "outputs"
+                    }
+                }
+                _ => "unknowns",
+            };
             Err(SimulationError::InvalidAnalysis(format!(
-                "a cotangent is finite, at points from 0 to {} of {outputs} {label} each",
+                "a cotangent is finite, at points from 0 to {} of {width} {noun} each",
                 points.saturating_sub(1)
             )))
         }
@@ -866,6 +937,13 @@ impl Simulator {
                     AnalysisResult::Stability(loop_gain),
                 )
             }
+            Differentiated::Noise(noise) => {
+                self.undelayed(OVER_FREQUENCY, LEFT_OUT_OVER_FREQUENCY)?;
+                let spectrum = self.noise(noise, options)?;
+                let found =
+                    self.noise_tangents(&mut twins, noise, &spectrum, &directions, kept, options)?;
+                (Derivatives::Real(found), AnalysisResult::Noise(spectrum))
+            }
             Differentiated::Transient(transient) => {
                 self.undelayed(OVER_TIME, LEFT_OUT_OVER_TIME)?;
                 let start = self.start_of(transient)?;
@@ -917,7 +995,8 @@ impl Simulator {
         })
     }
 
-    /// Runs `analysis` and captures the [`Saved`] replay state required for [`Simulator::pull_back`].
+    /// Runs `analysis` and captures the [`Saved`] replay state required for
+    /// [`Simulator::pull_back`].
     ///
     /// # Errors
     ///
@@ -945,6 +1024,13 @@ impl Simulator {
                 (
                     AnalysisResult::Stability(self.stability(stability, options)?),
                     Saved::Nothing,
+                )
+            }
+            Differentiated::Noise(noise) => {
+                self.undelayed(OVER_FREQUENCY, LEFT_OUT_OVER_FREQUENCY)?;
+                (
+                    AnalysisResult::Noise(self.noise(noise, options)?),
+                    Saved::Noise(noise.clone()),
                 )
             }
             Differentiated::Transient(transient) => {
@@ -1053,6 +1139,9 @@ impl Simulator {
                     simulator.dc_cotangents(twins, x, &at, &mut *fold, options)
                 })?;
                 Ok(())
+            }
+            (Saved::Noise(noise), AnalysisResult::Noise(spectrum)) => {
+                self.pull_noise(twins, noise, spectrum, cotangents, fold, options)
             }
             (Saved::Transient(start, steps), AnalysisResult::Transient(waveforms)) => {
                 let pass = BackwardPass {
@@ -1540,6 +1629,230 @@ impl Simulator {
             for (&[real, imaginary], &(cotangent, _)) in dots.as_chunks::<2>().0.iter().zip(&active)
             {
                 sums[cotangent][column] += Complex64::new(real, imaginary);
+            }
+        }
+        Ok(())
+    }
+
+    /// Computes forward directional noise spectral-density sensitivities for `kept` columns
+    /// (`0` for output density, `1` for optional input-referred density) along `directions`,
+    /// indexed by `[frequency][kept_output][direction]`.
+    fn noise_tangents(
+        &mut self,
+        twins: &mut Twins,
+        noise: &Noise,
+        spectrum: &NoiseResult,
+        directions: &[Vec<f64>],
+        kept: &[usize],
+        options: &Options,
+    ) -> Result<Vec<Vec<Vec<f64>>>, SimulationError> {
+        if directions.is_empty() || spectrum.frequencies.is_empty() {
+            return Ok(vec![
+                vec![Vec::new(); kept.len()];
+                spectrum.frequencies.len()
+            ]);
+        }
+        let setup = self.noise_setup(noise)?;
+        let operating = &spectrum.operating_point.values;
+        let parallelism = &options.parallelism;
+        self.evaluate(operating, None, 1.0, options.gmin, false);
+        let state = Input::new(operating, None, options.gmin);
+        let (sources, emitters) = self.noise_at(&state);
+        let nonlinear = self.nonlinear_devices();
+        let (matrix_biases, noise_biases) = if nonlinear.is_empty() && emitters.is_empty() {
+            twins.evaluate(operating, None, options.gmin, parallelism);
+            (
+                vec![Vec::new(); directions.len()],
+                vec![Vec::new(); directions.len()],
+            )
+        } else {
+            let shifts = self.dc_shifts(twins, operating, directions, &[], options)?;
+            let matrix =
+                self.entries_along(&nonlinear, operating, &shifts, options.gmin, parallelism);
+            let rates = self.noise_along(&emitters, operating, &shifts, options.gmin, parallelism);
+            (matrix, rates)
+        };
+        twins.evaluate_noise(operating, options.gmin, parallelism);
+        let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
+        let context = NoiseTangentContext {
+            dimension: self.elaborated.unknowns.len(),
+            setup: &setup,
+            spectrum,
+            sources: &sources,
+            twins: &*twins,
+            positions: &positions,
+            directions,
+            matrix_biases: &matrix_biases,
+            noise_biases: &noise_biases,
+            kept,
+        };
+        over_frequencies(
+            self.linearization(),
+            &self.state.workspace.contributions,
+            &spectrum.frequencies,
+            parallelism,
+            &|factors, index, frequency| {
+                noise_frequency_tangent(factors, index, frequency, &context)
+            },
+        )
+    }
+
+    /// Pulls back real `cotangents` on noise `spectrum` to `twins`, streaming parameter
+    /// gradients into `fold`.
+    fn pull_noise(
+        &mut self,
+        twins: &mut Twins,
+        noise: &Noise,
+        spectrum: &NoiseResult,
+        cotangents: &[Cotangent<f64>],
+        fold: Fold<'_>,
+        options: &Options,
+    ) -> Result<(), SimulationError> {
+        if cotangents.is_empty() || twins.len() == 0 || spectrum.frequencies.is_empty() {
+            return Ok(());
+        }
+        let setup = self.noise_setup(noise)?;
+        let operating = &spectrum.operating_point.values;
+        let parallelism = &options.parallelism;
+        self.evaluate(operating, None, 1.0, options.gmin, false);
+        let state = Input::new(operating, None, options.gmin);
+        let (sources, emitters) = self.noise_at(&state);
+        twins.evaluate(operating, None, options.gmin, parallelism);
+        twins.evaluate_noise(operating, options.gmin, parallelism);
+        let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
+        let dimension = self.elaborated.unknowns.len();
+        let frequency_results = {
+            let context = NoisePullContext {
+                dimension,
+                setup: &setup,
+                spectrum,
+                sources: &sources,
+                twins: &*twins,
+                positions: &positions,
+                cotangents,
+            };
+            over_frequencies(
+                self.linearization(),
+                &self.state.workspace.contributions,
+                &spectrum.frequencies,
+                parallelism,
+                &|factors, index, frequency| {
+                    noise_frequency_pull(factors, index, frequency, &context)
+                },
+            )?
+        };
+        let nonlinear = self.nonlinear_devices();
+        let (mut unknown_twins, nonlinear_slots) = if nonlinear.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            self.unknown_twins(&nonlinear)
+        };
+        let mut sums = vec![vec![0.0; twins.len()]; cotangents.len()];
+        let collected =
+            collect_noise_pull_weights(frequency_results, &nonlinear_slots, &positions, &mut sums);
+        let grid = NoiseCotangentGrid {
+            frequencies: &spectrum.frequencies,
+            adjoints: &collected.adjoints,
+            weights: &collected.sources,
+        };
+        for (column, by_cotangent) in twins.noise_dots(&grid, parallelism).into_iter().enumerate() {
+            for (cotangent, term) in by_cotangent.into_iter().enumerate() {
+                sums[cotangent][column] += term;
+            }
+        }
+        if !nonlinear_slots.is_empty() || !emitters.is_empty() {
+            let mut pull = NoiseOperatingPull {
+                nonlinear: NonlinearTwins {
+                    twins: &mut unknown_twins,
+                    slots: &nonlinear_slots,
+                },
+                noisy: &emitters,
+                operating,
+                matrix_weights: &collected.matrix,
+                grid: &grid,
+            };
+            self.add_noise_operating_point_cotangents(twins, &mut pull, &mut sums, options)?;
+        }
+        for (index, terms) in sums.iter().enumerate() {
+            fold(index, terms);
+        }
+        Ok(())
+    }
+
+    /// Adds to `sums` the operating-point share `+(J₀⁻ᵀ (g_mat - g_src))ᵀ ∂F₀/∂p` for each
+    /// active cotangent in [`Simulator::pull_noise`].
+    fn add_noise_operating_point_cotangents(
+        &mut self,
+        twins: &mut Twins,
+        pull: &mut NoiseOperatingPull<'_>,
+        sums: &mut [Vec<f64>],
+        options: &Options,
+    ) -> Result<(), SimulationError> {
+        let parallelism = &options.parallelism;
+        let matrix_gradients = self.entries_cotangents(
+            pull.nonlinear.twins,
+            pull.nonlinear.slots,
+            pull.operating,
+            pull.matrix_weights,
+            options.gmin,
+            parallelism,
+        );
+        let source_gradients = self.noise_cotangents(
+            pull.noisy,
+            pull.operating,
+            pull.grid,
+            options.gmin,
+            parallelism,
+        );
+        let mut active_indices = Vec::new();
+        let mut sides: Vec<Vec<f64>> = Vec::new();
+        for (cotangent, (matrix, source)) in matrix_gradients
+            .into_iter()
+            .zip(source_gradients)
+            .enumerate()
+        {
+            let combined = match (matrix, source) {
+                (Some(mut matrix), Some(source)) => {
+                    add(&mut matrix, -1.0, &source);
+                    matrix
+                }
+                (Some(matrix), None) => matrix,
+                (None, Some(mut source)) => {
+                    for value in &mut source {
+                        *value = -*value;
+                    }
+                    source
+                }
+                (None, None) => continue,
+            };
+            if combined.iter().any(|&value| value != 0.0) {
+                active_indices.push(cotangent);
+                sides.push(combined);
+            }
+        }
+        if active_indices.is_empty() {
+            return Ok(());
+        }
+        let factors = self
+            .state
+            .solver
+            .factor(&self.state.workspace.contributions.conductance)?;
+        let shared = factors.shared();
+        let solved = parallelism.spread(
+            &mut sides,
+            || shared.workspace(),
+            |workspace, side| {
+                shared.solve_transpose(side, workspace)?;
+                Ok(())
+            },
+        );
+        solved
+            .into_iter()
+            .collect::<Result<Vec<()>, SimulationError>>()?;
+        let by_column = twins.dots(Part::Residual, 1.0, &sides, parallelism);
+        for (column, dots) in by_column.into_iter().enumerate() {
+            for (term, &cotangent) in dots.into_iter().zip(&active_indices) {
+                sums[cotangent][column] += term;
             }
         }
         Ok(())
@@ -2073,6 +2386,276 @@ fn accumulate_stability_pulls(
     }
 }
 
+
+/// Computes directional noise derivatives for every tangent in `context` at frequency `index`.
+fn noise_frequency_tangent(
+    factors: &mut Factors<'_, Complex64>,
+    index: usize,
+    frequency: f64,
+    context: &NoiseTangentContext<'_>,
+) -> Result<Vec<Vec<f64>>, SimulationError> {
+    let mut weights: Vec<Complex64> = selector_vector(
+        context.dimension,
+        context.setup.output,
+        context.setup.reference,
+    );
+    factors.solve_transpose(&mut weights)?;
+    let omega = std::f64::consts::TAU * frequency;
+    let need_referred = context.kept.contains(&1);
+    let mut at = Vec::with_capacity(context.directions.len());
+    for ((direction, entries), bias_rates) in context
+        .directions
+        .iter()
+        .zip(context.matrix_biases)
+        .zip(context.noise_biases)
+    {
+        let mut moved = vec![Complex64::default(); context.dimension];
+        for (column, &along) in direction.iter().enumerate() {
+            if along != 0.0 {
+                context.twins.add_transposed_product(
+                    column,
+                    context.positions,
+                    along,
+                    omega,
+                    &weights,
+                    &mut moved,
+                );
+            }
+        }
+        for &(slot, conductance_rate, capacitance_rate) in entries {
+            let (row, column) = context.positions[slot];
+            moved[column] +=
+                Complex64::new(conductance_rate, omega * capacitance_rate) * weights[row];
+        }
+        for value in &mut moved {
+            *value = -*value;
+        }
+        factors.solve_transpose(&mut moved)?;
+        let density_rate = noise_density_tangent(
+            context.sources,
+            context.twins,
+            direction,
+            bias_rates,
+            (&weights, &moved),
+            frequency,
+        );
+        let referred_rate = need_referred.then(|| {
+            noise_referred_tangent(
+                context.spectrum,
+                index,
+                &context.setup.level,
+                &moved,
+                density_rate,
+            )
+        });
+        at.push(
+            context
+                .kept
+                .iter()
+                .map(|&column| {
+                    if column == 0 {
+                        density_rate
+                    } else {
+                        referred_rate.unwrap_or(0.0)
+                    }
+                })
+                .collect(),
+        );
+    }
+    Ok(transposed(at, context.kept.len()))
+}
+
+/// Folds per-frequency direct matrix terms into `sums` and builds slot weights, saved
+/// adjoints, and effective noise-source weights for [`Simulator::pull_noise`].
+fn collect_noise_pull_weights(
+    frequency_results: Vec<(Option<Vec<Complex64>>, Vec<NoisePullEntry>)>,
+    nonlinear_slots: &[usize],
+    positions: &[(usize, usize)],
+    sums: &mut [Vec<f64>],
+) -> NoisePullWeights {
+    let cotangent_count = sums.len();
+    let mut matrix: Vec<Option<(Vec<f64>, Vec<f64>)>> = vec![None; cotangent_count];
+    let mut adjoints: Vec<Option<Vec<Complex64>>> = vec![None; frequency_results.len()];
+    let mut sources: Vec<Vec<(usize, f64)>> = vec![Vec::new(); cotangent_count];
+    for (index, (adjoint, entries)) in frequency_results.into_iter().enumerate() {
+        let Some(adjoint) = adjoint else {
+            continue;
+        };
+        for (cotangent, omega, effective, forward, terms) in entries {
+            for (total, term) in sums[cotangent].iter_mut().zip(terms) {
+                *total += term;
+            }
+            if effective != 0.0 {
+                sources[cotangent].push((index, effective));
+            }
+            if nonlinear_slots.is_empty() {
+                continue;
+            }
+            let (weight_conductance, weight_capacitance) =
+                matrix[cotangent].get_or_insert_with(|| {
+                    (
+                        vec![0.0; nonlinear_slots.len()],
+                        vec![0.0; nonlinear_slots.len()],
+                    )
+                });
+            for (packed, &slot) in nonlinear_slots.iter().enumerate() {
+                let (row, column) = positions[slot];
+                let product = adjoint[row] * forward[column];
+                weight_conductance[packed] += product.re;
+                weight_capacitance[packed] -= omega * product.im;
+            }
+        }
+        adjoints[index] = Some(adjoint);
+    }
+    NoisePullWeights {
+        matrix,
+        adjoints,
+        sources,
+    }
+}
+
+/// Combines transfer-function, direct parameter, and operating-point noise-source
+/// directional derivatives into `dS_out(frequency)`.
+fn noise_density_tangent(
+    sources: &[NoiseSource],
+    twins: &Twins,
+    direction: &[f64],
+    bias_rates: &[NoiseRate],
+    transfer: (&[Complex64], &[Complex64]),
+    frequency: f64,
+) -> f64 {
+    let (weights, moved) = transfer;
+    let mut total = 0.0;
+    for source in sources {
+        let [positive, negative] = source.equations;
+        let weight = pair_difference(weights, positive, negative);
+        let weight_rate = pair_difference(moved, positive, negative);
+        total += 2.0 * (weight.conj() * weight_rate).re * source.density(frequency);
+    }
+    for (column, &along) in direction.iter().enumerate() {
+        if along == 0.0 {
+            continue;
+        }
+        for rate in twins.noise_rates(column) {
+            let [positive, negative] = rate.equations;
+            let weight_sq = pair_difference(weights, positive, negative).norm_sqr();
+            total += along * weight_sq * rate.density(frequency);
+        }
+    }
+    for rate in bias_rates {
+        let [positive, negative] = rate.equations;
+        let weight_sq = pair_difference(weights, positive, negative).norm_sqr();
+        total += weight_sq * rate.density(frequency);
+    }
+    total
+}
+
+/// Computes directional derivative `d(S_out / |G|²)` at frequency `index` from `density_rate`
+/// and adjoint transfer tangent `moved` (`dG = -levelᵀ moved`).
+fn noise_referred_tangent(
+    spectrum: &NoiseResult,
+    index: usize,
+    level: &[f64],
+    moved: &[Complex64],
+    density_rate: f64,
+) -> f64 {
+    let Some(input) = spectrum.input.as_ref() else {
+        return 0.0;
+    };
+    let gain = input.gains[index];
+    let magnitude = gain.re.hypot(gain.im);
+    let squared = magnitude * magnitude;
+    let gain_rate = -moved
+        .iter()
+        .zip(level)
+        .map(|(dz, &excitation)| dz * excitation)
+        .sum::<Complex64>();
+    let referred = spectrum.densities[index] / squared;
+    (density_rate - 2.0 * referred * (gain.conj() * gain_rate).re) / squared
+}
+
+/// Solves the adjoint noise vector and per-cotangent forward linear systems at frequency
+/// `index`, returning `None` when no cotangent is active at `index`.
+fn noise_frequency_pull(
+    factors: &mut Factors<'_, Complex64>,
+    index: usize,
+    frequency: f64,
+    context: &NoisePullContext<'_>,
+) -> Result<(Option<Vec<Complex64>>, Vec<NoisePullEntry>), SimulationError> {
+    let has_active = context
+        .cotangents
+        .iter()
+        .any(|given| given.points.contains_key(&index));
+    if !has_active {
+        return Ok((None, Vec::new()));
+    }
+    let mut adjoint: Vec<Complex64> = selector_vector(
+        context.dimension,
+        context.setup.output,
+        context.setup.reference,
+    );
+    factors.solve_transpose(&mut adjoint)?;
+    let omega = std::f64::consts::TAU * frequency;
+    let gain_info = context.spectrum.input.as_ref().map(|input| {
+        let gain = input.gains[index];
+        let magnitude = gain.re.hypot(gain.im);
+        let squared = magnitude * magnitude;
+        (gain, squared)
+    });
+    let mut entries = Vec::new();
+    for (cotangent, given) in context.cotangents.iter().enumerate() {
+        let Some(values) = given.points.get(&index) else {
+            continue;
+        };
+        let density_weight = values[0];
+        let referred_weight = values.get(1).copied().unwrap_or(0.0);
+        let (effective, gamma, gain_conj) = if referred_weight != 0.0
+            && let Some((gain, squared)) = gain_info
+        {
+            let referred = context.spectrum.densities[index] / squared;
+            (
+                density_weight + referred_weight / squared,
+                2.0 * referred_weight * referred / squared,
+                gain.conj(),
+            )
+        } else {
+            (density_weight, 0.0, Complex64::default())
+        };
+        let mut forward = vec![Complex64::default(); context.dimension];
+        if effective != 0.0 {
+            for source in context.sources {
+                let [positive, negative] = source.equations;
+                let difference = pair_difference(&adjoint, positive, negative);
+                let coefficient = Complex64::new(2.0 * effective * source.density(frequency), 0.0)
+                    * difference.conj();
+                if let Some(unknown) = positive {
+                    forward[unknown.index()] += coefficient;
+                }
+                if let Some(unknown) = negative {
+                    forward[unknown.index()] -= coefficient;
+                }
+            }
+        }
+        if gamma != 0.0 {
+            let scale = Complex64::new(gamma, 0.0) * gain_conj;
+            for (entry, &excitation) in forward.iter_mut().zip(&context.setup.level) {
+                *entry += scale * excitation;
+            }
+        }
+        factors.solve(&mut forward)?;
+        let by_twin: Vec<f64> = (0..context.twins.len())
+            .map(|column| {
+                -context
+                    .twins
+                    .product(column, context.positions, &adjoint, omega, &forward)
+                    .re
+            })
+            .collect();
+        entries.push((cotangent, omega, effective, forward, by_twin));
+    }
+    Ok((Some(adjoint), entries))
+}
+
 /// Checks that every cotangent in `cotangents` has a finite period and finite values of length
 /// `outputs` at valid indices `< points`.
 fn cotangents_fit<T: Scalar>(cotangents: &[Cotangent<T>], points: usize, outputs: usize) -> bool {
@@ -2125,6 +2708,7 @@ pub(crate) fn points(result: &AnalysisResult) -> usize {
         AnalysisResult::DcSweep(sweep) => sweep.values.len(),
         AnalysisResult::Ac(response) => response.values.len(),
         AnalysisResult::Stability(loop_gain) => loop_gain.gains.len(),
+        AnalysisResult::Noise(spectrum) => spectrum.frequencies.len(),
         AnalysisResult::Transient(waveforms) => waveforms.values.len(),
         AnalysisResult::PeriodicSteadyState(found) => found.transient.values.len(),
         _ => 1,

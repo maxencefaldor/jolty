@@ -724,14 +724,14 @@ fn assert_heats(model: &dyn Model, cool: &str, biases: &[&[f64]], rises: &[f64])
 
 mod tests {
     use super::{
-        FAR, GMIN, Input, Library, NEAR, Nature, SIGNED, SYMMETRIES, assert_conserves,
-        assert_continuous, assert_finite, assert_heats, assert_mirrors,
+        Bench, FAR, GMIN, Input, Library, NEAR, Nature, REFERENCE_TEMPERATURE, SIGNED, SYMMETRIES,
+        assert_conserves, assert_continuous, assert_finite, assert_heats, assert_mirrors,
         assert_model_parameter_gradients_match, assert_swaps, bench, cases, exactly, merge,
         mirrored, polarity, probes, within_junctions_reach, without,
     };
     use crate::testing::{
         assert_lift_matches_serde, assert_lift_matches_serde_with_optionals,
-        assert_unknown_derivatives_match,
+        assert_model_noise_derivatives_match, assert_unknown_derivatives_match,
     };
 
     /// Returns the name of every analog model in `library`.
@@ -1689,5 +1689,237 @@ mod tests {
             .filter(|name| !behavioral.contains(name))
             .collect();
         assert_eq!(covered, expected, "every differentiable model is covered");
+    }
+
+    /// Checks isothermal and self-heated noise derivatives for `name` at `cool_x`.
+    fn check_heated_noise(library: &Library, name: &str, parameters: &str, cool_x: &[f64]) {
+        let model = library.get(name).expect("a model");
+        assert_model_noise_derivatives_match(&**model, parameters, cool_x);
+        let heated = merge(parameters, r#"{"thermal": true}"#);
+        let heated_bench = Bench::from_model(&**model, &heated, REFERENCE_TEMPERATURE)
+            .unwrap_or_else(|error| panic!("{name} thermal: {error}"));
+        let thermal_index = heated_bench
+            .natures()
+            .iter()
+            .position(|&nature| nature == Nature::Temperature)
+            .expect("thermal terminal");
+        let mut hot_x = Vec::with_capacity(cool_x.len() + 1);
+        hot_x.extend_from_slice(&cool_x[..thermal_index]);
+        hot_x.push(25.0);
+        hot_x.extend_from_slice(&cool_x[thermal_index..]);
+        assert_model_noise_derivatives_match(&**model, &heated, &hot_x);
+    }
+
+    /// Checks BSIM3 and BSIM4 noise derivatives across all noise models and self-heating.
+    fn check_bsim_noise_derivatives(library: &Library) {
+        let check = |name: &str, parameters: &str, x: &[f64]| {
+            let model = library.get(name).expect("a model");
+            assert_model_noise_derivatives_match(&**model, parameters, x);
+        };
+        let bsim3_base = merge(
+            BSIM3_SHORT,
+            r#"{"rsh": 15, "drain_squares": 1, "source_squares": 1, "kf": 1e-24,
+                "af": 1.3, "ef": 1.1, "noia": 1.2e20, "noib": 5.5e4, "noic": -1.2e-12,
+                "em": 4.1e7, "lintnoi": 1e-8, "multiplier": 2}"#,
+        );
+        let bsim3_x = [1.8, 1.4, 0.0, -0.3, 1.7, 0.05];
+        for noise_model in 1..=6 {
+            let params = merge(&bsim3_base, &format!(r#"{{"noise_model": {noise_model}}}"#));
+            check("bsim3", &params, &bsim3_x);
+        }
+        check_heated_noise(library, "bsim3", &bsim3_base, &bsim3_x);
+
+        let bsim4_base = merge(
+            BSIM4_SHORT,
+            r#"{"rsh": 15, "drain_squares": 1, "source_squares": 1, "kf": 1e-24,
+                "af": 1.3, "ef": 1.1, "noia": 6.5e41, "noib": 3.2e26, "noic": 1e12,
+                "em": 4.1e7, "lintnoi": 5e-9, "ntnoi": 1.1, "tnoia": 1.5, "tnoib": 3.5,
+                "rnoia": 0.577, "rnoib": 0.37, "multiplier": 2, "gate_resistance_model": 2,
+                "rshg": 20, "body_resistance_model": 1}"#,
+        );
+        // 4 terminals + drain/source series + inner gate + 3 body-network nodes = 10 unknowns.
+        let bsim4_x = [1.4, 1.1, 0.0, -0.3, 1.3, 0.05, 1.05, -0.28, -0.29, -0.27];
+        for thermal_model in [0, 1] {
+            for flicker_model in [0, 1] {
+                let params = merge(
+                    &bsim4_base,
+                    &format!(
+                        r#"{{"thermal_noise_model": {thermal_model},
+                            "flicker_noise_model": {flicker_model}}}"#
+                    ),
+                );
+                check("bsim4", &params, &bsim4_x);
+            }
+        }
+        let bsim4_rds1 = merge(
+            BSIM4_SHORT,
+            r#"{"drain_source_resistance_model": 1, "thermal_noise_model": 1,
+                "flicker_noise_model": 1, "rsh": 15, "drain_squares": 1, "source_squares": 1}"#,
+        );
+        check_heated_noise(
+            library,
+            "bsim4",
+            &bsim4_rds1,
+            &[1.4, 1.1, 0.0, -0.3, 1.3, 0.05],
+        );
+    }
+
+    /// Checks semiconductor noise derivatives (diode, BJT, JFET, MOSFET, VDMOS, VBIC).
+    fn check_semiconductor_noise_derivatives(library: &Library) {
+        let check = |name: &str, parameters: &str, x: &[f64]| {
+            let model = library.get(name).expect("a model");
+            assert_model_noise_derivatives_match(&**model, parameters, x);
+        };
+        let diode = r#"{"saturation_current": 2e-14, "emission_coefficient": 1.2,
+            "series_resistance": 20, "sidewall_saturation_current": 1e-15,
+            "sidewall_series_resistance": 50, "flicker_coefficient": 1e-16,
+            "flicker_exponent": 1.5, "nominal_temperature": 290}"#;
+        check_heated_noise(library, "diode", diode, &[0.75, 0.0, 0.68, 0.70]);
+
+        let bjt = merge(
+            BJT_FULL,
+            r#"{"collector_resistance": 15, "emitter_resistance": 2,
+                "base_resistance": 150, "min_base_resistance": 25,
+                "base_resistance_current": 1e-3, "flicker_coefficient": 1e-15,
+                "flicker_exponent": 1.3, "nominal_temperature": 290}"#,
+        );
+        check_heated_noise(
+            library,
+            "bipolar_transistor",
+            &bjt,
+            &[3.0, 0.72, 0.0, 2.9, 0.68, 0.02],
+        );
+
+        let jfet = r#"{"threshold_voltage": -1.8, "transconductance_parameter": 1e-3,
+            "channel_length_modulation": 0.02, "drain_resistance": 10, "source_resistance": 5,
+            "flicker_coefficient": 1e-16, "flicker_exponent": 1.2,
+            "nominal_temperature": 290}"#;
+        check_heated_noise(library, "jfet", jfet, &[3.0, -0.3, 0.0, 2.95, 0.02]);
+
+        let mosfet_one = merge(
+            MOSFET_LEVEL_ONE,
+            r#"{"drain_resistance": 30, "source_resistance": 15, "multiplier": 2,
+                "flicker_coefficient": 1e-24, "flicker_exponent": 1.3}"#,
+        );
+        check_heated_noise(
+            library,
+            "mosfet",
+            &mosfet_one,
+            &[2.5, 1.8, 0.0, -0.3, 2.3, 0.05, 1e-4, 2e-4, -1e-4],
+        );
+        let mosfet_three = merge(
+            MOSFET_LEVEL_THREE,
+            r#"{"threshold_voltage": 0.7, "flicker_coefficient": 1e-24,
+                "flicker_exponent": 1.2}"#,
+        );
+        check(
+            "mosfet",
+            &mosfet_three,
+            &[2.5, 1.8, 0.0, -0.3, 1e-4, 2e-4, -1e-4],
+        );
+
+        let vdmos = merge(
+            VDMOS_FULL,
+            r#"{"quasi_saturation_resistance": 5, "quasi_saturation_voltage": 20,
+                "flicker_coefficient": 1e-24, "flicker_exponent": 1.4,
+                "nominal_temperature": 290}"#,
+        );
+        check_heated_noise(
+            library,
+            "vdmos",
+            &vdmos,
+            &[10.0, 6.0, 0.0, 9.5, 0.05, 5.9, 0.02],
+        );
+
+        let vbic = merge(
+            VBIC_WARM,
+            r#"{"flicker_coefficient": 1e-16, "flicker_exponent": 1.4,
+                "flicker_frequency_exponent": 1.1, "excess_phase_delay": 1e-11}"#,
+        );
+        check_heated_noise(
+            library,
+            "vbic",
+            &vbic,
+            &[3.0, 0.75, 0.0, -1.0, 2.8, 2.6, 2.7, 0.68, 1e-3, 1e-3],
+        );
+    }
+
+    /// Verifies that every noisy model in `Library::standard()` computes exact noise
+    /// derivatives with respect to both parameters and circuit unknowns (including
+    /// self-heating temperature unknowns for `thermal: true`), matching central differences.
+    #[test]
+    fn every_noisy_models_noise_derivatives_are_exact() {
+        let library = Library::standard();
+        let check = |name: &str, parameters: &str, x: &[f64]| {
+            let model = library.get(name).expect("a model");
+            assert_model_noise_derivatives_match(&**model, parameters, x);
+        };
+        let resistor = r#"{"resistance": 1e3, "temperature_coefficient": 1e-3,
+            "quadratic_temperature_coefficient": 1e-5, "nominal_temperature": 290,
+            "voltage_coefficient": 1e-3, "quadratic_voltage_coefficient": 2e-4,
+            "flicker_coefficient": 1e-18, "flicker_exponent": 1.4}"#;
+        check_heated_noise(&library, "resistor", resistor, &[2.5, 0.3]);
+        let small_resistor = r#"{"resistance": 0.25, "voltage_coefficient": 2e-3,
+            "flicker_coefficient": 1e-18, "flicker_exponent": 1.6}"#;
+        check("resistor", small_resistor, &[0.5, 0.2, 1.2]);
+
+        check_semiconductor_noise_derivatives(&library);
+        check_bsim_noise_derivatives(&library);
+
+        let vswitch = r#"{"on_resistance": 10, "off_resistance": 1e6,
+            "on_voltage": 2, "off_voltage": 1}"#;
+        check("voltage_controlled_switch", vswitch, &[1.0, 0.0, 1.4, 0.0]);
+        let iswitch = r#"{"on_resistance": 10, "off_resistance": 1e6,
+            "on_current": 2e-3, "off_current": 1e-3}"#;
+        check(
+            "current_controlled_switch",
+            iswitch,
+            &[1.0, 0.0, 0.1, 0.0, 1.5e-3],
+        );
+
+        let vmem_lin = r#"{"on_resistance": 100, "off_resistance": 1e4,
+            "on_voltage": -1, "off_voltage": 1, "on_rate": 10, "off_rate": 10,
+            "law": "linear", "state": 0.4}"#;
+        check("voltage_controlled_memristor", vmem_lin, &[0.5, 0.0, 0.4]);
+        let vmem_exp = merge(vmem_lin, r#"{"law": "exponential"}"#);
+        check("voltage_controlled_memristor", &vmem_exp, &[0.5, 0.0, 0.4]);
+        let imem = r#"{"on_resistance": 100, "off_resistance": 1e4, "charge": 1e-3,
+            "law": "exponential", "state": 0.4}"#;
+        check("current_controlled_memristor", imem, &[0.5, 0.0, 0.4]);
+
+        let photocell = r#"{"resistance": 1e4, "illuminance": 10, "gamma": 0.7,
+            "dark_resistance": 1e6}"#;
+        check("photocell", photocell, &[1.0, 0.0, 50.0, 0.0]);
+        let photocell_lag = merge(photocell, r#"{"response_time": 0.01}"#);
+        check("photocell", &photocell_lag, &[1.0, 0.0, 50.0, 0.0, 2.5]);
+
+        let covered: std::collections::BTreeSet<&str> = [
+            "bipolar_transistor",
+            "bsim3",
+            "bsim4",
+            "current_controlled_memristor",
+            "current_controlled_switch",
+            "diode",
+            "jfet",
+            "mosfet",
+            "photocell",
+            "resistor",
+            "vbic",
+            "vdmos",
+            "voltage_controlled_memristor",
+            "voltage_controlled_switch",
+        ]
+        .into_iter()
+        .collect();
+        let mut expected = std::collections::BTreeSet::new();
+        for &(name, parameters, given) in cases::CASES {
+            let mut b = bench(name, parameters);
+            let x = cases::values(given, b.natures().len());
+            b.settle(&x);
+            if !b.noise(&x).is_empty() {
+                expected.insert(name);
+            }
+        }
+        assert_eq!(covered, expected, "every noisy model is covered");
     }
 }

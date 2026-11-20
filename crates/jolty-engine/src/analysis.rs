@@ -27,8 +27,8 @@ pub enum Analysis {
     Transient(Transient),
     /// One period of a periodic steady state.
     PeriodicSteadyState(PeriodicSteadyState),
-    /// Sensitivities of some unknowns to every device parameter across operating point,
-    /// DC sweep, AC, transient, or periodic steady state analyses.
+    /// Sensitivities of some unknowns or noise densities to every device parameter across
+    /// operating point, DC sweep, AC, noise, transient, or periodic steady state analyses.
     Sensitivity(Sensitivity),
     /// Mismatch variance analysis with respect to random parameter draws.
     Mismatch(Mismatch),
@@ -57,8 +57,8 @@ pub enum AnalysisResult {
     Transient(TransientResult),
     /// One period of a periodic steady state.
     PeriodicSteadyState(PeriodicSteadyStateResult),
-    /// Sensitivities across an operating point, DC sweep, AC, transient, or periodic steady
-    /// state analysis.
+    /// Sensitivities across an operating point, DC sweep, AC, noise, transient, or periodic
+    /// steady state analysis.
     Sensitivity(SensitivityResult),
     /// The derivatives of a mismatch analysis.
     Mismatch(MismatchResult),

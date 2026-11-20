@@ -1128,7 +1128,7 @@ impl Kernel for Diode {
         shape: &DiodeShape,
         prepared: &PreparedDiode<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         struct Locals<R: Real> {
             vd: R,
@@ -1150,12 +1150,12 @@ impl Kernel for Diode {
         };
         if !shape.conditions[0] {
             if shape.conditions[1] {
-                sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(shape.junction_current)), None], prepared.h70.value()));
+                sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(shape.junction_current)), None], prepared.h70));
             } else {
-                sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(shape.junction))], prepared.h71.value()));
+                sources.push(NoiseSource::white("series thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(shape.junction))], prepared.h71));
             }
         }
-        let t0000 = R::constant(at.value(shape.junction) - at.value(1));
+        let t0000 = at.unknown::<R>(shape.junction) - at.unknown::<R>(1);
         v.vd = t0000;
         if prepared.h7 && v.vd.value() < -prepared.h8.value() && v.vd.value() < -prepared.matched.value() {
             v.id = -prepared.saturation * (-(prepared.matched + v.vd) / prepared.breakdown_slope).exp();
@@ -1185,7 +1185,7 @@ impl Kernel for Diode {
             v.id = v.id / ((-v.id / prepared.reverse_knee_current).sqrt() + 1.0);
         }
         if shape.conditions[2] {
-            let t0001 = R::constant(at.value(shape.sidewall) - at.value(1));
+            let t0001 = at.unknown::<R>(shape.sidewall) - at.unknown::<R>(1);
             v.vs = t0001;
         } else {
             v.vs = v.vd;
@@ -1208,42 +1208,42 @@ impl Kernel for Diode {
             v.isw = v.isw / ((v.isw / prepared.sidewall_forward_knee_current).sqrt() + 1.0);
         }
         if shape.conditions[2] {
-            sources.push(NoiseSource::white("shot", [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))], (v.id.abs() * 3.204_353_268e-19).value()));
+            sources.push(NoiseSource::white("shot", [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))], v.id.abs() * 3.204_353_268e-19));
             if prepared.h72 {
                 sources.push(NoiseSource {
                     name: "flicker",
                     equations: [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))],
-                    white: 0.0,
-                    flicker: (prepared.flicker_coefficient * v.id.abs().pow(prepared.flicker_exponent)).value(),
-                    exponent: 1.0,
+                    white: R::constant(0.0),
+                    flicker: prepared.flicker_coefficient * v.id.abs().pow(prepared.flicker_exponent),
+                    exponent: R::constant(1.0),
                 });
             }
             if !shape.conditions[3] {
                 if shape.conditions[4] {
-                    sources.push(NoiseSource::white("sidewall series thermal", [Some(UnknownIndex::new(shape.sidewall_current)), None], prepared.h75.value()));
+                    sources.push(NoiseSource::white("sidewall series thermal", [Some(UnknownIndex::new(shape.sidewall_current)), None], prepared.h75));
                 } else {
-                    sources.push(NoiseSource::white("sidewall series thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(shape.sidewall))], prepared.h76.value()));
+                    sources.push(NoiseSource::white("sidewall series thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(shape.sidewall))], prepared.h76));
                 }
             }
-            sources.push(NoiseSource::white("sidewall shot", [Some(UnknownIndex::new(shape.sidewall)), Some(UnknownIndex::new(1))], (v.isw.abs() * 3.204_353_268e-19).value()));
+            sources.push(NoiseSource::white("sidewall shot", [Some(UnknownIndex::new(shape.sidewall)), Some(UnknownIndex::new(1))], v.isw.abs() * 3.204_353_268e-19));
             if prepared.h72 {
                 sources.push(NoiseSource {
                     name: "sidewall flicker",
                     equations: [Some(UnknownIndex::new(shape.sidewall)), Some(UnknownIndex::new(1))],
-                    white: 0.0,
-                    flicker: (prepared.flicker_coefficient * v.isw.abs().pow(prepared.flicker_exponent)).value(),
-                    exponent: 1.0,
+                    white: R::constant(0.0),
+                    flicker: prepared.flicker_coefficient * v.isw.abs().pow(prepared.flicker_exponent),
+                    exponent: R::constant(1.0),
                 });
             }
         } else {
-            sources.push(NoiseSource::white("shot", [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))], ((v.id + v.isw).abs() * 3.204_353_268e-19).value()));
+            sources.push(NoiseSource::white("shot", [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))], (v.id + v.isw).abs() * 3.204_353_268e-19));
             if prepared.h72 {
                 sources.push(NoiseSource {
                     name: "flicker",
                     equations: [Some(UnknownIndex::new(shape.junction)), Some(UnknownIndex::new(1))],
-                    white: 0.0,
-                    flicker: (prepared.flicker_coefficient * (v.id + v.isw).abs().pow(prepared.flicker_exponent)).value(),
-                    exponent: 1.0,
+                    white: R::constant(0.0),
+                    flicker: prepared.flicker_coefficient * (v.id + v.isw).abs().pow(prepared.flicker_exponent),
+                    exponent: R::constant(1.0),
                 });
             }
         }

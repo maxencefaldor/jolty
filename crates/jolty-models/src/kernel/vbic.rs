@@ -625,8 +625,8 @@ pub struct PreparedVbic<R: Real> {
     /// temperature.
     slope: f64,
     critical_voltage: f64,
-    temperature: f64,
-    flicker: Flicker,
+    temperature: R,
+    flicker: Flicker<R>,
 }
 
 /// Step-limiting history and cached operating variables for [`Vbic`].
@@ -641,30 +641,27 @@ pub struct VbicMemory {
 
 /// The flicker noise of the base-emitter currents, `KFN · |I|^AFN / f^BFN`.
 #[derive(Debug, Clone, Copy)]
-struct Flicker {
-    coefficient: f64,
-    power: f64,
-    exponent: f64,
+struct Flicker<R: Real> {
+    coefficient: R,
+    power: R,
+    exponent: R,
 }
 
-impl Flicker {
+impl<R: Real> Flicker<R> {
     /// Appends a flicker noise source named `name` for `current` between `nodes` when
-    /// `coefficient > 0`.
+    /// `coefficient` is active.
     fn add(
         self,
         name: &'static str,
         nodes: [crate::Node; 2],
-        current: f64,
-        sources: &mut Vec<NoiseSource>,
+        current: R,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
-        if self.coefficient > 0.0 {
-            sources.push(NoiseSource {
-                name,
-                equations: nodes,
-                white: 0.0,
-                flicker: self.coefficient * current.abs().powf(self.power),
-                exponent: self.exponent,
-            });
+        if crate::noise::is_active(self.coefficient) {
+            let mut source =
+                NoiseSource::flicker(name, nodes, self.coefficient, self.power, current);
+            source.exponent = self.exponent;
+            sources.push(source);
         }
     }
 }
@@ -1840,9 +1837,9 @@ impl ExcessPhase {
     }
 
     /// Returns the delayed forward transport current `x2` from `at`.
-    fn delayed(&self, at: &Local<'_>) -> f64 {
+    fn delayed<R: Real>(&self, at: &Local<'_>) -> R {
         let [_, second] = self.unknowns;
-        at.value(second)
+        at.unknown(second)
     }
 
     /// Adds the network's equations, of `delay`, driven by the forward transport current
@@ -1934,11 +1931,11 @@ impl Kernel for Vbic {
             delay: non_negative("excess_phase_delay", parameters.excess_phase_delay)?,
             slope,
             critical_voltage: critical_voltage(parameters.saturation_current.value(), slope),
-            temperature: temperatures.actual.value(),
+            temperature: temperatures.actual,
             flicker: Flicker {
-                coefficient: flicker_coefficient.value(),
-                power: flicker_exponent.value(),
-                exponent: flicker_frequency_exponent.value(),
+                coefficient: flicker_coefficient,
+                power: flicker_exponent,
+                exponent: flicker_frequency_exponent,
             },
         })
     }
@@ -2094,7 +2091,7 @@ impl Kernel for Vbic {
         shape: &VbicShape,
         prepared: &PreparedVbic<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let temperature = prepared.temperature;
         let names = [
@@ -2107,8 +2104,8 @@ impl Kernel for Vbic {
             series.noise(series.value_of(resistance), (name, temperature), sources);
         }
         let nodes = &shape.stamp;
-        let voltages = nodes.voltages(at, prepared.sign, VARIABLES);
-        let branches = prepared.core.evaluate(voltages.map(R::constant), at.gmin);
+        let voltages = nodes.oriented::<R, _>(at, prepared.sign, VARIABLES);
+        let branches = prepared.core.evaluate(voltages, at.gmin);
         let node = |index: usize| nodes.equation(index);
         // Each intrinsic resistance law places branch drop first, giving conductance at
         // index 0.
@@ -2116,7 +2113,8 @@ impl Kernel for Vbic {
             current
                 .gradient
                 .first()
-                .map_or(0.0, |derivative| derivative.value())
+                .copied()
+                .unwrap_or_else(|| R::constant(0.0))
         };
         for (name, (plus, minus), current) in [
             ("intrinsic collector thermal", (CX, CI), &branches.irci),
@@ -2131,12 +2129,12 @@ impl Kernel for Vbic {
             ));
         }
         let transport = shape.excess.as_ref().map_or_else(
-            || (branches.itzf - branches.itzr).value.value(),
-            |excess| prepared.sign * excess.delayed(at) - branches.itzr.value.value(),
+            || (branches.itzf - branches.itzr).value,
+            |excess| excess.delayed::<R>(at) * prepared.sign - branches.itzr.value,
         );
         let base_emitter = [node(BI), node(EI)];
         let parasitic_base_emitter = [node(BX), node(BP)];
-        let (ibe, ibep) = (branches.ibe.value.value(), branches.ibep.value.value());
+        let (ibe, ibep) = (branches.ibe.value, branches.ibep.value);
         sources.extend([
             NoiseSource::shot("collector shot", [node(CI), node(EI)], transport),
             NoiseSource::shot("base shot", base_emitter, ibe),
@@ -2144,7 +2142,7 @@ impl Kernel for Vbic {
             NoiseSource::shot(
                 "parasitic collector shot",
                 [node(BX), node(SI)],
-                branches.iccp.value.value(),
+                branches.iccp.value,
             ),
         ]);
         prepared.flicker.add("flicker", base_emitter, ibe, sources);

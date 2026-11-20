@@ -376,7 +376,11 @@ def points_of(analysis: Analysis) -> int:
     match analysis:
         case DcSweep(values=values):
             return len(values)
-        case Ac(frequencies=frequencies) | Stability(frequencies=frequencies):
+        case (
+            Ac(frequencies=frequencies)
+            | Stability(frequencies=frequencies)
+            | Noise(frequencies=frequencies)
+        ):
             return len(frequencies)
         case Transient(breakpoints=times) | PeriodicSteadyState(breakpoints=times):
             return len(times)
@@ -772,6 +776,39 @@ def analysis_shape(
     return _linear_shape(built, unknowns, analysis, point)
 
 
+def _noise_shape(
+    built: ir.Circuit,
+    unknowns: tuple[results.Unknown, ...],
+    analysis: Noise,
+    point: results.OperatingPointResult,
+) -> results.NoiseResult:
+    """Builds a zero-point `NoiseResult` prototype with output and source metadata."""
+    names = {unknown.name: unknown.nature for unknown in unknowns}
+    given = None
+    if analysis.source is not None:
+        nature: results.Nature = (
+            "current"
+            if source_dimension(built, analysis.source) == CURRENT
+            else "voltage"
+        )
+        given = results.NoiseInput(
+            analysis.source, nature, np.empty(0, dtype=np.complex128)
+        )
+    empty = np.empty(0)
+    return results.NoiseResult(
+        unknowns,
+        analysis.output,
+        analysis.reference,
+        names.get(analysis.output, "voltage"),
+        empty,
+        empty,
+        (),
+        np.empty((0, 0)),
+        given,
+        point,
+    )
+
+
 def _linear_shape(
     built: ir.Circuit,
     unknowns: tuple[results.Unknown, ...],
@@ -787,13 +824,15 @@ def _linear_shape(
                 if isinstance(analysis, Sensitivity)
                 else results.MismatchResult
             )
-            inner: results.DifferentiatedResult = (
-                results.StabilityResult(
+            inner: results.DifferentiatedResult
+            if isinstance(analysis.of, Stability):
+                inner = results.StabilityResult(
                     unknowns, analysis.of.probe, np.empty(0), roots, point
                 )
-                if isinstance(analysis.of, Stability)
-                else point
-            )
+            elif isinstance(analysis.of, Noise):
+                inner = _noise_shape(built, unknowns, analysis.of, point)
+            else:
+                inner = point
             return result_class(
                 unknowns,
                 tuple(analysis.outputs),
@@ -806,28 +845,7 @@ def _linear_shape(
                 unknowns, analysis.probe, np.empty(0), roots, point
             )
         case Noise():
-            names = {unknown.name: unknown.nature for unknown in unknowns}
-            given = None
-            if analysis.source is not None:
-                nature: results.Nature = (
-                    "current"
-                    if source_dimension(built, analysis.source) == CURRENT
-                    else "voltage"
-                )
-                given = results.NoiseInput(analysis.source, nature, roots)
-            empty = np.empty(0)
-            return results.NoiseResult(
-                unknowns,
-                analysis.output,
-                analysis.reference,
-                names.get(analysis.output, "voltage"),
-                empty,
-                empty,
-                (),
-                np.empty((0, 0)),
-                given,
-                point,
-            )
+            return _noise_shape(built, unknowns, analysis, point)
         case TransferFunction():
             branch = f"{analysis.source}:current"
             held = any(unknown.name == branch for unknown in unknowns)

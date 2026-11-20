@@ -27,8 +27,8 @@ use derivatives::{moved, rectifier, tight_options};
 use inductor::inductor;
 use jolty_engine::{
     Ac, Cotangent, Cotangents, DcSweep, Derivatives, Differentiated, LOOP_GAIN, Method, Mismatch,
-    Options, Parallelism, ParameterCotangents, PeriodicSteadyState, RandomVariable, Sensitivity,
-    SimulationError, Simulator, Stability, Transient,
+    NOISE_DENSITY, Noise, Options, Parallelism, ParameterCotangents, PeriodicSteadyState,
+    REFERRED_NOISE, RandomVariable, Sensitivity, SimulationError, Simulator, Stability, Transient,
 };
 use jolty_ir::{Circuit, Instance};
 use jolty_numerics::Complex64;
@@ -107,6 +107,27 @@ fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> V
             .map(|gain| vec![gain; outputs.len()])
             .collect();
     }
+    if let Differentiated::Noise(noise) = of {
+        let spectrum = simulator
+            .noise(noise, &tight_options(false))
+            .expect("a noise spectrum");
+        let referred = spectrum.referred();
+        return (0..spectrum.frequencies.len())
+            .map(|point| {
+                outputs
+                    .iter()
+                    .map(|&output| {
+                        let value = match output {
+                            NOISE_DENSITY => spectrum.densities[point],
+                            REFERRED_NOISE => referred.as_ref().expect("referred noise")[point],
+                            other => panic!("unexpected noise output {other}"),
+                        };
+                        value.into()
+                    })
+                    .collect()
+            })
+            .collect();
+    }
     let columns: Vec<usize> = outputs
         .iter()
         .map(|output| simulator.unknown(output).expect("an unknown").index())
@@ -134,7 +155,7 @@ fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> V
             .iter()
             .map(|row| columns.iter().map(|&column| row[column]).collect())
             .collect(),
-        Differentiated::Stability(_) => Vec::new(),
+        Differentiated::Stability(_) | Differentiated::Noise(_) => Vec::new(),
         Differentiated::Transient(transient) => pick(
             simulator
                 .transient(transient, &options(of))
@@ -219,9 +240,18 @@ fn assert_matches(
                 .iter()
                 .chain(&exact)
                 .fold(0.0_f64, |most, value| most.max(value.norm()));
+            let peak_output = above
+                .iter()
+                .chain(&below)
+                .fold(0.0_f64, |most, row| most.max(row[output_index].norm()));
+            // Central-difference cancellation floor when an exact derivative is identically zero
+            // (e.g., input-referred noise vs output load capacitance): LU/solver rounding on
+            // `above - below` scales as `~1e3 * eps * peak_output / (2 * step)`.
+            let cancellation_floor = 1e3 * f64::EPSILON * peak_output / (2.0 * step);
+            let limit = (tolerance * largest.max(1e-12)).max(cancellation_floor);
             for (point, (exact, finite)) in exact.iter().zip(&finite).enumerate() {
                 assert!(
-                    (exact - finite).norm() <= tolerance * largest.max(1e-12),
+                    (exact - finite).norm() <= limit,
                     "d{output}/d{device}.{name} at point {point}: exact {exact}, finite \
                      differences {finite}"
                 );
@@ -448,10 +478,10 @@ fn transposes_with(
     let pullback = simulator.vjp(of, &names, options).expect("a VJP");
     let jacobian = complex(&columns.tangents);
     let pushed = complex(&along.tangents);
-    let outputs = if matches!(of, Differentiated::Stability(_)) {
-        1
-    } else {
-        simulator.unknowns().len()
+    let outputs = match of {
+        Differentiated::Stability(_) => 1,
+        Differentiated::Noise(noise) => 1 + usize::from(noise.source.is_some()),
+        _ => simulator.unknowns().len(),
     };
     let real = matches!(columns.tangents, Derivatives::Real(_));
     let period = columns.period.as_ref().map(|_| picked(0));
@@ -1677,4 +1707,487 @@ fn stability_differentiation_refuses_delay_lines() {
         ),
         Err(SimulationError::Delayed { .. })
     ));
+}
+
+/// Builds a resistively loaded NPN common-emitter stage with flicker noise and load capacitance.
+fn bjt_amplifier() -> Circuit {
+    circuit([
+        voltage_dc("VCC", "vcc", 5.0),
+        voltage_dc("VIN", "in", 1.2),
+        resistor("RB", 2e4, "in", "base"),
+        resistor("RC", 2e3, "vcc", "collector"),
+        resistor("RE", 200.0, "emitter", "0"),
+        capacitor("CL", 2e-12, "collector", "0"),
+        device(
+            "Q1",
+            "bipolar_transistor",
+            json!({
+                "polarity": "npn",
+                "saturation_current": 1e-15,
+                "forward_beta": 120.0,
+                "base_resistance": 50.0,
+                "emitter_resistance": 5.0,
+                "collector_resistance": 20.0,
+                "base_emitter_capacitance": 5e-13,
+                "base_collector_capacitance": 2e-13,
+                "flicker_coefficient": 1e-15,
+                "flicker_exponent": 1.4,
+            }),
+            &[
+                ("collector", "collector"),
+                ("base", "base"),
+                ("emitter", "emitter"),
+            ],
+        ),
+    ])
+}
+
+#[test]
+fn noise_sensitivities_match_finite_differences_across_mechanisms() {
+    // 1. Resistor divider (thermal + input-referred gain sensitivity).
+    let divider = circuit([
+        voltage_dc("V1", "top", 5.0),
+        resistor("R1", 1e3, "top", "out"),
+        resistor("R2", 3e3, "out", "0"),
+        capacitor("C1", 1e-11, "out", "0"),
+    ]);
+    let divider_noise = Differentiated::Noise(Noise {
+        output: "out".to_owned(),
+        reference: None,
+        source: Some("V1".to_owned()),
+        frequencies: vec![1e3, 1e6, 1e8],
+    });
+    assert_matches(
+        &divider,
+        &[NOISE_DENSITY, REFERRED_NOISE],
+        &divider_noise,
+        1e-5,
+    );
+    assert_transposes(
+        &divider,
+        &[
+            ("R1", "resistance"),
+            ("R2", "resistance"),
+            ("C1", "capacitance"),
+        ],
+        &divider_noise,
+    );
+
+    // 2. Linear resistor with current-dependent flicker noise: verifies operating-point
+    // coupling even when every device in the circuit is linear.
+    let flicker_divider = circuit([
+        voltage_dc("V1", "top", 4.0),
+        device(
+            "R1",
+            "resistor",
+            json!({"resistance": 1e3, "flicker_coefficient": 1e-12, "flicker_exponent": 1.5}),
+            &[("a", "top"), ("b", "out")],
+        ),
+        resistor("R2", 2e3, "out", "0"),
+    ]);
+    assert_matches(
+        &flicker_divider,
+        &[NOISE_DENSITY, REFERRED_NOISE],
+        &divider_noise,
+        1e-5,
+    );
+    assert_transposes(
+        &flicker_divider,
+        &[
+            ("V1", "waveform.dc"),
+            ("R1", "resistance"),
+            ("R1", "flicker_coefficient"),
+            ("R1", "flicker_exponent"),
+            ("R2", "resistance"),
+        ],
+        &divider_noise,
+    );
+
+    // 3. Nonlinear diode with thermal, shot, flicker, and capacitive rolloff.
+    let noisy_diode = circuit([
+        voltage_dc("V1", "in", 3.0),
+        resistor("R1", 1e3, "in", "out"),
+        device(
+            "D1",
+            "diode",
+            json!({
+                "saturation_current": 1e-14,
+                "emission_coefficient": 1.2,
+                "series_resistance": 10.0,
+                "junction_capacitance": 5e-12,
+                "flicker_coefficient": 1e-16,
+                "flicker_exponent": 1.3,
+            }),
+            &[("anode", "out"), ("cathode", "0")],
+        ),
+    ]);
+    let diode_noise = Differentiated::Noise(Noise {
+        output: "out".to_owned(),
+        reference: None,
+        source: Some("V1".to_owned()),
+        frequencies: vec![10.0, 1e4, 1e7],
+    });
+    assert_matches(
+        &noisy_diode,
+        &[NOISE_DENSITY, REFERRED_NOISE],
+        &diode_noise,
+        1e-5,
+    );
+    assert_transposes(
+        &noisy_diode,
+        &[
+            ("V1", "waveform.dc"),
+            ("R1", "resistance"),
+            ("D1", "saturation_current"),
+            ("D1", "series_resistance"),
+            ("D1", "flicker_coefficient"),
+            ("D1", "flicker_exponent"),
+        ],
+        &diode_noise,
+    );
+}
+
+#[test]
+fn noise_jvp_and_vjp_are_transposes_with_and_without_source() {
+    let loaded = circuit(loaded_amplifier());
+    let parameters = [
+        ("RD", "resistance"),
+        ("M1", "width"),
+        ("M1", "threshold_voltage"),
+        ("CL", "capacitance"),
+        ("RG", "resistance"),
+    ];
+    let output_noise = Differentiated::Noise(Noise {
+        output: "drain".to_owned(),
+        reference: None,
+        source: None,
+        frequencies: vec![10.0, 1e4, 1e7],
+    });
+    let referred_noise = Differentiated::Noise(Noise {
+        output: "drain".to_owned(),
+        reference: None,
+        source: Some("VG".to_owned()),
+        frequencies: vec![10.0, 1e4, 1e7],
+    });
+    assert_transposes(&loaded, &parameters, &output_noise);
+    assert_transposes(&loaded, &parameters, &referred_noise);
+}
+
+#[test]
+fn noise_sensitivities_match_finite_differences_for_transistors() {
+    // 1. BJT common-emitter amplifier: thermal + shot + flicker + nonlinear OP coupling.
+    let bjt = bjt_amplifier();
+    let bjt_noise = Differentiated::Noise(Noise {
+        output: "collector".to_owned(),
+        reference: None,
+        source: Some("VIN".to_owned()),
+        frequencies: vec![10.0, 1e4, 1e7],
+    });
+    assert_matches(&bjt, &[NOISE_DENSITY, REFERRED_NOISE], &bjt_noise, 1e-5);
+    assert_transposes(
+        &bjt,
+        &[
+            ("VIN", "waveform.dc"),
+            ("RB", "resistance"),
+            ("RC", "resistance"),
+            ("Q1", "saturation_current"),
+            ("Q1", "forward_beta"),
+            ("Q1", "base_resistance"),
+            ("Q1", "flicker_coefficient"),
+            ("Q1", "flicker_exponent"),
+            ("CL", "capacitance"),
+        ],
+        &bjt_noise,
+    );
+
+    // 2. MOSFET common-source stage with channel thermal + flicker noise + OP coupling.
+    let mosfet = circuit([
+        voltage_dc("VDD", "vdd", 3.3),
+        voltage_dc("VG", "source", 1.2),
+        resistor("RG", 1e4, "source", "gate"),
+        resistor("RD", 1e4, "vdd", "drain"),
+        capacitor("CL", 1e-12, "drain", "0"),
+        device(
+            "M1",
+            "mosfet",
+            json!({
+                "width": 2e-6,
+                "length": 1e-6,
+                "threshold_voltage": 0.7,
+                "transconductance_parameter": 1e-4,
+                "channel_length_modulation": 0.02,
+                "flicker_coefficient": 1e-24,
+                "flicker_exponent": 1.2,
+            }),
+            &[
+                ("drain", "drain"),
+                ("gate", "gate"),
+                ("source", "0"),
+                ("bulk", "0"),
+            ],
+        ),
+    ]);
+    let mosfet_noise = Differentiated::Noise(Noise {
+        output: "drain".to_owned(),
+        reference: None,
+        source: Some("VG".to_owned()),
+        frequencies: vec![10.0, 1e4, 1e7],
+    });
+    assert_matches(
+        &mosfet,
+        &[NOISE_DENSITY, REFERRED_NOISE],
+        &mosfet_noise,
+        1e-5,
+    );
+    assert_transposes(
+        &mosfet,
+        &[
+            ("VG", "waveform.dc"),
+            ("RD", "resistance"),
+            ("M1", "width"),
+            ("M1", "threshold_voltage"),
+            ("M1", "flicker_coefficient"),
+            ("M1", "flicker_exponent"),
+        ],
+        &mosfet_noise,
+    );
+}
+
+#[test]
+fn heated_noise_sensitivities_match_finite_differences() {
+    // Self-heated diode: thermal operating-point coupling into `4kT` and shot noise.
+    let hot = circuit(heated_diode(2.0, 200.0));
+    let hot_noise = Differentiated::Noise(Noise {
+        output: "anode".to_owned(),
+        reference: None,
+        source: Some("V1".to_owned()),
+        frequencies: vec![1e5, 1e6, 1e7],
+    });
+    assert_matches(&hot, &[NOISE_DENSITY, REFERRED_NOISE], &hot_noise, 1e-5);
+    assert_transposes(
+        &hot,
+        &[
+            ("V1", "waveform.dc"),
+            ("R1", "resistance"),
+            ("D1", "saturation_current"),
+            ("D1", "series_resistance"),
+            ("RTH", "resistance"),
+            ("CTH", "capacitance"),
+        ],
+        &hot_noise,
+    );
+}
+
+#[test]
+fn noise_mismatch_propagates_parameter_spread() {
+    let divider = circuit([
+        voltage_dc("V1", "top", 5.0),
+        resistor("R1", 1e3, "top", "out"),
+        resistor("R2", 3e3, "out", "0"),
+    ]);
+    let noise = Differentiated::Noise(Noise {
+        output: "out".to_owned(),
+        reference: None,
+        source: Some("V1".to_owned()),
+        frequencies: vec![1e3, 1e5],
+    });
+    let options = tight_options(false);
+    let mut simulator = simulator(&divider);
+    let sensitivity = simulator
+        .sensitivity(
+            &Sensitivity {
+                outputs: vec![NOISE_DENSITY.to_owned(), REFERRED_NOISE.to_owned()],
+                of: noise.clone(),
+            },
+            &options,
+        )
+        .expect("noise sensitivity");
+    let mismatch = simulator
+        .mismatch(
+            &Mismatch {
+                outputs: vec![NOISE_DENSITY.to_owned(), REFERRED_NOISE.to_owned()],
+                of: noise,
+                toleranced: Vec::new(),
+                random_variables: vec![RandomVariable {
+                    instance: Some("R1".to_owned()),
+                    lot: None,
+                    name: "resistance".to_owned(),
+                    mean: 0.0,
+                    standard_deviation: 0.05,
+                    derivatives: BTreeMap::from([
+                        (
+                            "R1".to_owned(),
+                            BTreeMap::from([("resistance".to_owned(), 1e3)]),
+                        ),
+                        (
+                            "R2".to_owned(),
+                            BTreeMap::from([("resistance".to_owned(), -500.0)]),
+                        ),
+                    ]),
+                }],
+            },
+            &options,
+        )
+        .expect("noise mismatch");
+    let first_column = sensitivity
+        .parameters
+        .iter()
+        .position(|parameter| parameter.instance == "R1" && parameter.name == "resistance")
+        .expect("R1.resistance");
+    let second_column = sensitivity
+        .parameters
+        .iter()
+        .position(|parameter| parameter.instance == "R2" && parameter.name == "resistance")
+        .expect("R2.resistance");
+    let Derivatives::Real(sensitivity_values) = &sensitivity.derivatives else {
+        panic!("real noise sensitivity");
+    };
+    let Derivatives::Real(mismatch_values) = &mismatch.derivatives else {
+        panic!("real noise mismatch");
+    };
+    for point in 0..2 {
+        for output in 0..2 {
+            let expected = 1e3 * sensitivity_values[point][output][first_column]
+                - 500.0 * sensitivity_values[point][output][second_column];
+            let actual = mismatch_values[point][output][0];
+            assert!(
+                (actual - expected).abs() <= 1e-12 * expected.abs().max(1e-30),
+                "point {point} output {output}: mismatch {actual:e} vs expected {expected:e}"
+            );
+        }
+    }
+}
+
+#[test]
+fn noise_sensitivity_rejects_invalid_outputs_and_delay_lines() {
+    let divider = circuit([
+        voltage_dc("V1", "top", 5.0),
+        resistor("R1", 1e3, "top", "out"),
+        resistor("R2", 3e3, "out", "0"),
+    ]);
+    let options = tight_options(false);
+    let mut divider_simulator = simulator(&divider);
+    let without_source = Differentiated::Noise(Noise {
+        output: "out".to_owned(),
+        reference: None,
+        source: None,
+        frequencies: vec![1e3],
+    });
+    for bad in [REFERRED_NOISE, "out"] {
+        let error = divider_simulator
+            .sensitivity(
+                &Sensitivity {
+                    outputs: vec![bad.to_owned()],
+                    of: without_source.clone(),
+                },
+                &options,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, SimulationError::InvalidAnalysis(_)),
+            "expected InvalidAnalysis for output `{bad}`, got {error:?}"
+        );
+    }
+
+    let delayed = circuit([
+        voltage_dc("V1", "in", 1.0),
+        resistor("R1", 50.0, "in", "a"),
+        device(
+            "T1",
+            "transmission_line",
+            json!({"characteristic_impedance": 50.0, "delay": 1e-9}),
+            &[
+                ("positive1", "a"),
+                ("negative1", "0"),
+                ("positive2", "out"),
+                ("negative2", "0"),
+            ],
+        ),
+        resistor("R2", 50.0, "out", "0"),
+    ]);
+    let mut delayed_simulator = simulator(&delayed);
+    let noise = Differentiated::Noise(Noise {
+        output: "out".to_owned(),
+        reference: None,
+        source: Some("V1".to_owned()),
+        frequencies: vec![1e6],
+    });
+    let parameters = vec![("R1".to_owned(), "resistance".to_owned())];
+    assert!(matches!(
+        delayed_simulator.jvp(&noise, &parameters, &[vec![1.0]], &options),
+        Err(SimulationError::Delayed { .. })
+    ));
+    assert!(matches!(
+        delayed_simulator.vjp(&noise, &parameters, &options),
+        Err(SimulationError::Delayed { .. })
+    ));
+}
+
+#[test]
+fn noise_derivatives_are_bit_identical_across_thread_counts() {
+    let amplifier = bjt_amplifier();
+    let noise = Differentiated::Noise(Noise {
+        output: "collector".to_owned(),
+        reference: None,
+        source: Some("VIN".to_owned()),
+        frequencies: vec![10.0, 1e2, 1e4, 1e6, 1e7, 1e8],
+    });
+    let names: Vec<(String, String)> = [
+        ("VIN", "waveform.dc"),
+        ("RB", "resistance"),
+        ("RC", "resistance"),
+        ("RE", "resistance"),
+        ("CL", "capacitance"),
+        ("Q1", "saturation_current"),
+        ("Q1", "forward_beta"),
+        ("Q1", "base_resistance"),
+        ("Q1", "flicker_coefficient"),
+        ("Q1", "flicker_exponent"),
+    ]
+    .into_iter()
+    .map(|(device, name)| (device.to_owned(), name.to_owned()))
+    .collect();
+    let tangent: Vec<f64> = (0..names.len()).map(picked).collect();
+    let run = |threads: usize| -> (Vec<u64>, Vec<u64>) {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool");
+        pool.install(|| {
+            let options = Options {
+                parallelism: Parallelism {
+                    max_threads: Some(threads),
+                    min_solves_per_task: Some(1),
+                    ..Parallelism::default()
+                },
+                ..tight_options(false)
+            };
+            let mut simulator = simulator(&amplifier);
+            let jvp = simulator
+                .jvp(&noise, &names, std::slice::from_ref(&tangent), &options)
+                .expect("noise jvp");
+            let Derivatives::Real(points) = jvp.tangents else {
+                panic!("real noise tangents");
+            };
+            let forward_bits: Vec<u64> = points
+                .iter()
+                .flat_map(|rows| rows.iter().flat_map(|row| row.iter()))
+                .map(|value| value.to_bits())
+                .collect();
+            let cotangents = picked_cotangent((6, 2), true, None);
+            let pullback = simulator.vjp(&noise, &names, &options).expect("noise vjp");
+            let ParameterCotangents::Real(rows) = simulator
+                .pull_back(&pullback, &cotangents, &options)
+                .expect("noise pullback")
+            else {
+                panic!("real noise cotangents");
+            };
+            let backward_bits: Vec<u64> = rows[0].iter().map(|value| value.to_bits()).collect();
+            (forward_bits, backward_bits)
+        })
+    };
+    let baseline = run(1);
+    for threads in [2, 4] {
+        assert_eq!(run(threads), baseline, "threads={threads}");
+    }
 }

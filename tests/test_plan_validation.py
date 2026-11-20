@@ -688,6 +688,49 @@ def test_sensitivity_and_mismatch_checks_including_random_variables() -> None:
         count=2,
     )
 
+    # Noise defaults omitted outputs based on `source` and rejects invalid names.
+    noise_without_source = Noise("out", [1 * kHz])
+    noise_with_source = Noise("out", [1 * kHz], source="V1")
+    default_sens_only = Sensitivity(of=noise_without_source)
+    default_sens_both = Sensitivity(of=noise_with_source)
+    default_mismatch_only = Mismatch(of=noise_without_source)
+    default_mismatch_both = Mismatch(of=noise_with_source)
+    assert default_sens_only.outputs == ("density",)
+    assert default_sens_both.outputs == ("density", "referred")
+    assert default_mismatch_only.outputs == ("density",)
+    assert default_mismatch_both.outputs == ("density", "referred")
+    simulation.validate_plan(
+        Plan(
+            {
+                "s_only": default_sens_only,
+                "s_both": default_sens_both,
+                "s_ref": Sensitivity(["referred"], of=noise_with_source),
+                "m_only": default_mismatch_only,
+                "m_both": default_mismatch_both,
+            }
+        )
+    )
+    _expect_plan_error(
+        lambda: simulation.run(Sensitivity(["referred"], of=Noise("outt", [1 * kHz]))),
+        "output `referred` requires the noise analysis to name a `source`",
+        "`outt`; close names: out",
+        count=2,
+    )
+    _expect_plan_error(
+        lambda: simulation.run(Sensitivity(["densiti"], of=Noise("out", [1 * kHz]))),
+        "only the `density` output, not `densiti`; close names: density",
+        count=1,
+    )
+    _expect_plan_error(
+        lambda: simulation.run(
+            Mismatch(["refered"], of=Noise("out", [1 * kHz], source="V9"))
+        ),
+        "exposes outputs `density` and `referred`, not `refered`; "
+        "close names: referred",
+        "there is no instance at `V9`; close names: VP, V1",
+        count=2,
+    )
+
 
 def test_variants_and_traces_checked_upfront_with_close_names() -> None:
     simulation = _build_simulation()

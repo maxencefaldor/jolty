@@ -1,4 +1,4 @@
-//! Exact parameter sensitivities across operating-point, DC-sweep, AC, stability,
+//! Exact parameter sensitivities across operating-point, DC-sweep, AC, stability, noise,
 //! transient, and periodic steady-state analyses.
 //!
 //! A sensitivity table is the analysis Jacobian (outputs across points with respect to every
@@ -7,7 +7,7 @@
 //! (plus one row for an oscillator's period). The driver picks whichever direction requires
 //! fewer linear solves for the circuit and output set.
 //!
-//! For DC, AC, and stability analyses, points decouple, so reverse mode wins whenever
+//! For DC, AC, stability, and noise analyses, points decouple, so reverse mode wins whenever
 //! `outputs <= parameters`.
 //! For transients over `N + 1` points, reverse mode requires `k (N + 1)(N + 2) / 2` transposed
 //! solves versus `P (N + 1)` forward solves; periodic steady-state reverse mode adds a second
@@ -26,12 +26,13 @@ use crate::derivative::{
     Trajectory, points, units, waveforms_numbers,
 };
 use crate::elaborated::{Origin, Origins};
+use crate::noise::{NOISE_DENSITY, REFERRED_NOISE};
 use crate::options::float_count;
 use crate::periodic::DENSE_MATRICES;
 use crate::stability::LOOP_GAIN;
 use crate::twins::Twins;
 use crate::{
-    Ac, AnalysisResult, DcSweep, OperatingPointResult, Options, PeriodicSteadyState,
+    Ac, AnalysisResult, DcSweep, Noise, OperatingPointResult, Options, PeriodicSteadyState,
     SimulationError, Simulator, Stability, Transient,
 };
 
@@ -40,8 +41,9 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sensitivity {
-    /// Output names, such as `out`, `V1:current`, or [`LOOP_GAIN`] for
-    /// [`Differentiated::Stability`].
+    /// Output names, such as `out`, `V1:current`, [`LOOP_GAIN`] for
+    /// [`Differentiated::Stability`], or [`NOISE_DENSITY`] and [`REFERRED_NOISE`] for
+    /// [`Differentiated::Noise`].
     pub outputs: Vec<String>,
     /// The analysis differentiated: the operating point by default.
     #[serde(default)]
@@ -65,6 +67,8 @@ pub enum Differentiated {
     Ac(Ac),
     /// A Middlebrook loop-gain stability analysis.
     Stability(Stability),
+    /// Output and optional input-referred small-signal noise spectral density.
+    Noise(Noise),
     /// A transient analysis.
     Transient(Transient),
     /// One period of a periodic steady state.
@@ -87,7 +91,7 @@ pub struct Parameter {
 /// `[point][unknown][tangent]` for JVPs (single point for operating-point analyses).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Derivatives {
-    /// Real derivatives for operating-point, DC-sweep, transient, or periodic analyses.
+    /// Real derivatives for operating-point, DC-sweep, noise, transient, or periodic analyses.
     Real(Vec<Vec<Vec<f64>>>),
     /// Complex phasor derivatives for AC and stability analyses.
     Complex(Vec<Vec<Vec<Complex64>>>),
@@ -166,8 +170,8 @@ impl Simulator {
         twins: Twins,
         options: &Options,
     ) -> Result<Differentiation, SimulationError> {
-        let kept = if matches!(of, Differentiated::Stability(_)) {
-            outputs
+        let kept = match of {
+            Differentiated::Stability(_) => outputs
                 .iter()
                 .map(|name| {
                     if name == LOOP_GAIN {
@@ -176,16 +180,19 @@ impl Simulator {
                         Err(SimulationError::UnknownOutput(name.clone()))
                     }
                 })
-                .collect::<Result<Vec<_>, _>>()?
-        } else {
-            outputs
+                .collect::<Result<Vec<_>, _>>()?,
+            Differentiated::Noise(noise) => outputs
+                .iter()
+                .map(|name| noise_output_column(name, noise.source.is_some()))
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => outputs
                 .iter()
                 .map(|name| {
                     self.unknown(name)
                         .map(jolty_models::UnknownIndex::index)
                         .ok_or_else(|| SimulationError::UnknownOutput(name.clone()))
                 })
-                .collect::<Result<Vec<_>, _>>()?
+                .collect::<Result<Vec<_>, _>>()?,
         };
         let parameters = twins.len();
         let backward = match of {
@@ -353,7 +360,8 @@ impl Simulator {
             }
             .check(options)?;
         }
-        let mut cotangents = unit_rows(kept, points, unknowns, 1.0);
+        let width = self.output_width(&result);
+        let mut cotangents = unit_rows(kept, points, width, 1.0);
         if oscillator {
             cotangents.push(Cotangent {
                 points: BTreeMap::new(),
@@ -454,6 +462,25 @@ impl Simulator {
             swept: &self.state.swept,
             temperature: self.state.temperature,
         }
+    }
+}
+
+/// Resolves a noise sensitivity or mismatch output name to its column index (`0` for
+/// [`NOISE_DENSITY`], `1` for [`REFERRED_NOISE`] when the noise analysis names a source).
+fn noise_output_column(name: &str, has_source: bool) -> Result<usize, SimulationError> {
+    match name {
+        NOISE_DENSITY => Ok(0),
+        REFERRED_NOISE if has_source => Ok(1),
+        REFERRED_NOISE => Err(SimulationError::InvalidAnalysis(format!(
+            "output `{REFERRED_NOISE}` requires the noise analysis to name a `source`"
+        ))),
+        _ if has_source => Err(SimulationError::InvalidAnalysis(format!(
+            "a noise analysis with a source exposes outputs `{NOISE_DENSITY}` and \
+             `{REFERRED_NOISE}`, not `{name}`"
+        ))),
+        _ => Err(SimulationError::InvalidAnalysis(format!(
+            "a noise analysis exposes output `{NOISE_DENSITY}`, not `{name}`"
+        ))),
     }
 }
 

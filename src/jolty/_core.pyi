@@ -14,6 +14,8 @@ ELEMENTARY_CHARGE: float
 REFERENCE_TEMPERATURE: float
 REGION: str
 LOOP_GAIN: str
+NOISE_DENSITY: str
+REFERRED_NOISE: str
 SAMPLES_PER_PERIOD: int
 
 class ElaborationError(Exception):

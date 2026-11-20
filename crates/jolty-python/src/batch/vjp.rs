@@ -63,26 +63,45 @@ pub(crate) fn vjp<'py>(
         unknowns: request.unknowns,
         points: Points::from_differentiated(&differentiated),
     };
-    let is_stability = matches!(differentiated, Differentiated::Stability(_));
-    let names: Vec<String> = if is_stability {
-        vec![jolty_engine::LOOP_GAIN.to_owned()]
-    } else {
-        elaborated
+    let is_analysis_output = matches!(
+        differentiated,
+        Differentiated::Stability(_) | Differentiated::Noise(_)
+    );
+    let names: Vec<String> = match &differentiated {
+        Differentiated::Stability(_) => vec![jolty_engine::LOOP_GAIN.to_owned()],
+        Differentiated::Noise(noise) => {
+            let mut output_names = vec![jolty_engine::NOISE_DENSITY.to_owned()];
+            if noise.source.is_some() {
+                output_names.push(jolty_engine::REFERRED_NOISE.to_owned());
+            }
+            output_names
+        }
+        _ => elaborated
             .unknowns()
             .iter()
             .map(|unknown| unknown.name.clone())
-            .collect()
+            .collect(),
     };
     if let Some(unknown) = traced
         .unknowns
         .iter()
         .find(|&&unknown| unknown >= names.len())
     {
+        let (subject, noun) = if is_analysis_output {
+            (
+                "analysis",
+                if names.len() == 1 {
+                    "output"
+                } else {
+                    "outputs"
+                },
+            )
+        } else {
+            ("circuit", "unknowns")
+        };
         return Err(PyValueError::new_err(format!(
-            "the {} has {} {}, not one at {unknown}",
-            if is_stability { "analysis" } else { "circuit" },
-            names.len(),
-            if is_stability { "output" } else { "unknowns" },
+            "the {subject} has {} {noun}, not one at {unknown}",
+            names.len()
         )));
     }
     let based = variants.based(base);
@@ -308,10 +327,12 @@ impl BatchPullback {
                             let Ok(Ok(pullback)) = &derived.found else {
                                 return Err(format!("batch run {} has no pullback", runs[row]));
                             };
-                            let width = if matches!(pullback.result, AnalysisResult::Stability(_)) {
-                                1
-                            } else {
-                                simulator.unknowns().len()
+                            let width = match &pullback.result {
+                                AnalysisResult::Stability(_) => 1,
+                                AnalysisResult::Noise(spectrum) => {
+                                    1 + usize::from(spectrum.input.is_some())
+                                }
+                                _ => simulator.unknowns().len(),
                             };
                             let cotangent =
                                 self.cotangent(derived, pullback, &rows[row], periods[row], width)?;
@@ -355,7 +376,10 @@ impl BatchPullback {
                 if value == T::default() && !value.is_nan() {
                     continue;
                 }
-                let column = if matches!(pullback.result, AnalysisResult::Stability(_)) {
+                let column = if matches!(
+                    pullback.result,
+                    AnalysisResult::Stability(_) | AnalysisResult::Noise(_)
+                ) {
                     unknown
                 } else {
                     let Some(column) = derived.column(unknown) else {

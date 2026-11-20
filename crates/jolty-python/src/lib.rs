@@ -1030,6 +1030,8 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("REFERENCE_TEMPERATURE", jolty_models::REFERENCE_TEMPERATURE)?;
     module.add("REGION", jolty_models::REGION)?;
     module.add("LOOP_GAIN", jolty_engine::LOOP_GAIN)?;
+    module.add("NOISE_DENSITY", jolty_engine::NOISE_DENSITY)?;
+    module.add("REFERRED_NOISE", jolty_engine::REFERRED_NOISE)?;
     module.add("ElaborationError", py.get_type::<ElaborationError>())?;
     module.add("SimulationError", py.get_type::<SimulationError>())?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;

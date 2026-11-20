@@ -93,7 +93,7 @@ pub struct VoltageControlledSwitch;
 #[derive(Debug, Clone, Copy)]
 pub struct PreparedSwitch<R: Real> {
     law: Law<R>,
-    temperature: f64,
+    temperature: R,
 }
 
 impl<R: Real> PreparedSwitch<R> {
@@ -122,8 +122,8 @@ impl<R: Real> PreparedSwitch<R> {
     }
 
     /// Appends the thermal noise of the switch's resistance at `control` to `sources`.
-    fn thermal_noise(&self, control: f64, sources: &mut Vec<NoiseSource>) {
-        let conductance = self.law.conductance(Dual::<R, 0>::number(control)).value;
+    fn thermal_noise(&self, control: R, sources: &mut Vec<NoiseSource<R>>) {
+        let conductance = self.law.conductance(Dual::<R, 0>::constant(control)).value;
         let [positive, negative, ..] = TERMINALS;
         sources.push(NoiseSource::thermal(
             "thermal",
@@ -131,7 +131,7 @@ impl<R: Real> PreparedSwitch<R> {
                 Some(UnknownIndex::new(positive)),
                 Some(UnknownIndex::new(negative)),
             ],
-            conductance.value(),
+            conductance,
             self.temperature,
         ));
     }
@@ -218,7 +218,7 @@ impl Kernel for VoltageControlledSwitch {
                 [on_voltage, off_voltage],
                 "voltage",
             )?,
-            temperature: temperature.value(),
+            temperature,
         })
     }
 
@@ -257,11 +257,11 @@ impl Kernel for VoltageControlledSwitch {
         _: &VoltageControlledSwitchShape,
         prepared: &PreparedSwitch<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let [_, _, control_positive, control_negative] = TERMINALS;
         prepared.thermal_noise(
-            at.value(control_positive) - at.value(control_negative),
+            at.unknown::<R>(control_positive) - at.unknown::<R>(control_negative),
             sources,
         );
     }
@@ -352,7 +352,7 @@ impl Kernel for CurrentControlledSwitch {
                 [on_current, off_current],
                 "current",
             )?,
-            temperature: temperature.value(),
+            temperature,
         })
     }
 
@@ -394,7 +394,7 @@ impl Kernel for CurrentControlledSwitch {
         shape: &CurrentControlledSwitchShape,
         prepared: &PreparedSwitch<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         prepared.thermal_noise(shape.sense.current(at), sources);
     }

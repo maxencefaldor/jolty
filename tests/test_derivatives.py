@@ -14,9 +14,19 @@ import pytest
 
 from jolty import Builder, Role, component, devices, function, jvp, vjp
 from jolty.errors import ElaborationError, SimulationError
-from jolty.plan import LOOP_GAIN, Ac, DcSweep, OperatingPoint, Stability, Transient
+from jolty.plan import (
+    LOOP_GAIN,
+    NOISE_DENSITY,
+    REFERRED_NOISE,
+    Ac,
+    DcSweep,
+    Noise,
+    OperatingPoint,
+    Stability,
+    Transient,
+)
 from jolty.simulate import Differentiable, Outputs, Parameters
-from jolty.units import MHz, V, kHz, kohm, nF, ns, ohm, us
+from jolty.units import Hz, MHz, V, kHz, kohm, nF, ns, ohm, pF, uA, um, us
 from sample_circuits import CROSSBAR_WEIGHTS, crossbar
 
 TRANSPOSED = 1e-11
@@ -314,3 +324,219 @@ def test_stability_function_jvp_vjp_and_batched_pullback() -> None:
 
     with pytest.raises(SimulationError, match="not a floating voltage source"):
         function(_feedback_loop(), Stability("R1", [1 * kHz]))(point)
+
+
+@component
+def _noisy_mosfet_stage(c: Builder) -> None:
+    """Builds a common-source stage with thermal, flicker, and post-pole noise."""
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(3.3 * V), name="VDD")
+    gate_bias = c.place(devices.voltage_source(1.2 * V), name="VG")
+    gate_resistor = c.place(devices.resistor(10 * kohm), name="RG")
+    drain_resistor = c.place(devices.resistor(10 * kohm), name="RD")
+    load_capacitor = c.place(devices.capacitor(2 * pF), name="CL")
+    output_resistor = c.place(devices.resistor(2 * kohm), name="RO")
+    load_resistor = c.place(devices.resistor(50 * kohm), name="RL")
+    transistor = c.place(
+        devices.mosfet(
+            width=2 * um,
+            length=1 * um,
+            threshold_voltage=0.7 * V,
+            transconductance_parameter=100 * uA / V**2,
+            channel_length_modulation=0.02 / V,
+            flicker_coefficient=1e-33,
+            flicker_exponent=1.2,
+        ),
+        name="M1",
+    )
+    c.connect(supply.positive, drain_resistor.a, name="vdd")
+    c.connect(gate_bias.positive, gate_resistor.a, name="source")
+    c.connect(gate_resistor.b, transistor.gate, name="gate")
+    c.connect(
+        drain_resistor.b,
+        transistor.drain,
+        load_capacitor.a,
+        output_resistor.a,
+        name="drain",
+    )
+    c.connect(output_resistor.b, load_resistor.a, name="out")
+    c.connect(
+        supply.negative,
+        gate_bias.negative,
+        transistor.source,
+        transistor.bulk,
+        load_capacitor.b,
+        load_resistor.b,
+        ground,
+    )
+
+
+def test_noise_function_jvp_vjp_and_finite_differences() -> None:
+    frequencies = [10 * Hz, 10 * kHz, 10 * MHz]
+    output_only = function(_noisy_mosfet_stage(), Noise("out", frequencies))
+    assert output_only.outputs == (NOISE_DENSITY,)
+    assert output_only.points == 3
+
+    analysis = Noise("out", frequencies, source="VG")
+    target = function(_noisy_mosfet_stage(), analysis)
+    assert target.outputs == (NOISE_DENSITY, REFERRED_NOISE)
+    assert target.points == 3
+
+    point: dict[str, dict[str, float]] = {
+        "VG": {"waveform.dc": 1.2},
+        "RG": {"resistance": 10e3},
+        "RD": {"resistance": 10e3},
+        "CL": {"capacitance": 2e-12},
+        "M1": {
+            "width": 2e-6,
+            "threshold_voltage": 0.7,
+            "flicker_coefficient": 1e-33,
+            "flicker_exponent": 1.2,
+        },
+    }
+    tangents: dict[str, dict[str, float]] = {
+        "VG": {"waveform.dc": 0.15},
+        "RG": {"resistance": 500.0},
+        "RD": {"resistance": -800.0},
+        "CL": {"capacitance": 3e-13},
+        "M1": {
+            "width": 3e-7,
+            "threshold_voltage": -0.05,
+            "flicker_coefficient": 2e-34,
+            "flicker_exponent": 0.1,
+        },
+    }
+
+    # Output-only noise rejects referred cotangent and satisfies JVP/VJP transpose.
+    solo_outputs, solo_pushed = jvp(output_only, point, tangents)
+    solo_same, solo_pull = vjp(output_only, point)
+    assert list(solo_outputs) == [NOISE_DENSITY]
+    np.testing.assert_array_equal(solo_outputs[NOISE_DENSITY], solo_same[NOISE_DENSITY])
+    with pytest.raises(ValueError, match="gives no output `referred`"):
+        solo_pull({REFERRED_NOISE: np.ones(3)})
+    solo_cotangent = {NOISE_DENSITY: np.array([1.5, -0.7, 2.3])}
+    solo_forward, solo_magnitude = inner(solo_cotangent, solo_pushed)
+    solo_pulled = solo_pull(solo_cotangent)
+    solo_backward = sum(
+        float(np.real(solo_pulled[path][name])) * tangents[path][name]
+        for path, named in point.items()
+        for name in named
+    )
+    solo_terms = sum(
+        abs(float(np.real(solo_pulled[path][name])) * tangents[path][name])
+        for path, named in point.items()
+        for name in named
+    )
+    assert abs(solo_forward - solo_backward) <= TRANSPOSED * max(
+        solo_magnitude, solo_terms
+    )
+
+    # Full noise (output density + input-referred density) transpose and finite diffs.
+    outputs, pushed = jvp(target, point, tangents)
+    same, pull = vjp(target, point)
+    assert list(outputs) == [NOISE_DENSITY, REFERRED_NOISE]
+    for key in (NOISE_DENSITY, REFERRED_NOISE):
+        np.testing.assert_array_equal(outputs[key], same[key])
+    cotangent = {
+        NOISE_DENSITY: np.array([1.2, -0.5, 0.8]),
+        REFERRED_NOISE: np.array([-0.4, 1.7, 0.6]),
+    }
+    forward, magnitude = inner(cotangent, pushed)
+    pulled = pull(cotangent)
+    backward = sum(
+        float(np.real(pulled[path][name])) * tangents[path][name]
+        for path, named in point.items()
+        for name in named
+    )
+    terms = sum(
+        abs(float(np.real(pulled[path][name])) * tangents[path][name])
+        for path, named in point.items()
+        for name in named
+    )
+    assert abs(forward - backward) <= TRANSPOSED * max(magnitude, terms)
+
+    # Verify both output density and referred noise pullbacks against central diffs.
+    step = 1e-4
+    for key in (NOISE_DENSITY, REFERRED_NOISE):
+        nominal = np.asarray(outputs[key], dtype=np.float64)
+        weights = np.array([1.0, 2.0, 3.0]) / nominal
+        gradient = pull({key: weights})
+        for path, named in point.items():
+            for name, value in named.items():
+                delta = value * step
+                plus = {**point, path: {**named, name: value + delta}}
+                minus = {**point, path: {**named, name: value - delta}}
+                loss_plus = float(np.sum(weights * np.asarray(target(plus)[key])))
+                loss_minus = float(np.sum(weights * np.asarray(target(minus)[key])))
+                finite = (loss_plus - loss_minus) / (2.0 * delta)
+                # Central difference O(step^2) = 1e-8 plus rounding eps / step ~ 1e-12.
+                np.testing.assert_allclose(
+                    float(np.real(gradient[path][name])), finite, rtol=1e-5
+                )
+
+
+def test_noise_function_batch_and_batch_vjp() -> None:
+    frequencies = [10 * Hz, 10 * kHz, 10 * MHz]
+    target = function(_noisy_mosfet_stage(), Noise("out", frequencies, source="VG"))
+    names = [
+        ("VG", "waveform.dc"),
+        ("RD", "resistance"),
+        ("CL", "capacitance"),
+        ("M1", "width"),
+    ]
+    batch_rows = np.array(
+        [
+            [1.2, 10e3, 2e-12, 2e-6],
+            [1.3, 8e3, 1.5e-12, 3e-6],
+            [1.1, 12e3, 2.5e-12, 1.5e-6],
+        ]
+    )
+    batched = target.batch(names, batch_rows)
+    batch_outputs, batch_pull = target.batch_vjp(names, batch_rows)
+    for key in (NOISE_DENSITY, REFERRED_NOISE):
+        np.testing.assert_array_equal(batched[key], batch_outputs[key])
+        for row_index, values in enumerate(batch_rows):
+            scalar_point = {
+                path: {name: float(value)}
+                for (path, name), value in zip(names, values.tolist(), strict=True)
+            }
+            np.testing.assert_array_equal(
+                np.asarray(batched[key])[row_index], target(scalar_point)[key]
+            )
+
+    cotangent = {
+        NOISE_DENSITY: np.array([1.2, -0.5, 0.8]),
+        REFERRED_NOISE: np.array([-0.4, 1.7, 0.6]),
+    }
+    runs = [2, 0, 2]
+    batch_cotangent = {
+        NOISE_DENSITY: np.stack(
+            [cotangent[NOISE_DENSITY] * (row + 1) for row in range(len(runs))]
+        ),
+        REFERRED_NOISE: np.stack(
+            [cotangent[REFERRED_NOISE] * (row + 2) for row in range(len(runs))]
+        ),
+    }
+    pulled_batch = batch_pull(batch_cotangent, runs)
+    for row_index, run_index in enumerate(runs):
+        scalar_point = {
+            path: {name: float(value)}
+            for (path, name), value in zip(
+                names, batch_rows[run_index].tolist(), strict=True
+            )
+        }
+        _, single_pull = vjp(target, scalar_point)
+        alone = single_pull(
+            {
+                NOISE_DENSITY: batch_cotangent[NOISE_DENSITY][row_index],
+                REFERRED_NOISE: batch_cotangent[REFERRED_NOISE][row_index],
+            }
+        )
+        np.testing.assert_array_equal(
+            pulled_batch[row_index], [alone[path][name] for path, name in names]
+        )
+
+    with pytest.raises(SimulationError, match="not an independent source"):
+        function(_noisy_mosfet_stage(), Noise("out", [1 * kHz], source="RD"))(
+            {"RD": {"resistance": 10e3}}
+        )

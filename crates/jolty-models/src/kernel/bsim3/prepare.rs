@@ -114,17 +114,17 @@ pub(super) struct Overlaps<R: Real> {
 
 /// The numbers of the noise models.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Noise {
+pub(super) struct Noise<R: Real> {
     pub(super) model: NoiseModel,
-    pub(super) noia: f64,
-    pub(super) noib: f64,
-    pub(super) noic: f64,
-    pub(super) em: f64,
-    pub(super) ef: f64,
-    pub(super) af: f64,
-    pub(super) kf: f64,
+    pub(super) noia: R,
+    pub(super) noib: R,
+    pub(super) noic: R,
+    pub(super) em: R,
+    pub(super) ef: R,
+    pub(super) af: R,
+    pub(super) kf: R,
     /// The effective length less twice `lintnoi`.
-    pub(super) length: f64,
+    pub(super) length: R,
 }
 
 /// A transistor's numbers at its temperature.
@@ -133,12 +133,12 @@ pub struct PreparedBsim3<R: Real> {
     pub(super) core: Core<R>,
     pub(super) junctions: Junctions<R>,
     pub(super) overlaps: Overlaps<R>,
-    pub(super) noise: Noise,
+    pub(super) noise: Noise<R>,
     /// The drain and source resistances' stamped values: each conductance, or each
     /// resistance where its current is an unknown, of the parallel copies together.
     pub(super) series: [R; 2],
     pub(super) multiplier: R,
-    pub(super) temperature: f64,
+    pub(super) temperature: R,
 }
 
 impl<R: Real> Bsim3Parameters<R> {
@@ -330,18 +330,18 @@ impl<R: Real> Bsim3Parameters<R> {
             model: self.noise_model,
             noia: self
                 .noia
-                .map_or(by_channel(self.channel, 1e20, 9.9e18), Real::value),
+                .unwrap_or_else(|| R::constant(by_channel(self.channel, 1e20, 9.9e18))),
             noib: self
                 .noib
-                .map_or(by_channel(self.channel, 5e4, 2.4e3), Real::value),
+                .unwrap_or_else(|| R::constant(by_channel(self.channel, 5e4, 2.4e3))),
             noic: self
                 .noic
-                .map_or(by_channel(self.channel, -1.4e-12, 1.4e-12), Real::value),
-            em: self.em.value(),
-            ef: self.ef.value(),
-            af: self.af.value(),
-            kf: self.kf.value(),
-            length: (leff - lintnoi * 2.0).value(),
+                .unwrap_or_else(|| R::constant(by_channel(self.channel, -1.4e-12, 1.4e-12))),
+            em: self.em,
+            ef: self.ef,
+            af: self.af,
+            kf: self.kf,
+            length: leff - lintnoi * 2.0,
         };
         let resistances = self.resistances()?;
         Ok(PreparedBsim3 {
@@ -351,7 +351,7 @@ impl<R: Real> Bsim3Parameters<R> {
             noise,
             series: resistances.map(series_value),
             multiplier,
-            temperature: temperature.value(),
+            temperature,
         })
     }
 

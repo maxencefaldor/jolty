@@ -46,6 +46,8 @@ from jolty.devices import Device, ParameterValue
 from jolty.errors import ElaborationError, PlanError, SimulationError
 from jolty.plan import (
     LOOP_GAIN,
+    NOISE_DENSITY,
+    REFERRED_NOISE,
     Ac,
     Analysis,
     Conditions,
@@ -93,7 +95,9 @@ from jolty.units import TEMPERATURE, Quantity
 
 __all__ = [
     "LOOP_GAIN",
+    "NOISE_DENSITY",
     "PERIOD",
+    "REFERRED_NOISE",
     "BatchPullback",
     "Differentiable",
     "Elaborated",

@@ -32,8 +32,8 @@ from jolty.unknowns import LogicLevel
 def _shown(value: float, nature: unknowns.Nature | None) -> str:
     """Formats an unknown `value` of `nature` with an SI unit prefix.
 
-    Device state unknowns and dimensionless outputs (such as stability loop gain)
-    are formatted as plain numbers.
+    Device state unknowns and non-unknown outputs (such as stability loop gain and
+    noise spectral densities) are formatted as plain numbers.
     """
     if nature is None or nature == "state":
         return f"{value:.4g}"
@@ -763,6 +763,7 @@ type Differentiated = Literal[
     "dc_sweep",
     "ac",
     "stability",
+    "noise",
     "transient",
     "periodic_steady_state",
 ]
@@ -772,6 +773,7 @@ _ALONG: Final[dict[Differentiated, str]] = {
     "dc_sweep": "along a DC sweep at {points} values",
     "ac": "over a response at {points} frequencies",
     "stability": "over a loop gain at {points} frequencies",
+    "noise": "over a noise spectrum at {points} frequencies",
     "transient": "over a transient at {points} times",
     "periodic_steady_state": "over a periodic steady state's period at {points} times",
 }
@@ -1628,6 +1630,8 @@ def _differentiated(
             return "ac", len(result.frequencies), "Hz", result.operating_point
         case results.StabilityResult():
             return "stability", len(result.frequencies), "Hz", result.operating_point
+        case results.NoiseResult():
+            return "noise", len(result.frequencies), "Hz", result.operating_point
         case results.PeriodicSteadyStateResult():
             return "periodic_steady_state", len(result.times), "s", None
         case results.TransientResult():
@@ -1693,11 +1697,12 @@ def _output(
             results.DcSweepResult()
             | results.AcResult()
             | results.StabilityResult()
+            | results.NoiseResult()
             | results.TransientResult() as along
         ):
             nature = (
                 None
-                if isinstance(along, results.StabilityResult)
+                if isinstance(along, results.StabilityResult | results.NoiseResult)
                 else result.unknowns[results.column(result.unknowns, output)].nature
             )
             value = None
@@ -1785,11 +1790,12 @@ def _output_mismatch(
             results.DcSweepResult()
             | results.AcResult()
             | results.StabilityResult()
+            | results.NoiseResult()
             | results.TransientResult() as along
         ):
             nature = (
                 None
-                if isinstance(along, results.StabilityResult)
+                if isinstance(along, results.StabilityResult | results.NoiseResult)
                 else result.unknowns[results.column(result.unknowns, output)].nature
             )
             at = float(results.axis_of(along)[largest])

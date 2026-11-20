@@ -170,8 +170,8 @@ pub struct PreparedBipolarTransistor<R: Real> {
     /// Thermal voltage at operating temperature.
     thermal_voltage: f64,
     critical_voltage: f64,
-    temperature: f64,
-    flicker: Flicker,
+    temperature: R,
+    flicker: Flicker<R>,
 }
 
 /// Persistent evaluation memory for [`BipolarTransistor`] storing previous junction voltages
@@ -1853,7 +1853,7 @@ impl Kernel for BipolarTransistor {
         shape: &BipolarTransistorShape,
         prepared: &PreparedBipolarTransistor<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let temperature = prepared.temperature;
         let [collector_series, emitter_series] = prepared.series;
@@ -1866,13 +1866,11 @@ impl Kernel for BipolarTransistor {
             .emitter_series
             .noise(emitter_series, ("emitter thermal", temperature), sources);
         let nodes = &shape.stamp;
-        let voltages = nodes.voltages(at, prepared.sign, [BASE_EMITTER, BASE_COLLECTOR]);
-        let state = prepared
-            .junctions
-            .evaluate(voltages.map(R::constant), at.gmin);
+        let voltages = nodes.oriented::<R, _>(at, prepared.sign, [BASE_EMITTER, BASE_COLLECTOR]);
+        let state = prepared.junctions.evaluate(voltages, at.gmin);
         let node = |index: usize| nodes.equation(index);
         if let (Some(resistance), Some(form)) = (&prepared.base, &shape.base) {
-            let resistance = resistance.evaluate(&state).value.value();
+            let resistance = resistance.evaluate(&state).value;
             sources.push(match form {
                 BaseForm::Conductance => NoiseSource::thermal(
                     "base thermal",
@@ -1890,11 +1888,11 @@ impl Kernel for BipolarTransistor {
         }
         let [base_emitter, base_collector] = state.base.map(|current| current.value);
         let collector = state.transport.value - base_collector;
-        let base_current = (base_emitter + base_collector).value();
+        let base_current = base_emitter + base_collector;
         sources.push(NoiseSource::shot(
             "collector shot",
             [node(INNER_COLLECTOR), node(INNER_EMITTER)],
-            collector.value(),
+            collector,
         ));
         let base_to_emitter = [node(INNER_BASE), node(INNER_EMITTER)];
         sources.push(NoiseSource::shot(
@@ -1916,7 +1914,7 @@ struct Scaled<R: Real> {
     substrate: Option<SubstrateJunction<R>>,
     thermal_voltage: f64,
     critical_voltage: f64,
-    temperature: f64,
+    temperature: R,
 }
 
 impl<R: Real> BipolarTransistorParameters<R> {
@@ -1961,7 +1959,7 @@ impl<R: Real> BipolarTransistorParameters<R> {
             charges: self.charges(temperatures)?,
             substrate: self.substrate_junction(temperatures)?,
             thermal_voltage,
-            temperature: temperatures.actual.value(),
+            temperature: temperatures.actual,
         })
     }
 }

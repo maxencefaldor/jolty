@@ -68,12 +68,13 @@ impl TraceGuard<'_> {
     }
 }
 
-/// Sample axis points along which a batch traces unknowns.
+/// Sample axis points along which a batch traces unknowns or noise outputs.
 #[derive(Debug, Clone)]
 pub(crate) enum Points {
     Point,
     Swept(usize),
     Frequencies(usize),
+    Noise(usize),
     Times(Vec<f64>),
 }
 
@@ -103,6 +104,7 @@ impl Points {
             Differentiated::DcSweep(sweep) => Self::Swept(sweep.values.len()),
             Differentiated::Ac(response) => Self::Frequencies(response.frequencies.len()),
             Differentiated::Stability(stability) => Self::Frequencies(stability.frequencies.len()),
+            Differentiated::Noise(noise) => Self::Noise(noise.frequencies.len()),
             Differentiated::Transient(transient) => Self::Times(transient.breakpoints.clone()),
             Differentiated::PeriodicSteadyState(steady) => Self::Times(steady.breakpoints.clone()),
         }
@@ -111,7 +113,7 @@ impl Points {
     pub(crate) fn len(&self) -> usize {
         match self {
             Self::Point => 1,
-            Self::Swept(count) | Self::Frequencies(count) => *count,
+            Self::Swept(count) | Self::Frequencies(count) | Self::Noise(count) => *count,
             Self::Times(times) => times.len(),
         }
     }
@@ -466,6 +468,24 @@ pub(crate) fn trace_result(
                 fill_trace(buffer, &columns, frequency, |column| {
                     values.get(column).copied()
                 });
+            }
+        }
+        (AnalysisResult::Noise(spectrum), Points::Noise(_), TracedValues::Real(buffer)) => {
+            let referred = spectrum.referred();
+            let width = traces.unknowns.len();
+            for point in 0..spectrum.frequencies.len() {
+                for (place, &index) in traces.unknowns.iter().enumerate() {
+                    let value = match index {
+                        0 => spectrum.densities.get(point).copied(),
+                        1 => referred
+                            .as_ref()
+                            .and_then(|values| values.get(point).copied()),
+                        _ => None,
+                    };
+                    if let Some(value) = value {
+                        buffer[point * width + place] = value;
+                    }
+                }
             }
         }
         (

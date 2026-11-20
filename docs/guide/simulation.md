@@ -134,11 +134,12 @@ Search stops at `max_solutions` or once no candidate yields a new root separated
 
 ## Sensitivities
 
-Every primary analysis (operating point, DC sweep, AC, stability, transient, and periodic steady state) is differentiable with respect to circuit parameters.
+Every primary analysis (operating point, DC sweep, AC, stability, noise, transient, and periodic steady state) is differentiable with respect to circuit parameters.
 `jolty.function(circuit, analysis)` wraps an elaborated circuit as callable `f(parameters)`, and `jolty.jvp` and `jolty.vjp` differentiate `f` with the same calling conventions as `jax.jvp` and `jax.vjp`.
 `parameters` is a nested dictionary indexed by instance path then parameter path in SI base units; only listed parameters are differentiated while all other circuit parameters remain constant.
 Parameter paths use dot-separated keys (such as `resistance` or `waveform.dc`) and 0-based list indices (such as `waveform.piecewise.1.1`).
 Outputs form a dictionary mapping each unknown name to its scalar or array values (complex phasors for AC, complex loop gain under `jolty.simulate.LOOP_GAIN` for stability), adding oscillator period in seconds under `jolty.simulate.PERIOD`.
+Noise analyses return real spectral densities under `jolty.simulate.NOISE_DENSITY` (`"density"`) and, when a `source` is set, `jolty.simulate.REFERRED_NOISE` (`"referred"`).
 
 `jvp(function, parameters, tangents)` computes outputs and forward directional derivatives along `tangents` via the direct method (one linear solve per analysis point).
 `vjp(function, parameters)` computes outputs and a `pullback` function mapping output cotangents (defaulting omitted entries to zero) back to parameter gradients via one transposed solve per point regardless of parameter count.
@@ -218,6 +219,8 @@ At DC, `J` is the DC Jacobian, and swept parameters have zero derivative at fixe
 In AC, every nonlinear kernel evaluates seeded dual unknowns so JVP pushes exact second derivatives `(∂G/∂x · dx₀/dp, ∂C/∂x · dx₀/dp)` directly.
 AC VJP accumulates frequency weights over nonlinear matrix slots and executes one transposed DC solve per active cotangent regardless of parameter count, skipping the DC solve on purely linear circuits.
 Stability JVP and VJP differentiate Middlebrook's double-injection loop gain `T = -u / (1 + u)` (`dT/du = -1 / (1 + u)²`) from the same factored `G + jωC` matrix, solving two unit transposed injections per active frequency and sharing the operating-point bias-coupling path with AC.
+Noise JVP differentiates adjoint transfer weights `(G + jωC)ᵀ z = e` and device spectral densities across parameter and operating-point shifts.
+Noise VJP solves one forward system per active frequency and one transposed DC solve regardless of parameter count.
 In transients, JVP propagates sensitivities step by step using the active integration formula (Hocevar, Yang, Trick, and Epler, 1985), while VJP executes the exact discrete adjoint backward across all steps (holding step sizes and logic events fixed).
 Transient derivatives start from the initial-condition-constrained DC Jacobian (or zero under `UIC`), matching closed form `d out/dR = -(t/(R²C)) e^(-t/RC)` on an RC started at `out = 0` V under either mode.
 Time-domain VJP replays steps post-run and therefore rejects logic circuits (event drivers cannot replay statelessly), and both JVP and VJP reject transmission lines (history terms are omitted from derivatives).
@@ -233,14 +236,15 @@ Discrete integer mode selectors (such as MOSFET `level`) are not continuous para
 Plan({"sensitivity": Sensitivity(["out", "V1:current"])})
 ```
 
-Passing `of=` differentiates outputs at every point of a DC sweep, AC sweep, stability analysis (yielding complex derivatives, defaulting `outputs` to `["loop_gain"]`), transient, or periodic steady state:
+Passing `of=` differentiates outputs at every point of a DC sweep, AC sweep, stability analysis (yielding complex derivatives, defaulting `outputs` to `["loop_gain"]`), noise spectrum, transient, or periodic steady state:
 
 ```python
 Plan({"drift": Sensitivity(["out"], of=Transient(stop=1 * ms))})
 ```
 
+For `Noise`, omitted `outputs` default to `("density",)` or `("density", "referred")` when a `source` is named.
 `Sensitivity` automatically chooses VJP or JVP to minimize total linear solves.
-At DC and AC points, `k` outputs require `k` transposed solves versus `P` forward solves for `P` parameters, selecting VJP whenever `k ≤ P`.
+At DC, AC, and noise points, `k` outputs require `k` solves versus `P` forward solves for `P` parameters, selecting VJP whenever `k ≤ P`.
 In transients and periodic steady states, `N + 1` points cost `k (N + 1)(N + 2) / 2` backward solves versus `P (N + 1)` forward solves.
 `Sensitivity` selects JVP upfront when cheaper at minimum step count (or when logic is present) and chooses dynamically after step recording otherwise.
 
@@ -296,6 +300,7 @@ One adjoint solve gives every device's transfer function to the output, summing 
 When an independent input `source` is provided, the same solve gives source-to-output gain, dividing output density by squared gain for SPICE-compatible input-referred noise.
 
 `NoiseResult.densities` holds output power spectral density (V²/Hz or A²/Hz), and `contributions` lists each source's contribution (`thermal`, `collector shot`, etc.).
+`Noise` composes directly with `Sensitivity`, `Mismatch`, `jolty.function`, and `jolty.jax.function` under outputs `"density"` and optional `"referred"`.
 Helper methods provide `referred()`, `contribution(instance, name=None)`, `density(at)`, and band-integrated `rms(start=None, stop=None)` using SPICE power-law log-log integration.
 Reports summarize band-edge densities, output and input-referred RMS noise, and top contributors; plots graph densities on log axes, and specs provide `noise_density` and `integrated_noise`.
 

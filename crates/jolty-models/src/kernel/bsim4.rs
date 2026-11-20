@@ -447,13 +447,12 @@ impl<R: Real> External<R> {
     }
 
     /// Computes total external drain and source conductances across all copies at `at`.
-    fn conductances(&self, nodes: &Nodes<6>, sign: f64, multiplier: R, at: &Local<'_>) -> [f64; 2] {
+    fn conductances(&self, nodes: &Nodes<6>, sign: f64, multiplier: R, at: &Local<'_>) -> [R; 2] {
         let [drain, source] = EXTERNAL_VARIABLES;
         [(0, drain), (1, source)].map(|(side, variables)| {
-            let [gate, body, _] = variables
-                .map(|(plus, minus)| sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
-            let [vg, vb] = [gate, body].map(D::number);
-            (self.conductance(side, [vg, vb]).value * multiplier).value()
+            let [gate, body, _] = nodes.oriented::<R, _>(at, sign, variables);
+            let [vg, vb] = [gate, body].map(D::constant);
+            self.conductance(side, [vg, vb]).value * multiplier
         })
     }
 
@@ -933,7 +932,7 @@ impl Kernel for Bsim4 {
         shape: &Bsim4Shape,
         prepared: &PreparedBsim4<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let temperature = prepared.temperature;
         let nodes = &shape.stamp;
@@ -944,14 +943,13 @@ impl Kernel for Bsim4 {
                 sources.push(NoiseSource::thermal(
                     name,
                     equations,
-                    conductance.value(),
+                    conductance,
                     temperature,
                 ));
             }
         }
         let core = &prepared.core;
-        let voltages = VARIABLES
-            .map(|(plus, minus)| core.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
+        let voltages = nodes.oriented::<R, _>(at, core.sign, VARIABLES);
         let channel = prepared.channel_noise(voltages);
         let [mut drain, mut source] = prepared.series;
         if let Some(added) = channel.source_side {
@@ -969,7 +967,7 @@ impl Kernel for Bsim4 {
             let [mut drain, mut source] =
                 external.conductances(external_nodes, core.sign, prepared.multiplier, at);
             if let Some(added) = channel.source_side {
-                let shared = |conductance: f64| conductance / (1.0 + added * conductance);
+                let shared = |conductance: R| conductance / (added * conductance + 1.0);
                 if channel.forward {
                     source = shared(source);
                 } else {
@@ -1008,7 +1006,7 @@ impl Kernel for Bsim4 {
             sources.push(NoiseSource::thermal(
                 "gate thermal",
                 [nodes.equation(GATE), nodes.equation(MIDDLE_GATE)],
-                (gate.electrode * prepared.multiplier).value(),
+                gate.electrode * prepared.multiplier,
                 temperature,
             ));
         }
@@ -1019,11 +1017,11 @@ impl Kernel for Bsim4 {
             channel.thermal,
             temperature,
         ));
-        if channel.flicker > 0.0 {
+        if crate::noise::is_active(channel.flicker) {
             sources.push(NoiseSource {
                 name: "flicker",
                 equations,
-                white: 0.0,
+                white: R::constant(0.0),
                 flicker: channel.flicker,
                 exponent: prepared.noise.ef,
             });
@@ -1034,20 +1032,20 @@ impl Kernel for Bsim4 {
 /// Evaluated channel noise across all parallel copies at one bias: equivalent thermal
 /// conductance, 1 Hz flicker density, forward-orientation flag, and optional source-side
 /// resistance from `tnoimod = 1`.
-struct ChannelNoise {
-    thermal: f64,
-    flicker: f64,
+struct ChannelNoise<R: Real> {
+    thermal: R,
+    flicker: R,
     forward: bool,
-    source_side: Option<f64>,
+    source_side: Option<R>,
 }
 
 impl<R: Real> PreparedBsim4<R> {
     /// Computes channel thermal and flicker noise at `[vgs, vds, vbs]`, matching
     /// `b4v5noi.c`.
-    fn channel_noise(&self, voltages: [f64; 3]) -> ChannelNoise {
+    fn channel_noise(&self, voltages: [R; 3]) -> ChannelNoise<R> {
         let (forward, frame) = forward_frame(voltages);
         let vds = frame[1];
-        let operating = self.core.evaluate(Dual::variables(frame.map(R::constant)));
+        let operating = self.core.evaluate(Dual::variables(frame));
         let (thermal, source_side) = self.thermal_noise(&operating, vds);
         let flicker = self.flicker_noise(&operating, vds);
         ChannelNoise {
@@ -1060,45 +1058,45 @@ impl<R: Real> PreparedBsim4<R> {
 
     /// Computes total equivalent thermal-noise conductance and optional `tnoimod = 1`
     /// source-side resistance for `operating` at forward-frame `vds`.
-    fn thermal_noise(&self, operating: &Operating<R>, vds: f64) -> (f64, Option<f64>) {
+    fn thermal_noise(&self, operating: &Operating<R>, vds: R) -> (R, Option<R>) {
         let core = &self.core;
         let noise = &self.noise;
-        let value = |number: D<R>| number.value.value();
-        let copies = self.multiplier.value();
-        let leff = core.leff.value();
+        let value = |number: D<R>| number.value;
+        let copies = self.multiplier;
+        let leff = core.leff;
         let ueff = value(operating.ueff);
         let vgsteff = value(operating.vgsteff);
         // `b4v5ld.c` keeps the current over `Vdseff` of one finger above 1 nA per volt.
-        let ids_over_vds = value(operating.ids_over_vds).max(1e-9) * core.fingers.value();
+        let ids_over_vds = value(operating.ids_over_vds).max(R::constant(1e-9)) * core.fingers;
         match noise.thermal_model {
             ThermalNoise::Zero => {
-                let abulk = value(operating.abulk0) * core.abulk_cv_factor.value();
+                let abulk = value(operating.abulk0) * core.abulk_cv_factor;
                 let vdsat = vgsteff / abulk;
                 let t0 = vdsat - vds - DELTA;
-                let t1 = (t0 * t0 + 4.0 * DELTA * vdsat).sqrt();
-                let vdseff = if vds == 0.0 {
-                    0.0
-                } else if t0 >= 0.0 {
-                    vdsat - f64::midpoint(t0, t1)
+                let t1 = (t0 * t0 + vdsat * (4.0 * DELTA)).sqrt();
+                let vdseff = if vds.value() == 0.0 {
+                    R::constant(0.0)
+                } else if t0.value() >= 0.0 {
+                    vdsat - (t0 + t1) * 0.5
                 } else {
-                    vdsat * (1.0 - 2.0 * DELTA / (t1 - t0))
+                    vdsat * (R::constant(1.0) - (t1 - t0).recip() * (2.0 * DELTA))
                 };
                 let t0 = abulk * vdseff;
-                let t1 = 12.0 * (vgsteff - 0.5 * t0 + 1.0e-20);
+                let t1 = (vgsteff - t0 * 0.5 + 1.0e-20) * 12.0;
                 let t3 = t0 * vdseff / t1;
                 let qinv = value(operating.coxeff)
-                    * (core.weff_cv * core.leff_cv * core.fingers).value()
-                    * (vgsteff - 0.5 * t0 + abulk * t3);
-                let t0 = ueff * qinv.abs();
+                    * (core.weff_cv * core.leff_cv * core.fingers)
+                    * (vgsteff - t0 * 0.5 + abulk * t3);
+                let t0 = ueff * crate::noise::magnitude(qinv);
                 let t1 = t0 * value(operating.rds) + leff * leff;
                 (copies * t0 / t1 * noise.ntnoi, None)
             }
             ThermalNoise::One => {
                 let t5 = vgsteff / value(operating.esat_l);
                 let t5 = t5 * t5;
-                let beta = noise.rnoia * (1.0 + t5 * noise.tnoia * leff);
-                let theta = noise.rnoib * (1.0 + t5 * noise.tnoib * leff);
-                let [gm, gds, gmbs] = operating.ids.gradient.map(Real::value);
+                let beta = noise.rnoia * (t5 * noise.tnoia * leff + 1.0);
+                let theta = noise.rnoib * (t5 * noise.tnoib * leff + 1.0);
+                let [gm, gds, gmbs] = operating.ids.gradient;
                 let sum = gm + gmbs + gds;
                 let induced = theta * theta * sum * sum / ids_over_vds;
                 let t1 = beta * (gm + gmbs) + gds;
@@ -1114,22 +1112,22 @@ impl<R: Real> PreparedBsim4<R> {
         clippy::similar_names,
         reason = "b4v5noi.c's names of the noise's terms"
     )]
-    fn flicker_noise(&self, operating: &Operating<R>, vds: f64) -> f64 {
+    fn flicker_noise(&self, operating: &Operating<R>, vds: R) -> R {
         let core = &self.core;
         let noise = &self.noise;
-        let value = |number: D<R>| number.value.value();
-        let copies = self.multiplier.value();
-        let leff = core.leff.value();
-        let coxe = core.coxe.value();
+        let value = |number: D<R>| number.value;
+        let copies = self.multiplier;
+        let leff = core.leff;
+        let coxe = core.coxe;
         let ueff = value(operating.ueff);
         let vgsteff = value(operating.vgsteff);
         let vdseff = value(operating.vdseff);
-        let current = value(operating.ids).abs();
-        let fingers = core.fingers.value();
-        let vtm = core.vtm.value();
+        let current = crate::noise::magnitude(value(operating.ids));
+        let fingers = core.fingers;
+        let vtm = core.vtm;
         match noise.flicker_model {
             FlickerNoise::Zero => {
-                copies * noise.kf * (noise.af * current.max(N_MINLOG).ln()).exp()
+                copies * noise.kf * (noise.af * current.max(R::constant(N_MINLOG)).ln()).exp()
                     / (leff * leff * coxe)
             }
             FlickerNoise::One => {
@@ -1137,21 +1135,27 @@ impl<R: Real> PreparedBsim4<R> {
                 let nstar = value(operating.nstar);
                 let length = noise.length;
                 let leffsq = length * length;
-                let esat = 2.0 * core.vsattemp.value() / ueff;
-                let litl = core.litl.value();
+                let esat = core.vsattemp * 2.0 / ueff;
+                let litl = core.litl;
                 let clm = clm_noise_length(vds, vdseff, litl, esat, noise.em);
-                let weff = core.weff.value() * fingers;
-                let t1 =
-                    NOISE_CHARGE * NOISE_CHARGE * NGSPICE_BOLTZMANN * current * temperature * ueff;
-                let t2 = 1.0e10 * value(operating.abulk_unscaled) * coxe * leffsq;
-                let abov_vgst2vtm = value(operating.abulk) / (vgsteff + 2.0 * vtm);
+                let weff = core.weff * fingers;
+                let t1 = current
+                    * (NOISE_CHARGE * NOISE_CHARGE * NGSPICE_BOLTZMANN)
+                    * temperature
+                    * ueff;
+                let t2 = value(operating.abulk_unscaled) * 1.0e10 * coxe * leffsq;
+                let abov_vgst2vtm = value(operating.abulk) / (vgsteff + vtm * 2.0);
                 let n0 = coxe * vgsteff / NOISE_CHARGE;
-                let nl = coxe * vgsteff * (1.0 - abov_vgst2vtm * vdseff) / NOISE_CHARGE;
-                let t3 = noise.noia * ((n0 + nstar) / (nl + nstar)).max(N_MINLOG).ln();
+                let nl =
+                    coxe * vgsteff * (R::constant(1.0) - abov_vgst2vtm * vdseff) / NOISE_CHARGE;
+                let t3 = noise.noia
+                    * ((n0 + nstar) / (nl + nstar))
+                        .max(R::constant(N_MINLOG))
+                        .ln();
                 let t4 = noise.noib * (n0 - nl);
                 let t5 = noise.noic * 0.5 * (n0 * n0 - nl * nl);
-                let t6 = NGSPICE_BOLTZMANN * temperature * current * current;
-                let t7 = 1.0e10 * leffsq * weff;
+                let t6 = temperature * NGSPICE_BOLTZMANN * current * current;
+                let t7 = leffsq * 1.0e10 * weff;
                 let t8 = noise.noia + noise.noib * nl + noise.noic * nl * nl;
                 let t9 = (nl + nstar) * (nl + nstar);
                 let strong = t1 / t2 * (t3 + t4 + t5) + t6 / t7 * clm * t8 / t9;
@@ -1159,10 +1163,10 @@ impl<R: Real> PreparedBsim4<R> {
                 let t11 = weff * leff * 1.0e10 * nstar * nstar;
                 let weak = t10 / t11 * current * current;
                 let both = strong + weak;
-                if both > 0.0 {
+                if both.value() > 0.0 {
                     copies * strong * weak / both
                 } else {
-                    0.0
+                    R::constant(0.0)
                 }
             }
         }

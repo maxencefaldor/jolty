@@ -76,6 +76,14 @@ rounding drift over large sweeps so each frequency rounds to the nearest float.
 LOOP_GAIN: Final = _core.LOOP_GAIN
 """Output name for loop gain `T` of a [`Stability`][jolty.plan.Stability] analysis."""
 
+NOISE_DENSITY: Final = _core.NOISE_DENSITY
+"""Output name for output noise spectral density of a [`Noise`][jolty.plan.Noise]
+analysis."""
+
+REFERRED_NOISE: Final = _core.REFERRED_NOISE
+"""Output name for input-referred noise spectral density of a
+[`Noise`][jolty.plan.Noise] analysis when `source` is set."""
+
 _MAX_SEED_EXCLUSIVE: Final = 2**64
 """Exclusive upper bound of a 64-bit unsigned integer seed."""
 
@@ -1117,13 +1125,71 @@ class Stability:
         return {"stability": {"probe": self.probe, "frequencies": frequencies}}
 
 
-type Differentiated = DcSweep | Ac | Stability | Transient | PeriodicSteadyState | None
+@dataclass(frozen=True, slots=True, config=_CONFIG)
+class Noise:
+    """Small-signal noise spectral density at an output across positive frequencies.
+
+    The `output` names a circuit unknown (voltage or current), or a differential node
+    voltage when `reference` is provided. Resistors contribute thermal noise, junctions
+    contribute shot noise, and diodes and transistors with flicker coefficients
+    contribute flicker noise per standard SPICE models. When an independent `source` is
+    specified, the transfer gain refers output noise back to an equivalent input noise.
+    """
+
+    output: Annotated[str, _NON_EMPTY]
+    frequencies: Annotated[
+        Sequence[Quantity],
+        _frequencies(
+            "a noise analysis has at least one frequency", strictly_positive=True
+        ),
+    ]
+    reference: Annotated[str | None, _REFERENCE] = None
+    source: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
+
+    def to_json(self) -> JsonValue:
+        """Serializes the analysis into the simulation engine's JSON format.
+
+        Returns:
+            Engine JSON mapping ``{'noise': ...}`` with frequencies in hertz.
+        """
+        frequencies: list[JsonValue] = [
+            frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
+        ]
+        noise: dict[str, JsonValue] = {
+            "output": self.output,
+            "frequencies": frequencies,
+        }
+        if self.reference is not None:
+            noise["reference"] = self.reference
+        if self.source is not None:
+            noise["source"] = self.source
+        return {"noise": noise}
+
+
+def noise_outputs(analysis: Noise) -> tuple[str, ...]:
+    """Returns the ordered output names exposed when differentiating `analysis`.
+
+    Args:
+        analysis: Noise analysis whose exposed outputs are determined.
+
+    Returns:
+        `(NOISE_DENSITY, REFERRED_NOISE)` when `analysis.source` is set, else
+        `(NOISE_DENSITY,)`.
+    """
+    if analysis.source is not None:
+        return (NOISE_DENSITY, REFERRED_NOISE)
+    return (NOISE_DENSITY,)
+
+
+type Differentiated = (
+    DcSweep | Ac | Stability | Noise | Transient | PeriodicSteadyState | None
+)
 """Analysis type supported for differentiation, or `None` for the operating point."""
 
 _DIFFERENTIATED: Final = _instance(
-    (DcSweep, Ac, Stability, Transient, PeriodicSteadyState),
+    (DcSweep, Ac, Stability, Noise, Transient, PeriodicSteadyState),
     "analysis_type",
-    "a differentiated analysis is a DcSweep, Ac, Stability, Transient, "
+    "a differentiated analysis is a DcSweep, Ac, Stability, Noise, Transient, "
     "PeriodicSteadyState or None, not {value}",
     optional=True,
 )
@@ -1151,7 +1217,7 @@ def differentiated(of: Differentiated, level: Dimension | None) -> JsonValue:
             return "operating_point"
         case DcSweep():
             return of.to_json(level)
-        case Ac() | Stability() | Transient() | PeriodicSteadyState():
+        case Ac() | Stability() | Noise() | Transient() | PeriodicSteadyState():
             return of.to_json()
 
 
@@ -1160,10 +1226,13 @@ class Sensitivity:
     """First-order sensitivity of analysis outputs with respect to device parameters.
 
     Each entry in `outputs` names a circuit unknown such as a node voltage (``out``) or
-    branch current (``V1:current``), or [`LOOP_GAIN`][jolty.plan.LOOP_GAIN] when
-    differentiating a [`Stability`][jolty.plan.Stability] analysis (the default when
-    `outputs` is omitted for `Stability`). Derivatives are evaluated at the operating
-    point when `of` is `None`, or at every point of a DC sweep, AC sweep, stability
+    branch current (``V1:current``), [`LOOP_GAIN`][jolty.plan.LOOP_GAIN] when
+    differentiating a [`Stability`][jolty.plan.Stability] analysis, or
+    [`NOISE_DENSITY`][jolty.plan.NOISE_DENSITY] and optional
+    [`REFERRED_NOISE`][jolty.plan.REFERRED_NOISE] when differentiating a
+    [`Noise`][jolty.plan.Noise] analysis (defaulted when `outputs` is omitted for
+    `Stability` or `Noise`). Derivatives are evaluated at the operating point when `of`
+    is `None`, or at every point of a DC sweep, AC sweep, stability analysis, noise
     analysis, transient, or periodic steady state. For periodic steady states,
     derivatives are taken at fixed period fractions while adjusting the periodic initial
     state and oscillator period to preserve periodicity. The engine computes the full
@@ -1175,9 +1244,12 @@ class Sensitivity:
     of: Annotated[Differentiated, _DIFFERENTIATED] = None
 
     @model_validator(mode="after")
-    def _default_stability_output(self) -> Sensitivity:
-        if not self.outputs and isinstance(self.of, Stability):
-            object.__setattr__(self, "outputs", (LOOP_GAIN,))
+    def _default_analysis_outputs(self) -> Sensitivity:
+        if not self.outputs:
+            if isinstance(self.of, Stability):
+                object.__setattr__(self, "outputs", (LOOP_GAIN,))
+            elif isinstance(self.of, Noise):
+                object.__setattr__(self, "outputs", noise_outputs(self.of))
         return self
 
     def to_json(self, level: Dimension | None = VOLTAGE) -> JsonValue:
@@ -1202,11 +1274,14 @@ class Sensitivity:
 class Mismatch:
     """First-order statistical spread of analysis outputs under random variations.
 
-    Each entry in `outputs` names an unknown (or [`LOOP_GAIN`][jolty.plan.LOOP_GAIN]
-    when differentiating [`Stability`][jolty.plan.Stability], defaulted when omitted)
-    evaluated at the operating point or across every point of the analysis `of`,
-    matching [`Sensitivity`][jolty.plan.Sensitivity]. Variations include per-part and
-    per-lot circuit tolerances (matching Monte Carlo draws) along with explicit
+    Each entry in `outputs` names an unknown, [`LOOP_GAIN`][jolty.plan.LOOP_GAIN] when
+    differentiating [`Stability`][jolty.plan.Stability], or
+    [`NOISE_DENSITY`][jolty.plan.NOISE_DENSITY] and optional
+    [`REFERRED_NOISE`][jolty.plan.REFERRED_NOISE] when differentiating
+    [`Noise`][jolty.plan.Noise] (defaulted when omitted), evaluated at the operating
+    point or across every point of the analysis `of`, matching
+    [`Sensitivity`][jolty.plan.Sensitivity]. Variations include per-part and per-lot
+    circuit tolerances (matching Monte Carlo draws) along with explicit
     [`RandomVariable`][jolty.ir.RandomVariable] inputs in `random_variables`, such as
     process-kit statistical models from
     [`Library.random_variables`][jolty.spice.Library.random_variables].
@@ -1224,9 +1299,12 @@ class Mismatch:
     ] = ()
 
     @model_validator(mode="after")
-    def _default_stability_output(self) -> Mismatch:
-        if not self.outputs and isinstance(self.of, Stability):
-            object.__setattr__(self, "outputs", (LOOP_GAIN,))
+    def _default_analysis_outputs(self) -> Mismatch:
+        if not self.outputs:
+            if isinstance(self.of, Stability):
+                object.__setattr__(self, "outputs", (LOOP_GAIN,))
+            elif isinstance(self.of, Noise):
+                object.__setattr__(self, "outputs", noise_outputs(self.of))
         return self
 
     def to_json(
@@ -1286,47 +1364,6 @@ class TransferFunction:
         if self.reference is not None:
             named["reference"] = self.reference
         return {"transfer_function": named}
-
-
-@dataclass(frozen=True, slots=True, config=_CONFIG)
-class Noise:
-    """Small-signal noise spectral density at an output across positive frequencies.
-
-    The `output` names a circuit unknown (voltage or current), or a differential node
-    voltage when `reference` is provided. Resistors contribute thermal noise, junctions
-    contribute shot noise, and diodes and transistors with flicker coefficients
-    contribute flicker noise per standard SPICE models. When an independent `source` is
-    specified, the transfer gain refers output noise back to an equivalent input noise.
-    """
-
-    output: Annotated[str, _NON_EMPTY]
-    frequencies: Annotated[
-        Sequence[Quantity],
-        _frequencies(
-            "a noise analysis has at least one frequency", strictly_positive=True
-        ),
-    ]
-    reference: Annotated[str | None, _REFERENCE] = None
-    source: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
-
-    def to_json(self) -> JsonValue:
-        """Serializes the analysis into the simulation engine's JSON format.
-
-        Returns:
-            Engine JSON mapping ``{'noise': ...}`` with frequencies in hertz.
-        """
-        frequencies: list[JsonValue] = [
-            frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
-        ]
-        noise: dict[str, JsonValue] = {
-            "output": self.output,
-            "frequencies": frequencies,
-        }
-        if self.reference is not None:
-            noise["reference"] = self.reference
-        if self.source is not None:
-            noise["source"] = self.source
-        return {"noise": noise}
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)

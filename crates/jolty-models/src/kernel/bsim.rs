@@ -796,11 +796,11 @@ pub(crate) fn three_part_depletion<R: Real, const N: usize>(
 
 /// Computes the channel-length modulation length for BSIM3 and BSIM4 strong-inversion
 /// flicker noise (`b3noi.c` and `b4v5noi.c`).
-pub(crate) fn clm_noise_length(vds: f64, vdseff: f64, litl: f64, esat: f64, em: f64) -> f64 {
-    if em <= 0.0 {
-        0.0
+pub(crate) fn clm_noise_length<R: Real>(vds: R, vdseff: R, litl: R, esat: R, em: R) -> R {
+    if em.value() <= 0.0 {
+        R::constant(0.0)
     } else {
         let t0 = ((vds - vdseff) / litl + em) / esat;
-        (litl * t0.max(N_MINLOG).ln()).max(0.0)
+        (litl * t0.max(R::constant(N_MINLOG)).ln()).max(R::constant(0.0))
     }
 }

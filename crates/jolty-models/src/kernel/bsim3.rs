@@ -462,7 +462,7 @@ impl Kernel for Bsim3 {
         shape: &Bsim3Shape,
         prepared: &PreparedBsim3<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let temperature = prepared.temperature;
         let [drain_series, source_series] = prepared.series;
@@ -474,8 +474,7 @@ impl Kernel for Bsim3 {
             .noise(source_series, ("source thermal", temperature), sources);
         let nodes = &shape.stamp;
         let core = &prepared.core;
-        let voltages = VARIABLES
-            .map(|(plus, minus)| core.sign * (nodes.voltage(at, plus) - nodes.voltage(at, minus)));
+        let voltages = nodes.oriented::<R, _>(at, core.sign, VARIABLES);
         let channel = [nodes.equation(INNER_DRAIN), nodes.equation(INNER_SOURCE)];
         prepared.channel_noise(voltages, channel, sources);
     }
@@ -487,32 +486,33 @@ impl<R: Real> PreparedBsim3<R> {
     #[expect(clippy::similar_names, reason = "the voltages' names in BSIM3")]
     fn channel_noise(
         &self,
-        voltages: [f64; 3],
+        voltages: [R; 3],
         channel: [crate::Node; 2],
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let [_, drain, _] = voltages;
         let (_, frame) = forward_frame(voltages);
         let core = &self.core;
-        let variables = Dual::variables(frame.map(R::constant));
+        let variables = Dual::variables(frame);
         let operating = core.evaluate(variables);
         let [_, mode_ds, mode_bs] = variables;
-        let copies = self.multiplier.value();
+        let copies = self.multiplier;
         let temperature = self.temperature;
         let noise = &self.noise;
-        let [gm, gds, gmbs] = operating.ids.gradient.map(Real::value);
-        let sum = (gm + gds + gmbs).abs();
-        let leff = core.leff.value();
+        let [gm, gds, gmbs] = operating.ids.gradient;
+        let sum = crate::noise::magnitude(gm + gds + gmbs);
+        let leff = core.leff;
         let thermal = match noise.model {
-            NoiseModel::One | NoiseModel::Three => 2.0 * sum / 3.0 * copies,
+            NoiseModel::One | NoiseModel::Three => sum * 2.0 / 3.0 * copies,
             NoiseModel::Five | NoiseModel::Six => {
-                let vdsat = operating.vdsat.value.value();
-                (3.0 - drain.min(vdsat) / vdsat) * sum / 3.0 * copies
+                let vdsat = operating.vdsat.value;
+                (R::constant(3.0) - drain.min(vdsat) / vdsat) * sum / 3.0 * copies
             }
             NoiseModel::Two | NoiseModel::Four => {
-                let inversion = core.intrinsic(mode_ds, mode_bs, &operating).inversion.abs();
-                let ueff = operating.ueff.value.value();
-                let rds = operating.rds.value.value();
+                let inversion =
+                    crate::noise::magnitude(core.intrinsic(mode_ds, mode_bs, &operating).inversion);
+                let ueff = operating.ueff.value;
+                let rds = operating.rds.value;
                 copies * ueff * inversion / (leff * leff + ueff * inversion * rds)
             }
         };
@@ -522,31 +522,36 @@ impl<R: Real> PreparedBsim3<R> {
             thermal,
             temperature,
         ));
-        let current = operating.ids.value.value();
+        let current = operating.ids.value;
         let flicker = match noise.model {
             NoiseModel::One | NoiseModel::Four | NoiseModel::Five => {
-                copies * noise.kf * (noise.af * current.abs().max(N_MINLOG).ln()).exp()
-                    / (leff * leff * core.cox.value())
+                copies
+                    * noise.kf
+                    * (noise.af
+                        * crate::noise::magnitude(current)
+                            .max(R::constant(N_MINLOG))
+                            .ln())
+                    .exp()
+                    / (leff * leff * core.cox)
             }
             NoiseModel::Two | NoiseModel::Three | NoiseModel::Six => {
-                let strong = self.strong_inversion(&operating, drain.abs());
-                let weak = noise.noia * NOISE_KBOQ * temperature
-                    / (core.weff.value() * leff * 4.0e36)
+                let strong = self.strong_inversion(&operating, crate::noise::magnitude(drain));
+                let weak = noise.noia * NOISE_KBOQ * temperature / (core.weff * leff * 4.0e36)
                     * current
                     * current;
                 let both = strong + weak;
-                if both > 0.0 {
+                if both.value() > 0.0 {
                     copies * strong * weak / both
                 } else {
-                    0.0
+                    R::constant(0.0)
                 }
             }
         };
-        if flicker > 0.0 {
+        if crate::noise::is_active(flicker) {
             sources.push(NoiseSource {
                 name: "flicker",
                 equations: channel,
-                white: 0.0,
+                white: R::constant(0.0),
                 flicker,
                 exponent: noise.ef,
             });
@@ -555,31 +560,34 @@ impl<R: Real> PreparedBsim3<R> {
 
     /// Computes BSIM3 strong-inversion flicker noise at 1 Hz (`Ssi` in `b3noi.c`) for
     /// `operating` and drain-source voltage magnitude `vds`.
-    fn strong_inversion(&self, operating: &channel::Operating<R>, vds: f64) -> f64 {
+    fn strong_inversion(&self, operating: &channel::Operating<R>, vds: R) -> R {
         let core = &self.core;
         let noise = &self.noise;
-        let value = |number: D<R>| number.value.value();
-        let current = value(operating.ids).abs();
+        let value = |number: D<R>| number.value;
+        let current = crate::noise::magnitude(value(operating.ids));
         let leff = noise.length;
         let leffsq = leff * leff;
         let ueff = value(operating.ueff);
-        let esat = 2.0 * core.vsattemp.value() / ueff;
-        let litl = core.litl.value();
+        let esat = core.vsattemp * 2.0 / ueff;
+        let litl = core.litl;
         let vdseff = value(operating.vdseff);
         let clm = clm_noise_length(vds, vdseff, litl, esat, noise.em);
-        let cox = core.cox.value();
+        let cox = core.cox;
         let vgsteff = value(operating.vgsteff);
         let temperature = self.temperature;
-        let t1 = NOISE_CHARGE * NOISE_CHARGE * NOISE_KBOQ * current * temperature * ueff;
-        let t2 = 1.0e8 * value(operating.abulk_unscaled) * cox * leffsq;
-        let abulk_over = value(operating.abulk) / (vgsteff + 2.0 * core.vtm.value());
+        let t1 = current * (NOISE_CHARGE * NOISE_CHARGE * NOISE_KBOQ) * temperature * ueff;
+        let t2 = value(operating.abulk_unscaled) * 1.0e8 * cox * leffsq;
+        let abulk_over = value(operating.abulk) / (vgsteff + core.vtm * 2.0);
         let n0 = cox * vgsteff / NOISE_CHARGE;
-        let nl = cox * vgsteff * (1.0 - abulk_over * vdseff) / NOISE_CHARGE;
-        let t3 = noise.noia * ((n0 + 2.0e14) / (nl + 2.0e14)).max(N_MINLOG).ln();
+        let nl = cox * vgsteff * (R::constant(1.0) - abulk_over * vdseff) / NOISE_CHARGE;
+        let t3 = noise.noia
+            * ((n0 + 2.0e14) / (nl + 2.0e14))
+                .max(R::constant(N_MINLOG))
+                .ln();
         let t4 = noise.noib * (n0 - nl);
         let t5 = noise.noic * 0.5 * (n0 * n0 - nl * nl);
-        let t6 = NOISE_KBOQ * temperature * current * current;
-        let t7 = 1.0e8 * leffsq * core.weff.value();
+        let t6 = temperature * NOISE_KBOQ * current * current;
+        let t7 = leffsq * 1.0e8 * core.weff;
         let t8 = noise.noia + noise.noib * nl + noise.noic * nl * nl;
         let t9 = (nl + 2.0e14) * (nl + 2.0e14);
         t1 / t2 * (t3 + t4 + t5) + t6 / t7 * clm * t8 / t9

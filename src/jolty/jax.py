@@ -10,8 +10,8 @@ so `jax.vmap` maps directly to a multithreaded engine batch with bit-exact resul
 Reverse-mode differentiation uses `jax.custom_vjp` backed by
 [`Function.batch_vjp`][jolty.simulate.Function.batch_vjp], requiring one transposed
 solve per analysis point regardless of parameter count. Supported analyses are
-operating points, DC sweeps, small-signal responses, stability loop gains, transients,
-and periodic steady states.
+operating points, DC sweeps, small-signal responses, stability loop gains, noise
+spectra, transients, and periodic steady states.
 
 Forward passes cache pullbacks for the most recent `saved_pullbacks` calls per
 function; evicted entries recompute the forward pass bit-identically during the
@@ -74,7 +74,15 @@ except ModuleNotFoundError as error:
 from jolty import ir
 from jolty.builder import Component
 from jolty.plan import Ac, Options, PeriodicSteadyState, Stability, Transient
-from jolty.simulate import LOOP_GAIN, PERIOD, BatchPullback, Differentiable, Function
+from jolty.simulate import (
+    LOOP_GAIN,
+    NOISE_DENSITY,
+    PERIOD,
+    REFERRED_NOISE,
+    BatchPullback,
+    Differentiable,
+    Function,
+)
 
 type JaxParameters = Mapping[str, Mapping[str, ArrayLike]]
 """Nested mapping of instance path to parameter path and real scalar SI value."""
@@ -322,11 +330,13 @@ def function(
     scalars matching [`jolty.function`][jolty.simulate.function] and returns outputs at
     [`Function.points`][jolty.simulate.Function.points]. Output points correspond to
     one operating point, DC sweep levels, AC complex phasor frequencies, stability loop
-    gain frequencies (under [`LOOP_GAIN`][jolty.jax.LOOP_GAIN]), or transient and
-    driven periodic steady-state `breakpoints`. Autonomous oscillators return
-    zero-point outputs plus a scalar period under [`PERIOD`][jolty.simulate.PERIOD].
-    For AC and stability analyses, gradients take the real part of the pullback with
-    respect to JAX complex cotangents.
+    gain frequencies (under [`LOOP_GAIN`][jolty.jax.LOOP_GAIN]), noise spectral density
+    frequencies (under [`NOISE_DENSITY`][jolty.jax.NOISE_DENSITY] and optional
+    [`REFERRED_NOISE`][jolty.jax.REFERRED_NOISE]), or transient and driven periodic
+    steady-state `breakpoints`. Autonomous oscillators return zero-point outputs plus a
+    scalar period under [`PERIOD`][jolty.simulate.PERIOD]. For AC and stability
+    analyses, gradients take the real part of the pullback with respect to JAX complex
+    cotangents.
 
     The callable supports `jax.jit`, `jax.grad`, `jax.value_and_grad`, `jax.vjp`,
     `jax.jacrev`, `jax.remat`, and `jax.vmap` (including empty and nested batches).
@@ -389,4 +399,12 @@ def function(
     return evaluate
 
 
-__all__ = ["LOOP_GAIN", "PERIOD", "JaxOutputs", "JaxParameters", "function"]
+__all__ = [
+    "LOOP_GAIN",
+    "NOISE_DENSITY",
+    "PERIOD",
+    "REFERRED_NOISE",
+    "JaxOutputs",
+    "JaxParameters",
+    "function",
+]

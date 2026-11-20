@@ -53,8 +53,8 @@ enum Form {
 pub struct PreparedResistor<R: Real> {
     resistance: R,
     coefficients: VoltageCoefficients<R>,
-    flicker: Flicker,
-    temperature: f64,
+    flicker: Flicker<R>,
+    temperature: R,
 }
 
 /// Quadratic voltage dependence `1 + vc1 · v + vc2 · v²` applied to a passive element.
@@ -193,7 +193,7 @@ impl Kernel for Resistor {
                 quadratic: parameters.quadratic_voltage_coefficient,
             },
             flicker,
-            temperature: temperature.value(),
+            temperature,
         })
     }
 
@@ -264,23 +264,25 @@ impl Kernel for Resistor {
         shape: &ResistorShape,
         prepared: &PreparedResistor<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let temperature = prepared.temperature;
         let (thermal, current) = match &shape.0 {
             Form::Conductance(pair) => {
-                let voltage = pair.voltage(at);
-                let factor = prepared.coefficients.factor(Dual::<R, 0>::number(voltage));
-                let conductance = (prepared.resistance * factor.value).value().recip();
+                let voltage = pair.difference::<R>(at);
+                let factor = prepared
+                    .coefficients
+                    .factor(Dual::<R, 0>::constant(voltage));
+                let conductance = (prepared.resistance * factor.value).recip();
                 (
                     NoiseSource::thermal("thermal", pair.equations(), conductance, temperature),
                     conductance * voltage,
                 )
             }
             Form::Current(branch, _) => {
-                let voltage = Dual::<R, 0>::number(branch.voltage(at));
+                let voltage = Dual::<R, 0>::constant(branch.voltage(at));
                 let factor = prepared.coefficients.factor(voltage);
-                let resistance = (prepared.resistance * factor.value).value();
+                let resistance = prepared.resistance * factor.value;
                 (
                     NoiseSource::thermal_in_series(
                         "thermal",

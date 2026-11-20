@@ -160,23 +160,23 @@ pub(super) struct Gate<R: Real> {
 
 /// The numbers of the noise models.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct Noise {
+pub(super) struct Noise<R: Real> {
     pub(super) flicker_model: FlickerNoise,
     pub(super) thermal_model: ThermalNoise,
-    pub(super) noia: f64,
-    pub(super) noib: f64,
-    pub(super) noic: f64,
-    pub(super) em: f64,
-    pub(super) ef: f64,
-    pub(super) af: f64,
-    pub(super) kf: f64,
-    pub(super) ntnoi: f64,
-    pub(super) tnoia: f64,
-    pub(super) tnoib: f64,
-    pub(super) rnoia: f64,
-    pub(super) rnoib: f64,
+    pub(super) noia: R,
+    pub(super) noib: R,
+    pub(super) noic: R,
+    pub(super) em: R,
+    pub(super) ef: R,
+    pub(super) af: R,
+    pub(super) kf: R,
+    pub(super) ntnoi: R,
+    pub(super) tnoia: R,
+    pub(super) tnoib: R,
+    pub(super) rnoia: R,
+    pub(super) rnoib: R,
     /// The effective length less twice `lintnoi`.
-    pub(super) length: f64,
+    pub(super) length: R,
 }
 
 /// A transistor's numbers at its temperature.
@@ -195,8 +195,8 @@ pub struct PreparedBsim4<R: Real> {
     /// The drain and source resistances, of the parallel copies together, none where
     /// there is no node behind them.
     pub(super) resistances: [R; 2],
-    pub(super) noise: Noise,
-    pub(super) temperature: f64,
+    pub(super) noise: Noise<R>,
+    pub(super) temperature: R,
     /// The conductances of the five body resistances of `rbodymod` 1, in the order of
     /// `BODY_RESISTANCES`, of the parallel copies together.
     pub(super) body_network: Option<[R; 5]>,
@@ -388,17 +388,17 @@ impl<R: Real> Bsim4Parameters<R> {
         let [drain_depletion, source_depletion] = self.depletions(&thermal, areas);
         let noise = self.noise_parameters(&geometry);
         Ok(PreparedBsim4 {
-            external,
+            core,
             overlaps,
-            resistances,
-            noise,
-            temperature: temperature.value(),
             drain_depletion,
             source_depletion,
-            core,
             drain_junction,
             source_junction,
             series,
+            external,
+            resistances,
+            noise,
+            temperature,
             body_network,
             gate,
             multiplier,
@@ -1188,27 +1188,27 @@ impl<R: Real> Bsim4Parameters<R> {
     }
 
     /// Resolves the flicker and thermal noise parameters for `geometry`.
-    fn noise_parameters(&self, geometry: &Geometry<R>) -> Noise {
+    fn noise_parameters(&self, geometry: &Geometry<R>) -> Noise<R> {
         Noise {
             flicker_model: self.flicker_noise_model,
             thermal_model: self.thermal_noise_model,
             noia: self
                 .noia
-                .map_or(by_channel(self.channel, 6.25e41, 6.188e40), Real::value),
+                .unwrap_or_else(|| R::constant(by_channel(self.channel, 6.25e41, 6.188e40))),
             noib: self
                 .noib
-                .map_or(by_channel(self.channel, 3.125e26, 1.5e25), Real::value),
-            noic: self.noic.value(),
-            em: self.em.value(),
-            ef: self.ef.value(),
-            af: self.af.value(),
-            kf: self.kf.value(),
-            ntnoi: self.ntnoi.value(),
-            tnoia: self.tnoia.value(),
-            tnoib: self.tnoib.value(),
-            rnoia: self.rnoia.value(),
-            rnoib: self.rnoib.value(),
-            length: (geometry.leff - self.lintnoi * 2.0).value(),
+                .unwrap_or_else(|| R::constant(by_channel(self.channel, 3.125e26, 1.5e25))),
+            noic: self.noic,
+            em: self.em,
+            ef: self.ef,
+            af: self.af,
+            kf: self.kf,
+            ntnoi: self.ntnoi,
+            tnoia: self.tnoia,
+            tnoib: self.tnoib,
+            rnoia: self.rnoia,
+            rnoib: self.rnoib,
+            length: geometry.leff - self.lintnoi * 2.0,
         }
     }
 

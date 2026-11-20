@@ -71,8 +71,8 @@ pub struct PreparedDiode<R: Real> {
     sidewall: Sidewall<R>,
     /// Transit time at operating temperature.
     transit_time: R,
-    temperature: f64,
-    flicker: Flicker,
+    temperature: R,
+    flicker: Flicker<R>,
 }
 
 /// Persistent evaluation memory for [`Diode`] storing previous junction voltages for step
@@ -577,19 +577,19 @@ impl Kernel for Diode {
         shape: &DiodeShape,
         prepared: &PreparedDiode<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let thermal = ("series thermal", prepared.temperature);
         shape
             .series
             .noise(shape.series.value_of(prepared.resistance), thermal, sources);
-        let voltage = Dual::<R, 0>::number(shape.junction.voltage(at));
+        let voltage = Dual::<R, 0>::constant(shape.junction.difference(at));
         let mut current = prepared.bottom.current(voltage);
         if shape.sidewall.is_none() {
             current = current + prepared.sidewall.current(voltage);
         }
         let nodes = shape.junction.equations();
-        let current = current.value.value();
+        let current = current.value;
         sources.push(NoiseSource::shot("shot", nodes, current));
         prepared.flicker.add(nodes, current, sources);
 
@@ -602,8 +602,8 @@ impl Kernel for Diode {
             thermal,
             sources,
         );
-        let voltage = Dual::<R, 0>::number(separate.junction.voltage(at));
-        let current = prepared.sidewall.current(voltage).value.value();
+        let voltage = Dual::<R, 0>::constant(separate.junction.difference(at));
+        let current = prepared.sidewall.current(voltage).value;
         let nodes = separate.junction.equations();
         sources.push(NoiseSource::shot("sidewall shot", nodes, current));
         prepared
@@ -663,7 +663,7 @@ impl<R: Real> DiodeParameters<R> {
             bottom,
             sidewall,
             transit_time: transit_time * transit,
-            temperature: temperature.value(),
+            temperature: temperatures.actual,
             flicker,
         })
     }

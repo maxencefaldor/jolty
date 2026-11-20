@@ -122,7 +122,7 @@ where
         (shape, _): &Self::Shape,
         (prepared, _): &Self::Prepared<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         K::noise(shape, prepared, at, sources);
     }

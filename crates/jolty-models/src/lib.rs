@@ -44,7 +44,8 @@ pub use device::{Differentiable, Model, ParameterError, Specification};
 pub use dimension::{Dimension, ParameterKind, ParameterMetadata};
 pub use evaluation::{Contributions, Input};
 pub use group::{
-    Alone, Block, Changed, Groups, Instance, Runs, Seeds, Tasks, TooLarge, Twin, TwinNumber,
+    Alone, Block, Changed, Groups, Instance, Runs, Seeds, Tasks, TooLarge, Twin, TwinNoise,
+    TwinNumber,
 };
 pub use jolty_expressions::Choice;
 pub use kernel::behavioral::{

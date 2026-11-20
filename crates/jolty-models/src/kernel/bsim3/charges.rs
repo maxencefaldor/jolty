@@ -24,7 +24,7 @@ pub(super) struct Intrinsic<R: Real> {
     pub(super) gate: D<R>,
     pub(super) bulk: D<R>,
     pub(super) drain: D<R>,
-    pub(super) inversion: f64,
+    pub(super) inversion: R,
 }
 
 impl<R: Real> Core<R> {
@@ -35,7 +35,7 @@ impl<R: Real> Core<R> {
             gate: D::number(0.0),
             bulk: D::number(0.0),
             drain: D::number(0.0),
-            inversion: 0.0,
+            inversion: R::constant(0.0),
         };
         if self.xpart < 0.0 {
             return zero;
@@ -112,7 +112,7 @@ impl<R: Real> Core<R> {
             gate,
             bulk: -gate,
             drain: D::number(0.0),
-            inversion: 0.0,
+            inversion: R::constant(0.0),
         };
         if arg1.value.value() <= 0.0 {
             return opposite(arg1.scale(cox_wl));
@@ -164,7 +164,7 @@ impl<R: Real> Core<R> {
             gate,
             bulk,
             drain,
-            inversion: -(gate + bulk).value.value(),
+            inversion: -(gate + bulk).value,
         }
     }
 
@@ -220,7 +220,7 @@ impl<R: Real> Core<R> {
             gate,
             bulk,
             drain: -(gate + bulk + source),
-            inversion: -(gate + bulk).value.value(),
+            inversion: -(gate + bulk).value,
         }
     }
 
@@ -264,7 +264,7 @@ impl<R: Real> Core<R> {
             gate,
             bulk,
             drain: -(gate + bulk + source),
-            inversion: inversion.value.value(),
+            inversion: inversion.value,
         }
     }
 
@@ -320,7 +320,7 @@ impl<R: Real> Core<R> {
             gate,
             bulk,
             drain,
-            inversion: -inversion.value.value(),
+            inversion: -inversion.value,
         }
     }
 }

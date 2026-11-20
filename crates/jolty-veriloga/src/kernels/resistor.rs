@@ -254,7 +254,7 @@ impl Kernel for Resistor {
         shape: &ResistorShape,
         prepared: &PreparedResistor<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         struct Locals<R: Real> {
             v: R,
@@ -270,24 +270,24 @@ impl Kernel for Resistor {
             voltage_a_b: R::constant(0.0),
             current_current: R::constant(0.0),
         };
-        v.voltage_a_b = R::constant(at.value(0) - at.value(1));
-        v.current_current = R::constant(at.value(shape.current));
+        v.voltage_a_b = at.unknown::<R>(0) - at.unknown::<R>(1);
+        v.current_current = at.unknown::<R>(shape.current);
         v.v = v.voltage_a_b;
         v.f = prepared.voltage_coefficient * v.v + prepared.quadratic_voltage_coefficient * (v.v * v.v) + 1.0;
         if shape.conditions[0] {
-            sources.push(NoiseSource::white("thermal", [Some(UnknownIndex::new(shape.current)), None], (prepared.h3 * (prepared.r * v.f).abs()).value()));
+            sources.push(NoiseSource::white("thermal", [Some(UnknownIndex::new(shape.current)), None], prepared.h3 * (prepared.r * v.f).abs()));
             v.i = v.current_current;
         } else {
-            sources.push(NoiseSource::white("thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(1))], (prepared.h3 * (R::constant(1.0) / (prepared.r * v.f)).abs()).value()));
+            sources.push(NoiseSource::white("thermal", [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(1))], prepared.h3 * (R::constant(1.0) / (prepared.r * v.f)).abs()));
             v.i = R::constant(1.0) / (prepared.r * v.f) * v.v;
         }
         if prepared.h4 {
             sources.push(NoiseSource {
                 name: "flicker",
                 equations: [Some(UnknownIndex::new(0)), Some(UnknownIndex::new(1))],
-                white: 0.0,
-                flicker: (prepared.flicker_coefficient * v.i.abs().pow(prepared.flicker_exponent)).value(),
-                exponent: 1.0,
+                white: R::constant(0.0),
+                flicker: prepared.flicker_coefficient * v.i.abs().pow(prepared.flicker_exponent),
+                exponent: R::constant(1.0),
             });
         }
     }

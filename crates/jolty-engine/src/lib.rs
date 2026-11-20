@@ -113,7 +113,7 @@ pub use elaborated::{Elaborated, Partition, Placed, Structure, StructureKey};
 pub use jolty_numerics::integration::Method;
 pub use logic::{Endpoint, Excursion, ExcursionKind, LogicNet, PlacedLogic};
 pub use mismatch::{Mismatch, MismatchResult, RandomVariable};
-pub use noise::{Noise, NoiseContribution, NoiseInput, NoiseResult};
+pub use noise::{NOISE_DENSITY, Noise, NoiseContribution, NoiseInput, NoiseResult, REFERRED_NOISE};
 pub use objective::{Functional, Objective, ObjectiveResult};
 pub use operating_point::{OperatingPointResult, OperatingPoints, Strategy};
 pub use options::{BREAK_EVENS, BreakEvens, Options, Parallelism, Record, Sizes};

@@ -1234,7 +1234,7 @@ def _differentiated(
         return found
     message = (
         f"the analysis {name} differentiates neither an operating point, a sweep, a "
-        "response, a stability analysis nor a transient"
+        "response, a stability analysis, a noise analysis nor a transient"
     )
     raise JoltyError(message)
 

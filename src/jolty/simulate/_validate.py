@@ -11,6 +11,8 @@ from jolty.devices import ParameterValue
 from jolty.errors import DimensionError, PlanError, close_names
 from jolty.plan import (
     LOOP_GAIN,
+    NOISE_DENSITY,
+    REFERRED_NOISE,
     Ac,
     Analysis,
     DcSweep,
@@ -29,6 +31,7 @@ from jolty.plan import (
     TransferFunction,
     Transient,
     Variants,
+    noise_outputs,
 )
 from jolty.simulate._stress import Joined
 from jolty.units import CURRENT, TEMPERATURE, VOLTAGE, Quantity
@@ -698,6 +701,27 @@ def _stability_output_problem(name: str) -> str | None:
     )
 
 
+def _noise_output_problem(name: str, analysis: Noise) -> str | None:
+    """Returns a problem string when `name` is not an output exposed by `analysis`."""
+    allowed = noise_outputs(analysis)
+    if name in allowed:
+        return None
+    if name == REFERRED_NOISE:
+        return (
+            f"output `{REFERRED_NOISE}` requires the noise analysis to name a `source`"
+        )
+    close = close_names(allowed, name)
+    if analysis.source is not None:
+        return (
+            f"a noise analysis with a source exposes outputs `{NOISE_DENSITY}` and "
+            f"`{REFERRED_NOISE}`, not `{name}`{close}"
+        )
+    return (
+        f"a noise analysis exposes only the `{NOISE_DENSITY}` output, "
+        f"not `{name}`{close}"
+    )
+
+
 def _differentiated_problems(
     analysis: Sensitivity | Mismatch,
     catalog: Catalog,
@@ -711,6 +735,12 @@ def _differentiated_problems(
             issue
             for output in analysis.outputs
             if (issue := _stability_output_problem(output)) is not None
+        ]
+    elif isinstance(analysis.of, Noise):
+        problems = [
+            issue
+            for output in analysis.outputs
+            if (issue := _noise_output_problem(output, analysis.of)) is not None
         ]
     else:
         problems = [

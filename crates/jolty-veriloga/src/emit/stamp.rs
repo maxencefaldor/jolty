@@ -228,7 +228,7 @@ impl Emitter<'_, '_> {
     ) -> Result<(), Error> {
         let module = self.facts.module;
         let operand = self.expression(&source.power, out)?;
-        let power = Self::value_of(&operand).code;
+        let power = Self::convert(operand, &Kind::Real)?.code;
         let Branch {
             plus,
             minus,
@@ -268,10 +268,10 @@ impl Emitter<'_, '_> {
                     ));
                 }
                 let exponent = self.expression(exponent, out)?;
+                let exponent = Self::convert(exponent, &Kind::Real)?.code;
                 format!(
-                    "sources.push(NoiseSource {{\n    name: {:?},\n    equations: {equations},\n    white: 0.0,\n    flicker: {power},\n    exponent: {},\n}});",
+                    "sources.push(NoiseSource {{\n    name: {:?},\n    equations: {equations},\n    white: R::constant(0.0),\n    flicker: {power},\n    exponent: {exponent},\n}});",
                     source.name,
-                    Self::value_of(&exponent).code
                 )
             }
         };
@@ -716,32 +716,26 @@ impl Emitter<'_, '_> {
     /// Writes the lines that bind each probe the body reads.
     fn write_probe_lines(&self, out: &mut CodeWriter) {
         let module = self.facts.module;
-        let read = if self.mode == Mode::Evaluate {
-            "unknown::<R>"
-        } else {
-            "value"
-        };
-        let wrap = if self.mode == Mode::Evaluate {
-            "Dual::variable"
-        } else {
-            "R::constant"
-        };
         for &probe in &self.probes {
             let Some(name) = self.probe_field(probe) else {
                 continue;
             };
             let value = match probe {
                 Probe::Voltage(plus, minus) => format!(
-                    "at.{read}({}) - at.{read}({})",
+                    "at.unknown::<R>({}) - at.unknown::<R>({})",
                     self.facts.node(plus, "shape."),
                     self.facts.node(minus, "shape.")
                 ),
                 Probe::Current(branch) => {
-                    format!("at.{read}(shape.{})", module.branches[branch].name)
+                    format!("at.unknown::<R>(shape.{})", module.branches[branch].name)
                 }
                 Probe::Limited(_) => continue,
             };
-            out.line(format!("v.{name} = {wrap}({value});"));
+            if self.mode == Mode::Evaluate {
+                out.line(format!("v.{name} = Dual::variable({value});"));
+            } else {
+                out.line(format!("v.{name} = {value};"));
+            }
         }
     }
 

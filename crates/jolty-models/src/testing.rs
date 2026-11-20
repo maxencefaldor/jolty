@@ -528,6 +528,56 @@ impl Rig<'_> {
         let (_, _, pattern, _) = grouped(self.model, parameters, Self::TEMPERATURE).expect("valid");
         pattern.positions().collect()
     }
+
+    /// Evaluates plain `f64` noise sources at operating point `x` after settling device
+    /// evaluation state (including self-heating temperature) at `x`.
+    #[must_use]
+    pub fn noise_plain(&self, parameters: &jolty_ir::Parameters, x: &[f64]) -> Vec<NoiseSource> {
+        let (groups, mut runs, pattern, _) =
+            grouped(self.model, parameters, Self::TEMPERATURE).expect("valid");
+        let mut contributions = Contributions::new(&pattern);
+        let mut input = Input::new(x, None, 1e-12);
+        input.limiting = false;
+        runs.evaluate(&groups, &input, &mut contributions, None);
+        let mut sources = Vec::new();
+        runs.noise(&groups, 0, &input, &mut sources);
+        sources
+    }
+
+    /// Evaluates differentiable noise sources at `x` along parameter `parameter` using an
+    /// isolated twin, returning `None` when `parameter` is not a differentiable real field.
+    #[must_use]
+    pub fn noise_exact(
+        &self,
+        parameters: &jolty_ir::Parameters,
+        parameter: &str,
+        x: &[f64],
+    ) -> Option<Vec<NoiseSource<Gradient>>> {
+        let (groups, runs, _, _) =
+            grouped(self.model, parameters, Self::TEMPERATURE).expect("valid");
+        let specification = self.model.read(parameters).expect("valid");
+        let instance = (&specification.kernel(), Self::TEMPERATURE);
+        let mut twin = runs.twin(&groups, 0, instance, &Seeds::units(&[parameter]))?;
+        let mut input = Input::new(x, None, 1e-12);
+        input.limiting = false;
+        twin.evaluate_noise(&input);
+        Some(
+            twin.noise()
+                .map(|source| {
+                    let lift = |(value, derivatives): TwinNumber<'_>| {
+                        Gradient::new(value, [derivatives.first().copied().unwrap_or(0.0)])
+                    };
+                    NoiseSource {
+                        name: source.name,
+                        equations: source.equations,
+                        white: lift(source.white),
+                        flicker: lift(source.flicker),
+                        exponent: lift(source.exponent),
+                    }
+                })
+                .collect(),
+        )
+    }
 }
 
 /// Builds an isolated [`Twin`] for kernel `K` with JSON `parameters` at `temperature`,
@@ -878,6 +928,298 @@ fn assert_entries_match_along(
                 (analytic - numeric).abs() <= tolerance || between,
                 "{model} d{kind}[{row}][{entry_column}]/dx[{column}] at {x:?}: exact \
                  {analytic}, numeric {numeric}"
+            );
+        }
+    }
+}
+
+/// Checks that analytical noise-source derivatives (`white`, `flicker`, `exponent`) with
+/// respect to both real parameters in `parameters` and circuit unknowns at `x` match
+/// extrapolated central finite differences.
+///
+/// # Panics
+///
+/// Panics if primal noise values disagree with plain evaluation or any derivative diverges
+/// from finite differences.
+pub(crate) fn assert_model_noise_derivatives_match(model: &dyn Model, parameters: &str, x: &[f64]) {
+    let parameters_json: serde_json::Value = serde_json::from_str(parameters).expect("JSON");
+    let plain_params = parameters_json.as_object().cloned().expect("a JSON object");
+    let rig = Rig { model };
+    let plain = rig.noise_plain(&plain_params, x);
+    assert!(
+        !plain.is_empty(),
+        "{} produced no noise sources at {x:?}",
+        model.name()
+    );
+    assert_noise_parameter_derivatives(&rig, &parameters_json, &plain_params, &plain, x);
+    let per_unknown = assert_noise_unknown_derivatives(&rig, &plain_params, &plain, x);
+    assert_noise_tangent_linearity(&rig, &plain_params, &per_unknown, x);
+}
+
+/// Checks one spectral component (`white`, `flicker`, or `exponent`) against Richardson
+/// extrapolated central finite differences across wide step `step` and half step `step / 2`.
+fn assert_noise_component_close(
+    label: &str,
+    (primal, analytic): (f64, f64),
+    (wide_up, wide_down): (f64, f64),
+    (narrow_up, narrow_down): (f64, f64),
+    step: f64,
+    allow_corner: bool,
+) {
+    let half = step / 2.0;
+    let wide = (wide_up - wide_down) / (2.0 * step);
+    let narrow = (narrow_up - narrow_down) / step;
+    let numeric = (4.0 * narrow - wide) / 3.0;
+    let magnitude = narrow_up.abs().max(narrow_down.abs());
+    // Central-difference rounding floor: 128 ulps over the half-step covers cancellation
+    // across BSIM and VBIC transcendental chains.
+    let rounding = 128.0 * f64::EPSILON * magnitude / half;
+    // 1e-5 relative tolerance covers Richardson truncation on nonlinear noise laws plus an
+    // absolute floor of 1e-40 for sub-atto thermal and flicker terms.
+    let tolerance = 1e-5 * analytic.abs().max(numeric.abs()) + rounding + 1e-40;
+    let between = if allow_corner {
+        let sides = [(primal - narrow_down) / half, (narrow_up - primal) / half];
+        let side_tolerance = 1e-4 * analytic.abs().max(narrow.abs()) + rounding + 1e-40;
+        (sides[0].min(sides[1]) - side_tolerance..=sides[0].max(sides[1]) + side_tolerance)
+            .contains(&analytic)
+    } else {
+        false
+    };
+    assert!(
+        (analytic - numeric).abs() <= tolerance || between,
+        "{label}: exact {analytic:e}, numeric {numeric:e}"
+    );
+}
+
+/// Checks parameter derivatives of every noise source for every real field in `parameters_json`.
+fn assert_noise_parameter_derivatives(
+    rig: &Rig<'_>,
+    parameters_json: &serde_json::Value,
+    plain_params: &jolty_ir::Parameters,
+    plain: &[NoiseSource],
+    x: &[f64],
+) {
+    let mut paths = Vec::new();
+    numbers(parameters_json, &mut Vec::new(), &mut paths);
+    for path in paths {
+        let name = path.join(".");
+        let mut changed = parameters_json.clone();
+        let value = at(&mut changed, &path).as_f64().expect("a number");
+        let Some(exact) = rig.noise_exact(plain_params, &name, x) else {
+            assert!(value.fract() == 0.0, "{name} is a real parameter");
+            continue;
+        };
+        let step = if value == 0.0 {
+            1e-6
+        } else {
+            1e-4 * value.abs()
+        };
+        let mut try_noise = |perturbed: f64| -> Option<Vec<NoiseSource>> {
+            *at(&mut changed, &path) = serde_json::json!(perturbed);
+            let params = changed.as_object().cloned()?;
+            let (groups, mut runs, pattern, _) =
+                grouped(rig.model, &params, Rig::TEMPERATURE).ok()?;
+            let mut contributions = Contributions::new(&pattern);
+            let mut input = Input::new(x, None, 1e-12);
+            input.limiting = false;
+            runs.evaluate(&groups, &input, &mut contributions, None);
+            let mut sources = Vec::new();
+            runs.noise(&groups, 0, &input, &mut sources);
+            Some(sources)
+        };
+        let (Some(wide_up), Some(wide_down), Some(narrow_up), Some(narrow_down)) = (
+            try_noise(value + step),
+            try_noise(value - step),
+            try_noise(value + step / 2.0),
+            try_noise(value - step / 2.0),
+        ) else {
+            continue;
+        };
+        assert_eq!(
+            exact.len(),
+            plain.len(),
+            "{} noise count for {name}",
+            rig.model.name()
+        );
+        for index in 0..plain.len() {
+            assert_eq!(exact[index].name, plain[index].name);
+            assert_eq!(exact[index].equations, plain[index].equations);
+            let parts = [
+                (
+                    "white",
+                    exact[index].white,
+                    plain[index].white,
+                    (wide_up[index].white, wide_down[index].white),
+                    (narrow_up[index].white, narrow_down[index].white),
+                ),
+                (
+                    "flicker",
+                    exact[index].flicker,
+                    plain[index].flicker,
+                    (wide_up[index].flicker, wide_down[index].flicker),
+                    (narrow_up[index].flicker, narrow_down[index].flicker),
+                ),
+                (
+                    "exponent",
+                    exact[index].exponent,
+                    plain[index].exponent,
+                    (wide_up[index].exponent, wide_down[index].exponent),
+                    (narrow_up[index].exponent, narrow_down[index].exponent),
+                ),
+            ];
+            for (field, analytic, primal, wide_pair, narrow_pair) in parts {
+                assert!(
+                    (analytic.value - primal).abs() <= 1e-12 * primal.abs() + 1e-45,
+                    "{} noise[{}].{field} primal mismatch: {} vs {}",
+                    rig.model.name(),
+                    plain[index].name,
+                    analytic.value,
+                    primal,
+                );
+                let [derivative] = analytic.derivatives;
+                let label = format!(
+                    "{} d(noise[{}].{field})/d{name} at {x:?}",
+                    rig.model.name(),
+                    plain[index].name
+                );
+                assert_noise_component_close(
+                    &label,
+                    (primal, derivative),
+                    wide_pair,
+                    narrow_pair,
+                    step,
+                    false,
+                );
+            }
+        }
+    }
+}
+
+/// Checks unknown derivatives of every noise source (including thermal terminals) and returns
+/// the table `per_unknown[column][source] = [dwhite, dflicker, dexponent]`.
+fn assert_noise_unknown_derivatives(
+    rig: &Rig<'_>,
+    plain_params: &jolty_ir::Parameters,
+    plain: &[NoiseSource],
+    x: &[f64],
+) -> Vec<Vec<[f64; 3]>> {
+    let (groups, runs, _, _) = grouped(rig.model, plain_params, Rig::TEMPERATURE).expect("valid");
+    let specification = rig.model.read(plain_params).expect("valid");
+    let instance = (&specification.kernel(), Rig::TEMPERATURE);
+    let twins = runs.unknown_twins(&groups, 0, instance);
+    assert!(!twins.is_empty(), "{} unknown twins", rig.model.name());
+    let mut input = Input::new(x, None, 1e-12);
+    input.limiting = false;
+
+    let mut per_unknown = vec![vec![[0.0_f64; 3]; plain.len()]; x.len()];
+    for mut twin in twins {
+        twin.evaluate_noise(&input);
+        let seeded: Vec<(usize, usize)> = twin
+            .seeded()
+            .iter()
+            .enumerate()
+            .filter(|&(_, &unknown)| unknown != jolty_numerics::UNMAPPED)
+            .map(|(seed, &unknown)| (seed, unknown as usize))
+            .collect();
+        let sources: Vec<_> = twin
+            .noise()
+            .map(|source| {
+                (
+                    source.name,
+                    source.equations,
+                    (source.white.0, source.white.1.to_vec()),
+                    (source.flicker.0, source.flicker.1.to_vec()),
+                    (source.exponent.0, source.exponent.1.to_vec()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            sources.len(),
+            plain.len(),
+            "{} unknown-twin noise count",
+            rig.model.name()
+        );
+        for &(seed, column) in &seeded {
+            let step = 1e-5 * x[column].abs().max(1.0);
+            let shifted = |offset: f64| {
+                let mut point = x.to_vec();
+                point[column] = x[column] + offset;
+                rig.noise_plain(plain_params, &point)
+            };
+            let (wide_up, wide_down) = (shifted(step), shifted(-step));
+            let (narrow_up, narrow_down) = (shifted(step / 2.0), shifted(-step / 2.0));
+            for index in 0..plain.len() {
+                let (name, equations, ref white, ref flicker, ref exponent) = sources[index];
+                assert_eq!(name, plain[index].name);
+                assert_eq!(equations, plain[index].equations);
+                per_unknown[column][index] = [white.1[seed], flicker.1[seed], exponent.1[seed]];
+                let fields = [
+                    (
+                        "white",
+                        (white.0, white.1[seed]),
+                        (wide_up[index].white, wide_down[index].white),
+                        (narrow_up[index].white, narrow_down[index].white),
+                    ),
+                    (
+                        "flicker",
+                        (flicker.0, flicker.1[seed]),
+                        (wide_up[index].flicker, wide_down[index].flicker),
+                        (narrow_up[index].flicker, narrow_down[index].flicker),
+                    ),
+                    (
+                        "exponent",
+                        (exponent.0, exponent.1[seed]),
+                        (wide_up[index].exponent, wide_down[index].exponent),
+                        (narrow_up[index].exponent, narrow_down[index].exponent),
+                    ),
+                ];
+                for (field, pair, wide_pair, narrow_pair) in fields {
+                    let label = format!(
+                        "{} d(noise[{name}].{field})/dx[{column}] at {x:?}",
+                        rig.model.name()
+                    );
+                    assert_noise_component_close(&label, pair, wide_pair, narrow_pair, step, true);
+                }
+            }
+        }
+    }
+    per_unknown
+}
+
+/// Checks that `Twin::evaluate_noise_along` equals the linear combination of per-unknown
+/// noise derivatives along a nontrivial tangent vector.
+fn assert_noise_tangent_linearity(
+    rig: &Rig<'_>,
+    plain_params: &jolty_ir::Parameters,
+    per_unknown: &[Vec<[f64; 3]>],
+    x: &[f64],
+) {
+    let (groups, runs, _, _) = grouped(rig.model, plain_params, Rig::TEMPERATURE).expect("valid");
+    let specification = rig.model.read(plain_params).expect("valid");
+    let instance = (&specification.kernel(), Rig::TEMPERATURE);
+    let mut input = Input::new(x, None, 1e-12);
+    input.limiting = false;
+    let tangent: Vec<f64> = (0..x.len())
+        .map(|index| 0.3 + 0.17 * f64::from(u32::try_from(index).expect("few unknowns")))
+        .collect();
+    let mut along_twin = runs
+        .twin(&groups, 0, instance, &Seeds::tangents(1).expect("one seed"))
+        .expect("tangent twin");
+    along_twin.evaluate_noise_along(&input, std::slice::from_ref(&tangent));
+    for (index, source) in along_twin.noise().enumerate() {
+        let components = [source.white.1[0], source.flicker.1[0], source.exponent.1[0]];
+        for (part, actual) in components.into_iter().enumerate() {
+            let expected: f64 = (0..x.len())
+                .map(|column| per_unknown[column][index][part] * tangent[column])
+                .sum();
+            let scale: f64 = (0..x.len())
+                .map(|column| (per_unknown[column][index][part] * tangent[column]).abs())
+                .sum();
+            assert!(
+                (actual - expected).abs() <= 1e-12 * scale + 1e-45,
+                "{} evaluate_noise_along[{}][{part}]: {actual:e} vs {expected:e}",
+                rig.model.name(),
+                source.name,
             );
         }
     }

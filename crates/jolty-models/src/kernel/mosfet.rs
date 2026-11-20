@@ -121,10 +121,10 @@ pub struct PreparedMosfet<R: Real> {
     oxide: Option<Oxide<R>>,
     /// Prepared threshold voltage in n-channel polarity used to seed the first step limit.
     threshold: f64,
-    temperature: f64,
+    temperature: R,
     /// Drain-current flicker noise summed across parallel multiplier copies, scaled by
     /// single-copy gate area and squared oxide capacitance per area.
-    flicker: Flicker,
+    flicker: Flicker<R>,
 }
 
 /// Persistent evaluation memory for [`Mosfet`] storing previous bias voltages, threshold,
@@ -866,16 +866,16 @@ impl Kernel for Mosfet {
         });
         let oxide_per_area = process
             .oxide
-            .map_or(OXIDE_PERMITTIVITY / DEFAULT_OXIDE_THICKNESS, |per_area| {
-                per_area.value()
-            });
+            .unwrap_or(R::constant(OXIDE_PERMITTIVITY / DEFAULT_OXIDE_THICKNESS));
         // Parallel multiplier copies each carry `Id / m` over a single gate area; summing
         // their uncorrelated flicker noise yields `m · KF (Id/m)^AF / (f W L Cox²)`.
-        let copies = geometry.multiplier.value();
-        let gate = geometry.area.value() / copies;
-        let exponent = parameters.flicker_exponent.value();
+        let copies = geometry.multiplier;
+        let gate = geometry.area / copies;
+        let exponent = parameters.flicker_exponent;
         let flicker = Flicker::new(parameters.flicker_coefficient, parameters.flicker_exponent)?
-            .scaled(copies.powf(1.0 - exponent) / (gate * oxide_per_area * oxide_per_area));
+            .scaled(
+                copies.pow(R::constant(1.0) - exponent) / (gate * oxide_per_area * oxide_per_area),
+            );
         Ok(PreparedMosfet {
             sign: parameters.channel.sign(),
             series: [
@@ -1040,7 +1040,7 @@ impl Kernel for Mosfet {
         shape: &MosfetShape,
         prepared: &PreparedMosfet<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let temperature = prepared.temperature;
         let [drain_series, source_series] = prepared.series;
@@ -1051,23 +1051,18 @@ impl Kernel for Mosfet {
             .source_series
             .noise(source_series, ("source thermal", temperature), sources);
         let stamp = &shape.stamp;
-        let voltages = stamp.voltages(at, prepared.sign, VARIABLES);
-        let current = prepared
-            .channel
-            .evaluate(Dual::variables(voltages.map(R::constant)))
-            .current;
+        let voltages = stamp.oriented::<R, _>(at, prepared.sign, VARIABLES);
+        let current = prepared.channel.evaluate(Dual::variables(voltages)).current;
         let channel = [stamp.equation(INNER_DRAIN), stamp.equation(INNER_SOURCE)];
         let [transconductance, _, _] = current.gradient;
-        let conductance = 2.0 / 3.0 * transconductance.value();
+        let conductance = transconductance * (2.0 / 3.0);
         sources.push(NoiseSource::thermal(
             "channel thermal",
             channel,
             conductance,
             temperature,
         ));
-        prepared
-            .flicker
-            .add(channel, current.value.value(), sources);
+        prepared.flicker.add(channel, current.value, sources);
     }
 }
 
@@ -1078,7 +1073,7 @@ struct Scaled<R: Real> {
     surface_potential: R,
     /// Prepared threshold in n-channel polarity used to seed step limiting.
     threshold: f64,
-    temperature: f64,
+    temperature: R,
 }
 
 impl<R: Real> MosfetParameters<R> {
@@ -1094,7 +1089,7 @@ impl<R: Real> MosfetParameters<R> {
             junctions: self.junctions(&geometry, temperatures)?,
             surface_potential: process.surface_potential,
             threshold: sign * process.threshold.value(),
-            temperature: temperatures.actual.value(),
+            temperature: temperatures.actual,
         })
     }
 }

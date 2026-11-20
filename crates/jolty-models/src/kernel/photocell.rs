@@ -52,7 +52,7 @@ pub struct PreparedPhotocell<R: Real> {
     gamma: R,
     /// Response time constant in seconds, or zero for instantaneous response.
     time: R,
-    temperature: f64,
+    temperature: R,
 }
 
 /// Local terminal indices of [`Photocell`]: `a`, `b`, `light_positive`, and `light_negative`.
@@ -153,7 +153,7 @@ impl Kernel for Photocell {
             reference,
             gamma,
             time,
-            temperature: temperature.value(),
+            temperature,
         })
     }
 
@@ -236,21 +236,21 @@ impl Kernel for Photocell {
         shape: &PhotocellShape,
         prepared: &PreparedPhotocell<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let [a, b, light_positive, light_negative] = TERMINALS;
         let response = shape.lag.as_ref().map_or_else(
             || {
-                let light = at.value(light_positive) - at.value(light_negative);
-                prepared.settled(Dual::<R, 0>::number(light)).value
+                let light = at.unknown::<R>(light_positive) - at.unknown::<R>(light_negative);
+                prepared.settled(Dual::<R, 0>::constant(light)).value
             },
-            |lag| R::constant(at.value(lag.response)),
+            |lag| at.unknown(lag.response),
         );
         let conductance = prepared.dark_conductance + prepared.conductance * response;
         sources.push(NoiseSource::thermal(
             "thermal",
             [Some(UnknownIndex::new(a)), Some(UnknownIndex::new(b))],
-            conductance.value(),
+            conductance,
             prepared.temperature,
         ));
     }

@@ -1101,8 +1101,194 @@ class StabilityResult(_Watched):
     operating_point: OperatingPointResult
 
 
+@dataclass(frozen=True, slots=True)
+class NoiseSource:
+    """Identifier for a single noise mechanism within a device instance."""
+
+    instance: str
+    """Instance path of the device, such as ``X1/Q1``."""
+    name: str
+    """Noise mechanism name, such as ``thermal``, ``collector shot``, or
+    ``flicker``."""
+
+
+@dataclass(frozen=True, slots=True)
+class NoiseInput:
+    """Input source metadata and transfer gains used for input-referred noise."""
+
+    source: str
+    """Instance path of the input source, such as ``V1``."""
+    nature: Nature
+    """Physical quantity of the input source level."""
+    gains: Complex
+    """Complex transfer gain from the input source to the output at each frequency."""
+
+
+@dataclass(frozen=True, slots=True)
+class NoiseResult(_Watched):
+    """Output noise spectral density and per-source contributions across frequencies.
+
+    The `densities` array stores one-sided output noise power spectral densities in
+    V²/Hz for voltage outputs or A²/Hz for current outputs, and `contributions` stores
+    one row per entry in `sources`. When an input source is configured, ``referred``
+    divides output densities by squared transfer gain to yield equivalent input noise.
+    The ``rms`` method integrates noise density over a frequency band using SPICE
+    power-law interpolation between frequencies.
+
+    Examples:
+        >>> point = OperatingPointResult(
+        ...     (Unknown("out", "voltage"),), np.array([2.0]), ""
+        ... )
+        >>> spectrum = NoiseResult(
+        ...     point.unknowns,
+        ...     "out",
+        ...     None,
+        ...     "voltage",
+        ...     np.array([1.0, 1e4]),
+        ...     np.array([4e-18, 4e-18]),
+        ...     (NoiseSource("R1", "thermal"),),
+        ...     np.array([[4e-18, 4e-18]]),
+        ...     NoiseInput("V1", "voltage", np.array([0.5, 0.5 + 0j])),
+        ...     point,
+        ... )
+        >>> f"{spectrum.rms():.3g}", spectrum.referred().tolist()
+        ('2e-07', [1.6e-17, 1.6e-17])
+        >>> spectrum.density(100.0)
+        4e-18
+    """
+
+    unknowns: tuple[Unknown, ...]
+    output: str
+    """Name of the output unknown."""
+    reference: str | None
+    """Reference net for a differential output voltage, or None for ground."""
+    nature: Nature
+    """Physical quantity of the output unknown."""
+    frequencies: Real
+    densities: Real
+    sources: tuple[NoiseSource, ...]
+    contributions: Real
+    input: NoiseInput | None
+    operating_point: OperatingPointResult
+
+    def referred(self) -> Real:
+        """Returns input-referred noise power spectral density at each frequency.
+
+        Values equal output noise density divided by squared transfer gain, in V²/Hz or
+        A²/Hz matching the input source quantity.
+
+        Returns:
+            One-dimensional array of input-referred noise densities across frequency.
+
+        Raises:
+            ValueError: If the noise analysis specified no input source.
+        """
+        if self.input is None:
+            message = "the noise analysis named no source to refer its noise to"
+            raise ValueError(message)
+        return _core.referred(
+            np.asarray(self.densities, dtype=np.float64),
+            np.asarray(self.input.gains, dtype=np.complex128),
+        )
+
+    def contribution(self, instance: str, name: str | None = None) -> Real:
+        """Returns noise power spectral density contributed by `instance`.
+
+        When `name` is provided, only that noise mechanism is returned; otherwise all
+        noise mechanisms of `instance` are summed in the unit of `densities`.
+
+        Args:
+            instance: Hierarchical path of the contributing device instance.
+            name: Optional noise mechanism name; ``None`` sums all mechanisms.
+
+        Returns:
+            One-dimensional array of output noise spectral densities across
+            `frequencies`.
+
+        Raises:
+            KeyError: If `instance` has no matching noise source.
+        """
+        rows = [
+            index
+            for index, source in enumerate(self.sources)
+            if source.instance == instance and name in {None, source.name}
+        ]
+        if not rows:
+            labels = [f"{source.instance} {source.name}" for source in self.sources]
+            wanted = instance if name is None else f"{instance} {name}"
+            _find(labels, wanted, "the analysis has no noise source")
+        return self.contributions[rows].sum(axis=0)
+
+    def density(self, at: float, *, referred: bool = False) -> float:
+        """Returns the interpolated noise spectral density at frequency `at`, in hertz.
+
+        Interpolation uses a power law between neighboring frequency points.
+
+        Args:
+            at: Query frequency in hertz within the simulated span.
+            referred: When ``True``, interpolates input-referred noise density.
+
+        Returns:
+            Power-law interpolated noise power spectral density in V²/Hz or A²/Hz.
+
+        Raises:
+            ValueError: If `at` lies outside `frequencies`, or if `referred` is true
+                with no input source configured.
+        """
+        densities = self.referred() if referred else self.densities
+        try:
+            return _core.density(
+                np.asarray(self.frequencies, dtype=np.float64),
+                np.asarray(densities, dtype=np.float64),
+                at,
+            )
+        except _core.MeasureError as error:
+            reason, numbers = error.args
+            if reason != "outside_at":
+                raise ValueError(_UNSPECTRAL[reason]) from None
+            first, last = numbers
+            message = (
+                f"{at!r} Hz does not lie within the frequencies, "
+                f"{first!r} Hz to {last!r} Hz"
+            )
+            raise ValueError(message) from None
+
+    def rms(
+        self,
+        start: float | None = None,
+        stop: float | None = None,
+        *,
+        referred: bool = False,
+    ) -> float:
+        """Returns integrated RMS noise from `start` to `stop` hertz.
+
+        When `start` or `stop` is omitted, integration covers the full frequency span
+        using power-law interpolation and returns the square root of integrated noise
+        power in volts or amperes.
+
+        Args:
+            start: Optional lower integration frequency in hertz.
+            stop: Optional upper integration frequency in hertz.
+            referred: When ``True``, integrates input-referred noise density.
+
+        Returns:
+            Integrated RMS noise amplitude in volts or amperes.
+
+        Raises:
+            ValueError: If the frequency band is empty or out of bounds, or if
+                `referred` is true with no input source configured.
+        """
+        densities = self.referred() if referred else self.densities
+        return math.sqrt(integrate(self.frequencies, densities, start, stop))
+
+
 type DifferentiatedResult = (
-    OperatingPointResult | DcSweepResult | AcResult | StabilityResult | TransientResult
+    OperatingPointResult
+    | DcSweepResult
+    | AcResult
+    | StabilityResult
+    | NoiseResult
+    | TransientResult
 )
 """Analysis result types supported by sensitivity and mismatch analyses."""
 
@@ -1111,6 +1297,7 @@ DIFFERENTIATED_TYPES: Final = (
     DcSweepResult,
     AcResult,
     StabilityResult,
+    NoiseResult,
     TransientResult,
 )
 """Runtime tuple of types matching `DifferentiatedResult`."""
@@ -1430,187 +1617,6 @@ class TransferFunctionResult(_Watched):
     operating_point: OperatingPointResult
 
 
-@dataclass(frozen=True, slots=True)
-class NoiseSource:
-    """Identifier for a single noise mechanism within a device instance."""
-
-    instance: str
-    """Instance path of the device, such as ``X1/Q1``."""
-    name: str
-    """Noise mechanism name, such as ``thermal``, ``collector shot``, or
-    ``flicker``."""
-
-
-@dataclass(frozen=True, slots=True)
-class NoiseInput:
-    """Input source metadata and transfer gains used for input-referred noise."""
-
-    source: str
-    """Instance path of the input source, such as ``V1``."""
-    nature: Nature
-    """Physical quantity of the input source level."""
-    gains: Complex
-    """Complex transfer gain from the input source to the output at each frequency."""
-
-
-@dataclass(frozen=True, slots=True)
-class NoiseResult(_Watched):
-    """Output noise spectral density and per-source contributions across frequencies.
-
-    The `densities` array stores one-sided output noise power spectral densities in
-    V²/Hz for voltage outputs or A²/Hz for current outputs, and `contributions` stores
-    one row per entry in `sources`. When an input source is configured, ``referred``
-    divides output densities by squared transfer gain to yield equivalent input noise.
-    The ``rms`` method integrates noise density over a frequency band using SPICE
-    power-law interpolation between frequencies.
-
-    Examples:
-        >>> point = OperatingPointResult(
-        ...     (Unknown("out", "voltage"),), np.array([2.0]), ""
-        ... )
-        >>> spectrum = NoiseResult(
-        ...     point.unknowns,
-        ...     "out",
-        ...     None,
-        ...     "voltage",
-        ...     np.array([1.0, 1e4]),
-        ...     np.array([4e-18, 4e-18]),
-        ...     (NoiseSource("R1", "thermal"),),
-        ...     np.array([[4e-18, 4e-18]]),
-        ...     NoiseInput("V1", "voltage", np.array([0.5, 0.5 + 0j])),
-        ...     point,
-        ... )
-        >>> f"{spectrum.rms():.3g}", spectrum.referred().tolist()
-        ('2e-07', [1.6e-17, 1.6e-17])
-        >>> spectrum.density(100.0)
-        4e-18
-    """
-
-    unknowns: tuple[Unknown, ...]
-    output: str
-    """Name of the output unknown."""
-    reference: str | None
-    """Reference net for a differential output voltage, or None for ground."""
-    nature: Nature
-    """Physical quantity of the output unknown."""
-    frequencies: Real
-    densities: Real
-    sources: tuple[NoiseSource, ...]
-    contributions: Real
-    input: NoiseInput | None
-    operating_point: OperatingPointResult
-
-    def referred(self) -> Real:
-        """Returns input-referred noise power spectral density at each frequency.
-
-        Values equal output noise density divided by squared transfer gain, in V²/Hz or
-        A²/Hz matching the input source quantity.
-
-        Returns:
-            One-dimensional array of input-referred noise densities across frequency.
-
-        Raises:
-            ValueError: If the noise analysis specified no input source.
-        """
-        if self.input is None:
-            message = "the noise analysis named no source to refer its noise to"
-            raise ValueError(message)
-        return _core.referred(
-            np.asarray(self.densities, dtype=np.float64),
-            np.asarray(self.input.gains, dtype=np.complex128),
-        )
-
-    def contribution(self, instance: str, name: str | None = None) -> Real:
-        """Returns noise power spectral density contributed by `instance`.
-
-        When `name` is provided, only that noise mechanism is returned; otherwise all
-        noise mechanisms of `instance` are summed in the unit of `densities`.
-
-        Args:
-            instance: Hierarchical path of the contributing device instance.
-            name: Optional noise mechanism name; ``None`` sums all mechanisms.
-
-        Returns:
-            One-dimensional array of output noise spectral densities across
-            `frequencies`.
-
-        Raises:
-            KeyError: If `instance` has no matching noise source.
-        """
-        rows = [
-            index
-            for index, source in enumerate(self.sources)
-            if source.instance == instance and name in {None, source.name}
-        ]
-        if not rows:
-            labels = [f"{source.instance} {source.name}" for source in self.sources]
-            wanted = instance if name is None else f"{instance} {name}"
-            _find(labels, wanted, "the analysis has no noise source")
-        return self.contributions[rows].sum(axis=0)
-
-    def density(self, at: float, *, referred: bool = False) -> float:
-        """Returns the interpolated noise spectral density at frequency `at`, in hertz.
-
-        Interpolation uses a power law between neighboring frequency points.
-
-        Args:
-            at: Query frequency in hertz within the simulated span.
-            referred: When ``True``, interpolates input-referred noise density.
-
-        Returns:
-            Power-law interpolated noise power spectral density in V²/Hz or A²/Hz.
-
-        Raises:
-            ValueError: If `at` lies outside `frequencies`, or if `referred` is true
-                with no input source configured.
-        """
-        densities = self.referred() if referred else self.densities
-        try:
-            return _core.density(
-                np.asarray(self.frequencies, dtype=np.float64),
-                np.asarray(densities, dtype=np.float64),
-                at,
-            )
-        except _core.MeasureError as error:
-            reason, numbers = error.args
-            if reason != "outside_at":
-                raise ValueError(_UNSPECTRAL[reason]) from None
-            first, last = numbers
-            message = (
-                f"{at!r} Hz does not lie within the frequencies, "
-                f"{first!r} Hz to {last!r} Hz"
-            )
-            raise ValueError(message) from None
-
-    def rms(
-        self,
-        start: float | None = None,
-        stop: float | None = None,
-        *,
-        referred: bool = False,
-    ) -> float:
-        """Returns integrated RMS noise from `start` to `stop` hertz.
-
-        When `start` or `stop` is omitted, integration covers the full frequency span
-        using power-law interpolation and returns the square root of integrated noise
-        power in volts or amperes.
-
-        Args:
-            start: Optional lower integration frequency in hertz.
-            stop: Optional upper integration frequency in hertz.
-            referred: When ``True``, integrates input-referred noise density.
-
-        Returns:
-            Integrated RMS noise amplitude in volts or amperes.
-
-        Raises:
-            ValueError: If the frequency band is empty or out of bounds, or if
-                `referred` is true with no input source configured.
-        """
-        densities = self.referred() if referred else self.densities
-        return math.sqrt(integrate(self.frequencies, densities, start, stop))
-
-
 _UNSPECTRAL: Final[dict[str, str]] = {
     "empty": "a spectrum of no frequencies has no density",
     "mismatch": "a spectrum holds a density at each frequency",
@@ -1785,13 +1791,17 @@ def result_kind(result: AnalysisResult) -> str:
 
 
 def axis_of(
-    result: DcSweepResult | AcResult | StabilityResult | TransientResult,
+    result: DcSweepResult
+    | AcResult
+    | StabilityResult
+    | NoiseResult
+    | TransientResult,
 ) -> Real:
     """Returns the sweep values, frequencies, or time axis array of `result`.
 
     Args:
-        result: Multi-point `DcSweepResult`, `AcResult`, `StabilityResult`, or
-            `TransientResult`.
+        result: Multi-point `DcSweepResult`, `AcResult`, `StabilityResult`,
+            `NoiseResult`, or `TransientResult`.
 
     Returns:
         One-dimensional coordinate array (`swept`, `frequencies`, or `times`).
@@ -1799,7 +1809,7 @@ def axis_of(
     match result:
         case DcSweepResult():
             return result.swept
-        case AcResult() | StabilityResult():
+        case AcResult() | StabilityResult() | NoiseResult():
             return result.frequencies
         case TransientResult():
             return result.times

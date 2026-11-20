@@ -91,10 +91,10 @@ pub struct PreparedVdmos<R: Real> {
     transit_time: R,
     /// Threshold voltage in n-channel polarity used for gate step limiting.
     threshold: f64,
-    temperature: f64,
+    temperature: R,
     /// Drain-current flicker noise scaled by the inverse square of default oxide capacitance
     /// per unit area.
-    flicker: Flicker,
+    flicker: Flicker<R>,
 }
 
 /// Persistent evaluation memory for [`Vdmos`] storing previous channel voltages, body diode
@@ -593,8 +593,8 @@ impl Kernel for Vdmos {
             gate: parameters.gate(multiplier)?,
             body: parameters.body(temperatures, multiplier)?,
             transit_time: ParameterError::non_negative("transit_time", parameters.transit_time)?,
-            temperature: temperatures.actual.value(),
-            flicker: flicker.scaled(1.0 / (oxide * oxide)),
+            temperature: temperatures.actual,
+            flicker: flicker.scaled(R::constant(1.0 / (oxide * oxide))),
         })
     }
 
@@ -721,20 +721,19 @@ impl Kernel for Vdmos {
         shape: &VdmosShape,
         prepared: &PreparedVdmos<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let temperature = prepared.temperature;
         let stamp = &shape.stamp;
         let sign = prepared.sign;
-        let voltages = stamp.voltages(at, sign, VARIABLES);
-        let conduction = prepared
-            .channel
-            .evaluate(Dual::variables(voltages.map(R::constant)));
+        let voltages = stamp.oriented::<R, _>(at, sign, VARIABLES);
+        let conduction = prepared.channel.evaluate(Dual::variables(voltages));
         let [drain_series, source_series, ..] = &shape.series;
         let [drain, source, ..] = prepared.resistances;
         let drain = match (&shape.quasi, &prepared.quasi) {
             (Some(_), Some(quasi)) if conduction.forward => {
-                let across = Dual::<R, 0>::number(sign * (at.value(DRAIN) - at.value(SOURCE)));
+                let drop = (at.unknown::<R>(DRAIN) - at.unknown::<R>(SOURCE)) * sign;
+                let across = Dual::<R, 0>::constant(drop);
                 quasi.resistance(drain, across).value
             }
             _ => drain,
@@ -754,12 +753,12 @@ impl Kernel for Vdmos {
         sources.push(NoiseSource::thermal(
             "channel thermal",
             channel,
-            2.0 / 3.0 * transconductance.value(),
+            transconductance * (2.0 / 3.0),
             temperature,
         ));
         prepared
             .flicker
-            .add(channel, conduction.current.value.value(), sources);
+            .add(channel, conduction.current.value, sources);
     }
 }
 

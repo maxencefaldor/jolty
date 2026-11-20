@@ -109,7 +109,7 @@ pub(crate) fn emit(module: &Module, (source, header): (&str, &str)) -> Result<St
                 "noise",
                 noise,
                 &names,
-                &[at_parameter.as_str(), "sources: &mut Vec<NoiseSource>"],
+                &[at_parameter.as_str(), "sources: &mut Vec<NoiseSource<R>>"],
                 out,
             );
         }

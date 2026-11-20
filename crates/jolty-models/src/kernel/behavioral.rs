@@ -609,7 +609,7 @@ pub struct BehavioralResistorParameters<R: Real = f64> {
 pub struct PreparedBehavioralResistor<R: Real> {
     expression: Arc<Expression>,
     factor: R,
-    temperature: f64,
+    temperature: R,
 }
 
 /// Layout shape for [`BehavioralResistor`] combining the two-terminal conductance pair with
@@ -680,7 +680,7 @@ impl Kernel for BehavioralResistor {
         Ok(PreparedBehavioralResistor {
             expression: Arc::clone(expression),
             factor,
-            temperature: temperature.value(),
+            temperature: temperatures.actual,
         })
     }
 
@@ -766,14 +766,38 @@ impl Kernel for BehavioralResistor {
         shape: &BehavioralResistorShape,
         prepared: &PreparedBehavioralResistor<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
-        let mut values = vec![0.0; shape.behavior.reads.len()];
+        let count = shape.behavior.reads.len();
+        let mut values = vec![0.0; count];
         shape.behavior.read(at, &mut values);
-        let effective = prepared.expression.value(&values) * prepared.factor.value();
-        if effective > 0.0 {
+        let resistance = if R::SEEDS > 0 && at.seeds_unknowns() {
+            let mut workspace = prepared.expression.workspace();
+            let mut gradient = vec![0.0; count];
+            let raw = prepared
+                .expression
+                .evaluate(&values, &mut workspace, &mut gradient);
+            let mut tangent = vec![0.0; count];
+            let mut rates = [0.0; crate::Seeds::MAX];
+            for slot in 0..R::SEEDS.min(crate::Seeds::MAX) {
+                shape.behavior.read_tangent(at, slot, &mut tangent);
+                let rate: f64 = gradient
+                    .iter()
+                    .zip(&tangent)
+                    .map(|(&slope, &moved)| slope * moved)
+                    .sum();
+                if let Some(target) = rates.get_mut(slot) {
+                    *target = rate;
+                }
+            }
+            R::seeded(raw, &rates)
+        } else {
+            R::constant(prepared.expression.value(&values))
+        };
+        let effective = resistance * prepared.factor;
+        if effective.value() > 0.0 {
             let conductance = effective.recip();
-            if conductance.is_finite() {
+            if conductance.value().is_finite() {
                 sources.push(NoiseSource::thermal(
                     "thermal",
                     shape.pair.equations(),

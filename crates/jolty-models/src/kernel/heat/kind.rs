@@ -437,14 +437,7 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
             .prepared
             .as_deref()
             .unwrap_or(prepared.at_ambient.as_ref());
-        let map = shape.map(at);
-        let start = sources.len();
-        K::noise(&shape.inner, heated, &at.remapped(&map), sources);
-        for source in sources.iter_mut().skip(start) {
-            source.equations = source.equations.map(|equation| {
-                equation.map(|local| crate::UnknownIndex::new(shape.outer(local.index())))
-            });
-        }
+        emit_heated_noise::<K, f64>(shape, heated, at, sources);
     }
 
     fn variable_names() -> &'static [&'static str] {
@@ -566,8 +559,61 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
         evaluate::<K, Gradient<SEEDS>>(shape, prepared, memory, at, stamp);
     }
 
+    fn noise_twin<const SEEDS: usize>(
+        shape: &Self::Shape,
+        twin: &mut Self::Twin<SEEDS>,
+        at: &Local<'_>,
+        sources: &mut Vec<NoiseSource<Gradient<SEEDS>>>,
+    ) {
+        let (prepared, memory) = &mut **twin;
+        let applied = prepared.ambient + at.value(shape.terminals);
+        let temperature = applied.max(MIN_TEMPERATURE);
+        let seeding = SEEDS > 0 && at.seeds_unknowns();
+        if temperature.to_bits() != memory.last.to_bits() || seeding || memory.seeded {
+            let moving = if seeding && applied > MIN_TEMPERATURE {
+                Gradient::<SEEDS>::seed(temperature)
+                    + at.unknown::<Hyper<SEEDS>>(shape.terminals).with_value(0.0)
+            } else {
+                Gradient::<SEEDS>::seed(temperature)
+            };
+            if let Ok(heated) = K::prepare(&prepared.parameters, moving) {
+                if let Some(slot) = &mut memory.prepared {
+                    **slot = heated;
+                } else {
+                    memory.prepared = Some(Box::new(heated));
+                }
+                memory.last = temperature;
+                memory.seeded = seeding;
+            }
+        }
+        let heated = memory
+            .prepared
+            .as_deref()
+            .unwrap_or(prepared.at_ambient.as_ref());
+        emit_heated_noise::<K, Gradient<SEEDS>>(shape, heated, at, sources);
+    }
+
     #[cfg(any(test, feature = "testing"))]
     fn lift_entries(parameters: &Self::Parameters) -> Vec<(String, f64)> {
         <K as Kind>::lift_entries(parameters)
     }
+}
+
+/// Evaluates inner kernel noise on `heated` at `at`, splits out temperature derivatives, and
+/// remaps local equation indices into the outer heated layout.
+fn emit_heated_noise<K: Kernel, R: Heating>(
+    shape: &HeatedShape<K::Shape>,
+    heated: &K::Prepared<R::Warm>,
+    at: &Local<'_>,
+    sources: &mut Vec<NoiseSource<R>>,
+) {
+    let map = shape.map(at);
+    let mut warm = Vec::new();
+    K::noise(&shape.inner, heated, &at.remapped(&map), &mut warm);
+    sources.extend(warm.into_iter().map(|source| NoiseSource {
+        equations: source.equations.map(|equation| {
+            equation.map(|local| crate::UnknownIndex::new(shape.outer(local.index())))
+        }),
+        ..source.map(|value| R::split(value).0)
+    }));
 }

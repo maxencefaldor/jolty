@@ -350,8 +350,8 @@ impl Kernel for Networks {
         shape: &NetworksShape,
         prepared: &PreparedNetworks<R>,
         _: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
-        sources.push(NoiseSource::white("source", [Some(UnknownIndex::new(shape.source)), None], prepared.s.value()));
+        sources.push(NoiseSource::white("source", [Some(UnknownIndex::new(shape.source)), None], prepared.s));
     }
 }

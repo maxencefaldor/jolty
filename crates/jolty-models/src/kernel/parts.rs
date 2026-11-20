@@ -76,6 +76,19 @@ impl<const N: usize> Nodes<N> {
         pairs.map(|(plus, minus)| sign * (self.voltage(at, plus) - self.voltage(at, minus)))
     }
 
+    /// Computes oriented voltages across each `(plus, minus)` entry in `pairs`, scaled by
+    /// `sign`, as scalar `R` carrying unknown derivative seeds from `at`.
+    pub(crate) fn oriented<R: Real, const K: usize>(
+        &self,
+        at: &Local<'_>,
+        sign: f64,
+        pairs: [(usize, usize); K],
+    ) -> [R; K] {
+        pairs.map(|(plus, minus)| {
+            (self.unknown::<R>(at, plus) - self.unknown::<R>(at, minus)) * sign
+        })
+    }
+
     /// Returns the voltage at slot `index` as scalar `R`, carrying any unknown derivative
     /// seeds from `at`.
     pub(crate) fn unknown<R: Real>(&self, at: &Local<'_>, index: usize) -> R {
@@ -176,6 +189,12 @@ impl Pair {
     /// Returns the voltage `v(positive) - v(negative)` across the element.
     pub(crate) fn voltage(&self, at: &Local<'_>) -> f64 {
         self.0.voltage(at, POSITIVE) - self.0.voltage(at, NEGATIVE)
+    }
+
+    /// Returns the voltage `v(positive) - v(negative)` across the element as scalar `R`,
+    /// carrying any unknown derivative seeds from `at`.
+    pub(crate) fn difference<R: Real>(&self, at: &Local<'_>) -> R {
+        self.0.unknown::<R>(at, POSITIVE) - self.0.unknown::<R>(at, NEGATIVE)
     }
 
     /// Returns the limited voltage `value` across the element as scalar `R`, carrying
@@ -437,18 +456,18 @@ impl Series {
     pub(crate) fn noise<R: Real>(
         &self,
         value: R,
-        (name, temperature): (&'static str, f64),
-        sources: &mut Vec<NoiseSource>,
+        (name, temperature): (&'static str, R),
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         sources.push(match self {
             Self::None => return,
             Self::Conductance(pair) => {
-                NoiseSource::thermal(name, pair.equations(), value.value(), temperature)
+                NoiseSource::thermal(name, pair.equations(), value, temperature)
             }
             Self::Current(branch, _) => NoiseSource::thermal_in_series(
                 name,
                 UnknownIndex::new(branch.unknown()),
-                value.value(),
+                value,
                 temperature,
             ),
         });

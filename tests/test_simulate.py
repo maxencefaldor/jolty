@@ -44,7 +44,15 @@ from jolty import (
     results,
     simulate,
 )
-from jolty.plan import LOOP_GAIN, Explicit, Variant, decade, linear
+from jolty.plan import (
+    LOOP_GAIN,
+    NOISE_DENSITY,
+    REFERRED_NOISE,
+    Explicit,
+    Variant,
+    decade,
+    linear,
+)
 from jolty.simulate import Joined, Logged
 from jolty.specs import crossover, gain_margin, phase_margin
 from jolty.units import (
@@ -64,6 +72,7 @@ from jolty.units import (
     mA,
     mH,
     ms,
+    nF,
     ns,
     ohm,
     uA,
@@ -400,6 +409,172 @@ def test_a_noise_analysis_rejects_what_it_cannot_measure() -> None:
         simulation.run(Noise("out", [1 * kHz], source="R1"))
     with pytest.raises(DimensionError, match="a frequency"):
         simulation.run(Noise("out", [1 * V]))
+
+
+@component
+def _rc_noise_divider(c: Builder) -> None:
+    """Builds a resistive divider shunted by a load capacitor for noise sensitivity."""
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(5 * V), name="V1")
+    upper = c.place(devices.resistor(1 * kohm), name="R1")
+    lower = c.place(devices.resistor(3 * kohm), name="R2")
+    shunt = c.place(devices.capacitor(1 * nF), name="C1")
+    c.connect(source.positive, upper.a, name="in")
+    c.connect(upper.b, lower.a, shunt.a, name="out")
+    c.connect(lower.b, shunt.b, source.negative, ground)
+
+
+def test_noise_sensitivity_matches_closed_form() -> None:
+    simulation = Simulation(_rc_noise_divider())
+    frequencies = [1 * kHz, 100 * kHz, 1 * MHz]
+    without_source = Noise("out", frequencies)
+    with_source = Noise("out", frequencies, source="V1")
+
+    only_density = simulation.run(Sensitivity(of=without_source))
+    assert only_density.outputs == (NOISE_DENSITY,)
+    assert isinstance(only_density.result, results.NoiseResult)
+
+    sensitivity = simulation.run(Sensitivity(of=with_source))
+    assert sensitivity.outputs == (NOISE_DENSITY, REFERRED_NOISE)
+    assert isinstance(sensitivity.result, results.NoiseResult)
+    explicit = simulation.run(
+        Sensitivity([NOISE_DENSITY, REFERRED_NOISE], of=with_source)
+    )
+    np.testing.assert_array_equal(sensitivity.derivatives, explicit.derivatives)
+
+    # Closed forms for RC divider:
+    # S_out(f) = 4kT * G_p / (G_p^2 + (w C)^2), G_p = 1/R1 + 1/R2
+    # S_ref(f) = 4kT * (R1 + R1^2 / R2), independent of shunt C.
+    upper, lower, capacitance = 1e3, 3e3, 1e-9
+    omega = 2 * math.pi * sensitivity.result.frequencies
+    conductance = 1 / upper + 1 / lower
+    denominator = conductance**2 + (omega * capacitance) ** 2
+    expected_density_r1 = (
+        FOUR_KT
+        * (conductance**2 - (omega * capacitance) ** 2)
+        / (upper**2 * denominator**2)
+    )
+    expected_density_r2 = (
+        FOUR_KT
+        * (conductance**2 - (omega * capacitance) ** 2)
+        / (lower**2 * denominator**2)
+    )
+    expected_density_c1 = (
+        -2 * FOUR_KT * conductance * omega**2 * capacitance / denominator**2
+    )
+    expected_referred_r1 = np.full_like(omega, FOUR_KT * (1 + 2 * upper / lower))
+    expected_referred_r2 = np.full_like(omega, -FOUR_KT * (upper / lower) ** 2)
+
+    # Exact linear adjoint noise sensitivities; rtol=1e-9 covers complex LU rounding.
+    np.testing.assert_allclose(
+        sensitivity.derivative(NOISE_DENSITY, "R1", "resistance"),
+        expected_density_r1,
+        rtol=1e-9,
+    )
+    np.testing.assert_allclose(
+        sensitivity.derivative(NOISE_DENSITY, "R2", "resistance"),
+        expected_density_r2,
+        rtol=1e-9,
+    )
+    np.testing.assert_allclose(
+        sensitivity.derivative(NOISE_DENSITY, "C1", "capacitance"),
+        expected_density_c1,
+        rtol=1e-9,
+    )
+    np.testing.assert_allclose(
+        sensitivity.derivative(REFERRED_NOISE, "R1", "resistance"),
+        expected_referred_r1,
+        rtol=1e-9,
+    )
+    np.testing.assert_allclose(
+        sensitivity.derivative(REFERRED_NOISE, "R2", "resistance"),
+        expected_referred_r2,
+        rtol=1e-9,
+    )
+    # Shunt C attenuates signal and noise equally so d(referred)/dC = 0; atol=1e-18
+    # covers complex LU rounding (~1e-15 * S_ref / C ~ 2e-23).
+    np.testing.assert_allclose(
+        sensitivity.derivative(REFERRED_NOISE, "C1", "capacitance"),
+        0.0,
+        atol=1e-18,
+    )
+
+
+def test_noise_mismatch_report_and_archive(tmp_path: Path) -> None:
+    simulation = Simulation(_rc_noise_divider())
+    frequencies = [1 * kHz, 100 * kHz, 1 * MHz]
+    with_source = Noise("out", frequencies, source="V1")
+    sensitivity = simulation.run(Sensitivity(of=with_source))
+
+    upper, lower = 1e3, 3e3
+    sigma_r1, sigma_r2 = 0.01, 0.02
+    variable_r1 = ir.RandomVariable(
+        instance="R1",
+        name="resistance",
+        mean=0.0,
+        standard_deviation=sigma_r1,
+        derivatives={"R1": {"resistance": upper}},
+    )
+    variable_r2 = ir.RandomVariable(
+        instance="R2",
+        name="resistance",
+        mean=0.0,
+        standard_deviation=sigma_r2,
+        derivatives={"R2": {"resistance": lower}},
+    )
+    mismatch = simulation.run(
+        Mismatch(of=with_source, random_variables=(variable_r1, variable_r2))
+    )
+    assert mismatch.outputs == (NOISE_DENSITY, REFERRED_NOISE)
+    assert isinstance(mismatch.result, results.NoiseResult)
+    with pytest.raises(ValueError, match="real values spreads no magnitude"):
+        mismatch.standard_deviation(NOISE_DENSITY, "magnitude")
+
+    for output in (NOISE_DENSITY, REFERRED_NOISE):
+        expected_sigma = np.sqrt(
+            (
+                np.asarray(sensitivity.derivative(output, "R1", "resistance"))
+                * upper
+                * sigma_r1
+            )
+            ** 2
+            + (
+                np.asarray(sensitivity.derivative(output, "R2", "resistance"))
+                * lower
+                * sigma_r2
+            )
+            ** 2
+        )
+        # Quadrature over exact sensitivities; rtol=1e-12 covers float rounding.
+        np.testing.assert_allclose(
+            mismatch.standard_deviation(output), expected_sigma, rtol=1e-12
+        )
+        # Two-variable variance shares sum to 1 algebraically; rtol=1e-12 covers sum.
+        np.testing.assert_allclose(
+            np.sum(mismatch.shares(output), axis=-1), 1.0, rtol=1e-12
+        )
+
+    # Reports and .npz archive round-trip both Noise sensitivity and mismatch.
+    sensitivity_report = report.report("sens", sensitivity, 10)
+    mismatch_report = report.report("mis", mismatch, 10)
+    assert "over a noise spectrum at 3 frequencies" in sensitivity_report.describe()
+    assert "over a noise spectrum at 3 frequencies" in mismatch_report.describe()
+    assert "density: standard deviation largest" in mismatch_report.describe()
+    assert "referred: standard deviation largest" in mismatch_report.describe()
+
+    archive = tmp_path / "noise_diff.npz"
+    files.save_results(archive, {"sens": sensitivity, "mis": mismatch})
+    loaded = files.load_results(archive)
+    loaded_sensitivity = loaded["sens"]
+    loaded_mismatch = loaded["mis"]
+    assert isinstance(loaded_sensitivity, results.SensitivityResult)
+    assert isinstance(loaded_mismatch, results.MismatchResult)
+    assert isinstance(loaded_sensitivity.result, results.NoiseResult)
+    assert isinstance(loaded_mismatch.result, results.NoiseResult)
+    np.testing.assert_array_equal(
+        loaded_sensitivity.derivatives, sensitivity.derivatives
+    )
+    np.testing.assert_array_equal(loaded_mismatch.derivatives, mismatch.derivatives)
 
 
 @component

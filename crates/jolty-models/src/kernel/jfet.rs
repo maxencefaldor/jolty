@@ -86,8 +86,8 @@ pub struct PreparedJfet<R: Real> {
     critical_voltage: f64,
     gate_source: Option<Depletion<R>>,
     gate_drain: Option<Depletion<R>>,
-    temperature: f64,
-    flicker: Flicker,
+    temperature: R,
+    flicker: Flicker<R>,
 }
 
 /// Persistent evaluation memory for [`Jfet`] storing previous gate-junction voltages and
@@ -471,7 +471,7 @@ impl Kernel for Jfet {
         shape: &JfetShape,
         prepared: &PreparedJfet<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let temperature = prepared.temperature;
         let [drain_series, source_series] = prepared.series;
@@ -482,21 +482,19 @@ impl Kernel for Jfet {
             .source_series
             .noise(source_series, ("source thermal", temperature), sources);
         let nodes = &shape.stamp;
-        let voltages = nodes.voltages(at, prepared.sign, [GATE_SOURCE, DRAIN_SOURCE]);
-        let [vgs, vds] = Dual::variables(voltages.map(R::constant));
+        let voltages = nodes.oriented::<R, _>(at, prepared.sign, [GATE_SOURCE, DRAIN_SOURCE]);
+        let [vgs, vds] = Dual::variables(voltages);
         let current = prepared.channel.evaluate(vgs, vds);
         let [gm, _] = current.gradient;
         let channel = [nodes.equation(INNER_DRAIN), nodes.equation(INNER_SOURCE)];
-        let conductance = 2.0 / 3.0 * gm.value();
+        let conductance = gm * (2.0 / 3.0);
         sources.push(NoiseSource::thermal(
             "channel thermal",
             channel,
             conductance,
             temperature,
         ));
-        prepared
-            .flicker
-            .add(channel, current.value.value(), sources);
+        prepared.flicker.add(channel, current.value, sources);
     }
 }
 
@@ -508,7 +506,7 @@ struct Scaled<R: Real> {
     critical_voltage: f64,
     gate_source: Option<Depletion<R>>,
     gate_drain: Option<Depletion<R>>,
-    temperature: f64,
+    temperature: R,
 }
 
 impl<R: Real> JfetParameters<R> {
@@ -587,7 +585,7 @@ impl<R: Real> JfetParameters<R> {
             critical_voltage: critical_voltage(saturation_current.value(), vt.value()),
             gate_source: depletion(gate_source_capacitance),
             gate_drain: depletion(gate_drain_capacitance),
-            temperature: temperatures.actual.value(),
+            temperature: temperatures.actual,
         })
     }
 }

@@ -219,7 +219,7 @@ pub trait Kernel: Send + Sync + 'static {
         shape: &Self::Shape,
         prepared: &Self::Prepared<R>,
         at: &Local<'_>,
-        sources: &mut Vec<NoiseSource>,
+        sources: &mut Vec<NoiseSource<R>>,
     ) {
         let _ = (shape, prepared, at, sources);
     }

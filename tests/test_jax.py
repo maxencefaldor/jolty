@@ -42,7 +42,7 @@ from jolty import (
 from jolty import function as jolty_function
 from jolty import vjp as jolty_vjp
 from jolty.errors import ElaborationError, SimulationError
-from jolty.jax import LOOP_GAIN, PERIOD, JaxOutputs
+from jolty.jax import LOOP_GAIN, NOISE_DENSITY, PERIOD, REFERRED_NOISE, JaxOutputs
 from jolty.jax import function as jax_function
 from jolty.plan import (
     Ac,
@@ -58,7 +58,7 @@ from jolty.plan import (
     decade,
 )
 from jolty.simulate import BatchPullback, Elaborated, Function, Outputs
-from jolty.units import F, H, MHz, V, kHz, kohm, mA, ns, ohm, pF, uA, um, us
+from jolty.units import F, H, Hz, MHz, V, kHz, kohm, mA, ns, ohm, pF, uA, um, us
 from jolty.waveforms import Pulse, Sine
 from sample_circuits import CROSSBAR_WEIGHTS as WEIGHTS
 from sample_circuits import crossbar
@@ -1098,7 +1098,6 @@ def test_construction_time_analysis_refusals() -> None:
 
     for unsupported in (
         OperatingPoints(),
-        Noise("out0", [1 * kHz]),
         PoleZero(source="V0", output="out0"),
         TransferFunction(source="V0", output="out0"),
     ):
@@ -1626,3 +1625,212 @@ def test_stability_jax_vmap_jacrev_nonlinear_bias_and_probe_errors() -> None:
             match="not a floating voltage source",
         ):
             bad_probe({"M1": {"width": jnp.asarray(20e-6, dtype=jnp.float64)}})
+
+
+@component
+def noisy_common_source_amplifier(c: Builder) -> None:
+    """Builds a common-source stage with thermal, flicker, and post-pole noise."""
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(3.3 * V), name="VDD")
+    gate_bias = c.place(devices.voltage_source(1.2 * V), name="VG")
+    gate_resistor = c.place(devices.resistor(10 * kohm), name="RG")
+    drain_resistor = c.place(devices.resistor(10 * kohm), name="RD")
+    load_capacitor = c.place(devices.capacitor(2 * pF), name="CL")
+    output_resistor = c.place(devices.resistor(2 * kohm), name="RO")
+    load_resistor = c.place(devices.resistor(50 * kohm), name="RL")
+    transistor = c.place(
+        devices.mosfet(
+            width=2 * um,
+            length=1 * um,
+            threshold_voltage=0.7 * V,
+            transconductance_parameter=100 * uA / V**2,
+            channel_length_modulation=0.02 / V,
+            flicker_coefficient=1e-33,
+            flicker_exponent=1.2,
+        ),
+        name="M1",
+    )
+    c.connect(supply.positive, drain_resistor.a, name="vdd")
+    c.connect(gate_bias.positive, gate_resistor.a, name="source")
+    c.connect(gate_resistor.b, transistor.gate, name="gate")
+    c.connect(
+        drain_resistor.b,
+        transistor.drain,
+        load_capacitor.a,
+        output_resistor.a,
+        name="drain",
+    )
+    c.connect(output_resistor.b, load_resistor.a, name="out")
+    c.connect(
+        supply.negative,
+        gate_bias.negative,
+        transistor.source,
+        transistor.bulk,
+        load_capacitor.b,
+        load_resistor.b,
+        ground,
+    )
+
+
+def test_noise_jax_grad_matches_vjp_and_finite_differences() -> None:
+    frequencies = [10 * Hz, 10 * kHz, 10 * MHz]
+    analysis = Noise("out", frequencies, source="VG")
+    wrapped = jax_function(noisy_common_source_amplifier(), analysis)
+    target = jolty_function(noisy_common_source_amplifier(), analysis)
+    output_only = jax_function(
+        noisy_common_source_amplifier(), Noise("out", frequencies)
+    )
+
+    point: dict[str, dict[str, float]] = {
+        "VG": {"waveform.dc": 1.2},
+        "RG": {"resistance": 10e3},
+        "RD": {"resistance": 10e3},
+        "CL": {"capacitance": 2e-12},
+        "M1": {
+            "width": 2e-6,
+            "threshold_voltage": 0.7,
+            "flicker_coefficient": 1e-33,
+            "flicker_exponent": 1.2,
+        },
+    }
+
+    with jax.enable_x64():
+        jax_point = _as_jax_parameters(point, dtype=jnp.float64)
+
+        # Output-only noise exposes only NOISE_DENSITY.
+        solo = output_only(jax_point)
+        assert list(solo) == [NOISE_DENSITY]
+        assert solo[NOISE_DENSITY].shape == (len(frequencies),)
+        assert solo[NOISE_DENSITY].dtype == jnp.float64
+
+        # Exact linear loss matches jolty.vjp bit for bit across both noise outputs.
+        weights_density = jnp.array([1e14, 1e16, 1e17], dtype=jnp.float64)
+        weights_referred = jnp.array([2e14, -1e16, 5e16], dtype=jnp.float64)
+
+        def combined_loss(parameters: dict[str, dict[str, jax.Array]]) -> jax.Array:
+            spectrum = wrapped(parameters)
+            return jnp.sum(weights_density * spectrum[NOISE_DENSITY]) + jnp.sum(
+                weights_referred * spectrum[REFERRED_NOISE]
+            )
+
+        jax_gradient = jax.jit(jax.grad(combined_loss))(jax_point)
+        _, pullback = jolty_vjp(target, point)
+        expected_vjp = pullback(
+            {
+                NOISE_DENSITY: np.asarray(weights_density),
+                REFERRED_NOISE: np.asarray(weights_referred),
+            }
+        )
+        for instance, inner in point.items():
+            for name in inner:
+                np.testing.assert_array_equal(
+                    float(jax_gradient[instance][name]),
+                    float(np.real(expected_vjp[instance][name])),
+                )
+
+        # Log-density objectives for both output and input-referred noise match
+        # central finite differences across bias, passive, and flicker parameters.
+        for key in (NOISE_DENSITY, REFERRED_NOISE):
+
+            def log_noise_objective(
+                parameters: dict[str, dict[str, jax.Array]],
+                output_key: str = key,
+            ) -> jax.Array:
+                return jnp.sum(jnp.log(wrapped(parameters)[output_key]))
+
+            value, gradient = jax.jit(jax.value_and_grad(log_noise_objective))(
+                jax_point
+            )
+            assert np.isfinite(float(value))
+            finite = _central_difference(
+                lambda moved, fn=log_noise_objective: float(
+                    fn(_as_jax_parameters(moved, dtype=jnp.float64))
+                ),
+                point,
+            )
+            for instance, inner in point.items():
+                for name in inner:
+                    np.testing.assert_allclose(
+                        float(gradient[instance][name]),
+                        finite[instance][name],
+                        rtol=CENTRAL_DIFF_RTOL,
+                    )
+
+
+def test_noise_jax_vmap_jacrev_and_errors() -> None:
+    frequencies = [10 * Hz, 10 * kHz, 10 * MHz]
+    analysis = Noise("out", frequencies, source="VG")
+    wrapped = jax_function(noisy_common_source_amplifier(), analysis)
+
+    with jax.enable_x64():
+        # vmap forward and grad match scalar calls bit for bit on both outputs.
+        widths = jnp.array([1.5e-6, 2.0e-6, 3.0e-6], dtype=jnp.float64)
+        batched = {"M1": {"width": widths}}
+        vmapped = jax.jit(jax.vmap(wrapped))(batched)
+        for key in (NOISE_DENSITY, REFERRED_NOISE):
+            assert vmapped[key].shape == (3, len(frequencies))
+            assert vmapped[key].dtype == jnp.float64
+        vmapped_gradient = jax.jit(
+            jax.grad(
+                lambda current: jnp.sum(
+                    jnp.log(jax.vmap(wrapped)(current)[NOISE_DENSITY])
+                    + jnp.log(jax.vmap(wrapped)(current)[REFERRED_NOISE])
+                )
+            )
+        )(batched)
+        for index in range(len(widths)):
+            single_input = {"M1": {"width": widths[index]}}
+            single_output = wrapped(single_input)
+            for key in (NOISE_DENSITY, REFERRED_NOISE):
+                np.testing.assert_array_equal(
+                    np.asarray(vmapped[key][index]),
+                    np.asarray(single_output[key]),
+                )
+            single_gradient = jax.grad(
+                lambda current: jnp.sum(
+                    jnp.log(wrapped(current)[NOISE_DENSITY])
+                    + jnp.log(wrapped(current)[REFERRED_NOISE])
+                )
+            )(single_input)
+            np.testing.assert_array_equal(
+                float(vmapped_gradient["M1"]["width"][index]),
+                float(single_gradient["M1"]["width"]),
+            )
+
+        # Empty batch preserves float64 output shapes and gradient shapes.
+        for shape in ((0,), (0, 2)):
+            empty = jnp.empty(shape, dtype=jnp.float64)
+            mapper = (
+                jax.vmap(wrapped) if len(shape) == 1 else jax.vmap(jax.vmap(wrapped))
+            )
+            empty_inputs = {"M1": {"width": empty}}
+            empty_out = mapper(empty_inputs)
+            for key in (NOISE_DENSITY, REFERRED_NOISE):
+                assert empty_out[key].shape == (*shape, len(frequencies))
+                assert empty_out[key].dtype == jnp.float64
+            empty_grad = jax.grad(
+                lambda current, m=mapper: (
+                    jnp.sum(m(current)[NOISE_DENSITY])
+                    + jnp.sum(m(current)[REFERRED_NOISE])
+                )
+            )(empty_inputs)
+            assert empty_grad["M1"]["width"].shape == shape
+
+        # jacrev differentiates both output density and referred noise together.
+        jacobian = jax.jacrev(
+            lambda current: jnp.concatenate(
+                [wrapped(current)[NOISE_DENSITY], wrapped(current)[REFERRED_NOISE]]
+            )
+        )({"M1": {"width": jnp.asarray(2e-6, dtype=jnp.float64)}})
+        assert jacobian["M1"]["width"].shape == (2 * len(frequencies),)
+
+        # Invalid input source raises SimulationError through JAX callback.
+        bad_source = jax_function(
+            noisy_common_source_amplifier(),
+            Noise("out", [1 * kHz], source="RD"),
+        )
+        with pytest.raises(
+            (SimulationError, jax.errors.JaxRuntimeError),
+            match="not an independent source",
+        ):
+            bad_source({"M1": {"width": jnp.asarray(2e-6, dtype=jnp.float64)}})
