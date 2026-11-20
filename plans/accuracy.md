@@ -47,7 +47,7 @@ Item 1 measured ngspice's iteration limit; items 6 and 7 address the root cause.
 
 ## 3. Gaps
 
-- `charge_tolerance` now follows SPICE's `reltol·max(|q|, chgtol)` definition (item 4, done), while `chgtol` still acts as a fixed floor on small nets until error is judged in the unknowns (item 5).
+- `charge_tolerance` follows SPICE's `reltol·max(|q|, chgtol)` definition (item 4, done), and `error_control="unknown"` provides optional scale-free unknown-space error control with no `chgtol` floor (item 5, done; `charge` remains the default).
 - The junction limiter jumps at 2vt in both engines (item 7); Newton's contraction test landed with a cap of 10 (item 6, done).
 - Cold start still requires gmin stepping on circuits where SPICE3's initialization succeeds directly (item 8).
 - Integrated solver charge leak is now reported per node on every transient (item 12, done), and lossless oscillations are distinguished from numerical trapezoidal ringing (item 16, done).
@@ -97,14 +97,39 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Since resolved:** the buck at `reltol` 3e-6 and 1e-6 was fixed by item 6b (`da286de`), and the gallery and discoveries were rebuilt on the updated engine with ngspice 47 (`0552d20`, `c766183`, 16 November).
 - **Source:** row 2 (raw logs not kept).
 
-### 📋 5. Error judged in the unknowns, free of any charge floor
+### ✅ 5. Error judged in the unknowns, free of any charge floor
 
 - **What:** the error filter already solves `(G + αC)⁻¹ α d`, giving the error each charge estimate produces in the unknowns.
-    Judging that vector against `reltol·|x|` plus the voltage or current tolerance holds every node's accuracy regardless of capacitance with no extra solve, offered as an option alongside charge-based error control.
+    Judging that vector against `reltol·|x|` plus the voltage or current tolerance holds every node's accuracy regardless of capacitance with no extra solve, offered as `error_control="unknown"` alongside `error_control="charge"` (default).
 - **Why:** scale-free error control, since no single charge tolerance fits both a 1 fF net and a 1 nF net.
 - **Done when:** the option exists and the precision suite selects the default.
+- **Result** (20 November): implemented `ErrorControl::{Charge, Unknown}` across Rust (`Options::error_control`), Python (`Options(error_control="charge" | "unknown")`), JSON serialization, and the solver guide.
+    In `Simulator::filter`, `ErrorControl::Unknown` skips multiplying `moved` back by `C`, bounds true one-step local truncation error directly against `trtol · (reltol · |x| + vntol/abstol)` with no charge floor, and excludes index-2 algebraic current unknowns (non-inductive voltage-source and Meyer displacement currents whose column in `C` is zero, via `Pattern::column_slots`) whose filtered errors otherwise carry an `O(1/h)` factor (Hairer and Wanner, 1996, VII.4; Brenan, Campbell, and Petzold, 1996, §5.2).
+    Measured on Machine D (AMD EPYC 9B14, 16 pinned cores) across the precision suite and §5 nonlinear transient protocol:
+    - **Precision suite (selected scale-sensitive and stiff fixtures):**
+        - `rc_femto` (1 MΩ, 1 fF): `charge` stalls at `3.753` digits from `reltol = 1e-2` through `1e-6` (64 accepted, 0 rejected); `unknown` climbs to `3.938` digits at `1e-5` and `4.277` digits at `1e-6` (79 accepted, 1 rejected), reaching `4.562` digits under `scaled = 1e-6` (vs `4.086` for `charge`).
+        - `ladder_1000` (`reltol = 1e-6`): `charge` reaches `3.771` digits (553 accepted, 202.2 ms) vs `unknown` `4.315` digits (380 accepted, 130.5 ms: -35% time, +0.54 digits); under `scaled = 1e-6`, `charge` reaches `4.074` digits (1,535 accepted, 556.4 ms) vs `unknown` `4.564` digits (942 accepted, 320.6 ms: -42% time, +0.49 digits).
+        - `ladder_100` (`scaled = 1e-6`): `charge` `4.071` digits (1,129 accepted, 43.3 ms) vs `unknown` `4.567` digits (730 accepted, 26.1 ms); `tree_100` (`reltol = 1e-6`): `charge` `4.083` digits (13.7 ms) vs `unknown` `4.358` digits (10.1 ms).
+        - `rlc_step` (defaults): `charge` `1.286` vs `unknown` `1.871` digits; `lc_tank` (defaults): `4.282` vs `4.483` digits.
+    - **§5 nonlinear protocol (all 7 examples pass every spec under both modes):**
+
+| Fixture | `charge` (acc / rej / ms) | `unknown` `trtol=7` (acc / rej / ms) | `unknown` `trtol=42` (acc / rej / ms) |
+| --- | ---: | ---: | ---: |
+| `buck` | 43,562 / 416 / 331.1 | 45,232 / 1,447 / 351.5 | 43,783 / 594 / 294.9 |
+| `boost` | 75,523 / 3,414 / 613.4 | 88,478 / 13,270 / 821.4 | 76,360 / 3,938 / 412.1 |
+| `ring` | 4,015 / 0 / 99.1 | 4,099 / 41 / 87.9 | 4,007 / 0 / 79.1 |
+| `relaxation` | 4,106 / 89 / 19.5 | 4,210 / 140 / 20.0 | 4,024 / 15 / 17.7 |
+| `555` | 11,948 / 45 / 95.6 | 12,271 / 308 / 101.2 | 11,932 / 121 / 88.2 |
+| `astable` | 8,897 / 407 / 113.7 | 9,086 / 469 / 109.5 | 8,708 / 107 / 91.5 |
+| `colpitts` | 10,017 / 7 / 59.7 | 10,015 / 7 / 57.9 | 10,007 / 0 / 56.1 |
+| `speed_buck` | 90,543 / 26,370 / 1,649.2 | 95,023 / 23,086 / 1,649.7 | 62,806 / 6,189 / 986.7 |
+| `speed_inverter_chain_500` | 2,312 / 838 / 9,568.9 | 11,692 / 4,160 / 31,888.9 | 4,909 / 2,388 / 16,131.6 |
+| `speed_rc_mesh_100` | 108 / 7 / 1,116.2 | 146 / 6 / 1,482.3 | 110 / 7 / 1,049.0 |
+
+- **Default selection:** `ErrorControl::Charge` remains the default, preserving SPICE `chgtol`/`trtol` parity, bit-exact deterministic baselines, and fast CMOS switching (`speed_inverter_chain_500` takes 3.3× more time under `unknown` at `trtol = 7` because sharp logic-rail edges are controlled to true 1× `trtol` rather than SPICE's 6× factorial slack).
+    `error_control="unknown"` is available whenever scale-free femtofarad or stiff-ladder accuracy is required.
 - **Lead:** filtered, local, and unknown-space error control combined, which no reference implements.
-    **Source:** row 3.
+    **Source:** row 3; Hairer and Wanner, 1996, VII.4; Brenan, Campbell, and Petzold, 1996, §5.2.
 
 ### ✅ 6. Newton's iteration stopped by observed contraction
 

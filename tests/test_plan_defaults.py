@@ -10,8 +10,12 @@ from jolty.units import Quantity
 GUIDE = Path(__file__).parents[1] / "docs" / "guide" / "simulation.md"
 """The guide's page on simulation, which tables the options."""
 
-ROW = re.compile(r"^\| `(\w+)` \| ([0-9.e+-]+)(?: ([A-Za-z]+))? \|", re.MULTILINE)
-"""A row of the table: an option's name and its default, with its optional unit."""
+ROW = re.compile(
+    r"^\| `(\w+)` \| (?:`([a-z_]+)`|([0-9.e+-]+)(?: ([A-Za-z]+))?) \|",
+    re.MULTILINE,
+)
+"""A row of the table: an option's name and its default, as a quoted choice or a number
+with its optional unit."""
 
 DISPLAY_UNITS: dict[str, str] = {"max_memory": "GiB"}
 """Non-SI display units shown in the guide for non-`Quantity` option defaults."""
@@ -19,8 +23,8 @@ DISPLAY_UNITS: dict[str, str] = {"max_memory": "GiB"}
 
 def test_the_guide_states_each_option_s_default_as_the_engine_has_it() -> None:
     stated = {
-        name: (float(value), unit or None)
-        for name, value, unit in ROW.findall(GUIDE.read_text(encoding="utf-8"))
+        name: (choice, None) if choice else (float(value), unit or None)
+        for name, choice, value, unit in ROW.findall(GUIDE.read_text(encoding="utf-8"))
         if name in plan.DEFAULTS
     }
     expected = {

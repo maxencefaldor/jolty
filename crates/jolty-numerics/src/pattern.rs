@@ -172,6 +172,13 @@ impl Pattern {
         }
     }
 
+    /// Returns the slice range in a value buffer covering all stored entries in `column`.
+    #[must_use]
+    pub fn column_slots(&self, column: usize) -> std::ops::Range<usize> {
+        let starts = self.structure.col_ptr();
+        starts[column]..starts[column + 1]
+    }
+
     /// Returns `(slot, column)` entries for `row` in ascending column order, matching
     /// [`Pattern::positions`].
     #[must_use]

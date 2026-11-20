@@ -407,6 +407,32 @@ pub(crate) struct UnknownGrain {
     pub(crate) chunks: usize,
 }
 
+/// Domain in which transient local truncation error is judged against tolerances.
+///
+/// Both modes solve `(G + αC) moved = α d` to filter fast decaying modes through the step
+/// equations (Shampine, 1980). [`ErrorControl::Charge`] multiplies back by `C` and bounds
+/// filtered charge error against SPICE charge and step-scaled current tolerances.
+/// [`ErrorControl::Unknown`] skips that product and bounds `moved` directly against
+/// [`Options::relative_tolerance`] and each unknown's voltage or current tolerance, free of
+/// [`Options::charge_tolerance`]. Index-2 algebraic current unknowns (current unknowns whose
+/// column in `C` is zero, such as non-inductive voltage-source currents and MOSFET Meyer
+/// displacement currents) are excluded from the unknown-space error norm because their
+/// filtered error scales as `O(1/h)` (Hairer & Wanner, 1996, VII.4; Brenan, Campbell, and
+/// Petzold, 1996, §5.2).
+///
+/// Serializes as `"charge"` or `"unknown"` in JSON.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorControl {
+    /// Judge filtered charge error `C (G + αC)⁻¹ α d` against SPICE charge and step-scaled
+    /// current tolerances (default).
+    #[default]
+    Charge,
+    /// Judge filtered unknown error `(G + αC)⁻¹ α d` directly against unknown tolerances,
+    /// excluding index-2 algebraic current unknowns and free of any charge floor.
+    Unknown,
+}
+
 /// Numerical solver settings, iteration limits, recording options, and parallelism
 /// configuration.
 ///
@@ -423,9 +449,10 @@ pub struct Options {
     /// Minimum reference charge floor in coulombs, matching SPICE `CHGTOL` (default
     /// `1e-14`).
     ///
-    /// Charge truncation tolerance scales `relative_tolerance * max(|q|, charge_tolerance)`
-    /// (or the equivalent current tolerance over the step when larger) by
-    /// `truncation_tolerance`.
+    /// Under [`ErrorControl::Charge`], charge truncation tolerance scales
+    /// `relative_tolerance * max(|q|, charge_tolerance)` (or the equivalent current tolerance
+    /// over the step when larger) by `truncation_tolerance`. Ignored under
+    /// [`ErrorControl::Unknown`].
     pub charge_tolerance: f64,
     /// Minimum shunt conductance placed across nonlinear junctions in siemens (default
     /// `1e-12`).
@@ -437,10 +464,15 @@ pub struct Options {
     pub max_transient_iterations: usize,
     /// Multiplier on local truncation error bounds matching SPICE `TRTOL` (default `7.0`).
     ///
-    /// SPICE omits the Taylor factorial, so true error may reach twice this bound for
-    /// backward Euler and six times for second-order methods. Setting `f64::INFINITY`
-    /// disables truncation-error rejection for fixed-step integration.
+    /// Under [`ErrorControl::Charge`], matches SPICE's omitted Taylor factorial so true error
+    /// may reach twice this bound for backward Euler and six times for second-order methods.
+    /// Under [`ErrorControl::Unknown`], scales the true one-step local truncation error bound
+    /// directly without the factorial factor. Setting `f64::INFINITY` disables
+    /// truncation-error rejection for fixed-step integration.
     pub truncation_tolerance: f64,
+    /// Domain in which transient local truncation error is judged (default
+    /// [`ErrorControl::Charge`]).
+    pub error_control: ErrorControl,
     /// Maximum memory budget in gibibytes for transient waveforms or dense analysis
     /// matrices (default `2.0`).
     ///
@@ -484,6 +516,7 @@ impl Default for Options {
             max_dc_iterations: 100,
             max_transient_iterations: 10,
             truncation_tolerance: 7.0,
+            error_control: ErrorControl::default(),
             max_memory: 2.0,
             record: Record::default(),
             regions: false,
@@ -651,8 +684,26 @@ impl Options {
 
 #[cfg(test)]
 mod tests {
-    use super::Options;
+    use super::{ErrorControl, Options};
     use crate::SimulationError;
+
+    #[test]
+    fn error_control_round_trips_through_json_and_defaults_to_charge() {
+        assert_eq!(Options::default().error_control, ErrorControl::Charge);
+        assert_eq!(
+            serde_json::to_string(&ErrorControl::Charge).expect("serializes"),
+            "\"charge\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ErrorControl::Unknown).expect("serializes"),
+            "\"unknown\""
+        );
+        let parsed: Options =
+            serde_json::from_str(r#"{"error_control": "unknown"}"#).expect("deserializes");
+        assert_eq!(parsed.error_control, ErrorControl::Unknown);
+        assert!(parsed.check().is_ok());
+        assert!(serde_json::from_str::<Options>(r#"{"error_control": "flux"}"#).is_err());
+    }
 
     #[test]
     fn check_rejects_non_finite_tolerances_and_gmin() {

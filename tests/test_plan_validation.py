@@ -961,11 +961,12 @@ _VALIDATION_CASES: dict[str, tuple[Callable[[], object], int]] = {
             max_dc_iterations=0,
             max_transient_iterations=False,
             truncation_tolerance=math.inf,
+            error_control="flux",  # ty: ignore[invalid-argument-type] - wrong literal
             max_memory=-1.0,
             profile="yes",  # ty: ignore[invalid-argument-type] - wrong type
             nodesets={"a": "bad", 1: 2 * V, "b": math.nan * V},  # ty: ignore[invalid-argument-type] - wrong types
         ),
-        13,
+        14,
     ),
     "parallelism": (
         lambda: Parallelism(
@@ -1073,6 +1074,20 @@ _VALIDATION_CASES: dict[str, tuple[Callable[[], object], int]] = {
 def test_models_report_all_validation_errors_at_once(name: str) -> None:
     build, count = _VALIDATION_CASES[name]
     _expect_validation_errors(build, count=count)
+
+
+def test_options_error_control_accepts_charge_and_unknown_and_rejects_others() -> None:
+    assert Options().to_json() == {}
+    assert Options(error_control="charge").to_json() == {"error_control": "charge"}
+    assert Options(error_control="unknown").to_json() == {"error_control": "unknown"}
+    parsed = TypeAdapter(Options).validate_json('{"error_control": "unknown"}')
+    assert parsed == Options(error_control="unknown")
+    for invalid in ("flux", 1, True):
+        _expect_validation_errors(
+            lambda value=invalid: Options(error_control=value),  # ty: ignore[invalid-argument-type] - wrong value
+            "error_control is 'charge' or 'unknown'",
+            count=1,
+        )
 
 
 def test_plan_reports_all_validation_errors_at_once() -> None:

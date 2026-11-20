@@ -116,7 +116,7 @@ pub use mismatch::{Mismatch, MismatchResult, RandomVariable};
 pub use noise::{NOISE_DENSITY, Noise, NoiseContribution, NoiseInput, NoiseResult, REFERRED_NOISE};
 pub use objective::{Functional, Objective, ObjectiveResult};
 pub use operating_point::{OperatingPointResult, OperatingPoints, Strategy};
-pub use options::{BREAK_EVENS, BreakEvens, Options, Parallelism, Record, Sizes};
+pub use options::{BREAK_EVENS, BreakEvens, ErrorControl, Options, Parallelism, Record, Sizes};
 pub use periodic::{PeriodicSteadyState, PeriodicSteadyStateResult};
 pub use pole_zero::{Mode, PoleZero, PoleZeroResult};
 pub use profile::{Profile, Work};

@@ -94,6 +94,11 @@ type Method = Literal["trapezoidal", "gear2", "backward_euler"]
 """Transient integration method: trapezoidal (default), Gear2 for stiff ringing
 circuits, or backward Euler for maximum damping."""
 
+type ErrorControl = Literal["charge", "unknown"]
+"""Transient local truncation error control domain: charge-based SPICE control
+(``"charge"``, default) or unknown-space control (``"unknown"``), free of any charge
+floor."""
+
 
 def _integer(
     *,
@@ -236,6 +241,23 @@ def _check_method(value: object) -> Method:
                 f"'backward_euler', not {value!r}"
             )
             error = PydanticCustomError("method", "{message}", {"message": message})
+            raise error
+
+
+def _check_error_control(value: object) -> ErrorControl | None:
+    """Validates `value` is `None` or a supported truncation error control domain."""
+    match value:
+        case None:
+            return None
+        case "charge":
+            return "charge"
+        case "unknown":
+            return "unknown"
+        case _:
+            message = f"error_control is 'charge' or 'unknown', not {value!r}"
+            error = PydanticCustomError(
+                "error_control", "{message}", {"message": message}
+            )
             raise error
 
 
@@ -761,6 +783,7 @@ _NON_EMPTY: Final = _text()
 _OPTIONAL_NON_EMPTY: Final = _text(optional=True)
 _REFERENCE: Final = BeforeValidator(_validate_reference)
 _METHOD: Final = BeforeValidator(_check_method)
+_ERROR_CONTROL: Final = BeforeValidator(_check_error_control)
 _RECORD: Final = BeforeValidator(_check_record)
 _OPTIONAL_POSITIVE_FLOAT: Final = _real(positive=True, optional=True)
 _OPTIONAL_POSITIVE_INT: Final = _integer(minimum=1, optional=True)
@@ -1491,7 +1514,7 @@ class Parallelism:
 
 
 class OptionDefaults(TypedDict):
-    """Read-only engine defaults for numerical `Options` fields."""
+    """Read-only engine defaults for solver `Options` fields."""
 
     relative_tolerance: ReadOnly[float]
     voltage_tolerance: ReadOnly[Quantity]
@@ -1501,6 +1524,7 @@ class OptionDefaults(TypedDict):
     max_dc_iterations: ReadOnly[int]
     max_transient_iterations: ReadOnly[int]
     truncation_tolerance: ReadOnly[float]
+    error_control: ReadOnly[ErrorControl]
     max_memory: ReadOnly[float]
 
 
@@ -1534,6 +1558,19 @@ def _load_defaults() -> OptionDefaults:
             raise TypeError(message)
         return entry
 
+    def control(name: str) -> ErrorControl:
+        entry = decoded[name]
+        match entry:
+            case "charge":
+                return "charge"
+            case "unknown":
+                return "unknown"
+            case _:
+                message = (
+                    f"engine default `{name}` is 'charge' or 'unknown', not {entry!r}"
+                )
+                raise TypeError(message)
+
     return OptionDefaults(
         relative_tolerance=number("relative_tolerance"),
         voltage_tolerance=Quantity(number("voltage_tolerance"), VOLTAGE),
@@ -1543,15 +1580,17 @@ def _load_defaults() -> OptionDefaults:
         max_dc_iterations=count("max_dc_iterations"),
         max_transient_iterations=count("max_transient_iterations"),
         truncation_tolerance=number("truncation_tolerance"),
+        error_control=control("error_control"),
         max_memory=number("max_memory"),
     )
 
 
 DEFAULTS: Final[OptionDefaults] = _load_defaults()
-"""Engine default values for numerical fields of [`Options`][jolty.plan.Options].
+"""Engine default values for solver fields of [`Options`][jolty.plan.Options].
 
-Dimensioned tolerances and `gmin` are [`Quantity`][jolty.units.Quantity] values, while
-dimensionless options and counts are plain numbers. Defaults for
+Dimensioned tolerances and `gmin` are [`Quantity`][jolty.units.Quantity] values,
+dimensionless options and counts are plain numbers, and `error_control` is an
+[`ErrorControl`][jolty.plan.ErrorControl] string. Defaults for
 [`Parallelism`][jolty.plan.Parallelism] thresholds are listed separately in
 [`BREAK_EVENS`][jolty.plan.BREAK_EVENS].
 
@@ -1589,6 +1628,8 @@ class Options:
         >>> from jolty.units import pS
         >>> Options(gmin=1e-3 * pS).to_json()
         {'gmin': 1e-15}
+        >>> Options(error_control="unknown").to_json()
+        {'error_control': 'unknown'}
         >>> Options(parallelism=Parallelism(min_solves_per_task=16)).to_json()
         {'parallelism': {'min_solves_per_task': 16}}
     """
@@ -1613,6 +1654,8 @@ class Options:
     max_dc_iterations: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
     max_transient_iterations: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
     truncation_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
+    error_control: Annotated[ErrorControl | None, _ERROR_CONTROL] = None
+    """Transient truncation-error control domain: ``"charge"`` or ``"unknown"``."""
     max_memory: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
     profile: Annotated[bool | None, _boolean(optional=True)] = None
     """Flag enabling transient timing profiles without altering simulation results."""

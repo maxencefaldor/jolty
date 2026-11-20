@@ -19,11 +19,11 @@ use std::path::Path;
 use capacitor::capacitor;
 use common::{circuit, device, resistor};
 use jolty_engine::{
-    Ac, AcResult, Analysis, AnalysisResult, DcSweep, DcSweepResult, Differentiated, Method,
-    Mismatch, MismatchResult, Noise, NoiseResult, OperatingPointResult, OperatingPoints, Options,
-    PeriodicSteadyState, PeriodicSteadyStateResult, PoleZero, PoleZeroResult, RandomVariable,
-    Record, RecordedSeries, RecordedValues, Sensitivity, SensitivityResult, Simulator,
-    StabilityResult, TransferFunction, TransferFunctionResult, TransientResult, Work,
+    Ac, AcResult, Analysis, AnalysisResult, DcSweep, DcSweepResult, Differentiated, ErrorControl,
+    Method, Mismatch, MismatchResult, Noise, NoiseResult, OperatingPointResult, OperatingPoints,
+    Options, PeriodicSteadyState, PeriodicSteadyStateResult, PoleZero, PoleZeroResult,
+    RandomVariable, Record, RecordedSeries, RecordedValues, Sensitivity, SensitivityResult,
+    Simulator, StabilityResult, TransferFunction, TransferFunctionResult, TransientResult, Work,
 };
 use jolty_ir::Circuit;
 use serde_json::json;
@@ -267,6 +267,7 @@ fn options_that_change_the_dc_solution_solve_it_again() {
     let transient = Options {
         max_transient_iterations: 50,
         truncation_tolerance: 1.0,
+        error_control: ErrorControl::Unknown,
         charge_tolerance: 1e-18,
         max_memory: 4.0,
         ..Options::default()

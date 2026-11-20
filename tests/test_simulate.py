@@ -57,16 +57,19 @@ from jolty.simulate import Joined, Logged
 from jolty.specs import crossover, gain_margin, phase_margin
 from jolty.units import (
     A,
+    C,
     F,
     GHz,
     H,
     Hz,
     K,
     MHz,
+    Mohm,
     Quantity,
     V,
     celsius,
     fA,
+    fF,
     kHz,
     kohm,
     mA,
@@ -75,12 +78,13 @@ from jolty.units import (
     nF,
     ns,
     ohm,
+    ps,
     uA,
     uF,
     um,
     us,
 )
-from jolty.waveforms import Sine
+from jolty.waveforms import Piecewise, Sine
 from sample_circuits import divider, low_pass
 
 LINEAR_SOLVE_RTOL: Final = 1e-6
@@ -1217,6 +1221,47 @@ def test_the_step_response_of_a_low_pass_filter() -> None:
     # Stop-time landing; default pytest.approx (rel=1e-6) covers float accumulation.
     assert waveforms.times[-1] == pytest.approx(5e-6)
     assert waveforms.statistics.accepted == len(waveforms.times) - 1
+
+
+def test_unknown_error_control_is_free_of_the_charge_floor() -> None:
+    @component
+    def femtofarad_rc(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        step = Piecewise([(0 * ns, 0 * V), (1 * ps, 1 * V)])
+        source = c.place(devices.voltage_source(step), name="V1")
+        resistor = c.place(devices.resistor(1 * Mohm), name="R1")
+        capacitor = c.place(devices.capacitor(1 * fF), name="C1")
+        c.connect(source.positive, resistor.a, name="in")
+        c.connect(resistor.b, capacitor.a, name="out")
+        c.connect(capacitor.b, source.negative, ground)
+
+    simulation = Simulation(femtofarad_rc())
+    analysis = Transient(stop=5 * ns)
+    default_run = simulation.run(analysis)
+    charge_run = simulation.run(analysis, Options(error_control="charge"))
+    assert np.array_equal(default_run.times, charge_run.times)
+    assert np.array_equal(default_run.values, charge_run.values)
+
+    unknown_default = simulation.run(analysis, Options(error_control="unknown"))
+    unknown_huge_floor = simulation.run(
+        analysis, Options(charge_tolerance=1 * C, error_control="unknown")
+    )
+    assert np.array_equal(unknown_default.times, unknown_huge_floor.times)
+    assert np.array_equal(unknown_default.values, unknown_huge_floor.values)
+
+    tight = simulation.run(
+        analysis, Options(relative_tolerance=1e-5, error_control="unknown")
+    )
+    tau, rise = 1e-9, 1e-12
+    after_ramp = tight.times >= rise
+    exact = 1 - (tau / rise) * (np.exp(rise / tau) - 1) * np.exp(
+        -tight.times[after_ramp] / tau
+    )
+    # Adaptive trapezoidal LTE at reltol=1e-5 (unknown mode, trtol=7) holds global error
+    # well below 5e-4 V without depending on the 10 fC charge_tolerance floor.
+    np.testing.assert_allclose(
+        tight.voltage("out")[after_ramp], exact, atol=5e-4, rtol=0.0
+    )
 
 
 @component

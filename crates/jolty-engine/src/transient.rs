@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use jolty_models::{Input, LogicLevel, Past};
+use jolty_models::{Input, LogicLevel, Nature, Past};
 use jolty_numerics::Pattern;
 use jolty_numerics::integration::{
     CONSTANT_STEP, ErrorBound, Formula, Method, divided_difference, longest_at,
@@ -21,8 +21,8 @@ use crate::record::{Read, Recorder};
 use crate::ringing;
 use crate::solver::Factors;
 use crate::{
-    Options, Profile, RecordedSeries, RecordedValues, Rejection, SimulationError, Simulator,
-    Strategy, Work,
+    ErrorControl, Options, Profile, RecordedSeries, RecordedValues, Rejection, SimulationError,
+    Simulator, Strategy, Work,
 };
 
 /// Default step-count divisor setting `max_step = stop / 50`, matching SPICE's default
@@ -620,15 +620,56 @@ struct Corner {
     logic: Checkpoint,
 }
 
-/// Step geometry and endpoint charge states passed to truncation-error estimation.
+/// Step geometry and endpoint states passed to truncation-error estimation.
 struct Span<'a> {
     length: f64,
     /// Preceding step length used by multistep error constants.
     previous: f64,
     /// Leading charge coefficient `α` of the step's integration formula.
     alpha: f64,
+    /// Unknown vectors at the step end and start.
+    unknown: (&'a [f64], &'a [f64]),
     charge: (&'a [f64], &'a [f64]),
     derivative: (&'a [f64], &'a [f64]),
+}
+
+impl Span<'_> {
+    /// Computes `(fixed_tolerance, current_tolerance)` for unknown `index` of `nature` under
+    /// `control` and `scale`.
+    ///
+    /// Under [`ErrorControl::Charge`], charge tolerance uses `reltol * max(|q|, chgtol)` per
+    /// ngspice 47 `cktterr.c` (lines 40 to 41), paired with step-scaled current tolerance
+    /// (`voltage_tolerance` for flux). Under [`ErrorControl::Unknown`], unknown tolerance uses
+    /// `reltol * max(|x_0|, |x_1|)` plus the unknown's voltage or current tolerance, with no
+    /// charge floor or step-scaled term.
+    fn tolerances(
+        &self,
+        index: usize,
+        nature: Nature,
+        control: ErrorControl,
+        scale: f64,
+        options: &Options,
+    ) -> (f64, f64) {
+        match control {
+            ErrorControl::Charge => {
+                let charge = self.charge.0[index].abs().max(self.charge.1[index].abs());
+                let current = self.derivative.0[index]
+                    .abs()
+                    .max(self.derivative.1[index].abs());
+                let absolute_current = options.equation_tolerance(nature);
+                let charge_tolerance =
+                    options.relative_tolerance * charge.max(options.charge_tolerance);
+                let current_tolerance =
+                    self.length * (options.relative_tolerance * current + absolute_current);
+                (scale * charge_tolerance, scale * current_tolerance)
+            }
+            ErrorControl::Unknown => {
+                let (end, start) = (self.unknown.0[index], self.unknown.1[index]);
+                let unknown_tolerance = options.unknown_tolerance(nature, end, start);
+                (scale * unknown_tolerance, 0.0)
+            }
+        }
+    }
 }
 
 /// Solved candidate step awaiting truncation-error evaluation and event checks.
@@ -650,7 +691,7 @@ struct Tried {
 /// Truncation-error comparison against step tolerances.
 #[derive(Clone, Copy)]
 struct Judgement {
-    /// Maximum ratio of estimated charge truncation error to tolerance.
+    /// Maximum ratio of estimated truncation error to tolerance.
     ratio: f64,
     /// Unknown index realizing `ratio`.
     worst: usize,
@@ -1269,6 +1310,7 @@ impl Simulator {
                 // A restart's step follows none, which backward Euler does not read.
                 previous: pending.length,
                 alpha: pending.formula.alpha,
+                unknown: (&stepper.x, &pending.corner.x),
                 charge: (&stepper.history.last.1, &pending.corner.charge),
                 derivative: (&stepper.history.derivative, &pending.corner.derivative),
             };
@@ -1289,6 +1331,7 @@ impl Simulator {
                 length: tried.length,
                 previous: stepper.previous,
                 alpha: tried.formula.alpha,
+                unknown: (&tried.x, &stepper.x),
                 charge: (&tried.charge, &stepper.history.last.1),
                 derivative: (&tried.derivative, &stepper.history.derivative),
             };
@@ -1673,13 +1716,16 @@ impl Simulator {
         (times, scale)
     }
 
-    /// Evaluates the local truncation error of `span` under `method` using filtered charge
-    /// divided differences from `history` and `new`, returning `None` until enough post-corner
-    /// points exist.
+    /// Evaluates the local truncation error of `span` under `method` using filtered divided
+    /// differences from `history` and `new`, returning `None` until enough post-corner points
+    /// exist.
     ///
-    /// Charge tolerances follow SPICE `TRTOL` scaling (`reltol * max(|q|, chgtol)` and
-    /// current tolerance over the step), multiplying by `(p + 1)!` to match SPICE's factorial
-    /// omission.
+    /// Under [`ErrorControl::Charge`], charge and step-scaled current tolerances follow SPICE
+    /// `TRTOL` scaling (`reltol * max(|q|, chgtol)` and current tolerance over the step),
+    /// multiplying by `(p + 1)!` to match SPICE's factorial omission. Under
+    /// [`ErrorControl::Unknown`], filtered unknown errors `(G + αC)⁻¹ α d` are compared
+    /// directly against `truncation_tolerance * (reltol * max(|x_0|, |x_1|) + value_tolerance)`
+    /// without the factorial omission or any charge floor.
     fn judge(
         &mut self,
         method: Method,
@@ -1697,24 +1743,14 @@ impl Simulator {
         let grain = options.parallelism.unknown_grain(new.values.len());
         let mut differences = std::mem::take(&mut self.state.workspace.differences);
         divided_differences(history, new, needed, grain, &mut differences);
-        self.filter(&mut differences, span.alpha, grain);
-        let scale = options.truncation_tolerance * method.factorial();
-        let natures = &self.elaborated.natures;
-        // Scale charge and current tolerances by `truncation_tolerance` and the `(p + 1)!`
-        // factor omitted by SPICE. Charge tolerance uses `reltol * max(|q|, chgtol)` per
-        // ngspice 47 `cktterr.c` (lines 40 to 41).
-        let tolerances = |index: usize| {
-            let charge = span.charge.0[index].abs().max(span.charge.1[index].abs());
-            let current = span.derivative.0[index]
-                .abs()
-                .max(span.derivative.1[index].abs());
-            let absolute_current = options.equation_tolerance(natures[index]);
-            let charge_tolerance =
-                options.relative_tolerance * charge.max(options.charge_tolerance);
-            let current_tolerance =
-                span.length * (options.relative_tolerance * current + absolute_current);
-            (scale * charge_tolerance, scale * current_tolerance)
+        let active = self.filter(&mut differences, span.alpha, options.error_control, grain);
+        // Match SPICE's omitted `(p + 1)!` factor in charge mode; in unknown mode,
+        // `truncation_tolerance` scales true one-step local truncation error directly.
+        let scale = match active {
+            ErrorControl::Charge => options.truncation_tolerance * method.factorial(),
+            ErrorControl::Unknown => options.truncation_tolerance,
         };
+        let natures = &self.elaborated.natures;
         let none = (
             Judgement {
                 ratio: 0.0,
@@ -1724,7 +1760,7 @@ impl Simulator {
             (f64::INFINITY, ErrorBound::Charge),
         );
         // Compute per-chunk worst error ratio and constant-step shortest next length, retaining
-        // per-charge unit steps for multistep variable-ratio adjustment.
+        // per-unknown unit steps for multistep variable-ratio adjustment.
         let keep = method.is_multistep();
         let per_difference = method.error_per_difference(span.length, span.previous);
         let found = pieces(differences.len(), grain, |range| {
@@ -1734,13 +1770,15 @@ impl Simulator {
                 let difference = differences[index];
                 // Step truncation error matching `Method::truncation_error`.
                 let error = per_difference * difference.abs();
-                let (charge, current) = tolerances(index);
-                let ratio = error / charge.max(current);
+                let (fixed_tolerance, current_tolerance) =
+                    span.tolerances(index, natures[index], active, scale, options);
+                let ratio = error / fixed_tolerance.max(current_tolerance);
                 if ratio > worst.ratio {
                     worst.ratio = ratio;
                     worst.worst = index;
                 }
-                let unit = method.unit_steps(difference, charge, current / span.length);
+                let rate = current_tolerance / span.length;
+                let unit = method.unit_steps(difference, fixed_tolerance, rate);
                 found = least(found, longest_at(unit, CONSTANT_STEP));
                 if keep {
                     units.push(unit);
@@ -1778,14 +1816,23 @@ impl Simulator {
         Some(Judgement { longest, ..worst })
     }
 
-    /// Filters charge divided `differences` through the step equations via
-    /// `C (G + αC)⁻¹ α d`, parallelized identically across thread counts by `grain`.
+    /// Filters charge divided `differences` through the step equations by solving
+    /// `(G + αC) moved = α d`, parallelized identically across thread counts by `grain`.
     ///
     /// Filtering preserves smooth capacitive error while attenuating stiff decaying modes
     /// already damped by the implicit step (Shampine, *SIAM Journal on Scientific and
     /// Statistical Computing* 1(1), 1980; Hairer and Wanner, *Solving Ordinary Differential
-    /// Equations II*, §IV.8). Leaves `differences` unchanged if factorization fails.
-    fn filter(&mut self, differences: &mut [f64], alpha: f64, grain: Option<UnknownGrain>) {
+    /// Equations II*, §IV.8). For [`ErrorControl::Charge`], multiplies `moved` back by `C`
+    /// into `differences`. For [`ErrorControl::Unknown`], swaps `moved` directly into
+    /// `differences` without the `C` product. If factorization fails, leaves `differences` as
+    /// raw charge divided differences and returns [`ErrorControl::Charge`].
+    fn filter(
+        &mut self,
+        differences: &mut Vec<f64>,
+        alpha: f64,
+        control: ErrorControl,
+        grain: Option<UnknownGrain>,
+    ) -> ErrorControl {
         let Workspace {
             contributions,
             jacobian,
@@ -1808,17 +1855,46 @@ impl Simulator {
         });
         meter.leave(previous);
         if solved.is_err() {
-            return;
+            return ErrorControl::Charge;
         }
-        differences.fill(0.0);
-        let capacitance = &contributions.capacitance;
-        add_product(
-            &self.elaborated.pattern,
-            capacitance,
-            moved,
-            differences,
-            grain,
-        );
+        match control {
+            ErrorControl::Charge => {
+                differences.fill(0.0);
+                let capacitance = &contributions.capacitance;
+                add_product(
+                    &self.elaborated.pattern,
+                    capacitance,
+                    moved,
+                    differences,
+                    grain,
+                );
+            }
+            ErrorControl::Unknown => {
+                std::mem::swap(differences, moved);
+                let capacitance = &contributions.capacitance;
+                let pattern = &self.elaborated.pattern;
+                let natures = &self.elaborated.natures;
+                // Exclude index-2 algebraic current unknowns (Meyer displacement currents and
+                // non-inductive branch currents whose column in `C` is zero): their entries in
+                // `(G + αC)⁻¹ α d` carry an `O(1/h)` factor from `α`, causing step-cut feedback
+                // at capacitance kinks and rounding floors (Hairer and Wanner, *Solving Ordinary
+                // Differential Equations II*, §VII.4; Brenan, Campbell, and Petzold, §5.2;
+                // Hindmarsh et al., *ACM TOMS* 31(3), 2005).
+                each_chunk(differences, grain, |start, chunk| {
+                    for (offset, entry) in chunk.iter_mut().enumerate() {
+                        let unknown = start + offset;
+                        if natures[unknown].is_current()
+                            && capacitance[pattern.column_slots(unknown)]
+                                .iter()
+                                .all(|&value| value == 0.0)
+                        {
+                            *entry = 0.0;
+                        }
+                    }
+                });
+            }
+        }
+        control
     }
 }
 

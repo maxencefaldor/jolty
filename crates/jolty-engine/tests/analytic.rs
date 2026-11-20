@@ -26,8 +26,8 @@ use current::{current_dc, current_source};
 use dc::{dc, voltage_dc};
 use inductor::inductor;
 use jolty_engine::{
-    Ac, Analysis, AnalysisResult, DcSweep, Method, Options, Rejection, SimulationError, Simulator,
-    Strategy, Transient,
+    Ac, Analysis, AnalysisResult, DcSweep, ErrorControl, Method, Options, Rejection,
+    SimulationError, Simulator, Strategy, Transient, TransientResult,
 };
 use jolty_ir::{Circuit, Instance};
 use jolty_numerics::Complex64;
@@ -462,9 +462,14 @@ const FEMTOFARAD: Ramped = Ramped {
     stop: 6e-9,
 };
 
-/// Simulates `ramped` with `method` and `options`, returning peak post-ramp error and
-/// accepted step count.
-fn rc_step_error(ramped: &Ramped, method: Method, options: &Options) -> (f64, usize) {
+/// Simulates `ramped` with `method`, `max_step`, and `options`, returning peak post-ramp error
+/// and the transient waveforms.
+fn rc_step_run(
+    ramped: &Ramped,
+    method: Method,
+    max_step: Option<f64>,
+    options: &Options,
+) -> (f64, TransientResult) {
     let Ramped {
         resistance,
         capacitance,
@@ -487,7 +492,7 @@ fn rc_step_error(ramped: &Ramped, method: Method, options: &Options) -> (f64, us
     ]);
     let mut simulator = simulator(&circuit);
     let waveforms = simulator
-        .transient(&transient(stop, None, method), options)
+        .transient(&transient(stop, max_step, method), options)
         .expect("a transient analysis");
     let out = index(&simulator, "out");
     assert!(
@@ -504,6 +509,13 @@ fn rc_step_error(ramped: &Ramped, method: Method, options: &Options) -> (f64, us
             error = error.max((values[out] - rc_ramp_response(time, delay, rise, tau)).abs());
         }
     }
+    (error, waveforms)
+}
+
+/// Simulates `ramped` with `method` and `options`, returning peak post-ramp error and
+/// accepted step count.
+fn rc_step_error(ramped: &Ramped, method: Method, options: &Options) -> (f64, usize) {
+    let (error, waveforms) = rc_step_run(ramped, method, None, options);
     (error, waveforms.statistics.accepted)
 }
 
@@ -561,6 +573,317 @@ fn a_femtofarad_nets_error_shrinks_with_the_relative_tolerance() {
             exponent > order / (order + 1.0) - 0.1,
             "{method:?}: {tight_error:e} at 1e-7, {tighter_error:e} at 1e-9"
         );
+    }
+}
+
+/// Extracts IEEE-754 bit patterns of transient times and unknown vectors for bit-identical
+/// comparisons.
+fn waveform_bits(waveforms: &TransientResult) -> (Vec<u64>, Vec<Vec<u64>>) {
+    let times = waveforms.times.iter().copied().map(f64::to_bits).collect();
+    let values = waveforms
+        .values
+        .iter()
+        .map(|row| row.iter().copied().map(f64::to_bits).collect())
+        .collect();
+    (times, values)
+}
+
+/// Verifies that unknown-space error control removes the `10 fC` charge floor, matches
+/// nanofarad accuracy on a femtofarad RC across every integration method, ignores
+/// `charge_tolerance`, and leaves default charge-space control bit-identical.
+#[test]
+fn unknown_error_control_matches_nanofarad_accuracy_on_a_femtofarad_rc() {
+    let unknown = Options {
+        error_control: ErrorControl::Unknown,
+        ..Options::default()
+    };
+    let huge_charge_floor = Options {
+        charge_tolerance: 1.0,
+        error_control: ErrorControl::Unknown,
+        ..Options::default()
+    };
+    let explicit_charge = Options {
+        error_control: ErrorControl::Charge,
+        ..Options::default()
+    };
+    for (method, default_bound) in [
+        (Method::BackwardEuler, 2e-2),
+        (Method::Trapezoidal, 2e-3),
+        (Method::Gear2, 2e-3),
+    ] {
+        // Explicit `ErrorControl::Charge` matches default options bit for bit.
+        let (_, default_waveforms) = rc_step_run(&FEMTOFARAD, method, None, &Options::default());
+        let (_, charge_waveforms) = rc_step_run(&FEMTOFARAD, method, None, &explicit_charge);
+        assert_eq!(
+            waveform_bits(&default_waveforms),
+            waveform_bits(&charge_waveforms),
+            "{method:?}"
+        );
+        assert_eq!(
+            (
+                default_waveforms.statistics.accepted,
+                default_waveforms.statistics.rejected,
+            ),
+            (
+                charge_waveforms.statistics.accepted,
+                charge_waveforms.statistics.rejected,
+            ),
+            "{method:?}"
+        );
+
+        // Default-capped `rc_femto` stays within the same closed-form error bound as 1 nF,
+        // and changing `charge_tolerance` by 14 orders of magnitude alters zero bits.
+        let (femto_default, unknown_waveforms) = rc_step_run(&FEMTOFARAD, method, None, &unknown);
+        let (_, huge_floor_waveforms) = rc_step_run(&FEMTOFARAD, method, None, &huge_charge_floor);
+        assert!(
+            femto_default < default_bound,
+            "{method:?}: femto error {femto_default:e} exceeded {default_bound:e}"
+        );
+        assert_eq!(
+            waveform_bits(&unknown_waveforms),
+            waveform_bits(&huge_floor_waveforms),
+            "{method:?}"
+        );
+
+        // Uncapped by `max_step = stop / 50`, unknown-space control achieves the same error
+        // on 1 fF as on 1 nF (within 5% from `current_tolerance` at the 1 uA scale) and stays
+        // strictly more accurate than charge-space control hindered by the 10 fC floor.
+        let (micro_uncapped, _) =
+            rc_step_run(&MICROSECOND, method, Some(MICROSECOND.stop), &unknown);
+        let (femto_uncapped, _) = rc_step_run(&FEMTOFARAD, method, Some(FEMTOFARAD.stop), &unknown);
+        let (femto_charge_uncapped, _) =
+            rc_step_run(&FEMTOFARAD, method, Some(FEMTOFARAD.stop), &explicit_charge);
+        assert!(
+            (femto_uncapped / micro_uncapped - 1.0).abs() < 0.05,
+            "{method:?}: uncapped femto {femto_uncapped:e} vs micro {micro_uncapped:e}"
+        );
+        assert!(
+            femto_uncapped < femto_charge_uncapped,
+            "{method:?}: unknown {femto_uncapped:e} vs charge {femto_charge_uncapped:e}"
+        );
+    }
+}
+
+/// Verifies that unknown-space error control converges at order `p/(p+1)` for every
+/// integration method on `rc_femto` (`1 MΩ`, `1 fF`, `5 ns`) even with default
+/// `charge_tolerance = 1e-14 C` ten times above the capacitor's full charge.
+#[test]
+fn unknown_error_control_converges_at_each_methods_order_without_a_charge_floor() {
+    let scaled = |factor: f64| Options {
+        relative_tolerance: 1e-3 * factor,
+        voltage_tolerance: 1e-6 * factor,
+        current_tolerance: 1e-12 * factor,
+        error_control: ErrorControl::Unknown,
+        ..Options::default()
+    };
+    let rc_femto = Ramped {
+        resistance: 1e6,
+        capacitance: 1e-15,
+        delay: 0.0,
+        rise: 1e-12,
+        stop: 5e-9,
+    };
+    for (method, order) in ORDERS {
+        let (tight_femto, _) = rc_step_error(&FEMTOFARAD, method, &scaled(1e-2));
+        let (tight_micro, _) = rc_step_error(&MICROSECOND, method, &scaled(1e-2));
+        let (tighter_femto, _) = rc_step_error(&FEMTOFARAD, method, &scaled(1e-4));
+        let exponent = (tight_femto / tighter_femto).log10() / 2.0;
+        assert!(
+            exponent > order / (order + 1.0) - 0.1,
+            "{method:?}: {tight_femto:e} at 1e-5, {tighter_femto:e} at 1e-7"
+        );
+        assert!(
+            (tight_femto / tight_micro - 1.0).abs() < 0.05,
+            "{method:?}: tight femto {tight_femto:e} vs micro {tight_micro:e}"
+        );
+    }
+    // Precision-suite `rc_femto` (1 MΩ, 1 fF, 1 V step rising in 1 ps, 5 ns) at `reltol = 1e-5`
+    // and default `trtol = 7.0` with default `charge_tolerance = 1e-14 C` stays within 1e-3 V
+    // (global error across ~5 time constants for `trtol * reltol = 7e-5 V` per step) and keeps
+    // tightening at `reltol = 1e-6` where charge control stalls on its 1e-14 C floor.
+    let tight = Options {
+        relative_tolerance: 1e-5,
+        error_control: ErrorControl::Unknown,
+        ..Options::default()
+    };
+    let tighter = Options {
+        relative_tolerance: 1e-6,
+        error_control: ErrorControl::Unknown,
+        ..Options::default()
+    };
+    for method in [Method::Trapezoidal, Method::Gear2] {
+        let (error, _) = rc_step_error(&rc_femto, method, &tight);
+        let (finer, _) = rc_step_error(&rc_femto, method, &tighter);
+        assert!(
+            error < 1e-3,
+            "{method:?}: rc_femto error {error:e} exceeded 1e-3 V"
+        );
+        assert!(
+            finer < error * 0.5,
+            "{method:?}: rc_femto did not tighten from {error:e} V to {finer:e} V"
+        );
+    }
+}
+
+/// Verifies that unknown-space error control excludes index-2 algebraic current unknowns
+/// (non-inductive voltage-source currents and Meyer displacement currents) when a MOSFET with
+/// oxide capacitance switches across threshold under a sharp pulse, avoiding step collapse.
+#[test]
+fn unknown_error_control_excludes_index_2_algebraic_currents_on_switched_mosfet() {
+    let switch = device(
+        "M1",
+        "mosfet",
+        json!({
+            "level": 1,
+            "channel": "n",
+            "width": 1e-3,
+            "length": 1e-6,
+            "threshold_voltage": 2.0,
+            "transconductance_parameter": 1e-3,
+            "oxide_thickness": 5e-8,
+        }),
+        &[
+            ("drain", "vdd"),
+            ("gate", "gate"),
+            ("source", "sw"),
+            ("bulk", "sw"),
+        ],
+    );
+    let buck_leg = circuit([
+        voltage_dc("VIN", "vdd", 12.0),
+        voltage_source(
+            "VG",
+            "gate",
+            "0",
+            json!({"pulse": {
+                "initial": 0.0, "pulsed": 15.0, "delay": 2e-7,
+                "rise": 5e-9, "fall": 5e-9, "width": 5e-7, "period": 2e-6,
+            }}),
+        ),
+        switch,
+        resistor("Rload", 20.0, "sw", "0"),
+        capacitor("Cout", 1e-9, "sw", "0"),
+    ]);
+    let options = Options {
+        error_control: ErrorControl::Unknown,
+        ..Options::default()
+    };
+    for method in [Method::Trapezoidal, Method::Gear2] {
+        let mut simulator = simulator(&buck_leg);
+        let waveforms = simulator
+            .transient(&transient(6e-6, Some(1e-7), method), &options)
+            .expect("switched MOSFET transient completes without index-2 step collapse");
+        assert!(
+            waveforms.statistics.rejected < waveforms.statistics.accepted,
+            "{method:?}: excessive rejections ({} rejected vs {} accepted)",
+            waveforms.statistics.rejected,
+            waveforms.statistics.accepted,
+        );
+        let sw = index(&simulator, "sw");
+        let peak = waveforms
+            .values
+            .iter()
+            .map(|row| row[sw])
+            .fold(0.0, f64::max);
+        assert!(
+            peak > 9.0,
+            "{method:?}: switch node did not pull high ({peak} V)"
+        );
+    }
+}
+
+/// Verifies that unknown-space error control handles branch-current unknowns (`Nature::Current`)
+/// on an RL step and Meyer displacement unknowns (`Nature::Displacement`) on a CMOS inverter.
+#[test]
+fn unknown_error_control_handles_inductors_and_mosfet_displacements() {
+    let unknown = Options {
+        error_control: ErrorControl::Unknown,
+        ..Options::default()
+    };
+    // 1 kΩ and 1 mH RL step (tau = 1 µs, steady current 1 mA) matches closed form to 2e-3.
+    let (resistance, inductance, delay, rise, stop) = (1e3, 1e-3, 1e-6, 1e-9, 6e-6);
+    let tau = inductance / resistance;
+    let rl_circuit = circuit([
+        voltage_source(
+            "V1",
+            "in",
+            "0",
+            json!({"pulse": {
+                "initial": 0, "pulsed": 1, "delay": delay, "rise": rise, "fall": rise, "width": 1,
+            }}),
+        ),
+        resistor("R1", resistance, "in", "mid"),
+        inductor("L1", inductance, "mid", "0"),
+    ]);
+    for method in [Method::Trapezoidal, Method::Gear2] {
+        let mut simulator = simulator(&rl_circuit);
+        let waveforms = simulator
+            .transient(&transient(stop, None, method), &unknown)
+            .expect("an RL transient");
+        let current = index(&simulator, "L1:current");
+        let peak_error = waveforms
+            .times
+            .iter()
+            .zip(&waveforms.values)
+            .filter(|&(&time, _)| time >= delay + rise)
+            .map(|(&time, values)| {
+                let exact = rc_ramp_response(time, delay, rise, tau) / resistance;
+                (values[current] - exact).abs()
+            })
+            .fold(0.0, f64::max);
+        assert!(
+            peak_error < 2e-3 / resistance,
+            "{method:?}: RL current error {peak_error:e} A"
+        );
+    }
+
+    // CMOS inverter with oxide thickness (Meyer displacement unknowns) driving a 1 fF load.
+    let oxide_mosfet = |name: &str, channel: &str, [drain, gate, source]: [&str; 3]| {
+        let (width, threshold, transconductance) = if channel == "n" {
+            (1e-5, 0.5, 1e-4)
+        } else {
+            (2e-5, -0.5, 5e-5)
+        };
+        device(
+            name,
+            "mosfet",
+            json!({
+                "level": 1, "channel": channel, "width": width, "length": 1e-6,
+                "threshold_voltage": threshold, "transconductance_parameter": transconductance,
+                "oxide_thickness": 2e-8,
+            }),
+            &[
+                ("drain", drain),
+                ("gate", gate),
+                ("source", source),
+                ("bulk", source),
+            ],
+        )
+    };
+    let inverter = circuit([
+        voltage_dc("VDD", "vdd", 5.0),
+        voltage_source(
+            "VIN",
+            "in",
+            "0",
+            json!({"pulse": {
+                "initial": 0, "pulsed": 5, "delay": 1e-8, "rise": 1e-9, "fall": 1e-9, "width": 1,
+            }}),
+        ),
+        oxide_mosfet("MN1", "n", ["out", "in", "0"]),
+        oxide_mosfet("MP1", "p", ["out", "in", "vdd"]),
+        capacitor("CL", 1e-15, "out", "0"),
+    ]);
+    for method in [Method::BackwardEuler, Method::Trapezoidal, Method::Gear2] {
+        let mut simulator = simulator(&inverter);
+        let waveforms = simulator
+            .transient(&transient(5e-8, None, method), &unknown)
+            .expect("an inverter transient");
+        let out = index(&simulator, "out");
+        let first = waveforms.values.first().expect("initial point")[out];
+        let last = waveforms.values.last().expect("final point")[out];
+        assert_close(first, 5.0, 1e-4);
+        assert!(last.abs() < 1e-3, "{method:?}: settled output {last:e} V");
     }
 }
 

@@ -197,6 +197,7 @@ fn read_at_dc(options: &Options) -> Options {
         charge_tolerance: unread.charge_tolerance,
         max_transient_iterations: unread.max_transient_iterations,
         truncation_tolerance: unread.truncation_tolerance,
+        error_control: unread.error_control,
         max_memory: unread.max_memory,
         record: unread.record,
         regions: unread.regions,
