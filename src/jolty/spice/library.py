@@ -17,11 +17,11 @@ reflects the library temperature.
 import math
 import threading
 from collections import OrderedDict
-from collections.abc import Mapping, MutableMapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Self
+from typing import Final, Never, Self
 
 from jolty import _core, ir
 from jolty.builder import Component
@@ -35,6 +35,7 @@ from jolty.spice._initial import (
     GROUND,
     INITIAL,
     Built,
+    DualBuilt,
     collect_node_voltages,
     parse_voltages,
     prefixed_inductors,
@@ -48,22 +49,25 @@ from jolty.spice._params import (
     NO_MODELS,
     OPTIONS,
     PARAMETERS,
-    STEP,
+    CallKey,
     Drawing,
     GlobalPlan,
-    Probe,
     Sample,
+    StatisticalRecorder,
     Subcircuit,
     TrackedScope,
     build_global_plan,
     check_cycle,
+    dependency_graph,
     evaluate_stochastic,
     extract_multiplier,
+    extract_multiplier_dual,
     parse_assignments,
     parse_function,
     parse_options,
     parse_pins_and_parameters,
     resolve_into,
+    resolve_into_dual,
     retarget_global_plan,
     standard_deviation,
 )
@@ -102,14 +106,19 @@ from jolty.spice._translate import (
     TranslationOptions,
 )
 from jolty.spice.expressions import (
+    Dual,
+    DualDraw,
     Expression,
     Function,
     Name,
+    Scalar,
     UndefinedError,
     evaluate,
+    has_derivatives,
     inlined,
+    primal,
 )
-from jolty.spice.models import ModelCard
+from jolty.spice.models import BinBounds, ModelCard
 from jolty.spice.netlist import Statement, tokens
 from jolty.spice.ngspice import Compatibility
 
@@ -125,11 +134,14 @@ __all__ = [
     "SIZES",
     "TRANSMISSION_LINE",
     "VERILOG_A",
+    "BinBounds",
     "IntegrationMethod",
     "Library",
     "PeriodicSteadyStateCard",
     "Sample",
     "Subcircuit",
+    "SubcircuitDerivatives",
+    "SubcircuitPlacement",
     "UnbinnedError",
     "Use",
     "load",
@@ -162,6 +174,172 @@ class _IndexedBin:
     card: ModelCard
     static_bounds: tuple[float, float, float, float] | None
     dynamic: bool
+
+
+_EMPTY_FLOATS: Final[Mapping[str, float]] = MappingProxyType({})
+"""Empty read-only mapping used as default baseline parameters on placements."""
+
+
+def _fold_unique_arguments(
+    arguments: Mapping[str, float],
+) -> tuple[dict[str, float], dict[str, str]]:
+    """Case-folds `arguments`, rejecting duplicate folded keys and non-finite values."""
+    folded: dict[str, float] = {}
+    labels: dict[str, str] = {}
+    for key, value in arguments.items():
+        if not math.isfinite(value):
+            message = f"parameter `{key}` must be finite, not {value!r}"
+            raise SpiceError(message)
+        lower = key.casefold()
+        if lower in labels:
+            message = f"duplicate parameter `{key}` collides with `{labels[lower]}`"
+            raise SpiceError(message)
+        folded[lower] = float(value)
+        labels[lower] = key
+    return folded, labels
+
+
+def _merge_subcircuit_arguments(
+    base: Mapping[str, float], overrides: Mapping[str, float]
+) -> dict[str, float]:
+    """Merges `overrides` onto `base` case-insensitively without duplicate keys."""
+    merged = dict(base)
+    by_folded = {key.casefold(): key for key in merged}
+    seen_override: dict[str, str] = {}
+    for key, value in overrides.items():
+        lower = key.casefold()
+        if lower in seen_override:
+            message = (
+                f"duplicate parameter `{key}` collides with `{seen_override[lower]}`"
+            )
+            raise SpiceError(message)
+        seen_override[lower] = key
+        existing = by_folded.get(lower)
+        if existing is not None and existing != key:
+            del merged[existing]
+        merged[key] = value
+        by_folded[lower] = key
+    return merged
+
+
+@dataclass(frozen=True, slots=True)
+class SubcircuitDerivatives:
+    """Translated subcircuit paired with exact parameter Jacobian and active bins.
+
+    `derivatives` maps each hierarchical device path and dotted primitive parameter
+    name to `{argument_name: d(device_parameter) / d(argument_name)}`. `bins` maps
+    each binned MOSFET device path to its active [`BinBounds`][jolty.spice.BinBounds].
+    """
+
+    component: Component
+    """Translated nominal component at the evaluated subcircuit arguments."""
+    arguments: Mapping[str, float]
+    """Evaluated values of the differentiated subcircuit arguments."""
+    parameters: Mapping[str, Mapping[str, float]]
+    """Numeric primitive device parameters keyed by device path and dotted name."""
+    derivatives: Mapping[str, Mapping[str, Mapping[str, float]]]
+    """Exact Jacobian `device_path -> device_parameter -> argument_name -> slope`."""
+    bins: Mapping[str, BinBounds]
+    """Active MOSFET bin rectangles keyed by hierarchical device path."""
+
+    def push(self, tangents: Mapping[str, float]) -> dict[str, dict[str, float]]:
+        """Pushes subcircuit argument `tangents` forward to primitive device tangents.
+
+        Args:
+            tangents: Perturbations keyed by subcircuit argument names in
+                `self.arguments`.
+
+        Returns:
+            Nonzero primitive device parameter tangents keyed by
+            `device_path -> device_parameter`.
+
+        Raises:
+            ValueError: When `tangents` names an argument outside `self.arguments`.
+        """
+        for argument in tangents:
+            if argument not in self.arguments:
+                expected = ", ".join(f"`{name}`" for name in self.arguments)
+                message = (
+                    f"unknown subcircuit argument `{argument}`; differentiated "
+                    f"arguments are {expected or 'none'}"
+                )
+                raise ValueError(message)
+        pushed: dict[str, dict[str, float]] = {}
+        for device_path, device_parameters in self.derivatives.items():
+            device_tangents: dict[str, float] = {}
+            for parameter_name, slopes in device_parameters.items():
+                total = sum(
+                    slope * tangents[argument]
+                    for argument, slope in slopes.items()
+                    if argument in tangents
+                )
+                if total != 0.0:
+                    device_tangents[parameter_name] = total
+            if device_tangents:
+                pushed[device_path] = device_tangents
+        return pushed
+
+    def pull(self, cotangents: Mapping[str, Mapping[str, float]]) -> dict[str, float]:
+        """Pulls primitive device `cotangents` back to subcircuit argument gradients.
+
+        Devices in `cotangents` outside `self.derivatives` are ignored so a full
+        circuit VJP dictionary can be passed directly.
+
+        Args:
+            cotangents: Primitive device parameter gradients keyed by
+                `device_path -> device_parameter`.
+
+        Returns:
+            Gradient dictionary containing every argument in `self.arguments`.
+        """
+        pulled = dict.fromkeys(self.arguments, 0.0)
+        for device_path, device_cotangents in cotangents.items():
+            device_jacobian = self.derivatives.get(device_path)
+            if device_jacobian is None:
+                continue
+            for parameter_name, cotangent in device_cotangents.items():
+                slopes = device_jacobian.get(parameter_name)
+                if slopes is None:
+                    continue
+                for argument, slope in slopes.items():
+                    pulled[argument] += cotangent * slope
+        return pulled
+
+
+@dataclass(frozen=True, slots=True)
+class SubcircuitPlacement:
+    """Binding of a SPICE subcircuit in `library` with baseline call arguments.
+
+    Pass a mapping `{instance_path: placement}` to `jolty.function` or
+    `jolty.jax.function` to differentiate circuits through SPICE subcircuit parameters
+    (such as MOSFET `w`, `l`, `nf`, or `mult`).
+    """
+
+    library: Library
+    subcircuit: str
+    parameters: Mapping[str, float] = field(default_factory=lambda: _EMPTY_FLOATS)
+
+    def component(self, **overrides: float) -> Component:
+        """Builds this subcircuit as a component with `overrides` over `parameters`."""
+        merged = _merge_subcircuit_arguments(self.parameters, overrides)
+        return self.library.component(self.subcircuit, **merged)
+
+    def derivatives(
+        self,
+        path: str = "",
+        /,
+        *,
+        with_respect_to: Sequence[str] | None = None,
+        **overrides: float,
+    ) -> SubcircuitDerivatives:
+        """Evaluates this subcircuit, its exact Jacobian, and active MOSFET bins."""
+        merged = _merge_subcircuit_arguments(self.parameters, overrides)
+        return self.library.derivatives(
+            self.subcircuit,
+            path,
+            with_respect_to=with_respect_to,
+            **merged,
+        )
 
 
 def _devices(placed: Component, prefix: str) -> dict[str, dict[str, float]]:
@@ -645,10 +823,206 @@ class Library:
         prefix = f"{path}{ir.SEPARATOR}" if path else ""
         return prefixed_inductors(built.initial.inductors, prefix)
 
+    def placement(self, name: str, /, **parameters: float) -> SubcircuitPlacement:
+        """Creates a reusable [`SubcircuitPlacement`][jolty.spice.SubcircuitPlacement].
+
+        Validates that subcircuit `name` exists and `parameters` contains finite,
+        case-insensitively unique values.
+
+        Args:
+            name: Subcircuit name to bind (matched case-insensitively).
+            **parameters: Baseline numeric overrides for subcircuit parameters or `m`.
+
+        Returns:
+            Immutable `SubcircuitPlacement` binding `self`, `name`, and `parameters`.
+
+        Raises:
+            SpiceError: When `name` is undefined or `parameters` has duplicates or
+                non-finite values.
+        """
+        subcircuit = self._subcircuits.get(name.casefold())
+        if subcircuit is None:
+            message = f"no subcircuit is named `{name}`"
+            raise SpiceError(message)
+        _fold_unique_arguments(parameters)
+        return SubcircuitPlacement(
+            self, subcircuit.name, MappingProxyType(dict(parameters))
+        )
+
+    def derivatives(
+        self,
+        name: str,
+        path: str = "",
+        /,
+        *,
+        with_respect_to: Sequence[str] | None = None,
+        **parameters: float,
+    ) -> SubcircuitDerivatives:
+        """Evaluates subcircuit `name`, exact parameter Jacobian, and active bin bounds.
+
+        Propagates exact first-order dual numbers through SPICE parameter expressions,
+        user `.func` calls, `.model` cards, geometry transforms, and nested `X`
+        placements in one pass.
+
+        When `with_respect_to` is omitted, differentiates every passed keyword in
+        `parameters`, or every independent root default in `name` when no keywords are
+        passed. When `with_respect_to` is provided, differentiates exactly those
+        subcircuit arguments (evaluating omitted defaults at their nominal values
+        before seeding).
+
+        Args:
+            name: Subcircuit name to differentiate (matched case-insensitively).
+            path: Optional hierarchical placement path prefixing returned device keys.
+            with_respect_to: Optional sequence of subcircuit argument names to
+                differentiate.
+            **parameters: Numeric overrides for subcircuit formal parameters or `m`.
+
+        Returns:
+            [`SubcircuitDerivatives`][jolty.spice.SubcircuitDerivatives] containing the
+            built component, argument values, primitive parameters, exact Jacobian, and
+            active MOSFET [`BinBounds`][jolty.spice.BinBounds].
+
+        Raises:
+            SpiceError: When `name` or any requested argument is undefined, arguments
+                are non-finite or duplicated, or SPICE translation fails.
+        """
+        subcircuit = self._subcircuits.get(name.casefold())
+        if subcircuit is None:
+            message = f"no subcircuit is named `{name}`"
+            raise SpiceError(message)
+        folded_given, given_labels = _fold_unique_arguments(parameters)
+        plan = self._plan()
+        seed_labels = self._seed_labels(
+            subcircuit, folded_given, given_labels, with_respect_to
+        )
+        seeded_given, argument_values = self._seed_arguments(
+            subcircuit, plan.nominal, folded_given, seed_labels
+        )
+        dual_built = self._build_dual(
+            subcircuit,
+            plan.nominal,
+            seeded_given,
+            Drawing(None, ""),
+            temperature=plan.temperature,
+            temperature_dependent=plan.temperature_dependent,
+        )
+        prefix = f"{path}{ir.SEPARATOR}" if path else ""
+        device_parameters = {
+            device_path: MappingProxyType(values)
+            for device_path, values in _devices(
+                dual_built.built.component, prefix
+            ).items()
+        }
+        prefixed_derivatives = {
+            f"{prefix}{device_path}": parameters_map
+            for device_path, parameters_map in dual_built.derivatives.items()
+        }
+        prefixed_bins = {
+            f"{prefix}{device_path}": bin_bounds
+            for device_path, bin_bounds in dual_built.bins.items()
+        }
+        return SubcircuitDerivatives(
+            component=dual_built.built.component,
+            arguments=MappingProxyType(argument_values),
+            parameters=MappingProxyType(device_parameters),
+            derivatives=MappingProxyType(prefixed_derivatives),
+            bins=MappingProxyType(prefixed_bins),
+        )
+
+    def _seed_labels(
+        self,
+        subcircuit: Subcircuit,
+        folded_given: Mapping[str, float],
+        given_labels: Mapping[str, str],
+        with_respect_to: Sequence[str] | None,
+    ) -> dict[str, str]:
+        """Selects `{folded_name: output_label}` for `Library.derivatives`."""
+        if with_respect_to is None:
+            if folded_given:
+                return dict(given_labels)
+            with self._cache_lock:
+                library_functions = dict(self.functions)
+            scoped = (
+                {**library_functions, **subcircuit.functions}
+                if subcircuit.functions
+                else library_functions
+            )
+            inlined_defaults = {
+                key: inlined(expression, scoped)
+                for key, expression in subcircuit.defaults.items()
+            }
+            in_degree, _ = dependency_graph(inlined_defaults)
+            return {
+                key: key for key in subcircuit.defaults if in_degree.get(key, 0) == 0
+            }
+        labels: dict[str, str] = {}
+        for requested in with_respect_to:
+            lower = requested.casefold()
+            if lower in labels:
+                message = (
+                    f"duplicate parameter `{requested}` collides with `{labels[lower]}`"
+                )
+                raise SpiceError(message)
+            if lower != "m" and lower not in subcircuit.defaults:
+                message = f"`{subcircuit.name}` has no parameter `{requested}`"
+                raise subcircuit.statement.fail(message)
+            labels[lower] = requested
+        return labels
+
+    def _seed_arguments(
+        self,
+        subcircuit: Subcircuit,
+        scope: Mapping[str, float],
+        folded_given: Mapping[str, float],
+        seed_labels: Mapping[str, str],
+    ) -> tuple[dict[str, Scalar[str]], dict[str, float]]:
+        """Builds dual-seeded overrides and nominal argument values."""
+        omitted_seeds = [key for key in seed_labels if key not in folded_given]
+        resolved_nominal: dict[str, float] = {}
+        if any(key != "m" or key in subcircuit.defaults for key in omitted_seeds):
+            multiplier, remaining = extract_multiplier(subcircuit, folded_given)
+            local = dict(scope)
+            local.update(remaining)
+            defaults = {
+                parameter: default
+                for parameter, default in subcircuit.defaults.items()
+                if parameter not in remaining
+            }
+            scoped_functions = self._scoped_functions(subcircuit)
+            self._resolve_defaults(
+                defaults,
+                local,
+                Drawing(None, ""),
+                scoped_functions,
+                surveying=False,
+                temperature_dependent=frozenset(),
+            )
+            resolved_nominal = local
+            if "m" not in subcircuit.defaults:
+                resolved_nominal["m"] = multiplier
+        seeded: dict[str, Scalar[str]] = dict(folded_given)
+        arguments: dict[str, float] = {}
+        for folded_name, label in seed_labels.items():
+            if folded_name in folded_given:
+                nominal_value = folded_given[folded_name]
+            elif folded_name == "m" and folded_name not in subcircuit.defaults:
+                nominal_value = 1.0
+            else:
+                nominal_value = resolved_nominal[folded_name]
+            if not math.isfinite(nominal_value):
+                message = (
+                    f"parameter `{label}` evaluates to a non-finite value "
+                    f"({nominal_value!r})"
+                )
+                raise SpiceError(message)
+            seeded[folded_name] = Dual.seed(nominal_value, label)
+            arguments[label] = nominal_value
+        return seeded, arguments
+
     def random_variables(
         self, name: str, path: str, /, **parameters: float
     ) -> tuple[ir.RandomVariable, ...]:
-        """Extracts placement random variables and parameter sensitivities for `name`.
+        """Extracts placement random variables and exact sensitivities for `name`.
 
         Inspects every statistical call made inside subcircuit `name` placed at `path`
         (and nested placements) that changes at least one device parameter. Each entry
@@ -656,11 +1030,11 @@ class Library:
         and standard deviation from
         [`standard_deviation`][jolty.spice.standard_deviation].
 
-        Parameter derivatives are computed by central difference with step
-        ``eps^(1/3) * sigma``, exact up to rounding for quadratic polynomials used by
-        open PDKs. Calls with zero standard deviation, calls with no device effect, and
-        shared global library parameters are excluded. Keyword `parameters` override
-        subcircuit defaults.
+        Parameter derivatives are computed exactly in a single forward dual-number
+        pass through SPICE expressions, model cards, and geometry transforms. Calls
+        with zero standard deviation, calls with no device effect, and shared global
+        library parameters are excluded. Keyword `parameters` override subcircuit
+        defaults.
 
         Args:
             name: Subcircuit name to inspect for statistical variation.
@@ -672,55 +1046,53 @@ class Library:
 
         Raises:
             SpiceError: When `name` is undefined, contains unsupported syntax, or a
-                statistical perturbation alters the set of emitted devices or keys.
+                statistical call has a non-finite mean, standard deviation, or
+                derivative.
         """
-        given = {key.casefold(): value for key, value in parameters.items()}
-
-        def read(probe: Probe) -> dict[str, dict[str, float]]:
-            placed = self._placed(name, Drawing(probe, path), given).component
-            return _devices(placed, f"{path}{ir.SEPARATOR}")
-
-        recorded = Probe()
-        nominal_numbers = read(recorded)
+        subcircuit = self._subcircuits.get(name.casefold())
+        if subcircuit is None:
+            message = f"no subcircuit is named `{name}`"
+            raise SpiceError(message)
+        folded_given, _ = _fold_unique_arguments(parameters)
+        given: dict[str, Scalar[CallKey]] = dict(folded_given)
+        plan = self._plan()
+        recorder = StatisticalRecorder()
+        dual_built = self._build_dual(
+            subcircuit,
+            plan.nominal,
+            given,
+            Drawing(None, path),
+            dual_draws=recorder.draw_dual,
+            temperature=plan.temperature,
+            temperature_dependent=plan.temperature_dependent,
+        )
+        prefix = f"{path}{ir.SEPARATOR}" if path else ""
+        by_call: dict[CallKey, dict[str, dict[str, float]]] = {}
+        for device_path, device_parameters in dual_built.derivatives.items():
+            full_path = f"{prefix}{device_path}"
+            for parameter_name, slopes in device_parameters.items():
+                for call_key, slope in slopes.items():
+                    if slope != 0.0:
+                        by_call.setdefault(call_key, {}).setdefault(full_path, {})[
+                            parameter_name
+                        ] = slope
         found: list[ir.RandomVariable] = []
-        for (scope, call), (function, arguments) in recorded.calls.items():
+        for call_key, (function, arguments) in recorder.calls.items():
+            scope_path, call = call_key
             spread = standard_deviation(function, arguments)
-            if not scope or spread == 0:
+            if not scope_path or spread == 0.0:
                 continue
             if not (math.isfinite(arguments[0]) and math.isfinite(spread)):
                 message = (
-                    f"the call `{call}` of `{scope}` has non-finite mean or standard "
-                    f"deviation ({arguments[0]!r}, {spread!r})"
+                    f"the call `{call}` of `{scope_path}` has non-finite mean or "
+                    f"standard deviation ({arguments[0]!r}, {spread!r})"
                 )
                 raise SpiceError(message)
-            step = STEP * spread
-            if not (step > 0 and math.isfinite(step)):
-                continue
-            up, down = (read(Probe((scope, call), sign * step)) for sign in (1.0, -1.0))
-            if not up.keys() == down.keys() == nominal_numbers.keys() or any(
-                up[device].keys() != down[device].keys() for device in up
-            ):
-                message = (
-                    f"the call `{call}` of `{scope}` changes which devices or numbers "
-                    f"`{name}` places, so it has no derivative"
-                )
-                raise SpiceError(message)
-            derivatives = {
-                device: moved
-                for device, numbers in up.items()
-                if (
-                    moved := {
-                        parameter_name: (value - down[device][parameter_name])
-                        / (2 * step)
-                        for parameter_name, value in numbers.items()
-                        if value != down[device][parameter_name]
-                    }
-                )
-            }
-            if derivatives:
+            derivatives = by_call.get(call_key)
+            if derivatives is not None:
                 found.append(
                     ir.RandomVariable(
-                        instance=scope,
+                        instance=scope_path,
                         name=call,
                         mean=arguments[0],
                         standard_deviation=spread,
@@ -805,15 +1177,7 @@ class Library:
             message = f"no subcircuit is named `{name}`"
             raise SpiceError(message)
         plan = self._plan()
-        if isinstance(drawing.sample, Probe):
-            if drawing.sample.moved is None or drawing.sample.moved[0] == "":
-                scope: Mapping[str, float] = evaluate_stochastic(
-                    plan, Drawing(drawing.sample, "")
-                )
-            else:
-                scope = plan.nominal
-        else:
-            scope = self._scope_for_plan(plan, drawing.sample)
+        scope = self._scope_for_plan(plan, drawing.sample)
         given = {key.casefold(): value for key, value in parameters.items()}
         return self._build(
             subcircuit,
@@ -1024,7 +1388,7 @@ class Library:
             if multiplier_symbolic is not None:
                 parent_statistics.bind_symbol("m", multiplier_symbolic)
             parent_statistics.resolve_into(defaults, scopes[1], scoped_functions)
-            options = TranslationOptions(
+            options = TranslationOptions[Never](
                 drawing=drawing,
                 elements=_ELEMENTS,
                 multiplier=multiplier,
@@ -1075,7 +1439,7 @@ class Library:
         if probe_multiplier_expression is not None:
             probe_compiler.scope_symbols["m"] = probe_multiplier_expression
         probe_compiler.resolve_into(defaults, scopes[1], scoped_functions)
-        options = TranslationOptions(
+        options = TranslationOptions[Never](
             drawing=drawing,
             elements=_ELEMENTS,
             multiplier=multiplier,
@@ -1235,7 +1599,7 @@ class Library:
                 temperature=resolved_temperature,
                 temperature_dependent=resolved_temperature_dependent,
             )
-        options = TranslationOptions(
+        options = TranslationOptions[Never](
             drawing=drawing,
             elements=_ELEMENTS,
             multiplier=multiplier,
@@ -1271,13 +1635,82 @@ class Library:
             )
         return built
 
+    def _build_dual[Seed](  # noqa: PLR0913 - dual subcircuit build context
+        self,
+        subcircuit: Subcircuit,
+        scope: Mapping[str, float],
+        given: Mapping[str, Scalar[Seed]],
+        drawing: Drawing,
+        instantiating: tuple[str, ...] = (),
+        *,
+        dual_draws: Callable[[str, str], DualDraw[Seed]] | None = None,
+        temperature: float | None = None,
+        temperature_dependent: frozenset[str] | None = None,
+    ) -> DualBuilt[Seed]:
+        """Builds `subcircuit` in dual-number mode, collecting exact slopes and bins."""
+        key = check_cycle(subcircuit, instantiating)
+        multiplier, remaining = extract_multiplier_dual(subcircuit, given)
+        unknown = sorted(set(remaining) - set(subcircuit.defaults))
+        if unknown:
+            message = f"`{subcircuit.name}` has no parameter `{unknown[0]}`"
+            raise subcircuit.statement.fail(message)
+        resolved_temperature = self.temperature if temperature is None else temperature
+        resolved_temperature_dependent = (
+            self._plan().temperature_dependent
+            if temperature_dependent is None
+            else temperature_dependent
+        )
+        local: dict[str, Scalar[Seed]] = dict(scope)
+        local.update(remaining)
+        defaults = {
+            parameter: default
+            for parameter, default in subcircuit.defaults.items()
+            if parameter not in remaining
+        }
+        if defaults:
+            scoped_functions = self._scoped_functions(subcircuit)
+
+            def draw_for(parameter: str) -> DualDraw[Seed] | None:
+                if dual_draws is None:
+                    return None
+                return dual_draws(drawing.path, parameter)
+
+            resolve_into_dual(defaults, local, draw_for, scoped_functions)
+        values = {
+            parameter: primal(local[parameter])
+            for parameter in subcircuit.defaults
+            if parameter in local
+        }
+        if primal(multiplier) != 1.0 or has_derivatives(multiplier):
+            local["m"] = multiplier
+        if primal(multiplier) != 1.0:
+            values["m"] = primal(multiplier)
+        listed = ",".join(f"{name}={value!r}" for name, value in values.items())
+        name = f"{subcircuit.name}[{listed}]" if values else subcircuit.name
+        name = drawing.named(name)
+        options = TranslationOptions[Seed](
+            drawing=drawing,
+            elements=_ELEMENTS,
+            multiplier=multiplier,
+            parsed_models=self._parsed_models,
+            lock=self._cache_lock,
+            instantiating=(*instantiating, key),
+            temperature=resolved_temperature,
+            temperature_dependent=resolved_temperature_dependent,
+            differentiating=True,
+            dual_draws=dual_draws,
+        )
+        return Translation(self, subcircuit, (scope, local), options).translate_dual(
+            name
+        )
+
     def _translate_cached(  # noqa: PLR0913 - nominal build context and compiler inputs
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
         local: dict[str, float],
         name: str,
-        options: TranslationOptions,
+        options: TranslationOptions[Never],
         *,
         body_temperature_keys: frozenset[str],
         given: Mapping[str, float],
@@ -1303,7 +1736,7 @@ class Library:
         compiler = StatisticalCompiler(self._global_symbolic_plan())
         compiler.set_given(given)
         compiler.resolve_into(defaults, local, scoped_functions)
-        compiled_options = TranslationOptions(
+        compiled_options = TranslationOptions[Never](
             drawing=options.drawing,
             elements=options.elements,
             multiplier=options.multiplier,
@@ -1448,6 +1881,32 @@ class Library:
         Returns:
             Matching binned `ModelCard`, or `None` when no bin matches `instance`.
         """
+        matched = self.binned_with_bounds(
+            name, local, instance, scope, functions=functions
+        )
+        return None if matched is None else matched[0]
+
+    def binned_with_bounds(
+        self,
+        name: str,
+        local: Mapping[str, ModelCard],
+        instance: Mapping[str, float],
+        scope: Mapping[str, float],
+        *,
+        functions: Mapping[str, Function] = NO_FUNCTIONS,
+    ) -> tuple[ModelCard, BinBounds] | None:
+        """Selects the binned MOSFET card and its active `BinBounds` for `instance`.
+
+        Args:
+            name: Base model name without numeric bin suffix.
+            local: Subcircuit-local model cards keyed by case-folded name.
+            instance: Evaluated MOSFET instance attributes including `l`, `w`, and `nf`.
+            scope: Case-folded parameter values in scope for evaluating bin bounds.
+            functions: Case-folded user-defined functions inlined before evaluation.
+
+        Returns:
+            Pair `(card, bounds)` for the matching bin, or `None` when none matches.
+        """
         if "l" not in instance or "w" not in instance:
             return None
         finger_count = self.fingers(instance)
@@ -1459,18 +1918,32 @@ class Library:
         size = (instance["l"], instance["w"] / finger_count)
         base = name.casefold()
         for key, card in reversed(list(local.items())):
-            if bin_base(key) == base and models.holds(
-                card, scope, size, functions=functions
-            ):
-                return card
+            if bin_base(key) == base:
+                card_bounds = models.bounds(card, scope, functions=functions)
+                if card_bounds is not None and models.bounds_hold(card_bounds, size):
+                    return card, BinBounds(
+                        model=card.name,
+                        min_length=card_bounds[0],
+                        max_length=card_bounds[1],
+                        min_width=card_bounds[2],
+                        max_width=card_bounds[3],
+                        finger_divisor=finger_count,
+                    )
         for entry in reversed(self._global_bins(base)):
-            if entry.dynamic:
-                if models.holds(entry.card, scope, size, functions=functions):
-                    return entry.card
-            elif entry.static_bounds is not None and models.bounds_hold(
-                entry.static_bounds, size
-            ):
-                return entry.card
+            card_bounds = (
+                models.bounds(entry.card, scope, functions=functions)
+                if entry.dynamic
+                else entry.static_bounds
+            )
+            if card_bounds is not None and models.bounds_hold(card_bounds, size):
+                return entry.card, BinBounds(
+                    model=entry.card.name,
+                    min_length=card_bounds[0],
+                    max_length=card_bounds[1],
+                    min_width=card_bounds[2],
+                    max_width=card_bounds[3],
+                    finger_divisor=finger_count,
+                )
         return None
 
     def fingers(self, instance: Mapping[str, float]) -> float:
@@ -1581,6 +2054,30 @@ class Library:
             parent_statistics=parent_statistics,
             hoist_instance=hoist_instance,
             given_probe_stochastic=given_probe_stochastic,
+        )
+
+    def place_dual[Seed](  # noqa: PLR0913 - dual subcircuit placement state
+        self,
+        subcircuit: Subcircuit,
+        scope: Mapping[str, float],
+        given: Mapping[str, Scalar[Seed]],
+        drawing: Drawing,
+        instantiating: tuple[str, ...] = (),
+        *,
+        dual_draws: Callable[[str, str], DualDraw[Seed]] | None = None,
+        temperature: float | None = None,
+        temperature_dependent: frozenset[str] | None = None,
+    ) -> DualBuilt[Seed]:
+        """Builds a child `DualBuilt` placement propagating exact dual derivatives."""
+        return self._build_dual(
+            subcircuit,
+            scope,
+            given,
+            drawing,
+            instantiating,
+            dual_draws=dual_draws,
+            temperature=temperature,
+            temperature_dependent=temperature_dependent,
         )
 
     @classmethod

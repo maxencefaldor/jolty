@@ -12,7 +12,7 @@ Scripts write circuits with the builder, from devices whose values carry units a
 
 ::: jolty.spice
     options:
-      members: [load, Library, Sample, standard_deviation, Use, fetch, GROUND]
+      members: [load, Library, BinBounds, SubcircuitDerivatives, SubcircuitPlacement, Sample, standard_deviation, Use, fetch, GROUND]
 
 ::: jolty.spice.kits
 

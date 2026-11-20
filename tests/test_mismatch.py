@@ -249,8 +249,8 @@ def test_a_placements_random_variables_are_its_kits_calls(hbt: Library) -> None:
 
     The card defines `is` as `4.81e-17 (Nx/4) vbic_is (1 + mm_ok (is_mm - 1) / √(m
     Nx))`, so saturation current changes by 1.2025e-17 A per unit of `is_mm` with
-    standard deviation `is_var_mm` (0.038). Central-difference rounding scales as ε
-    divided by step `0.038 * ε^(1/3)` (about 1e-9), so 1e-8 bounds the error.
+    standard deviation `is_var_mm` (0.038). Exact dual-number propagation carries only
+    IEEE-754 floating-point rounding (~45 ε), so 1e-14 bounds the error.
     """
     found = {each.name: each for each in hbt.random_variables("npn13G2", "Q1", mm_ok=1)}
     assert set(found) == {
@@ -261,13 +261,88 @@ def test_a_placements_random_variables_are_its_kits_calls(hbt: Library) -> None:
     assert (saturation.instance, saturation.mean) == ("Q1", 1.0)
     assert saturation.standard_deviation == pytest.approx(0.038, rel=1e-15)
     moved = saturation.derivatives["Q1/Qnpn13G2"]["saturation_current"]
-    assert moved == pytest.approx(4.81e-17 / 4, rel=1e-8)
+    assert moved == pytest.approx(4.81e-17 / 4, rel=1e-14)
     assert set(found["rbx_mm#0"].derivatives["Q1/Qnpn13G2"]) == {
         "extrinsic_base_resistance",
         "intrinsic_base_resistance",
     }
     # Without `mm_ok`, every call's spread is 0, and no random variable is drawn.
     assert hbt.random_variables("npn13G2", "Q1") == ()
+
+
+def test_random_variables_exact_dual_derivatives_match_closed_forms() -> None:
+    """Verifies single-pass dual differentiation for every statistical function.
+
+    Exact forward-mode dual propagation computes nonlinear derivatives across
+    parameters, nested subcircuits, and VBIC thermal networks to IEEE-754 rounding
+    (`rel=1e-14`, ~45 eps). Global, zero-spread, and unused draws are excluded.
+    """
+    loaded = Library()
+    loaded.read(
+        ".param global_lot = agauss(1, 0.1, 1)\n"
+        ".subckt inner a b\n"
+        ".param p = agauss(2, 0.2, 3)\n"
+        "R1 a b {1k * exp(p)}\n"
+        ".ends\n"
+        ".subckt outer a b c e s dt\n"
+        ".param g = gauss(10, 0.1, 3)\n"
+        ".param u = aunif(4, 0.5)\n"
+        ".param r = unif(2, 0.25)\n"
+        ".param lim = limit(5, 0.4)\n"
+        ".param zero_spread = agauss(3, 0, 1)\n"
+        ".param unused_draw = agauss(7, 0.5, 1)\n"
+        ".param rth_draw = agauss(1, 0.1, 1)\n"
+        ".param cth_draw = agauss(1, 0.2, 1)\n"
+        ".model qself npn level=4 rth={100 * rth_draw} cth={1n * cth_draw}\n"
+        "R1 a b {100 * (sqrt(g) + u * r) + lim * lim + 0 * zero_spread + global_lot}\n"
+        "X1 a b inner\n"
+        "Q1 c b e s dt qself\n"
+        ".ends\n",
+        "mismatch.lib",
+    )
+    found = {
+        (variable.instance, variable.name): variable
+        for variable in loaded.random_variables("outer", "U1")
+    }
+    assert set(found) == {
+        ("U1", "g#0"),
+        ("U1", "u#0"),
+        ("U1", "r#0"),
+        ("U1", "lim#0"),
+        ("U1", "rth_draw#0"),
+        ("U1", "cth_draw#0"),
+        ("U1/X1", "p#0"),
+    }
+    assert found["U1", "g#0"].mean == 10.0
+    assert found["U1", "g#0"].standard_deviation == pytest.approx(1.0 / 3.0, rel=1e-14)
+    assert found["U1", "g#0"].derivatives["U1/R1"]["resistance"] == pytest.approx(
+        100.0 / (2.0 * math.sqrt(10.0)), rel=1e-14
+    )
+    assert found["U1", "u#0"].standard_deviation == pytest.approx(
+        0.5 / math.sqrt(3.0), rel=1e-14
+    )
+    assert found["U1", "u#0"].derivatives["U1/R1"]["resistance"] == pytest.approx(
+        200.0, rel=1e-14
+    )
+    assert found["U1", "r#0"].standard_deviation == pytest.approx(
+        0.5 / math.sqrt(3.0), rel=1e-14
+    )
+    assert found["U1", "r#0"].derivatives["U1/R1"]["resistance"] == pytest.approx(
+        400.0, rel=1e-14
+    )
+    assert found["U1", "lim#0"].standard_deviation == pytest.approx(0.4, rel=1e-14)
+    assert found["U1", "lim#0"].derivatives["U1/R1"]["resistance"] == pytest.approx(
+        10.0, rel=1e-14
+    )
+    assert found["U1/X1", "p#0"].derivatives["U1/X1/R1"]["resistance"] == pytest.approx(
+        1000.0 * math.exp(2.0), rel=1e-14
+    )
+    assert found["U1", "rth_draw#0"].derivatives["U1/Q1.rth"][
+        "resistance"
+    ] == pytest.approx(100.0, rel=1e-14)
+    assert found["U1", "cth_draw#0"].derivatives["U1/Q1.cth"][
+        "capacitance"
+    ] == pytest.approx(1e-9, rel=1e-14)
 
 
 def test_each_statistical_function_spreads_as_it_draws() -> None:

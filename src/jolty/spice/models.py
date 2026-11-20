@@ -16,7 +16,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Final
+from typing import Final, Never
 
 from pydantic import JsonValue
 
@@ -25,20 +25,103 @@ from jolty.devices import BSIM3_BINNED, BSIM3_CARD, BSIM4_BINNED, BSIM4_CARD
 from jolty.errors import SpiceError
 from jolty.spice.expressions import (
     Draw,
+    Dual,
+    DualDraw,
     Expression,
     Function,
     Number,
+    Scalar,
+    compact,
+    dual_max,
+    dual_min,
+    dual_power,
     evaluate,
+    evaluate_dual,
+    has_derivatives,
     inlined,
+    is_finite,
     nominal,
     number,
     parse,
+    primal,
 )
 from jolty.spice.netlist import Statement, tokens
-from jolty.units import celsius
+from jolty.units import LENGTH, ZERO_CELSIUS, Quantity
 
 type Table = Mapping[str, tuple[str, float]]
 """Mapping from SPICE parameter names to `(jolty_name, si_scale_factor)`."""
+
+type DualJsonValue[Seed] = (
+    bool
+    | int
+    | float
+    | str
+    | Dual[Seed]
+    | list[DualJsonValue[Seed]]
+    | dict[str, DualJsonValue[Seed]]
+    | None
+)
+"""JSON-like device parameter value whose numeric leaves may carry `Dual` slopes."""
+
+
+def _split_dual_value[Seed](
+    path: str,
+    entry: DualJsonValue[Seed],
+    derivatives: dict[str, dict[Seed, float]],
+    statement: Statement,
+) -> JsonValue:
+    """Recursively splits primal JSON leaves from sparse `Dual` derivatives."""
+    if isinstance(entry, Dual):
+        if not is_finite(entry):
+            message = (
+                f"parameter `{path}` evaluates to a non-finite value or derivative "
+                f"({entry.value!r})"
+            )
+            raise statement.fail(message)
+        if entry.derivatives:
+            derivatives[path] = dict(entry.derivatives)
+        return entry.value
+    if isinstance(entry, dict):
+        return {
+            key: _split_dual_value(
+                f"{path}.{key}" if path else key, value, derivatives, statement
+            )
+            for key, value in entry.items()
+        }
+    if isinstance(entry, list):
+        return [
+            _split_dual_value(
+                f"{path}.{index}" if path else str(index),
+                value,
+                derivatives,
+                statement,
+            )
+            for index, value in enumerate(entry)
+        ]
+    return entry
+
+
+def split_dual_parameters[Seed](
+    raw: Mapping[str, DualJsonValue[Seed]],
+    statement: Statement,
+) -> tuple[dict[str, JsonValue], dict[str, dict[Seed, float]]]:
+    """Separates primal JSON device parameters from dotted-path `Dual` derivatives.
+
+    Args:
+        raw: Device parameter mapping whose numeric leaves may be `Dual` numbers.
+        statement: Element statement used to attribute non-finite errors.
+
+    Returns:
+        Pair of `(parameters, derivatives)` where `parameters` is pure `JsonValue`
+        and `derivatives` maps dotted parameter paths (matching `ir.numbers`) to
+        non-empty `{seed: derivative}` dictionaries.
+    """
+    parameters: dict[str, JsonValue] = {}
+    derivatives: dict[str, dict[Seed, float]] = {}
+    for key, entry in raw.items():
+        parameters[key] = _split_dual_value(key, entry, derivatives, statement)
+    return parameters, derivatives
+
 
 _EMPTY_STRINGS: Final[Mapping[str, str]] = MappingProxyType({})
 _EMPTY_SCALES: Final[Mapping[str, float]] = MappingProxyType({})
@@ -777,13 +860,13 @@ OWN_TEMPERATURES: Final = frozenset(
 ``T_ABS``/``T_REL_*`` and ngspice ``TEMP``/``DTEMP``)."""
 
 
-def nominal_temperature(
-    card: Mapping[str, float],
+def nominal_temperature_dual[Seed](
+    card: Mapping[str, Scalar[Seed]],
     statement: Statement,
     *,
     allow_tref: bool = False,
-) -> dict[str, JsonValue]:
-    """Extracts a single nominal measurement temperature in kelvins from `card`.
+) -> dict[str, DualJsonValue[Seed]]:
+    """Extracts a single nominal measurement temperature in kelvins (plain or dual).
 
     Accepts ``TNOM`` and PSpice ``T_MEASURED`` (plus HSPICE ``TREF`` when
     `allow_tref` is true), converting from degrees Celsius to kelvins.
@@ -808,7 +891,61 @@ def nominal_temperature(
         raise statement.fail(message)
     if given:
         (value,) = given.values()
-        return {"nominal_temperature": celsius(value).value}
+        return {"nominal_temperature": value + ZERO_CELSIUS}
+    return {}
+
+
+def nominal_temperature(
+    card: Mapping[str, float],
+    statement: Statement,
+    *,
+    allow_tref: bool = False,
+) -> dict[str, JsonValue]:
+    """Extracts a single nominal measurement temperature in kelvins from `card`.
+
+    Accepts ``TNOM`` and PSpice ``T_MEASURED`` (plus HSPICE ``TREF`` when
+    `allow_tref` is true), converting from degrees Celsius to kelvins.
+
+    Args:
+        card: Evaluated model-card parameter values keyed by case-folded SPICE name.
+        statement: Statement used for error attribution.
+        allow_tref: Whether HSPICE ``TREF`` is accepted as an alias for ``TNOM``.
+
+    Returns:
+        Single-entry dictionary setting ``"nominal_temperature"`` in kelvins, or an
+        empty dictionary.
+
+    Raises:
+        SpiceError: When `card` specifies more than one nominal-temperature key.
+    """
+    return split_dual_parameters(
+        nominal_temperature_dual(card, statement, allow_tref=allow_tref), statement
+    )[0]
+
+
+def _own_temperature_scalar[Seed](
+    card: Mapping[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
+    statement: Statement,
+) -> dict[str, DualJsonValue[Seed]]:
+    """Extracts a per-device temperature or offset in plain or dual scalar mode."""
+    given = {
+        name: value
+        for name, value in (*card.items(), *instance.items())
+        if name in OWN_TEMPERATURES
+    }
+    if "t_rel_local" in given:
+        message = "jolty reads no `T_REL_LOCAL`, relative to an inherited card"
+        raise statement.fail(message)
+    if len(given) > 1:
+        names = ", ".join(f"`{name.upper()}`" for name in given)
+        message = f"the device sets its own temperature twice: {names}"
+        raise statement.fail(message)
+    match given:
+        case {"t_abs": value} | {"temp": value}:
+            return {"temperature": value + ZERO_CELSIUS}
+        case {"t_rel_global": value} | {"dtemp": value}:
+            return {"temperature_offset": value}
     return {}
 
 
@@ -834,29 +971,28 @@ def own_temperature(
         SpiceError: When temperature is specified more than once or uses unsupported
             ``T_REL_LOCAL`` inheritance offsets.
     """
-    given = {
-        name: value
-        for name, value in (*card.items(), *instance.items())
-        if name in OWN_TEMPERATURES
-    }
-    if "t_rel_local" in given:
-        message = "jolty reads no `T_REL_LOCAL`, relative to an inherited card"
-        raise statement.fail(message)
-    if len(given) > 1:
-        names = ", ".join(f"`{name.upper()}`" for name in given)
-        message = f"the device sets its own temperature twice: {names}"
-        raise statement.fail(message)
-    match given:
-        case {"t_abs": value} | {"temp": value}:
-            return {"temperature": celsius(value).value}
-        case {"t_rel_global": value} | {"dtemp": value}:
-            return {"temperature_offset": value}
-    return {}
+    return split_dual_parameters(
+        _own_temperature_scalar(card, instance, statement), statement
+    )[0]
+
+
+def own_temperature_dual[Seed](
+    card: Mapping[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
+    statement: Statement,
+) -> dict[str, DualJsonValue[Seed]]:
+    """Dual-mode counterpart of `own_temperature` preserving partial derivatives."""
+    return _own_temperature_scalar(card, instance, statement)
 
 
 def _nominal(_name: str) -> Draw:
     """Returns the default nominal-value callback for statistical parameters."""
     return nominal
+
+
+def _no_dual_draw(_name: str) -> None:
+    """Returns `None` so dual evaluation uses `nominal_dual` by default."""
+    return
 
 
 RESISTOR_CARD: Final = {
@@ -959,6 +1095,45 @@ def geometric_values(
     return values
 
 
+def geometric_values_dual[Seed](
+    card: ModelCard,
+    scope: Mapping[str, Scalar[Seed]],
+    draws: Callable[[str], DualDraw[Seed] | None] = _no_dual_draw,
+    statement: Statement | None = None,
+    *,
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
+) -> dict[str, Scalar[Seed]]:
+    """Evaluates SPICE3 resistor or capacitor `card` parameters in dual mode.
+
+    Args:
+        card: SPICE3 geometric resistor (`r`) or capacitor (`c`) model card.
+        scope: Case-folded scalar or dual parameter scope.
+        draws: Factory mapping each card parameter name to an optional `DualDraw`.
+        statement: Optional element statement overriding `card.statement` for errors.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        Evaluated scalar or `Dual` card parameters keyed by canonical `GEOMETRIC` names.
+    """
+    table = GEOMETRIC[card.kind]
+    target = statement or card.statement
+    raw: dict[str, Scalar[Seed]] = {}
+    values: dict[str, Scalar[Seed]] = {}
+    for name, expression in card.parameters.items():
+        if name not in table:
+            raise unmatched(card, name, target)
+        if table[name] != "bv_max":
+            if type(expression) is Number and math.isfinite(expression.value):
+                evaluated: Scalar[Seed] = float(expression.value)
+            else:
+                resolved = inlined(expression, functions)
+                evaluated = compact(evaluate_dual(resolved, scope, draws(name)))
+            raw[name] = evaluated
+            values[table[name]] = evaluated
+    nominal_temperature_dual(raw, target, allow_tref=card.kind == "r")
+    return values
+
+
 @dataclass(frozen=True, slots=True)
 class Geometric:
     """Resolved resistance or capacitance value and drift parameters from a SPICE3 card.
@@ -969,6 +1144,73 @@ class Geometric:
 
     value: float
     drift: dict[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class GeometricDual[Seed]:
+    """Dual-mode resolved resistance or capacitance value and drift parameters."""
+
+    value: Scalar[Seed]
+    drift: dict[str, Scalar[Seed]]
+
+
+def _geometric_scalar[Seed](
+    card: ModelCard,
+    values: Mapping[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
+    statement: Statement,
+) -> GeometricDual[Seed]:
+    """Computes geometric resistor or capacitor value and drift in scalar or dual."""
+    resistor = card.kind == "r"
+    letter = "r" if resistor else "c"
+    width: Scalar[Seed] = instance.get("w", values.get("defw", DEFAULT_WIDTH))
+    sized = "w" in instance or "l" in instance
+    drift: dict[str, Scalar[Seed]] = {
+        name: value
+        for name, value in values.items()
+        if name in {"tc1", "tc2", "tce", "tnom", "kf", "af"}
+    }
+    if resistor:
+        if primal(values.get("noise", 1.0)) != 1:
+            message = f"`{card.name}` makes no noise, which jolty's resistor makes"
+            raise statement.fail(message)
+        if primal(values.get("kf", 0.0)) != 0 and primal(values.get("ef", 1.0)) != 1:
+            raise unmatched(card, "ef", statement)
+        length: Scalar[Seed] = instance.get(
+            "l", values.get("defl", DEFAULT_RESISTOR_LENGTH)
+        )
+        long = length - 2 * values.get("short", 0.0)
+        wide = width - 2 * values.get("narrow", 0.0)
+        sheet = values.get("rsh", 0.0)
+        if letter in instance:
+            value: Scalar[Seed] = instance[letter]
+        elif primal(length) * primal(width) * primal(sheet) > 0:
+            if primal(wide) == 0:
+                message = f"effective width of `{card.name}` is 0"
+                raise statement.fail(message)
+            value = long / wide * sheet
+        else:
+            value = values.get("r", MIN_RESISTANCE)
+        if "kf" in drift and sized:
+            drift["kf"] = drift["kf"] / _noise_area(card, values, long, wide, statement)
+    else:
+        length = instance.get("l", 0.0)
+        cut = values.get("del")
+        long = length - values.get("short", 0.0 if cut is None else 2 * cut)
+        wide = width - values.get("narrow", 0.0 if cut is None else 2 * cut)
+        thick = values.get("thick", 0.0)
+        relative = values.get("di", SILICA_RELATIVE_PERMITTIVITY)
+        permittivity = relative * VACUUM_PERMITTIVITY
+        area: Scalar[Seed] = values.get(
+            "cj", permittivity / thick if primal(thick) > 0 else 0.0
+        )
+        if letter in instance:
+            value = instance[letter]
+        elif "cap" in values:
+            value = values["cap"]
+        else:
+            value = area * wide * long + values.get("cjsw", 0.0) * 2 * (long + wide)
+    return GeometricDual(value * instance.get("scale", 1.0), drift)
 
 
 def geometric(
@@ -1007,83 +1249,53 @@ def geometric(
         SpiceError: When a resistor card disables thermal noise or sets flicker
             frequency exponent ``EF`` to a value other than 1.
     """
-    resistor = card.kind == "r"
-    letter = "r" if resistor else "c"
-    width = instance.get("w", values.get("defw", DEFAULT_WIDTH))
-    sized = "w" in instance or "l" in instance
-    drift = {
-        name: value
-        for name, value in values.items()
-        if name in {"tc1", "tc2", "tce", "tnom", "kf", "af"}
-    }
-    if resistor:
-        if values.get("noise", 1.0) != 1:
-            message = f"`{card.name}` makes no noise, which jolty's resistor makes"
-            raise statement.fail(message)
-        if values.get("kf", 0.0) != 0 and values.get("ef", 1.0) != 1:
-            raise unmatched(card, "ef", statement)
-        length = instance.get("l", values.get("defl", DEFAULT_RESISTOR_LENGTH))
-        long = length - 2 * values.get("short", 0.0)
-        wide = width - 2 * values.get("narrow", 0.0)
-        sheet = values.get("rsh", 0.0)
-        if letter in instance:
-            value = instance[letter]
-        elif length * width * sheet > 0:
-            if wide == 0:
-                message = f"effective width of `{card.name}` is 0"
-                raise statement.fail(message)
-            value = long / wide * sheet
-        else:
-            value = values.get("r", MIN_RESISTANCE)
-        if "kf" in drift and sized:
-            drift["kf"] /= _noise_area(card, values, long, wide, statement)
-    else:
-        length = instance.get("l", 0.0)
-        cut = values.get("del")
-        long = length - values.get("short", 0.0 if cut is None else 2 * cut)
-        wide = width - values.get("narrow", 0.0 if cut is None else 2 * cut)
-        thick = values.get("thick", 0.0)
-        relative = values.get("di", SILICA_RELATIVE_PERMITTIVITY)
-        permittivity = relative * VACUUM_PERMITTIVITY
-        area = values.get("cj", permittivity / thick if thick > 0 else 0.0)
-        if letter in instance:
-            value = instance[letter]
-        elif "cap" in values:
-            value = values["cap"]
-        else:
-            value = area * wide * long + values.get("cjsw", 0.0) * 2 * (long + wide)
-    return Geometric(value * instance.get("scale", 1.0), drift)
+    built = _geometric_scalar(card, values, instance, statement)
+    return Geometric(
+        primal(built.value),
+        {name: primal(amount) for name, amount in built.drift.items()},
+    )
 
 
-def _noise_area(
+def geometric_dual[Seed](
     card: ModelCard,
-    values: Mapping[str, float],
-    long: float,
-    wide: float,
+    values: Mapping[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> float:
+) -> GeometricDual[Seed]:
+    """Dual-mode counterpart of `geometric` preserving exact partial derivatives."""
+    return _geometric_scalar(card, values, instance, statement)
+
+
+def _noise_area[Seed](
+    card: ModelCard,
+    values: Mapping[str, Scalar[Seed]],
+    long: Scalar[Seed],
+    wide: Scalar[Seed],
+    statement: Statement,
+) -> Scalar[Seed]:
     """Computes the effective flicker-noise area of a geometric resistor card.
 
     Raises:
         SpiceError: When effective dimensions or exponents yield a non-positive,
             overflowing, or non-finite area.
     """
-    if not (long > 0 and wide > 0):
+    if not (primal(long) > 0 and primal(wide) > 0):
         message = (
             f"effective length and width of `{card.name}` are positive for flicker "
-            f"noise, not {long!r} and {wide!r}"
+            f"noise, not {primal(long)!r} and {primal(wide)!r}"
         )
         raise statement.fail(message)
     length_exponent = values.get("lf", 1.0)
     width_exponent = values.get("wf", 1.0)
     try:
-        area = math.pow(long, length_exponent) * math.pow(wide, width_exponent)
+        area = dual_power(long, length_exponent) * dual_power(wide, width_exponent)
     except OverflowError, ValueError:
         message = f"flicker noise area of `{card.name}` is outside finite range"
         raise statement.fail(message) from None
-    if not (area > 0 and math.isfinite(area)):
+    if not (primal(area) > 0 and is_finite(area)):
         message = (
-            f"flicker noise area of `{card.name}` is positive and finite, not {area!r}"
+            f"flicker noise area of `{card.name}` is positive and finite, not "
+            f"{primal(area)!r}"
         )
         raise statement.fail(message)
     return area
@@ -1298,6 +1510,15 @@ class Made:
     parameters: dict[str, JsonValue]
 
 
+@dataclass(frozen=True, slots=True)
+class MadeDual[Seed]:
+    """Translated jolty device model, SI parameters, and exact partial derivatives."""
+
+    model: str
+    parameters: dict[str, JsonValue]
+    derivatives: dict[str, dict[Seed, float]]
+
+
 def device(  # noqa: PLR0913 - device translation inputs
     card: ModelCard,
     scope: Mapping[str, float],
@@ -1333,65 +1554,112 @@ def device(  # noqa: PLR0913 - device translation inputs
             every[name] = float(expression.value)
         else:
             every[name] = evaluate(inlined(expression, functions), scope, draws(name))
-    own = own_temperature(every, instance, statement)
+    own = _own_temperature_scalar(every, instance, statement)
+    values: dict[str, Scalar[Never]] = {
+        name: value for name, value in every.items() if name not in OWN_TEMPERATURES
+    }
+    clean_instance = {
+        name: value for name, value in instance.items() if name not in OWN_TEMPERATURES
+    }
+    model, raw_parameters = _device(card, values, clean_instance, statement)
+    parameters, _ = split_dual_parameters({**raw_parameters, **own}, statement)
+    return Made(model, parameters)
+
+
+def device_dual[Seed](  # noqa: PLR0913 - dual device translation inputs
+    card: ModelCard,
+    scope: Mapping[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
+    statement: Statement,
+    draws: Callable[[str], DualDraw[Seed] | None] = _no_dual_draw,
+    *,
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
+) -> MadeDual[Seed]:
+    """Translates `card` and `instance` into primal SI parameters and exact derivatives.
+
+    Args:
+        card: Parsed SPICE ``.model`` card describing the device.
+        scope: Case-folded scalar or dual parameter scope.
+        instance: Evaluated element-level scalar or dual parameter overrides.
+        statement: Element statement used for error attribution.
+        draws: Factory mapping each card parameter name to an optional `DualDraw`.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        Translated `MadeDual` bundling model name, primal parameters, and sparse
+        exact derivatives per device parameter path.
+    """
+    every: dict[str, Scalar[Seed]] = {}
+    for name, expression in card.parameters.items():
+        if type(expression) is Number and math.isfinite(expression.value):
+            every[name] = float(expression.value)
+        else:
+            every[name] = compact(
+                evaluate_dual(inlined(expression, functions), scope, draws(name))
+            )
+    own = _own_temperature_scalar(every, instance, statement)
     values = {
         name: value for name, value in every.items() if name not in OWN_TEMPERATURES
     }
-    instance = {
+    clean_instance = {
         name: value for name, value in instance.items() if name not in OWN_TEMPERATURES
     }
-    made = _device(card, values, instance, statement)
-    return Made(made.model, {**made.parameters, **own})
+    model, raw_parameters = _device(card, values, clean_instance, statement)
+    parameters, derivatives = split_dual_parameters(
+        {**raw_parameters, **own}, statement
+    )
+    return MadeDual(model, parameters, derivatives)
 
 
-def _bipolar_device(
+def _bipolar_device[Seed](
     card: ModelCard,
-    values: dict[str, float],
-    instance: Mapping[str, float],
+    values: dict[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> Made:
+) -> tuple[str, dict[str, DualJsonValue[Seed]]]:
     """Builds a Gummel-Poon (`level=1`) or VBIC (`level=4`/`9`) bipolar device.
 
     Raises:
         SpiceError: When the card specifies an unsupported level or parameter.
     """
-    if values.get("level", 1.0) in VBIC_LEVELS:
-        return Made("vbic", _vbic(card, values, instance, statement))
-    level = values.pop("level", 1.0)
+    if primal(values.get("level", 1.0)) in VBIC_LEVELS:
+        return "vbic", _vbic(card, values, instance, statement)
+    level = primal(values.pop("level", 1.0))
     if level != 1:
         message = (
             f"`{card.name}` is a bipolar transistor of level {level:g}; jolty "
             "models levels 1, 4 and 9"
         )
         raise statement.fail(message)
-    return Made("bipolar_transistor", _bipolar(card, values, instance, statement))
+    return "bipolar_transistor", _bipolar(card, values, instance, statement)
 
 
-def _mosfet_device(
+def _mosfet_device[Seed](
     card: ModelCard,
-    values: dict[str, float],
-    instance: Mapping[str, float],
+    values: dict[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> Made:
+) -> tuple[str, dict[str, DualJsonValue[Seed]]]:
     """Dispatches a MOSFET card to BSIM3, BSIM4, or level-1/3 MOSFET translation.
 
     Raises:
         SpiceError: When the card specifies an unsupported level, version, or parameter.
     """
-    level = values.get("level")
+    raw_level = values.get("level")
+    level = None if raw_level is None else primal(raw_level)
     if level in BSIM3_LEVELS:
-        return Made("bsim3", _bsim3(card, values, instance, statement))
+        return "bsim3", _bsim3(card, values, instance, statement)
     if level in BSIM4_LEVELS:
-        return Made("bsim4", _bsim4(card, values, instance, statement))
-    return Made("mosfet", _mosfet(card, values, instance, statement))
+        return "bsim4", _bsim4(card, values, instance, statement)
+    return "mosfet", _mosfet(card, values, instance, statement)
 
 
-def _device(
+def _device[Seed](
     card: ModelCard,
-    values: dict[str, float],
-    instance: Mapping[str, float],
+    values: dict[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> Made:
+) -> tuple[str, dict[str, DualJsonValue[Seed]]]:
     """Dispatches evaluated `card` `values` and `instance` parameters by device kind.
 
     Raises:
@@ -1399,26 +1667,27 @@ def _device(
     """
     match card.kind:
         case "d":
-            made = Made("diode", _diode(card, values, instance, statement))
+            made = ("diode", _diode(card, values, instance, statement))
         case "npn" | "pnp":
             made = _bipolar_device(card, values, instance, statement)
         case "njf" | "pjf":
             area = _area(instance, statement)
-            values = _area_scaled(
+            scaled_values = _area_scaled(
                 "jfet", values, area, ("beta", "is", "cgs", "cgd"), ("rd", "rs")
             )
-            parameters = _mapped(card, values, JFET, statement)
-            made = Made("jfet", {"channel": card.kind[0], **parameters})
+            parameters = _mapped(card, scaled_values, JFET, statement)
+            made = ("jfet", {"channel": card.kind[0], **parameters})
         case "nmos" | "pmos":
             made = _mosfet_device(card, values, instance, statement)
         case "vdmosn" | "vdmosp":
-            made = Made("vdmos", _vdmos(card, values, instance, statement))
+            made = ("vdmos", _vdmos(card, values, instance, statement))
         case "vswitch":
-            made = Made(
-                "voltage_controlled_switch", _mapped(card, values, SWITCH, statement)
+            made = (
+                "voltage_controlled_switch",
+                _mapped(card, values, SWITCH, statement),
             )
         case "iswitch":
-            made = Made(
+            made = (
                 "current_controlled_switch",
                 _mapped(card, values, CURRENT_SWITCH, statement),
             )
@@ -1430,12 +1699,12 @@ def _device(
     return made
 
 
-def _diode(
+def _diode[Seed](
     card: ModelCard,
-    values: dict[str, float],
-    instance: Mapping[str, float],
+    values: dict[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> dict[str, JsonValue]:
+) -> dict[str, DualJsonValue[Seed]]:
     """Translates a level-1 or level-3 diode card and instance into jolty parameters.
 
     Follows ngspice sizing rules (``diosetup.c``, lines 313 to 366). Area and perimeter
@@ -1454,18 +1723,18 @@ def _diode(
             counterpart, effective area is non-positive, or metal/polysilicon bulk
             dimensions are set.
     """
-    level = values.pop("level", 1.0)
+    level = primal(values.pop("level", 1.0))
     if level not in {1.0, 3.0}:
         message = f"`{card.name}` is a diode of level {level:g}; jolty models 1 and 3"
         raise statement.fail(message)
     geometric = level == 3  # noqa: PLR2004 - geometric diode level
-    geometry = {
+    geometry: dict[str, Scalar[Seed]] = {
         name: values.pop(name, default) for name, default in DIODE_GEOMETRY.items()
     }
     values = {
         name: value for name, value in values.items() if name not in DIODE_IGNORED
     }
-    selectors = {
+    selectors: dict[str, DualJsonValue[Seed]] = {
         DIODE[name][0]: _whole(card, name, values.pop(name), statement)
         for name in DIODE_SELECTORS & values.keys()
     }
@@ -1474,29 +1743,27 @@ def _diode(
     values = {
         name: value
         for name, value in values.items()
-        if name not in DIODE_KNEES or value >= MIN_CURRENT
+        if name not in DIODE_KNEES or primal(value) >= MIN_CURRENT
     }
     for name in {"is", "js"} & values.keys():
-        values[name] = max(values[name], MIN_CURRENT)
+        values[name] = dual_max(values[name], MIN_CURRENT)
     copies = instance.get("m", 1.0)
     sized = "w" in instance or "l" in instance
-    area = instance.get("area", 1.0 if sized else geometry["area"])
-    perimeter = instance.get("pj", 0.0 if sized else geometry["pj"])
+    area: Scalar[Seed] = instance.get("area", 1.0 if sized else geometry["area"])
+    perimeter: Scalar[Seed] = instance.get("pj", 0.0 if sized else geometry["pj"])
     if geometric:
         scale = instance.get("scale", 1.0)
         if "w" in instance and "l" in instance:
-            width, length = (
-                instance["w"] + geometry["xw"],
-                instance["l"] + geometry["xw"],
-            )
-            try:
-                area = width * length * (scale**2)
-            except OverflowError:
-                message = f"scale factor of `{card.name}` overflows: {scale!r}"
-                raise statement.fail(message) from None
-            perimeter = (2 * width + 2 * length) * scale
+            width = instance["w"] + geometry["xw"]
+            length = instance["l"] + geometry["xw"]
+            scale_squared = scale * scale
+            if not is_finite(scale_squared):
+                message = f"scale factor of `{card.name}` overflows: {primal(scale)!r}"
+                raise statement.fail(message)
+            area = width * length * scale_squared
+            perimeter = (width * 2.0 + length * 2.0) * scale
         sizes = {name: instance.get(name, geometry[name]) for name in METAL_AND_POLY}
-        if any(sizes.values()):
+        if any(primal(entry) != 0.0 for entry in sizes.values()):
             message = (
                 f"jolty reads no metal or polysilicon over a diode's bulk, which "
                 f"`{card.name}` sizes"
@@ -1505,7 +1772,7 @@ def _diode(
     bottom = _area(dict(instance) | {"area": area}, statement)
     values = _area_scaled("diode", values, bottom, DIODE_BY_AREA, ("rs",))
     sidewall = perimeter * copies
-    if sidewall > 0:
+    if primal(sidewall) > 0:
         values = _area_scaled("diode", values, sidewall, DIODE_BY_PERIMETER, ("rsw",))
     else:
         # Without a perimeter the sidewall has no current nor charge, and ngspice's
@@ -1517,11 +1784,10 @@ def _diode(
         }
     breakdown = copies * (area if geometric else 1.0)
     values = _area_scaled("diode", values, breakdown, ("ibv", "ib"), ())
-    parameters: dict[str, JsonValue] = {
+    return {
         **_mapped(card, values, DIODE, statement, allow_tref=True),
         **selectors,
     }
-    return parameters
 
 
 def unmatched(card: ModelCard, parameter: str, statement: Statement) -> SpiceError:
@@ -1541,29 +1807,35 @@ def unmatched(card: ModelCard, parameter: str, statement: Statement) -> SpiceErr
     return statement.fail(message)
 
 
-def _area(instance: Mapping[str, float], statement: Statement) -> float:
+def _area[Seed](
+    instance: Mapping[str, Scalar[Seed]], statement: Statement
+) -> Scalar[Seed]:
     """Computes effective `area * m` scaling factor for `instance`.
 
     Raises:
         SpiceError: When multiplicity `m` or effective area is not positive and finite.
     """
     copies = instance.get("m", 1.0)
-    if not (copies > 0 and math.isfinite(copies)):
-        message = f"the element's copies `m` is positive and finite, not {copies!r}"
+    if not (primal(copies) > 0 and is_finite(copies)):
+        message = (
+            f"the element's copies `m` is positive and finite, not {primal(copies)!r}"
+        )
         raise statement.fail(message)
     area = instance.get("area", 1.0) * copies
-    if not (area > 0 and math.isfinite(area)):
-        message = f"the element's area times its copies is positive, not {area!r}"
+    if not (primal(area) > 0 and is_finite(area)):
+        message = (
+            f"the element's area times its copies is positive, not {primal(area)!r}"
+        )
         raise statement.fail(message)
     return area
 
 
-def _scaled(
-    values: dict[str, float],
-    area: float,
+def _scaled[Seed](
+    values: dict[str, Scalar[Seed]],
+    area: Scalar[Seed],
     multiplied: tuple[str, ...],
     divided: tuple[str, ...],
-) -> dict[str, float]:
+) -> dict[str, Scalar[Seed]]:
     """Scales `values` by `area`, multiplying `multiplied` and dividing `divided`."""
     return {
         name: value * area
@@ -1581,24 +1853,24 @@ def _defaults(model: str) -> Mapping[str, object]:
     return MappingProxyType(json.loads(_core.defaulted(model, "{}")))
 
 
-def _area_scaled(
+def _area_scaled[Seed](
     model: str,
-    values: Mapping[str, float],
-    area: float,
+    values: Mapping[str, Scalar[Seed]],
+    area: Scalar[Seed],
     multiplied: tuple[str, ...],
     divided: tuple[str, ...],
-) -> dict[str, float]:
+) -> dict[str, Scalar[Seed]]:
     """Scales `values` and nonzero engine defaults of `model` by effective `area`.
 
     Multiplies keys in `multiplied` and divides keys in `divided`. Omitted parameters
     with nonzero engine defaults (such as the 1e-16 A BJT saturation current in
     ``bjtsetup.c:48``) are populated before scaling to match ngspice.
     """
-    if area == 1:
+    if primal(area) == 1.0 and not has_derivatives(area):
         return dict(values)
     table = _TABLES[model]
     defaults = _defaults(model)
-    filled = dict(values)
+    filled: dict[str, Scalar[Seed]] = dict(values)
     given = {table[name][0] for name in values if name in table}
     for name in (*multiplied, *divided):
         if name not in table:
@@ -1610,6 +1882,25 @@ def _area_scaled(
         filled[name] = default / factor
         given.add(parameter)
     return _scaled(filled, area, multiplied, divided)
+
+
+def _scale_flicker_scalar[Seed](
+    coefficient: Scalar[Seed],
+    exponent: Scalar[Seed],
+    copies: Scalar[Seed],
+    statement: Statement,
+    label: str,
+) -> Scalar[Seed]:
+    """Scales a flicker noise coefficient across `copies` in scalar or dual mode."""
+    try:
+        scaled = coefficient * dual_power(copies, 1.0 - exponent)
+    except OverflowError, ValueError:
+        message = f"flicker noise scaling {label} overflows"
+        raise statement.fail(message) from None
+    if not is_finite(scaled):
+        message = f"flicker noise scaling {label} overflows"
+        raise statement.fail(message)
+    return scaled
 
 
 def scale_flicker_coefficient(
@@ -1634,26 +1925,31 @@ def scale_flicker_coefficient(
     Raises:
         SpiceError: When scaling overflows or produces a non-finite value.
     """
-    try:
-        scaled = coefficient * math.pow(copies, 1 - exponent)
-    except OverflowError, ValueError:
-        message = f"flicker noise scaling {label} overflows"
-        raise statement.fail(message) from None
-    if not math.isfinite(scaled):
-        message = f"flicker noise scaling {label} overflows"
-        raise statement.fail(message)
-    return scaled
+    return primal(
+        _scale_flicker_scalar(coefficient, exponent, copies, statement, label)
+    )
 
 
-def _mapped(  # noqa: PLR0913 - card, values, table, statement, skipped and TREF flag
+def scale_flicker_coefficient_dual[Seed](
+    coefficient: Scalar[Seed],
+    exponent: Scalar[Seed],
+    copies: Scalar[Seed],
+    statement: Statement,
+    label: str,
+) -> Scalar[Seed]:
+    """Dual-mode counterpart of `scale_flicker_coefficient`."""
+    return _scale_flicker_scalar(coefficient, exponent, copies, statement, label)
+
+
+def _mapped[Seed](  # noqa: PLR0913 - card, values, table, statement, skipped and TREF flag
     card: ModelCard,
-    values: Mapping[str, float],
+    values: Mapping[str, Scalar[Seed]],
     table: Table,
     statement: Statement,
     skipped: frozenset[str] = frozenset(),
     *,
     allow_tref: bool = False,
-) -> dict[str, JsonValue]:
+) -> dict[str, DualJsonValue[Seed]]:
     """Maps SPICE parameter `values` into jolty SI parameters via `table`.
 
     Raises:
@@ -1663,7 +1959,7 @@ def _mapped(  # noqa: PLR0913 - card, values, table, statement, skipped and TREF
     nominal_keys = (
         NOMINAL_TEMPERATURES_WITH_TREF if allow_tref else NOMINAL_TEMPERATURES
     )
-    parameters = nominal_temperature(
+    parameters = nominal_temperature_dual(
         {name: value for name, value in values.items() if name not in skipped},
         statement,
         allow_tref=allow_tref,
@@ -1678,12 +1974,12 @@ def _mapped(  # noqa: PLR0913 - card, values, table, statement, skipped and TREF
     return parameters
 
 
-def _bipolar(
+def _bipolar[Seed](
     card: ModelCard,
-    values: dict[str, float],
-    instance: Mapping[str, float],
+    values: dict[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> dict[str, JsonValue]:
+) -> dict[str, DualJsonValue[Seed]]:
     """Translates a level-1 Gummel-Poon BJT card and instance into jolty parameters.
 
     Defaults substrate construction to vertical for NPN and lateral for PNP unless
@@ -1694,11 +1990,11 @@ def _bipolar(
     Raises:
         SpiceError: When a selector or parameter is unsupported by jolty.
     """
-    construction = values.pop("subs", 1.0 if card.kind == "npn" else -1.0)
+    construction = primal(values.pop("subs", 1.0 if card.kind == "npn" else -1.0))
     if construction not in CONSTRUCTIONS:
         message = f"`SUBS` is 1 or -1, not {construction!r}"
         raise statement.fail(message)
-    models: dict[str, JsonValue] = {}
+    selectors: dict[str, DualJsonValue[Seed]] = {}
     for name, jolty in BIPOLAR_TEMPERATURE_MODELS.items():
         if name in values:
             level = _whole(card, name, values.pop(name), statement)
@@ -1708,17 +2004,17 @@ def _bipolar(
                     f"{level} says; jolty models 0 and 1"
                 )
                 raise statement.fail(message)
-            models[jolty] = level
+            selectors[jolty] = level
     given = [name for name in BIPOLAR_SATURATION_CURRENTS if name in values]
     if len(given) == len(BIPOLAR_SATURATION_CURRENTS):
         raise unmatched(card, given[0], statement)
     for name in ("nkf", "nk"):
         if name in values:
-            values[name] = min(values[name], BIPOLAR_MAX_HIGH_INJECTION_EXPONENT)
+            values[name] = dual_min(values[name], BIPOLAR_MAX_HIGH_INJECTION_EXPONENT)
     values = {
         name: value
         for name, value in values.items()
-        if (name not in BIPOLAR_ABSENT_AT_ZERO or value != 0)
+        if (name not in BIPOLAR_ABSENT_AT_ZERO or primal(value) != 0)
         and name not in {*BIPOLAR_UNDEFINED, *BIPOLAR_POWER_COEFFICIENTS, *given}
     }
     area = _area(instance, statement)
@@ -1732,31 +2028,32 @@ def _bipolar(
     return {
         "polarity": card.kind,
         "substrate": CONSTRUCTIONS[construction],
-        **models,
+        **selectors,
         **parameters,
     }
 
 
-def _mosfet(
+def _mosfet[Seed](
     card: ModelCard,
-    values: dict[str, float],
-    instance: Mapping[str, float],
+    values: dict[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> dict[str, JsonValue]:
+) -> dict[str, DualJsonValue[Seed]]:
     """Translates a level-1 or level-3 MOSFET card and instance into jolty parameters.
 
     Raises:
         SpiceError: When the level is not 1 or 3, ``TPG`` is invalid, or a parameter
             has no jolty counterpart.
     """
-    level = values.pop("level", 1.0)
+    level = primal(values.pop("level", 1.0))
     if level not in {1, 3}:
         message = f"`{card.name}` is a MOSFET of level {level:g}; jolty models 1 and 3"
         raise statement.fail(message)
     if level == 3:  # noqa: PLR2004 - the level of the semi-empirical model
         # Level 3 has no channel-length modulation: PSpice and ngspice ignore it there.
         values.pop("lambda", None)
-    gate = values.pop("tpg", None)
+    raw_gate = values.pop("tpg", None)
+    gate = None if raw_gate is None else primal(raw_gate)
     # A model card's geometry is its instances' default.
     geometry = {name: values.pop(name) for name in ("l", "w") if name in values}
     parameters = _mapped(card, values, MOSFET, statement, NOISE)
@@ -1772,12 +2069,12 @@ def _mosfet(
     return parameters
 
 
-def _vdmos(
+def _vdmos[Seed](
     card: ModelCard,
-    values: dict[str, float],
-    instance: Mapping[str, float],
+    values: dict[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> dict[str, JsonValue]:
+) -> dict[str, DualJsonValue[Seed]]:
     """Translates a VDMOS model card and instance into jolty parameters.
 
     Omits ``PHI`` (used only by ngspice distortion analysis) and thermal-network
@@ -1789,8 +2086,8 @@ def _vdmos(
             counterpart.
     """
     potential = values.pop("phi", None)
-    if potential is not None and potential <= 0:
-        message = f"`PHI` of `{card.name}` is positive, not {potential!r}"
+    if potential is not None and primal(potential) <= 0:
+        message = f"`PHI` of `{card.name}` is positive, not {primal(potential)!r}"
         raise statement.fail(message)
     parameters = _mapped(card, values, VDMOS, statement, VDMOS_SELF_HEATING)
     parameters |= _mapped(card, dict(instance), VDMOS_INSTANCE, statement)
@@ -1800,6 +2097,58 @@ def _vdmos(
 
 BIN_TOLERANCE: Final = 1e-9
 """Boundary tolerance in meters for MOSFET bin matching in ngspice ``INPgetModBin``."""
+
+
+@dataclass(frozen=True, slots=True)
+class BinBounds:
+    """Active MOSFET model bin rectangle in meters.
+
+    A binned BSIM3 or BSIM4 card applies while instance channel length lies in
+    `[min_length, max_length]` and per-finger width `width / finger_divisor` lies in
+    `[min_width, max_width]` within `BIN_TOLERANCE`. Stepping outside this box selects
+    another model bin, where device parameters can jump discontinuously.
+    """
+
+    model: str
+    """Full matched bin card name (such as ``sky130_fd_pr__nfet_01v8__model.71``)."""
+    min_length: float
+    """Lower bound ``LMIN`` on instance channel length, in meters."""
+    max_length: float
+    """Upper bound ``LMAX`` on instance channel length, in meters."""
+    min_width: float
+    """Lower bound ``WMIN`` on per-finger channel width, in meters."""
+    max_width: float
+    """Upper bound ``WMAX`` on per-finger channel width, in meters."""
+    finger_divisor: float = 1.0
+    """Divisor applied to total channel width during bin selection (`nf` or `1.0`)."""
+
+    def contains(self, length: float | Quantity, width: float | Quantity) -> bool:
+        """Returns whether `(length, width)` lies within this active bin box.
+
+        Args:
+            length: Instance channel length in meters (plain `float` or `LENGTH`
+                `Quantity`).
+            width: Total instance channel width in meters (plain `float` or `LENGTH`
+                `Quantity`).
+
+        Returns:
+            `True` when `length` and `width / self.finger_divisor` fall inside the
+            bin bounds within `BIN_TOLERANCE`.
+        """
+        length_meters = (
+            length.to(LENGTH, "channel length")
+            if isinstance(length, Quantity)
+            else float(length)
+        )
+        width_meters = (
+            width.to(LENGTH, "channel width")
+            if isinstance(width, Quantity)
+            else float(width)
+        )
+        return bounds_hold(
+            (self.min_length, self.max_length, self.min_width, self.max_width),
+            (length_meters, width_meters / self.finger_divisor),
+        )
 
 
 BSIM4_LEVELS: Final = frozenset({14, 54})
@@ -1899,10 +2248,10 @@ def holds(
     Returns:
         `True` when `card` defines bin bounds containing `size` within `BIN_TOLERANCE`.
     """
-    bounds = _bounds(card, scope, functions)
-    if bounds is None:
+    card_bounds = bounds(card, scope, functions=functions)
+    if card_bounds is None:
         return False
-    return bounds_hold(bounds, size)
+    return bounds_hold(card_bounds, size)
 
 
 def center(
@@ -1924,30 +2273,40 @@ def center(
     Returns:
         Midpoint `(length, width)` in meters, or `None` when `card` is not binned.
     """
-    bounds = _bounds(card, scope, functions)
-    if bounds is None:
+    card_bounds = bounds(card, scope, functions=functions)
+    if card_bounds is None:
         return None
-    lmin, lmax, wmin, wmax = bounds
+    lmin, lmax, wmin, wmax = card_bounds
     return (lmin + lmax) / 2, (wmin + wmax) / 2
 
 
-def _bounds(
+def bounds(
     card: ModelCard,
     scope: Mapping[str, float],
+    *,
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
 ) -> tuple[float, float, float, float] | None:
-    """Evaluates ``(LMIN, LMAX, WMIN, WMAX)`` for a binned MOSFET `card` in `scope`.
+    """Evaluates `(lmin, lmax, wmin, wmax)` for binned MOSFET `card`, or `None`.
 
-    Returns `None` when `card` is not a binned level or omits any bound.
+    Args:
+        card: Candidate binned MOSFET model card.
+        scope: Case-folded parameter values in scope for evaluating bin bounds.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        Tuple `(lmin, lmax, wmin, wmax)` in meters, or `None` when `card` is not a
+        binned level or omits any bound.
     """
     level = card.parameters.get("level")
     if level is None or evaluate(inlined(level, functions), scope) not in BINNED_LEVELS:
         return None
-    bounds = [card.parameters.get(name) for name in ("lmin", "lmax", "wmin", "wmax")]
-    if any(bound is None for bound in bounds):
+    raw_bounds = [
+        card.parameters.get(name) for name in ("lmin", "lmax", "wmin", "wmax")
+    ]
+    if any(bound is None for bound in raw_bounds):
         return None
     lmin, lmax, wmin, wmax = (
-        evaluate(inlined(bound, functions), scope) for bound in bounds if bound
+        evaluate(inlined(bound, functions), scope) for bound in raw_bounds if bound
     )
     return lmin, lmax, wmin, wmax
 
@@ -2007,9 +2366,9 @@ BSIMS: Final = {
 """BSIM family translation configurations keyed by jolty model name."""
 
 
-def _check_bsim_modes(
-    values: dict[str, float],
-    instance: dict[str, float],
+def _check_bsim_modes[Seed](
+    values: dict[str, Scalar[Seed]],
+    instance: dict[str, Scalar[Seed]],
     modes: Mapping[str, int],
     family: str,
     statement: Statement,
@@ -2017,17 +2376,17 @@ def _check_bsim_modes(
     """Checks that fixed BSIM mode switches match `modes` on card and instance."""
     for name, modeled in modes.items():
         for given in (values, instance):
-            if given.pop(name, modeled) != modeled:
+            if primal(given.pop(name, float(modeled))) != modeled:
                 message = f"jolty models {family} with `{name.upper()}` {modeled} alone"
                 raise statement.fail(message)
 
 
-def _bsim3(
+def _bsim3[Seed](
     card: ModelCard,
-    values: dict[str, float],
-    instance: Mapping[str, float],
+    values: dict[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> dict[str, JsonValue]:
+) -> dict[str, DualJsonValue[Seed]]:
     """Translates a BSIM3v3.3 model card and instance into jolty SI parameters.
 
     Converts doping densities (``nch``, ``ngate``, ``nsub``) to per-cubic-meter SI
@@ -2048,18 +2407,18 @@ def _bsim3(
     own = dict(instance)
     _check_bsim_modes(values, own, dict.fromkeys(BSIM3_OFF, 0), "BSIM3", statement)
     own.pop("geo", None)
-    parameters: dict[str, JsonValue] = {"channel": card.kind[0]}
+    parameters: dict[str, DualJsonValue[Seed]] = {"channel": card.kind[0]}
     parameters |= _bsim_card(BSIMS["bsim3"], card, values, statement)
     parameters |= _mapped(card, own, BSIM3_INSTANCE, statement)
     return parameters
 
 
-def _bsim4(
+def _bsim4[Seed](
     card: ModelCard,
-    values: dict[str, float],
-    instance: Mapping[str, float],
+    values: dict[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> dict[str, JsonValue]:
+) -> dict[str, DualJsonValue[Seed]]:
     """Translates a BSIM4v4.5 model card and instance into jolty SI parameters.
 
     Converts doping densities (``ndep``, ``nsd``, ``ngate``, ``nsub``) to
@@ -2082,7 +2441,7 @@ def _bsim4(
     _check_bsim_modes(values, own, BSIM4_MODES, "BSIM4", statement)
     for name in BSIM4_INSTANCE_UNREAD:
         own.pop(name, None)
-    parameters: dict[str, JsonValue] = {"channel": card.kind[0]}
+    parameters: dict[str, DualJsonValue[Seed]] = {"channel": card.kind[0]}
     parameters |= _bsim_card(BSIMS["bsim4"], card, values, statement)
     for name, jolty in BSIM4_SELECTORS.items():
         if name in own:
@@ -2098,36 +2457,40 @@ _BSIM_PARAMCHK: Final = frozenset({0.0, 1.0})
 """Accepted values for BSIM ``PARAMCHK``: 0 (off) or 1 (on)."""
 
 
-def _bsim_setting(
-    card: ModelCard, name: str, value: float, statement: Statement
-) -> float | bool:
+def _bsim_setting[Seed](
+    card: ModelCard, name: str, value: Scalar[Seed], statement: Statement
+) -> Scalar[Seed] | bool:
     """Converts a BSIM setting (`PARAMCHK` or `XPART`) into its jolty value."""
     if name != "paramchk":
         return value
-    if not (math.isfinite(value) and value in _BSIM_PARAMCHK):
-        message = f"`PARAMCHK` of `{card.name}` is 0 or 1, not {value!r}"
+    raw = primal(value)
+    if not (math.isfinite(raw) and raw in _BSIM_PARAMCHK):
+        message = f"`PARAMCHK` of `{card.name}` is 0 or 1, not {raw!r}"
         raise statement.fail(message)
-    return value == 1.0
+    return raw == 1.0
 
 
-def _bsim_card(
-    bsim: Bsim, card: ModelCard, values: dict[str, float], statement: Statement
-) -> dict[str, JsonValue]:
+def _bsim_card[Seed](
+    bsim: Bsim,
+    card: ModelCard,
+    values: dict[str, Scalar[Seed]],
+    statement: Statement,
+) -> dict[str, DualJsonValue[Seed]]:
     """Converts BSIM card parameters into SI units, excluding fixed mode selectors.
 
     Raises:
         SpiceError: When a parameter has no jolty counterpart or ``BINUNIT`` or
             ``PARAMCHK`` holds an unsupported value.
     """
-    binunit = values.pop("binunit", 1.0)
+    binunit = primal(values.pop("binunit", 1.0))
     if not (math.isfinite(binunit) and binunit in _BSIM_BINUNITS):
         message = f"`BINUNIT` of `{card.name}` is 1 or 2, not {binunit!r}"
         raise statement.fail(message)
     binned = 1e-6 if binunit == 1.0 else 1.0
-    mobility = values.get("u0", 0.067 if card.kind[0] == "n" else 0.025)
+    mobility = primal(values.get("u0", 0.067 if card.kind[0] == "n" else 0.025))
     # ngspice reads a binned u0 above 1 in cm²/(V·s), as b3temp.c and b4v5temp.c do.
     centimeters = 1e-4 if mobility > 1 else 1.0
-    parameters = nominal_temperature(
+    parameters = nominal_temperature_dual(
         {
             bsim.aliases.get(spice, spice): value
             for spice, value in values.items()
@@ -2140,17 +2503,18 @@ def _bsim_card(
         if name in bsim.unread or name in NOMINAL_TEMPERATURES:
             continue
         if name in bsim.selectors:
-            parameters[bsim.selectors[name]] = _whole(card, name, value, statement)
         elif name in bsim.settings:
             parameters[bsim.settings[name]] = _bsim_setting(
                 card, name, value, statement
             )
         elif name in bsim.card:
-            parameters[name] = value * _bsim_factor(bsim, name, value, centimeters)
+            parameters[name] = value * _bsim_factor(
+                bsim, name, primal(value), centimeters
+            )
         elif name[:1] in {"l", "w", "p"} and name[1:] in bsim.binned:
             extent = binned * binned if name[0] == "p" else binned
-            factor = _bsim_factor(bsim, name[1:], value, centimeters)
-            parameters[name] = value * factor * extent
+            factor = _bsim_factor(bsim, name[1:], primal(value), centimeters)
+            parameters[name] = value * (factor * extent)
         else:
             raise unmatched(card, spice, statement)
     return parameters
@@ -2171,24 +2535,27 @@ def _bsim_factor(bsim: Bsim, name: str, value: float, centimeters: float) -> flo
     return 1.0
 
 
-def _whole(card: ModelCard, name: str, value: float, statement: Statement) -> int:
+def _whole[Seed](
+    card: ModelCard, name: str, value: Scalar[Seed], statement: Statement
+) -> int:
     """Validates that selector `value` for `name` on `card` is an integer.
 
     Raises:
         SpiceError: When `value` has a fractional part.
     """
-    if not value.is_integer():
-        message = f"`{name.upper()}` of `{card.name}` is a whole number, not {value!r}"
+    raw = primal(value)
+    if not raw.is_integer():
+        message = f"`{name.upper()}` of `{card.name}` is a whole number, not {raw!r}"
         raise statement.fail(message)
-    return int(value)
+    return int(raw)
 
 
-def _vbic(
+def _vbic[Seed](
     card: ModelCard,
-    values: dict[str, float],
-    instance: Mapping[str, float],
+    values: dict[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
     statement: Statement,
-) -> dict[str, JsonValue]:
+) -> dict[str, DualJsonValue[Seed]]:
     """Translates a VBIC model card and instance into jolty parameters matching ngspice.
 
     Clamps card resistances to at least 10 mΩ and omits non-positive infinite-default
@@ -2211,7 +2578,7 @@ def _vbic(
     values = _area_scaled("vbic", values, area, VBIC_MULTIPLIED, VBIC_RESISTANCES)
     for coefficient, exponent in (("kfn", "afn"), ("kf", "af")):
         if coefficient in values:
-            values[coefficient] = scale_flicker_coefficient(
+            values[coefficient] = _scale_flicker_scalar(
                 values[coefficient],
                 values.get(exponent, 1.0),
                 copies,
@@ -2222,29 +2589,46 @@ def _vbic(
     parameters["polarity"] = card.kind
     if charge is not None:
         threshold = 0.5  # ngspice threshold below which QBM selects VBIC form
-        parameters["base_charge"] = "vbic" if charge < threshold else "gummel_poon"
+        parameters["base_charge"] = (
+            "vbic" if primal(charge) < threshold else "gummel_poon"
+        )
     return parameters
 
 
-def _vbic_read(values: Mapping[str, float]) -> dict[str, float]:
+def _vbic_read[Seed](values: Mapping[str, Scalar[Seed]]) -> dict[str, Scalar[Seed]]:
     """Normalizes VBIC card `values` according to ngspice preprocessing rules.
 
     Drops ignored and self-heating keys, clamps resistances to `VBIC_MIN_RESISTANCE`,
     and drops non-positive values of `VBIC_INFINITE_AT_ZERO` parameters.
     """
-    read = {
+    read: dict[str, Scalar[Seed]] = {
         name: value
         for name, value in values.items()
         if name not in VBIC_IGNORED | VBIC_SELF_HEATING | {"level"}
     }
     for name in VBIC_RESISTANCES:
         if name in read:
-            read[name] = max(read[name], VBIC_MIN_RESISTANCE)
+            read[name] = dual_max(read[name], VBIC_MIN_RESISTANCE)
     return {
         name: value
         for name, value in read.items()
-        if name not in VBIC_INFINITE_AT_ZERO or value > 0
+        if name not in VBIC_INFINITE_AT_ZERO or primal(value) > 0
     }
+
+
+def _vbic_heating_scalar[Seed](
+    given: Mapping[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
+) -> tuple[Scalar[Seed], Scalar[Seed]] | None:
+    """Computes area-scaled `(rth, cth)` for VBIC self-heating in scalar or dual."""
+    resistance = given.get("rth", 0.0)
+    if primal(resistance) <= 0 or primal(given.get("selft", 1.0)) != 1:
+        return None
+    area = instance.get("area", 1.0) * instance.get("m", 1.0)
+    if not (primal(area) > 0 and is_finite(area)):
+        return None
+    capacitance = dual_max(given.get("cth", 0.0), VBIC_MIN_THERMAL_CAPACITANCE)
+    return resistance / area, capacitance * area
 
 
 def vbic_heating(
@@ -2275,11 +2659,24 @@ def vbic_heating(
         for name in VBIC_SELF_HEATING
         if name in card.parameters
     }
-    resistance = given.get("rth", 0.0)
-    if resistance <= 0 or given.get("selft", 1.0) != 1:
-        return None
-    area = instance.get("area", 1.0) * instance.get("m", 1.0)
-    if not (area > 0 and math.isfinite(area)):
-        return None
-    capacitance = max(given.get("cth", 0.0), VBIC_MIN_THERMAL_CAPACITANCE)
-    return resistance / area, capacitance * area
+    heated = _vbic_heating_scalar(given, instance)
+    return None if heated is None else (primal(heated[0]), primal(heated[1]))
+
+
+def vbic_heating_dual[Seed](
+    card: ModelCard,
+    scope: Mapping[str, Scalar[Seed]],
+    instance: Mapping[str, Scalar[Seed]],
+    draws: Callable[[str], DualDraw[Seed] | None] = _no_dual_draw,
+    *,
+    functions: Mapping[str, Function] = _NO_FUNCTIONS,
+) -> tuple[Scalar[Seed], Scalar[Seed]] | None:
+    """Dual-mode counterpart of `vbic_heating` preserving exact thermal derivatives."""
+    given: dict[str, Scalar[Seed]] = {
+        name: compact(
+            evaluate_dual(inlined(card.parameters[name], functions), scope, draws(name))
+        )
+        for name in VBIC_SELF_HEATING
+        if name in card.parameters
+    }
+    return _vbic_heating_scalar(given, instance)

@@ -80,3 +80,44 @@ round(float(loss_value), 3)  # 0.25
 
 For batched transients or driven periodic steady states under `jax.vmap`, pass explicit `breakpoints` so every sample returns a fixed waveform shape.
 See [Sensitivities](../guide/simulation.md#sensitivities) for AC complex cotangents, transient adjoints, and oscillator period derivatives.
+
+## 4. Differentiate SPICE and PDK subcircuits
+
+SPICE and PDK subcircuits evaluate parameter expressions and geometry formulas before building primitive devices.
+Bind each placed subcircuit with `Library.placement` and pass `subcircuits={path: placement}` to `jolty.function` or `jolty.jax.function`.
+Exact dual numbers propagate subcircuit arguments through SPICE expressions and compose with the engine adjoint solver.
+
+```python
+from jolty.spice import Library
+
+library = Library()
+library.read(
+    ".model rsheet r rsh=1000\n"
+    ".subckt sized a b w=1u l=2u\n"
+    "R1 a b rsheet w={w} l={l}\n"
+    ".ends\n",
+    "sized.lib",
+)
+upper = library.placement("sized", w=1e-6, l=2e-6)
+
+
+@component
+def sized_divider(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(4 * V), name="V1")
+    top = c.place(upper.component(), name="X1")
+    bottom = c.place(devices.resistor(2 * kohm), name="R2")
+    c.connect(source.positive, top.a, name="in")
+    c.connect(top.b, bottom.a, name="out")
+    c.connect(bottom.b, source.negative, ground)
+
+
+sized_eval = function(sized_divider(), OperatingPoint(), subcircuits={"X1": upper})
+outputs, pullback = vjp(sized_eval, {"X1": {"w": 1e-6, "l": 2e-6}})
+gradient = pullback({"out": [1.0]})
+round(float(outputs["out"][0]), 6)  # 2.0
+round(float(gradient["X1"]["w"]), 1)  # 1000000.0
+round(float(gradient["X1"]["l"]), 1)  # -500000.0
+```
+
+For binned BSIM3 or BSIM4 transistors, call `sized_eval.bins(parameters)` or `library.derivatives(...)` to inspect each device's active `(min_length, max_length, min_width, max_width)` rectangle.

@@ -22,9 +22,12 @@ __lazy_modules__ = ["jolty.spice.download", "jolty.spice.library"]
 from jolty.spice.download import fetch
 from jolty.spice.library import (
     GROUND,
+    BinBounds,
     Library,
     PeriodicSteadyStateCard,
     Sample,
+    SubcircuitDerivatives,
+    SubcircuitPlacement,
     Use,
     load,
     standard_deviation,
@@ -32,9 +35,12 @@ from jolty.spice.library import (
 
 __all__ = [
     "GROUND",
+    "BinBounds",
     "Library",
     "PeriodicSteadyStateCard",
     "Sample",
+    "SubcircuitDerivatives",
+    "SubcircuitPlacement",
     "Use",
     "fetch",
     "load",

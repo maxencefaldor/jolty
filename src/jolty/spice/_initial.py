@@ -12,6 +12,7 @@ from jolty.builder import Component
 from jolty.errors import SpiceError
 from jolty.spice._params import Subcircuit
 from jolty.spice.expressions import Function, evaluate, inlined, number, parse
+from jolty.spice.models import BinBounds
 from jolty.spice.netlist import Statement, tokens
 
 GROUND: Final = "ground"
@@ -56,6 +57,15 @@ class Built:
     nets: Mapping[str, str]
     initial: InitialState
     temperature_dependent: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DualBuilt[Seed]:
+    """A dual-translated subcircuit paired with exact derivatives and bin bounds."""
+
+    built: Built
+    derivatives: Mapping[str, Mapping[str, Mapping[Seed, float]]]
+    bins: Mapping[str, BinBounds]
 
 
 def check_net_name(node: str, statement: Statement) -> None:

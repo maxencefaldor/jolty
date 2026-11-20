@@ -90,8 +90,11 @@ Deterministic keying guarantees bit-identical samples across arbitrary thread co
 `library.random_variables(name, path)` exposes per-placement statistical calls, including nested and behavioral devices, for first-order [mismatch analysis](simulation.md#mismatch) via `Mismatch(outputs, random_variables=...)`.
 Each random variable pairs its nominal mean with its analytical standard deviation.
 Standard deviations are `a / s` for `agauss(x, a, s)`, `|x| r / s` for `gauss(x, r, s)`, `|a| / √3` for `aunif(x, a)`, `|x r| / √3` for `unif(x, r)`, and `|a|` for `limit(x, a)`.
-Parameter derivatives use `ε^(1/3) σ` central differences, which are exact to floating-point rounding for the quadratic or linear parameter expressions used in open PDKs.
+Parameter derivatives propagate exact dual numbers through SPICE expressions, model cards, and geometry transforms in one pass.
 Global library-level statistical calls represent process variation shared by every instance and are excluded from per-placement mismatch.
+`library.derivatives(name, path, **parameters)` computes the exact Jacobian from subcircuit call arguments (such as `w`, `l`, `nf`, or `mult`) to primitive device parameters.
+It also returns active MOSFET [`BinBounds`](../reference/circuits.md) so optimizers know the smooth `(LMIN..LMAX, WMIN..WMAX)` box before crossing a bin boundary.
+Bind placements with `library.placement(name, **parameters)` and pass `subcircuits={path: placement}` to `jolty.function` or `jolty.jax.function` for end-to-end circuit gradients.
 Resistors and capacitors attached to a VBIC thermal node automatically map to thermal resistances and capacitances.
 
 `kits.inventory(kit)` inspects every subcircuit and model in a PDK, listing constituent elements, required models, and any blocker preventing native loading.

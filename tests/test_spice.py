@@ -62,6 +62,7 @@ from jolty.spice.expressions import (
     Binary,
     Call,
     Conditional,
+    Dual,
     Expression,
     Function,
     Name,
@@ -69,7 +70,10 @@ from jolty.spice.expressions import (
     Unary,
     Voltage,
     evaluate,
+    evaluate_dual,
+    inlined,
     integral,
+    is_finite,
     nesting_depth,
     number,
     parse,
@@ -5708,3 +5712,516 @@ def test_global_plan_retargets_without_rebuild_when_no_param_uses_temper() -> No
     assert _devices(loaded.component("sensor"))["R1"][1]["resistance"] == pytest.approx(
         1100.0, rel=1e-12
     )
+
+
+def test_dual_arithmetic_and_zero_pruning() -> None:
+    """Verifies `Dual` arithmetic rules, zero-slope pruning, and constant guards.
+
+    Exact algebraic operations carry only IEEE-754 floating-point rounding (`rel=1e-14`,
+    ~45 eps).
+    """
+    first = Dual.seed(3.0, "x")
+    second = Dual.seed(4.0, "y")
+
+    assert (+first) == first
+    assert (-first).value == -3.0
+    assert (-first).derivative("x") == -1.0
+
+    added = first + second + 2.0
+    assert added.value == 9.0
+    assert (added.derivative("x"), added.derivative("y")) == (1.0, 1.0)
+    assert (2.0 + first).value == 5.0
+    assert (2.0 + first).derivative("x") == 1.0
+
+    subtracted = first - second - 1.0
+    assert subtracted.value == -2.0
+    assert (subtracted.derivative("x"), subtracted.derivative("y")) == (1.0, -1.0)
+    assert (5.0 - first).value == 2.0
+    assert (5.0 - first).derivative("x") == -1.0
+
+    # Canceling terms drop exact zero derivatives rather than retaining empty entries.
+    assert (first - first).derivatives == {}
+    assert (0.0 * first).derivatives == {}
+    assert (first * 0.0).derivatives == {}
+
+    product = first * second
+    assert product.value == 12.0
+    assert (product.derivative("x"), product.derivative("y")) == (4.0, 3.0)
+    assert (2.5 * first).derivative("x") == 2.5
+    assert (first * 2.5).derivative("x") == 2.5
+
+    quotient = first / second
+    assert quotient.value == pytest.approx(0.75, rel=1e-14)
+    assert quotient.derivative("x") == pytest.approx(0.25, rel=1e-14)
+    assert quotient.derivative("y") == pytest.approx(-3.0 / 16.0, rel=1e-14)
+    assert (6.0 / first).value == 2.0
+    assert (6.0 / first).derivative("x") == pytest.approx(-6.0 / 9.0, rel=1e-14)
+    assert (first / 2.0).derivative("x") == 0.5
+
+    # Unseeded constants never multiply zero derivatives by infinities or NaNs.
+    zero_constant = Dual[str].constant(0.0)
+    infinite_constant = Dual[str].constant(math.inf)
+    assert (zero_constant / zero_constant).derivatives == {}
+    assert (Dual.constant(1.0) / zero_constant).derivatives == {}
+    assert (zero_constant * infinite_constant).derivatives == {}
+
+
+def test_evaluate_dual_operators_and_all_builtin_functions() -> None:
+    """Verifies `evaluate_dual` across every SPICE operator, built-in, and `.func`.
+
+    Primals agree with `evaluate` and partials agree with closed-form calculus rules
+    within IEEE-754 floating-point rounding (`rel=1e-14`, ~45 eps).
+    """
+    x_value = 1.2
+    y_value = 0.7
+    unit_value = 0.4
+    hyperbolic_value = 2.0
+    seeded: dict[str, float | Dual[str]] = {
+        "x": Dual.seed(x_value, "x"),
+        "y": Dual.seed(y_value, "y"),
+        "u": Dual.seed(unit_value, "u"),
+        "v": Dual.seed(hyperbolic_value, "v"),
+    }
+    plain = {"x": x_value, "y": y_value, "u": unit_value, "v": hyperbolic_value}
+
+    cases: list[tuple[str, dict[str, float]]] = [
+        ("x + 2 * y - 3", {"x": 1.0, "y": 2.0}),
+        (
+            "x * y / (x + y)",
+            {
+                "x": y_value**2 / (x_value + y_value) ** 2,
+                "y": x_value**2 / (x_value + y_value) ** 2,
+            },
+        ),
+        ("-x + (+y)", {"x": -1.0, "y": 1.0}),
+        (
+            "x ^ y",
+            {
+                "x": y_value * x_value ** (y_value - 1.0),
+                "y": (x_value**y_value) * math.log(x_value),
+            },
+        ),
+        ("(-x) ^ 3", {"x": -3.0 * x_value**2}),
+        ("(-x) ^ 2", {"x": 2.0 * x_value}),
+        ("x ^ 0", {}),
+        (
+            "pow(x, y)",
+            {
+                "x": y_value * x_value ** (y_value - 1.0),
+                "y": (x_value**y_value) * math.log(x_value),
+            },
+        ),
+        (
+            "pwr(-x, y)",
+            {
+                "x": y_value * x_value ** (y_value - 1.0),
+                "y": (x_value**y_value) * math.log(x_value),
+            },
+        ),
+        (
+            "pwrs(-x, y)",
+            {
+                "x": -y_value * x_value ** (y_value - 1.0),
+                "y": -(x_value**y_value) * math.log(x_value),
+            },
+        ),
+        ("abs(x)", {"x": 1.0}),
+        ("abs(-x)", {"x": 1.0}),
+        ("sqrt(x)", {"x": 0.5 / math.sqrt(x_value)}),
+        ("exp(x)", {"x": math.exp(x_value)}),
+        ("ln(x)", {"x": 1.0 / x_value}),
+        ("log(x)", {"x": 1.0 / x_value}),
+        ("log10(x)", {"x": 1.0 / (x_value * math.log(10.0))}),
+        ("sin(x)", {"x": math.cos(x_value)}),
+        ("cos(x)", {"x": -math.sin(x_value)}),
+        ("tan(x)", {"x": 1.0 + math.tan(x_value) ** 2}),
+        ("asin(u)", {"u": 1.0 / math.sqrt(1.0 - unit_value**2)}),
+        ("acos(u)", {"u": -1.0 / math.sqrt(1.0 - unit_value**2)}),
+        ("atan(x)", {"x": 1.0 / (1.0 + x_value**2)}),
+        ("sinh(x)", {"x": math.cosh(x_value)}),
+        ("cosh(x)", {"x": math.sinh(x_value)}),
+        ("tanh(x)", {"x": 1.0 - math.tanh(x_value) ** 2}),
+        ("asinh(x)", {"x": 1.0 / math.hypot(x_value, 1.0)}),
+        ("acosh(v)", {"v": 1.0 / math.sqrt(hyperbolic_value**2 - 1.0)}),
+        ("atanh(u)", {"u": 1.0 / (1.0 - unit_value**2)}),
+        ("floor(x)", {}),
+        ("ceil(x)", {}),
+        ("int(-x)", {}),
+        ("sgn(x)", {}),
+        ("sign(-x)", {}),
+        ("u(x)", {}),
+        ("stp(-x)", {}),
+        ("uramp(x)", {"x": 1.0}),
+        ("uramp(-x)", {}),
+        ("min(x, y)", {"y": 1.0}),
+        ("max(x, y)", {"x": 1.0}),
+        ("limit(x, y, v)", {"x": 1.0}),
+        ("limit(u, y, v)", {"y": 1.0}),
+        ("limit(v + 1, y, v)", {"v": 1.0}),
+        ("limit(u, v, y)", {"y": 1.0}),
+        ("if(x > y, x * x, 3 * y)", {"x": 2.0 * x_value}),
+        ("if(x < y, x * x, 3 * y)", {"y": 3.0}),
+        ("x > y ? x * y : 5 * x", {"x": y_value, "y": x_value}),
+        ("(x > y) && (y > 0) || !(x == y)", {}),
+        ("(x <= y) + (x >= y) + (x != y)", {}),
+        ("table(x, 0, 1, 2, 5, 4, 3)", {"x": 2.0}),
+        ("pwl(v + 3, 0, 1, 2, 5, 4, 3)", {"v": -1.0}),
+        (
+            "table(u - 1, 0, y, 2, 5)",
+            {"u": (5.0 - y_value) / 2.0, "y": 1.0 - (unit_value - 1.0) / 2.0},
+        ),
+        ("rounded_table(x, 0.25, 0, 0, 2, 4, 4, 2)", {"x": 2.0}),
+        ("rounded_table(v, 0.25, 0, 0, 2, 4, 4, 2)", {"v": 0.5}),
+        ("rounded_table(v - 0.25, 0.25, 0, 0, 2, 4, 4, 2)", {"v": 1.25}),
+    ]
+    for source, expected_slopes in cases:
+        tree = parse(source)
+        dual = evaluate_dual(tree, seeded)
+        reference = evaluate(tree, plain)
+        assert dual.value == pytest.approx(reference, rel=1e-14, abs=1e-15), source
+        for key in ("x", "y", "u", "v"):
+            assert dual.derivative(key) == pytest.approx(
+                expected_slopes.get(key, 0.0), rel=1e-14, abs=1e-15
+            ), (source, key)
+
+    # Smooth zero-base powers and `abs(0)` produce clean finite zero derivatives.
+    at_two = {"x": Dual.seed(2.0, "x")}
+    assert evaluate_dual(parse("(x - 2) ^ 2"), at_two) == Dual(0.0)
+    assert evaluate_dual(parse("abs(x - 2)"), at_two) == Dual(0.0)
+    assert evaluate_dual(parse("0 ^ 2"), at_two) == Dual(0.0)
+    assert evaluate_dual(parse("sqrt(0)"), at_two) == Dual(0.0)
+    assert not is_finite(evaluate_dual(parse("sqrt(x - 2)"), at_two))
+
+    # User-defined `.func` calls propagate exact derivatives iteratively and via inline.
+    user_functions = {
+        "inner": Function(("a", "b"), parse("a * b + sin(a)")),
+        "outer": Function(("z",), parse("inner(z * z, z + 1)")),
+    }
+    direct = evaluate_dual(parse("outer(x)"), seeded, functions=user_functions)
+    expanded = evaluate_dual(inlined(parse("outer(x)"), user_functions), seeded)
+    expected_outer_slope = (
+        3.0 * x_value**2 + 2.0 * x_value + 2.0 * x_value * math.cos(x_value**2)
+    )
+    assert direct.value == pytest.approx(expanded.value, rel=1e-14)
+    assert direct.derivative("x") == pytest.approx(expected_outer_slope, rel=1e-14)
+    assert expanded.derivative("x") == pytest.approx(expected_outer_slope, rel=1e-14)
+
+
+def test_library_derivatives_geometric_passives_and_diode() -> None:
+    """Verifies exact Jacobian propagation through geometric passives and level-3 diode.
+
+    Every closed-form slope agrees with `Library.derivatives` within IEEE-754
+    floating-point rounding (`rel=1e-14`, ~45 eps).
+    """
+    loaded = library(
+        ".option scale=1e-6\n"
+        ".model rpoly r rsh=100 narrow=0.1u short=0.2u kf=1e-20 af=2 lf=1.5 wf=0.5\n"
+        ".model cmim c cj=2e-3 cjsw=1e-10 narrow=0.1u short=0.05u\n"
+        ".model cox c thick=10n di=4.0\n"
+        ".model d3 d level=3 js=1e-4 jsw=1e-10 xw=0.1\n"
+        ".subckt passive_block a b w=2 l=5\n"
+        "R1 a b rpoly w={w} l={l}\n"
+        "C1 a b cmim w={w} l={l}\n"
+        "C2 a b cox w={w} l={l}\n"
+        "D1 a b d3 w={w} l={l}\n"
+        ".ends\n"
+    )
+    scale = 1e-6
+    width_microns = 2.0
+    length_microns = 5.0
+    width = width_microns * scale
+    length = length_microns * scale
+    copies = 2.0
+    default_evaluated = loaded.derivatives("passive_block", "U1")
+    assert set(default_evaluated.arguments) == {"w", "l"}
+    override_only = loaded.derivatives("passive_block", "U1", m=copies)
+    assert list(override_only.arguments) == ["m"]
+    evaluated = loaded.derivatives(
+        "passive_block", "U1", with_respect_to=("w", "l", "m"), m=copies
+    )
+
+    # Geometric resistor: R = ((L - 2*short) / (W - 2*narrow)) * rsh / m.
+    resistor_length = length - 4e-7
+    resistor_width = width - 2e-7
+    resistance_single = resistor_length / resistor_width * 100.0
+    resistor_slopes = evaluated.derivatives["U1/R1"]
+    assert resistor_slopes["resistance"]["l"] == pytest.approx(
+        scale * 100.0 / (resistor_width * copies), rel=1e-14
+    )
+    assert resistor_slopes["resistance"]["w"] == pytest.approx(
+        -scale * resistance_single / (resistor_width * copies), rel=1e-14
+    )
+    assert resistor_slopes["resistance"]["m"] == pytest.approx(
+        -resistance_single / (copies**2), rel=1e-14
+    )
+    # Flicker noise coefficient: kf / (long^lf * wide^wf) * m^(1 - af).
+    flicker_area = (resistor_length**1.5) * (resistor_width**0.5)
+    flicker_value = 1e-20 / flicker_area * (copies ** (1.0 - 2.0))
+    assert resistor_slopes["flicker_coefficient"]["l"] == pytest.approx(
+        scale * (-1.5 * flicker_value / resistor_length), rel=1e-14
+    )
+    assert resistor_slopes["flicker_coefficient"]["w"] == pytest.approx(
+        scale * (-0.5 * flicker_value / resistor_width), rel=1e-14
+    )
+    assert resistor_slopes["flicker_coefficient"]["m"] == pytest.approx(
+        -flicker_value / copies, rel=1e-14
+    )
+
+    # Geometric capacitor: C = m * (cj * wide * long + 2 * cjsw * (wide + long)).
+    cap_width = width - 1e-7
+    cap_length = length - 5e-8
+    cap_single = 2e-3 * cap_width * cap_length + 2e-10 * (cap_width + cap_length)
+    cap_slopes = evaluated.derivatives["U1/C1"]["capacitance"]
+    assert cap_slopes["w"] == pytest.approx(
+        scale * copies * (2e-3 * cap_length + 2e-10), rel=1e-14
+    )
+    assert cap_slopes["l"] == pytest.approx(
+        scale * copies * (2e-3 * cap_width + 2e-10), rel=1e-14
+    )
+    assert cap_slopes["m"] == pytest.approx(cap_single, rel=1e-14)
+
+    # Thickness dielectric capacitor: cj = di * eps0 / thick.
+    oxide_cj = 4.0 * models.VACUUM_PERMITTIVITY / 10e-9
+    assert evaluated.derivatives["U1/C2"]["capacitance"]["w"] == pytest.approx(
+        scale * copies * oxide_cj * length, rel=1e-14
+    )
+    assert evaluated.derivatives["U1/C2"]["capacitance"]["l"] == pytest.approx(
+        scale * copies * oxide_cj * width, rel=1e-14
+    )
+
+    # Level-3 diode under `.option scale=1e-6`: width_eff = w + xw, scale = 1e-6.
+    diode_width = width_microns + 0.1
+    diode_length = length_microns + 0.1
+    diode_slopes = evaluated.derivatives["U1/D1"]
+    assert diode_slopes["saturation_current"]["w"] == pytest.approx(
+        copies * 1e-4 * diode_length * (scale**2), rel=1e-14
+    )
+    assert diode_slopes["saturation_current"]["l"] == pytest.approx(
+        copies * 1e-4 * diode_width * (scale**2), rel=1e-14
+    )
+    assert diode_slopes["sidewall_saturation_current"]["w"] == pytest.approx(
+        copies * 1e-10 * 2.0 * scale, rel=1e-14
+    )
+
+
+def test_library_derivatives_coupled_sources_line_vbic_and_nested() -> None:
+    """Verifies exact Jacobian across coupled inductors, sources, lines, VBIC, and `X`.
+
+    Every closed-form slope and push/pull transpose agrees within IEEE-754 rounding
+    (`rel=1e-14`, ~45 eps).
+    """
+    loaded = library(
+        ".model qvbic npn level=4 is=1e-16 rth={rth_val} cth={cth_val}\n"
+        ".subckt child a b rval=2k\n"
+        "Rchild a b {rval}\n"
+        ".ends\n"
+        ".subckt mixed_block a b c e s dt w=2 l1=1u l2=2u k=0.5 "
+        "off=0.5 amp=1.0 freq=1meg deg=30 z0=50 nl=0.25 rth_val=100 cth_val=1n\n"
+        "L1 a 0 {l1}\n"
+        "L2 b 0 {l2}\n"
+        "K1 L1 L2 {k}\n"
+        "V1 a 0 SIN({off} {amp} {freq} 0 0 {deg})\n"
+        "T1 a 0 b 0 Z0={z0} F={freq} NL={nl}\n"
+        "Q1 c b e s dt qvbic\n"
+        "X1 a b child rval={w * 1k}\n"
+        ".ends\n"
+    )
+    copies = 2.0
+    evaluated = loaded.derivatives(
+        "mixed_block",
+        "U1",
+        with_respect_to=(
+            "w",
+            "l1",
+            "l2",
+            "k",
+            "off",
+            "amp",
+            "freq",
+            "deg",
+            "z0",
+            "nl",
+            "rth_val",
+            "cth_val",
+            "m",
+        ),
+        m=copies,
+    )
+
+    # Coupled inductors remap L1/L2/K1 onto K1 windings and couplings.
+    coupled_slopes = evaluated.derivatives["U1/K1"]
+    assert coupled_slopes["windings.0.inductance"]["l1"] == pytest.approx(
+        1.0 / copies, rel=1e-14
+    )
+    assert coupled_slopes["windings.1.inductance"]["l2"] == pytest.approx(
+        1.0 / copies, rel=1e-14
+    )
+    assert coupled_slopes["couplings.0.coefficient"]["k"] == pytest.approx(
+        1.0, rel=1e-14
+    )
+
+    # Independent sine source converts degrees to radians.
+    source_slopes = evaluated.derivatives["U1/V1"]
+    assert source_slopes["waveform.sine.offset"]["off"] == pytest.approx(1.0, rel=1e-14)
+    assert source_slopes["waveform.sine.amplitude"]["amp"] == pytest.approx(
+        1.0, rel=1e-14
+    )
+    assert source_slopes["waveform.sine.frequency"]["freq"] == pytest.approx(
+        1.0, rel=1e-14
+    )
+    assert source_slopes["waveform.sine.phase"]["deg"] == pytest.approx(
+        math.pi / 180.0, rel=1e-14
+    )
+
+    # Transmission line: delay = nl / freq.
+    line_slopes = evaluated.derivatives["U1/T1"]
+    assert line_slopes["characteristic_impedance"]["z0"] == pytest.approx(
+        1.0, rel=1e-14
+    )
+    assert line_slopes["delay"]["nl"] == pytest.approx(1.0 / 1e6, rel=1e-14)
+    assert line_slopes["delay"]["freq"] == pytest.approx(-0.25 / 1e12, rel=1e-14)
+
+    # VBIC self-heating network: rth / m and cth * m.
+    assert evaluated.derivatives["U1/Q1.rth"]["resistance"]["rth_val"] == pytest.approx(
+        1.0 / copies, rel=1e-14
+    )
+    assert evaluated.derivatives["U1/Q1.rth"]["resistance"]["m"] == pytest.approx(
+        -100.0 / (copies**2), rel=1e-14
+    )
+    assert evaluated.derivatives["U1/Q1.cth"]["capacitance"][
+        "cth_val"
+    ] == pytest.approx(copies, rel=1e-14)
+    assert evaluated.derivatives["U1/Q1.cth"]["capacitance"]["m"] == pytest.approx(
+        1e-9, rel=1e-14
+    )
+
+    # Nested X subcircuit propagates parent parameter and multiplier `m`.
+    assert evaluated.derivatives["U1/X1/Rchild"]["resistance"]["w"] == pytest.approx(
+        1000.0 / copies, rel=1e-14
+    )
+    assert evaluated.derivatives["U1/X1/Rchild"]["resistance"]["m"] == pytest.approx(
+        -2000.0 / (copies**2), rel=1e-14
+    )
+
+    # `push` and `pull` are exact transposes on arbitrary tangents and cotangents.
+    tangents = {"w": 0.13, "l1": 1e-7, "m": 0.25, "deg": 5.0}
+    pushed = evaluated.push(tangents)
+    cotangents = {
+        device_path: {
+            parameter: float(index + 1)
+            for index, parameter in enumerate(device_parameters)
+        }
+        for device_path, device_parameters in evaluated.derivatives.items()
+    }
+    pulled = evaluated.pull(cotangents)
+    forward = sum(
+        cotangents[device_path][parameter] * delta
+        for device_path, device_deltas in pushed.items()
+        for parameter, delta in device_deltas.items()
+    )
+    backward = sum(pulled[name] * delta for name, delta in tangents.items())
+    assert forward == pytest.approx(backward, rel=1e-14)
+
+
+def test_library_derivatives_binned_mosfet_and_bin_bounds() -> None:
+    """Verifies BSIM4 `BinBounds`, `contains`, `placement`, and `with_respect_to`.
+
+    Exact scale-factor slopes agree within IEEE-754 rounding (`rel=1e-14`).
+    """
+    source = (
+        ".option scale=1e-6\n"
+        ".model nmos.0 nmos level=54 version=4.5 "
+        "lmin=0.1u lmax=0.2u wmin=0.5u wmax=1.0u vth0=0.4\n"
+        ".model nmos.1 nmos level=54 version=4.5 "
+        "lmin=0.2u lmax=0.5u wmin=0.5u wmax=1.0u vth0=0.5\n"
+        ".subckt fet d g s b w=0.8 l=0.15 nf=2\n"
+        "M1 d g s b nmos w={w} l={l} nf={nf} "
+        "ad={w * 0.27} as={w * 0.27} pd={2 * (w + 0.27)} ps={2 * (w + 0.27)}\n"
+        ".ends\n"
+    )
+    loaded = library(source)
+    placement = loaded.placement("fet", w=0.8, l=0.15, nf=2.0)
+    assert isinstance(placement, spice.SubcircuitPlacement)
+    assert circuit(placement.component()) == circuit(
+        loaded.component("fet", w=0.8, l=0.15, nf=2.0)
+    )
+
+    evaluated = placement.derivatives("M1", with_respect_to=("W", "L", "nf"))
+    assert isinstance(evaluated, spice.SubcircuitDerivatives)
+    assert list(evaluated.arguments) == ["W", "L", "nf"]
+    assert evaluated.bins == {
+        "M1/M1": spice.BinBounds(
+            model="nmos.0",
+            min_length=1e-7,
+            max_length=2e-7,
+            min_width=5e-7,
+            max_width=1e-6,
+            finger_divisor=1.0,
+        )
+    }
+    box = evaluated.bins["M1/M1"]
+    assert box.contains(0.15 * um, 0.8 * um)
+    assert box.contains(1.5e-7, 8e-7)
+    assert not box.contains(0.3 * um, 0.8 * um)
+    assert not box.contains(0.15 * um, 1.2 * um)
+
+    slopes = evaluated.derivatives["M1/M1"]
+    assert slopes["width"]["W"] == pytest.approx(1e-6, rel=1e-14)
+    assert slopes["length"]["L"] == pytest.approx(1e-6, rel=1e-14)
+    assert slopes["fingers"]["nf"] == pytest.approx(1.0, rel=1e-14)
+    assert slopes["drain_area"]["W"] == pytest.approx(0.27e-12, rel=1e-14)
+    assert slopes["source_area"]["W"] == pytest.approx(0.27e-12, rel=1e-14)
+    assert slopes["drain_perimeter"]["W"] == pytest.approx(2e-6, rel=1e-14)
+    assert slopes["source_perimeter"]["W"] == pytest.approx(2e-6, rel=1e-14)
+
+    # Stepping length into bin 1 updates active `BinBounds` and model parameters.
+    stepped = placement.derivatives("M1", with_respect_to=(), l=0.3)
+    assert stepped.arguments == {}
+    assert stepped.derivatives == {}
+    assert stepped.parameters["M1/M1"]["vth0"] == 0.5
+    assert stepped.bins["M1/M1"].model == "nmos.1"
+    assert stepped.bins["M1/M1"].contains(0.3 * um, 0.8 * um)
+
+    # HSPICE compatibility divides width by `nf` for bin selection (`finger_divisor=2`).
+    hspice_library = spice.Library(compatibility="hsa")
+    hspice_library.read(source, "parts.lib")
+    hspice_eval = hspice_library.derivatives("fet", "M1", w=1.6, l=0.15, nf=2.0)
+    hspice_box = hspice_eval.bins["M1/M1"]
+    assert hspice_box.finger_divisor == 2.0
+    assert hspice_box.contains(0.15 * um, 1.6 * um)
+    assert not hspice_box.contains(0.15 * um, 0.8 * um)
+
+
+def test_library_derivatives_errors_and_thread_safety() -> None:
+    """Verifies error handling and thread safety for `Library.derivatives`."""
+    loaded = library(".subckt cell a b w=1k\nR1 a b {w * 2}\n.ends\n")
+    with pytest.raises(SpiceError, match="no subcircuit is named `missing`"):
+        loaded.derivatives("missing")
+    with pytest.raises(SpiceError, match="has no parameter `bogus`"):
+        loaded.derivatives("cell", bogus=1.0)
+    with pytest.raises(SpiceError, match="has no parameter `bogus`"):
+        loaded.derivatives("cell", with_respect_to=("bogus",))
+    with pytest.raises(SpiceError, match="duplicate parameter"):
+        loaded.derivatives("cell", w=1.0, W=2.0)
+    with pytest.raises(SpiceError, match="duplicate parameter"):
+        loaded.derivatives("cell", with_respect_to=("w", "W"))
+    with pytest.raises(SpiceError, match="must be finite"):
+        loaded.derivatives("cell", w=math.nan)
+    with pytest.raises(SpiceError, match="must be finite"):
+        loaded.derivatives("cell", w=math.inf)
+
+    evaluated = loaded.derivatives("cell", "U1", with_respect_to=("w",))
+    with pytest.raises(ValueError, match="unknown subcircuit argument `bogus`"):
+        evaluated.push({"bogus": 1.0})
+
+    # Concurrent calls across threads return bit-identical parameters and Jacobians.
+    def worker(index: int) -> tuple[float, float]:
+        result = loaded.derivatives("cell", f"U{index}", w=100.0 + index)
+        return (
+            result.parameters[f"U{index}/R1"]["resistance"],
+            result.derivatives[f"U{index}/R1"]["resistance"]["w"],
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(pool.map(worker, range(32)))
+    assert outcomes == [(2.0 * (100.0 + index), 2.0) for index in range(32)]

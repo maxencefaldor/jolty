@@ -3,12 +3,16 @@
 
 import functools
 import json
+import math
 import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Final
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Final, cast
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import JsonValue
 
 from jolty import _core, checks, devices, ir
 from jolty.builder import Component, circuit
@@ -35,6 +39,7 @@ from jolty.simulate._decode import (
     substitutes_json,
     swept_dimension,
 )
+from jolty.spice import BinBounds, SubcircuitDerivatives, SubcircuitPlacement
 from jolty.units import VOLTAGE, Quantity
 
 type Parameters = Mapping[str, Mapping[str, float]]
@@ -56,6 +61,398 @@ type Pullback = Callable[[Mapping[str, npt.ArrayLike]], Gradient]
 
 PERIOD: Final = "the period"
 """Output key for an oscillator's period in seconds (distinct from unknown names)."""
+
+_BASELINE_RELATIVE_TOLERANCE: Final = 1e-12
+"""Relative tolerance when checking baseline subcircuit parameters against a circuit."""
+
+_BASELINE_ABSOLUTE_TOLERANCE: Final = 1e-15
+"""Absolute tolerance when checking baseline subcircuit parameters against a circuit."""
+
+
+def _split_canonical(
+    value: JsonValue,
+    path: str,
+    floats: dict[str, float],
+    discrete: dict[str, object],
+) -> None:
+    """Separates continuous `float` leaves from discrete values in defaulted JSON."""
+    if type(value) is float:
+        floats[path] = value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            child = f"{path}.{key}" if path else key
+            _split_canonical(item, child, floats, discrete)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            child = f"{path}.{index}" if path else str(index)
+            _split_canonical(item, child, floats, discrete)
+    else:
+        discrete[path] = value
+
+
+def _canonical_parameters(
+    model: str, raw: Mapping[str, JsonValue]
+) -> tuple[dict[str, JsonValue], dict[str, float], dict[str, object]]:
+    """Defaults `raw` via the engine schema and splits continuous vs discrete leaves."""
+    canonical = cast(
+        "dict[str, JsonValue]",
+        json.loads(_core.defaulted(model, json.dumps(raw, allow_nan=False))),
+    )
+    floats: dict[str, float] = {}
+    discrete: dict[str, object] = {}
+    _split_canonical(canonical, "", floats, discrete)
+    return canonical, floats, discrete
+
+
+def _component_devices(
+    placed: Component, prefix: str
+) -> dict[str, tuple[str, Mapping[str, JsonValue]]]:
+    """Collects `(model, parameters)` for every primitive device inside `placed`."""
+    child_map = {child.name: child for child in placed.children}
+    found: dict[str, tuple[str, Mapping[str, JsonValue]]] = {}
+    for instance in placed.definition.instances:
+        path = f"{prefix}{instance.name}"
+        match instance.of:
+            case ir.DeviceOf(model=model):
+                found[path] = (model, instance.parameters)
+            case ir.ComponentOf(component=inner):
+                found |= _component_devices(child_map[inner], f"{path}{ir.SEPARATOR}")
+    return found
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundSubcircuit:
+    """Validated subcircuit placement bound to a component instance path."""
+
+    path: str
+    placement: SubcircuitPlacement
+    models: Mapping[str, str]
+    base_floats: Mapping[str, Mapping[str, float]]
+    base_discrete: Mapping[str, Mapping[str, object]]
+
+    def expand(
+        self,
+        overrides: Mapping[str, float],
+        *,
+        with_respect_to: Sequence[str],
+    ) -> tuple[dict[str, dict[str, float]], SubcircuitDerivatives]:
+        """Evaluates `placement` at `overrides` and diffs continuous parameters."""
+        evaluated = self.placement.derivatives(
+            self.path, with_respect_to=with_respect_to, **overrides
+        )
+        prefix = f"{self.path}{ir.SEPARATOR}"
+        current = _component_devices(evaluated.component, prefix)
+        current_models = {
+            device_path: model for device_path, (model, _) in current.items()
+        }
+        if current_models != self.models:
+            message = (
+                f"subcircuit `{self.path}` changed its device topology under overrides"
+            )
+            raise ValueError(message)
+        diff: dict[str, dict[str, float]] = {}
+        for device_path, (model, raw_parameters) in current.items():
+            _, floats, discrete = _canonical_parameters(model, raw_parameters)
+            if (
+                discrete != self.base_discrete[device_path]
+                or floats.keys() != self.base_floats[device_path].keys()
+            ):
+                message = (
+                    f"subcircuit `{self.path}` changed discrete model settings on "
+                    f"`{device_path}`"
+                )
+                raise ValueError(message)
+            base_device = self.base_floats[device_path]
+            changed = {
+                key: value for key, value in floats.items() if value != base_device[key]
+            }
+            if changed:
+                diff[device_path] = changed
+        return diff, evaluated
+
+
+def _validate_bound_paths(paths: Sequence[str]) -> None:
+    """Rejects empty or nested overlapping bound subcircuit paths."""
+    for path in paths:
+        if not path:
+            message = "subcircuit placement path must be non-empty"
+            raise ValueError(message)
+    for first in paths:
+        prefix = f"{first}{ir.SEPARATOR}"
+        for second in paths:
+            if second.startswith(prefix):
+                message = (
+                    f"cannot bind nested subcircuit `{second}` inside bound "
+                    f"subcircuit `{first}`"
+                )
+                raise ValueError(message)
+
+
+def _bind_subcircuits(
+    circuit_ir: ir.Circuit,
+    subcircuits: Mapping[str, SubcircuitPlacement] | None,
+) -> tuple[dict[str, _BoundSubcircuit], dict[str, dict[str, JsonValue]]]:
+    """Validates and binds `subcircuits` against devices in `circuit_ir`."""
+    if subcircuits is None or not subcircuits:
+        return {}, {}
+    _validate_bound_paths(tuple(subcircuits))
+    walked = list(circuit_ir.walk())
+    component_paths = {
+        path for path, instance in walked if isinstance(instance.of, ir.ComponentOf)
+    }
+    circuit_devices = {
+        path: (instance.of.model, instance.parameters)
+        for path, instance in walked
+        if isinstance(instance.of, ir.DeviceOf)
+    }
+    bound: dict[str, _BoundSubcircuit] = {}
+    canonical_devices: dict[str, dict[str, JsonValue]] = {}
+    for path, placement in subcircuits.items():
+        if path not in component_paths:
+            message = f"circuit has no subcircuit placement at `{path}`"
+            raise ValueError(message)
+        prefix = f"{path}{ir.SEPARATOR}"
+        actual = {
+            device_path: entry
+            for device_path, entry in circuit_devices.items()
+            if device_path.startswith(prefix)
+        }
+        baseline = placement.derivatives(path, with_respect_to=())
+        expected = _component_devices(baseline.component, prefix)
+        actual_models = {
+            device_path: model for device_path, (model, _) in actual.items()
+        }
+        expected_models = {
+            device_path: model for device_path, (model, _) in expected.items()
+        }
+        if actual_models != expected_models:
+            message = (
+                f"subcircuit binding `{path}` does not match the devices placed at "
+                f"`{path}`"
+            )
+            raise ValueError(message)
+        base_floats: dict[str, Mapping[str, float]] = {}
+        base_discrete: dict[str, Mapping[str, object]] = {}
+        for device_path, (model, actual_raw) in actual.items():
+            actual_canonical, actual_floats, actual_discrete = _canonical_parameters(
+                model, actual_raw
+            )
+            _, expected_floats, expected_discrete = _canonical_parameters(
+                model, expected[device_path][1]
+            )
+            if (
+                actual_discrete != expected_discrete
+                or actual_floats.keys() != expected_floats.keys()
+                or any(
+                    not math.isclose(
+                        actual_floats[key],
+                        expected_floats[key],
+                        rel_tol=_BASELINE_RELATIVE_TOLERANCE,
+                        abs_tol=_BASELINE_ABSOLUTE_TOLERANCE,
+                    )
+                    for key in actual_floats
+                )
+            ):
+                message = (
+                    f"subcircuit binding `{path}` baseline parameters do not match "
+                    f"`{device_path}` in the circuit"
+                )
+                raise ValueError(message)
+            canonical_devices[device_path] = actual_canonical
+            base_floats[device_path] = MappingProxyType(actual_floats)
+            base_discrete[device_path] = MappingProxyType(actual_discrete)
+        bound[path] = _BoundSubcircuit(
+            path=path,
+            placement=placement,
+            models=MappingProxyType(actual_models),
+            base_floats=MappingProxyType(base_floats),
+            base_discrete=MappingProxyType(base_discrete),
+        )
+    return bound, canonical_devices
+
+
+def _canonical_ancestors(paths: Iterable[str]) -> set[str]:
+    """Returns every strict ancestor component path containing a path in `paths`."""
+    ancestors: set[str] = set()
+    for device_path in paths:
+        parts = device_path.split(ir.SEPARATOR)
+        for depth in range(1, len(parts)):
+            ancestors.add(ir.SEPARATOR.join(parts[:depth]))
+    return ancestors
+
+
+def _fresh_component_name(base: str, existing: Mapping[str, ir.Component]) -> str:
+    """Returns a unique component definition name derived from `base`."""
+    suffix = 1
+    while f"{base}__{suffix}" in existing:
+        suffix += 1
+    return f"{base}__{suffix}"
+
+
+def _canonicalize_circuit(
+    circuit_ir: ir.Circuit,
+    canonical_devices: Mapping[str, dict[str, JsonValue]],
+) -> ir.Circuit:
+    """Populates engine-defaulted parameters on bound subcircuit primitive devices.
+
+    Elaborated circuits index numeric overrides from each device's stored IR
+    parameters. Defaulting bound subcircuit devices ensures continuous parameters
+    omitted at baseline (such as default `multiplier = 1` or bin-specific parameters
+    absent from the initial bin) remain overridable and differentiable without
+    re-elaboration, while leaving unbound components unchanged.
+    """
+    if not canonical_devices:
+        return circuit_ir
+    ancestors = _canonical_ancestors(canonical_devices)
+    components = dict(circuit_ir.components)
+
+    def rewrite_instance(
+        instance: ir.Instance, prefix: str
+    ) -> tuple[ir.Instance, bool]:
+        path = f"{prefix}{instance.name}"
+        match instance.of:
+            case ir.DeviceOf():
+                canonical = canonical_devices.get(path)
+                if canonical is not None:
+                    return instance.model_copy(update={"parameters": canonical}), True
+            case ir.ComponentOf(component=inner) if path in ancestors:
+                child_name = rewrite(inner, f"{path}{ir.SEPARATOR}")
+                if child_name != inner:
+                    return (
+                        instance.model_copy(
+                            update={"of": ir.ComponentOf(component=child_name)}
+                        ),
+                        True,
+                    )
+        return instance, False
+
+    def rewrite(component_name: str, prefix: str) -> str:
+        definition = circuit_ir.components[component_name]
+        rebuilt_pairs = [
+            rewrite_instance(instance, prefix) for instance in definition.instances
+        ]
+        if not any(changed for _, changed in rebuilt_pairs):
+            return component_name
+        rebuilt = definition.model_copy(
+            update={"instances": tuple(item for item, _ in rebuilt_pairs)}
+        )
+        target_name = (
+            component_name
+            if not prefix
+            else _fresh_component_name(component_name, components)
+        )
+        components[target_name] = rebuilt
+        return target_name
+
+    rewrite(circuit_ir.top, "")
+    return circuit_ir.model_copy(update={"components": components})
+
+
+def _check_subcircuit_conflicts(
+    paths: Iterable[str], bound: Mapping[str, _BoundSubcircuit]
+) -> None:
+    """Rejects overriding both a bound subcircuit path and an inner device under it."""
+    path_set = set(paths)
+    active_bound = path_set & bound.keys()
+    for subcircuit_path in active_bound:
+        prefix = f"{subcircuit_path}{ir.SEPARATOR}"
+        for other in path_set:
+            if other.startswith(prefix):
+                message = (
+                    f"cannot override both subcircuit `{subcircuit_path}` and inner "
+                    f"device `{other}`"
+                )
+                raise ValueError(message)
+
+
+def _contract_subcircuit(
+    evaluated: SubcircuitDerivatives,
+    primitive_gradients: Mapping[str, Mapping[str, float | complex]],
+    *,
+    phasors: bool,
+) -> dict[str, float | complex]:
+    """Pulls real or complex primitive gradients back to subcircuit argument slopes."""
+    pulled: dict[str, float | complex] = dict.fromkeys(
+        evaluated.arguments, 0j if phasors else 0.0
+    )
+    for device_path, device_cotangents in primitive_gradients.items():
+        device_jacobian = evaluated.derivatives.get(device_path)
+        if device_jacobian is None:
+            continue
+        for parameter_name, cotangent in device_cotangents.items():
+            slopes = device_jacobian.get(parameter_name)
+            if slopes is None:
+                continue
+            for argument, slope in slopes.items():
+                pulled[argument] = pulled[argument] + cotangent * slope
+    return pulled
+
+
+def _collect_row_entries(
+    evaluated: Mapping[str, SubcircuitDerivatives],
+    primitive_index: dict[tuple[str, str], int],
+    column_index: Mapping[tuple[str, str], int],
+) -> tuple[tuple[int, int, float], ...]:
+    """Collects sparse `(primitive_col, output_col, slope)` triples for one run."""
+    entries: list[tuple[int, int, float]] = []
+    for subcircuit_path, subcircuit in evaluated.items():
+        for device_path, device_params in subcircuit.derivatives.items():
+            for parameter_name, slopes in device_params.items():
+                primitive_column = primitive_index.setdefault(
+                    (device_path, parameter_name), len(primitive_index)
+                )
+                for argument, slope in slopes.items():
+                    entries.append(
+                        (
+                            primitive_column,
+                            column_index[subcircuit_path, argument],
+                            slope,
+                        )
+                    )
+    return tuple(entries)
+
+
+def _plain_runs(
+    names: Sequence[tuple[str, str]], rows: npt.NDArray[np.float64]
+) -> list[dict[str, dict[str, float]]]:
+    """Unpacks a parameter matrix into per-run nested override dictionaries."""
+    runs: list[dict[str, dict[str, float]]] = []
+    for row in rows.tolist():
+        run: dict[str, dict[str, float]] = {}
+        for (path, name), value in zip(names, row, strict=True):
+            run.setdefault(path, {})[name] = value
+        runs.append(run)
+    return runs
+
+
+@dataclass(frozen=True, slots=True)
+class _RowComposition:
+    """Sparse chain-rule pullback composer for batched subcircuit gradients."""
+
+    output_columns: int
+    direct_columns: tuple[tuple[int, int], ...]
+    row_entries: tuple[tuple[tuple[int, int, float], ...], ...]
+
+    def apply(
+        self,
+        rows: npt.NDArray[np.intp],
+        raw: npt.NDArray[np.float64] | npt.NDArray[np.complex128],
+        *,
+        phasors: bool,
+    ) -> npt.NDArray[np.float64] | npt.NDArray[np.complex128]:
+        """Contracts engine primitive gradients `raw` back to caller column layout."""
+        shape = (len(rows), self.output_columns)
+        result: npt.NDArray[np.float64] | npt.NDArray[np.complex128] = (
+            np.zeros(shape, np.complex128) if phasors else np.zeros(shape, np.float64)
+        )
+        for output_column, primitive_column in self.direct_columns:
+            result[:, output_column] = raw[:, primitive_column]
+        for output_row, run_index in enumerate(rows.tolist()):
+            for primitive_column, output_column, slope in self.row_entries[run_index]:
+                result[output_row, output_column] += (
+                    raw[output_row, primitive_column] * slope
+                )
+        return result
 
 
 class Elaborated:
@@ -225,12 +622,23 @@ class Function:
         circuit_or_top: ir.Circuit | Component,
         analysis: Differentiable,
         options: Options | None = None,
+        *,
+        subcircuits: Mapping[str, SubcircuitPlacement] | None = None,
     ) -> None:
         """Initializes a differentiable analysis function for `circuit_or_top`.
+
+        Args:
+            circuit_or_top: Circuit IR or top-level component to elaborate.
+            analysis: Differentiable analysis specification evaluated per call.
+            options: Optional solver tolerances, iteration limits, and nodesets.
+            subcircuits: Optional mapping from placed SPICE subcircuit instance paths
+                to [`SubcircuitPlacement`][jolty.spice.SubcircuitPlacement] bindings,
+                enabling exact differentiation through SPICE subcircuit parameters.
 
         Raises:
             ElaborationError: Lists every problem reported during elaboration.
             TypeError: When `analysis` is not a differentiable analysis type.
+            ValueError: When a `subcircuits` binding does not match the circuit.
         """
         if not isinstance(
             analysis,
@@ -249,9 +657,86 @@ class Function:
                 f"state, not {type(analysis).__name__}"
             )
             raise TypeError(message)
-        self.elaborated = Elaborated(circuit_or_top)
+        raw_circuit = (
+            circuit_or_top
+            if isinstance(circuit_or_top, ir.Circuit)
+            else circuit(circuit_or_top)
+        )
+        bound, canonical_devices = _bind_subcircuits(raw_circuit, subcircuits)
+        self.elaborated = Elaborated(
+            _canonicalize_circuit(raw_circuit, canonical_devices)
+        )
         self.analysis = analysis
         self.options = Options() if options is None else options
+        self._subcircuits = bound
+
+    def check(self, parameters: Mapping[str, Iterable[str]]) -> None:
+        """Validates every device and bound subcircuit parameter named in `parameters`.
+
+        Args:
+            parameters: Mapping from instance or bound subcircuit paths to iterables of
+                parameter names.
+
+        Raises:
+            ElaborationError: Lists unrecognized primitive device instances or names.
+            SpiceError: When a bound subcircuit rejects an unknown or duplicate name.
+            ValueError: When `parameters` overrides both a subcircuit and an inner
+                device under it.
+        """
+        if not self._subcircuits:
+            self.elaborated.check(parameters)
+            return
+        _check_subcircuit_conflicts(parameters, self._subcircuits)
+        primitive: dict[str, Iterable[str]] = {}
+        for path, names in parameters.items():
+            bound = self._subcircuits.get(path)
+            if bound is None:
+                primitive[path] = names
+            else:
+                bound.placement.derivatives(path, with_respect_to=tuple(names))
+        if primitive:
+            self.elaborated.check(primitive)
+
+    def bins(self, parameters: Parameters | None = None) -> dict[str, BinBounds]:
+        """Returns active MOSFET bin rectangles for all bound subcircuits.
+
+        Args:
+            parameters: Optional overrides keyed by bound subcircuit path.
+
+        Returns:
+            Mapping from hierarchical MOSFET device paths to their active
+            [`BinBounds`][jolty.spice.BinBounds].
+        """
+        if not self._subcircuits:
+            return {}
+        active: dict[str, BinBounds] = {}
+        overrides = parameters or {}
+        for path, bound in self._subcircuits.items():
+            evaluated = bound.placement.derivatives(
+                path, with_respect_to=(), **overrides.get(path, {})
+            )
+            active.update(evaluated.bins)
+        return active
+
+    def _expand_point(
+        self, parameters: Parameters, *, differentiate: bool
+    ) -> tuple[dict[str, dict[str, float]], dict[str, SubcircuitDerivatives]]:
+        """Expands bound subcircuit entries in `parameters` into primitive overrides."""
+        if not self._subcircuits:
+            return {path: dict(values) for path, values in parameters.items()}, {}
+        _check_subcircuit_conflicts(parameters, self._subcircuits)
+        expanded: dict[str, dict[str, float]] = {}
+        evaluated: dict[str, SubcircuitDerivatives] = {}
+        for path, values in parameters.items():
+            bound = self._subcircuits.get(path)
+            if bound is None:
+                expanded[path] = dict(values)
+                continue
+            seeds = tuple(values) if differentiate else ()
+            diff, subcircuit_derivatives = bound.expand(values, with_respect_to=seeds)
+            evaluated[path] = subcircuit_derivatives
+            expanded.update(diff)
+        return expanded, evaluated
 
     def __call__(self, parameters: Parameters) -> Outputs:
         """Evaluates the analysis at `parameters` and returns the unknown outputs.
@@ -260,8 +745,9 @@ class Function:
             ElaborationError: Lists unknown parameters or out-of-range device values.
             SimulationError: When the analysis fails to solve.
         """
+        expanded, _ = self._expand_point(parameters, differentiate=False)
         core, outcome = self._run(
-            parameters,
+            expanded,
             lambda core, analysis, settings: core.run(
                 analysis, settings, engine_pool()
             ),
@@ -343,11 +829,27 @@ class Function:
         if unknown := sorted(given - set(names)):
             message = f"a tangent moves only the parameters given, not {unknown}"
             raise ValueError(message)
-        tangent = [float(tangents.get(path, {}).get(name, 0.0)) for path, name in names]
+        expanded, evaluated = self._expand_point(parameters, differentiate=True)
+        primitive_names, primitive_tangent = self._push_tangents(
+            parameters, tangents, evaluated
+        )
+        if not primitive_names:
+            core, outcome = self._run(
+                expanded,
+                lambda core, analysis, settings: core.run(
+                    analysis, settings, engine_pool()
+                ),
+            )
+            outputs = self._outputs(core, outcome)
+            zeros: Outputs = {
+                name: (np.zeros_like(value) if isinstance(value, np.ndarray) else 0.0)
+                for name, value in outputs.items()
+            }
+            return outputs, zeros
         core, found = self._run(
-            parameters,
+            expanded,
             lambda core, analysis, settings: core.jvp(
-                analysis, names, [tangent], settings, engine_pool()
+                analysis, primitive_names, [primitive_tangent], settings, engine_pool()
             ),
         )
         outputs = self._outputs(core, found["result"])
@@ -360,6 +862,36 @@ class Function:
             pushed[PERIOD] = float(period[0])
         return outputs, pushed
 
+    def _push_tangents(
+        self,
+        parameters: Parameters,
+        tangents: Parameters,
+        evaluated: Mapping[str, SubcircuitDerivatives],
+    ) -> tuple[list[tuple[str, str]], list[float]]:
+        """Maps direct and subcircuit tangents into flat engine `(names, tangent)`."""
+        if not evaluated:
+            names = self._named(parameters)
+            tangent = [
+                float(tangents.get(path, {}).get(name, 0.0)) for path, name in names
+            ]
+            return names, tangent
+        combined: dict[tuple[str, str], float] = {}
+        for path, named in parameters.items():
+            subcircuit = evaluated.get(path)
+            if subcircuit is None:
+                for name in named:
+                    combined[path, name] = float(tangents.get(path, {}).get(name, 0.0))
+                continue
+            pushed = subcircuit.push(
+                {name: float(value) for name, value in tangents.get(path, {}).items()}
+            )
+            for device_path, device_tangents in pushed.items():
+                for parameter_name, delta in device_tangents.items():
+                    combined[device_path, parameter_name] = (
+                        combined.get((device_path, parameter_name), 0.0) + delta
+                    )
+        return list(combined), list(combined.values())
+
     def pulled(self, parameters: Parameters) -> tuple[Outputs, Pullback]:
         """Computes primal outputs and a reverse-mode adjoint pullback (VJP).
 
@@ -369,17 +901,45 @@ class Function:
         Returns:
             Pair of primal `Outputs` and adjoint `Pullback` callable.
         """
-        names = self._named(parameters)
+        expanded, evaluated = self._expand_point(parameters, differentiate=True)
+        primitive_names = self._pull_names(parameters, evaluated)
+        phasors = self._is_complex
+        if not primitive_names:
+            core, outcome = self._run(
+                expanded,
+                lambda core, analysis, settings: core.run(
+                    analysis, settings, engine_pool()
+                ),
+            )
+            outputs = self._outputs(core, outcome)
+            columns = {
+                name: column for column, name in enumerate(self._output_names(core))
+            }
+            points = _values(outcome)[0].shape[0]
+
+            def zero_pull(cotangent: Mapping[str, npt.ArrayLike]) -> Gradient:
+                _cotangents(
+                    cotangent,
+                    columns,
+                    (points, len(columns)),
+                    phasors=phasors,
+                    oscillates=self.oscillates,
+                )
+                return {
+                    path: dict.fromkeys(named, 0j if phasors else 0.0)
+                    for path, named in parameters.items()
+                }
+
+            return outputs, zero_pull
         core, (outcome, pullback) = self._run(
-            parameters,
+            expanded,
             lambda core, analysis, settings: core.vjp(
-                analysis, names, settings, engine_pool()
+                analysis, primitive_names, settings, engine_pool()
             ),
         )
         outputs = self._outputs(core, outcome)
         columns = {name: column for column, name in enumerate(self._output_names(core))}
         points = _values(outcome)[0].shape[0]
-        phasors = self._is_complex
         settings = self._settings()
 
         def pull(cotangent: Mapping[str, npt.ArrayLike]) -> Gradient:
@@ -397,12 +957,47 @@ class Function:
                 )
             except _core.SimulationError as error:
                 raise SimulationError(str(error)) from None
+            primitive_gradients: Gradient = {}
+            for (path, name), value in zip(
+                primitive_names, found.tolist(), strict=True
+            ):
+                primitive_gradients.setdefault(path, {})[name] = value
+            if not evaluated:
+                return primitive_gradients
             pulled: Gradient = {}
-            for (path, name), value in zip(names, found.tolist(), strict=True):
-                pulled.setdefault(path, {})[name] = value
+            for path, named in parameters.items():
+                subcircuit = evaluated.get(path)
+                if subcircuit is None:
+                    pulled[path] = {
+                        name: primitive_gradients[path][name] for name in named
+                    }
+                else:
+                    pulled[path] = _contract_subcircuit(
+                        subcircuit, primitive_gradients, phasors=phasors
+                    )
             return pulled
 
         return outputs, pull
+
+    def _pull_names(
+        self,
+        parameters: Parameters,
+        evaluated: Mapping[str, SubcircuitDerivatives],
+    ) -> list[tuple[str, str]]:
+        """Collects deduplicated engine `(device, parameter)` targets for VJP."""
+        if not evaluated:
+            return self._named(parameters)
+        ordered: dict[tuple[str, str], None] = {}
+        for path, named in parameters.items():
+            subcircuit = evaluated.get(path)
+            if subcircuit is None:
+                for name in named:
+                    ordered[path, name] = None
+                continue
+            for device_path, device_parameters in subcircuit.derivatives.items():
+                for parameter_name in device_parameters:
+                    ordered[device_path, parameter_name] = None
+        return list(ordered)
 
     @functools.cached_property
     def unknowns(self) -> tuple[str, ...]:
@@ -434,7 +1029,7 @@ class Function:
         Returns:
             Batched output `Outputs` indexed by run and analysis point.
         """
-        outputs, _ = self._batched(names, values, [])
+        outputs, _, _ = self._batched(names, values, differentiate=False)
         return outputs
 
     def batch_vjp(
@@ -450,7 +1045,7 @@ class Function:
         Returns:
             Pair of batched `Outputs` and `BatchPullback` over all runs.
         """
-        outputs, core = self._batched(names, values, list(names))
+        outputs, core, composition = self._batched(names, values, differentiate=True)
         pullback = BatchPullback(
             core,
             self.outputs,
@@ -458,26 +1053,77 @@ class Function:
             phasors=self._is_complex,
             oscillates=self.oscillates,
             settings=self._settings(),
+            composition=composition,
         )
         return outputs, pullback
+
+    def _expand_batch(
+        self,
+        names: Sequence[tuple[str, str]],
+        rows: npt.NDArray[np.float64],
+        *,
+        differentiate: bool,
+    ) -> tuple[
+        list[dict[str, dict[str, float]]],
+        list[tuple[str, str]],
+        _RowComposition | None,
+    ]:
+        """Expands batch rows through any bound subcircuits and builds chain rule."""
+        has_bound = bool(self._subcircuits) and any(
+            path in self._subcircuits for path, _ in names
+        )
+        if not has_bound:
+            return (
+                _plain_runs(names, rows),
+                list(names) if differentiate else [],
+                None,
+            )
+        _check_subcircuit_conflicts((path for path, _ in names), self._subcircuits)
+        column_index = {pair: index for index, pair in enumerate(names)}
+        primitive_index: dict[tuple[str, str], int] = {}
+        direct_columns: list[tuple[int, int]] = []
+        if differentiate:
+            for output_column, pair in enumerate(names):
+                if pair[0] not in self._subcircuits:
+                    primitive_column = primitive_index.setdefault(
+                        pair, len(primitive_index)
+                    )
+                    direct_columns.append((output_column, primitive_column))
+        runs: list[dict[str, dict[str, float]]] = []
+        row_entries: list[tuple[tuple[int, int, float], ...]] = []
+        for point in _plain_runs(names, rows):
+            expanded, evaluated = self._expand_point(point, differentiate=differentiate)
+            runs.append(expanded)
+            if differentiate:
+                row_entries.append(
+                    _collect_row_entries(evaluated, primitive_index, column_index)
+                )
+        composition = (
+            _RowComposition(
+                output_columns=len(names),
+                direct_columns=tuple(direct_columns),
+                row_entries=tuple(row_entries),
+            )
+            if differentiate
+            else None
+        )
+        return runs, list(primitive_index), composition
 
     def _batched(
         self,
         names: Sequence[tuple[str, str]],
         values: npt.ArrayLike,
-        parameters: list[tuple[str, str]],
-    ) -> tuple[Outputs, _core.BatchPullback]:
+        *,
+        differentiate: bool,
+    ) -> tuple[Outputs, _core.BatchPullback, _RowComposition | None]:
         """Executes a batch at `values` for `names` and returns outputs and pullback."""
         rows = np.asarray(values, dtype=np.float64)
         if rows.ndim != 2 or rows.shape[1] != len(names):  # noqa: PLR2004 - a matrix
             message = f"values are a row of {len(names)} names by run, not {rows.shape}"
             raise ValueError(message)
-        runs: list[dict[str, dict[str, float]]] = []
-        for row in rows.tolist():
-            run: dict[str, dict[str, float]] = {}
-            for (path, name), value in zip(names, row, strict=True):
-                run.setdefault(path, {})[name] = value
-            runs.append(run)
+        runs, primitive_parameters, composition = self._expand_batch(
+            names, rows, differentiate=differentiate
+        )
         variants = self.elaborated.variants(runs)
         base = self.elaborated.simulator()
         output_names = self.outputs
@@ -486,7 +1132,7 @@ class Function:
             found, pullback = base.batch_vjp(
                 self._encoded(),
                 self._settings(),
-                parameters,
+                primitive_parameters,
                 variants,
                 (0, len(runs)),
                 columns,
@@ -507,7 +1153,7 @@ class Function:
         }
         if self.oscillates:
             outputs[PERIOD] = found["periods"]
-        return outputs, pullback
+        return outputs, pullback, composition
 
 
 class BatchPullback:
@@ -526,6 +1172,7 @@ class BatchPullback:
         phasors: bool,
         oscillates: bool,
         settings: str,
+        composition: _RowComposition | None = None,
     ) -> None:
         """Wraps an engine `core` batch pullback for `unknowns` over `points`."""
         self._core = core
@@ -534,6 +1181,7 @@ class BatchPullback:
         self._phasors = phasors
         self._oscillates = oscillates
         self._settings = settings
+        self._composition = composition
 
     def __call__(
         self, cotangent: Mapping[str, npt.ArrayLike], runs: npt.ArrayLike | None = None
@@ -550,11 +1198,14 @@ class BatchPullback:
             oscillates=self._oscillates,
         )
         try:
-            return self._core.pull_back(
+            raw = self._core.pull_back(
                 rows.tolist(), values, periods.tolist(), self._settings, engine_pool()
             )
         except _core.SimulationError as error:
             raise SimulationError(str(error)) from None
+        if self._composition is None:
+            return raw
+        return self._composition.apply(rows, raw, phasors=self._phasors)
 
 
 def _cotangents(
@@ -611,24 +1262,31 @@ def function(
     circuit_or_top: ir.Circuit | Component,
     analysis: Differentiable,
     options: Options | None = None,
+    *,
+    subcircuits: Mapping[str, SubcircuitPlacement] | None = None,
 ) -> Function:
     """Creates a differentiable [`Function`][jolty.simulate.Function] for `analysis`.
 
     Calling ``function(circuit, analysis)(parameters)`` evaluates `analysis` with
-    `options` at `parameters` and returns unknown outputs.
+    `options` at `parameters` and returns unknown outputs. Supplying `subcircuits`
+    enables exact differentiation through SPICE subcircuit arguments (such as PDK
+    MOSFET `w`, `l`, `nf`, or `mult`) composed with the engine adjoint solver.
 
     Args:
         circuit_or_top: Circuit IR or top-level component to elaborate.
         analysis: Differentiable analysis specification evaluated per call.
         options: Optional solver tolerances, iteration limits, and nodesets.
+        subcircuits: Optional mapping from placed subcircuit paths to
+            [`SubcircuitPlacement`][jolty.spice.SubcircuitPlacement] bindings.
 
     Returns:
         Callable `Function` evaluating `analysis` at parameter overrides.
 
     Raises:
         ElaborationError: Lists every problem reported during circuit elaboration.
+        ValueError: When a `subcircuits` binding does not match the circuit.
     """
-    return Function(circuit_or_top, analysis, options)
+    return Function(circuit_or_top, analysis, options, subcircuits=subcircuits)
 
 
 def jvp(

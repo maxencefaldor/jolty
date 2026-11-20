@@ -83,6 +83,7 @@ from jolty.simulate import (
     Differentiable,
     Function,
 )
+from jolty.spice import SubcircuitPlacement
 
 type JaxParameters = Mapping[str, Mapping[str, ArrayLike]]
 """Nested mapping of instance path to parameter path and real scalar SI value."""
@@ -323,6 +324,7 @@ def function(
     options: Options | None = None,
     *,
     saved_pullbacks: int = 16,
+    subcircuits: Mapping[str, SubcircuitPlacement] | None = None,
 ) -> Callable[[JaxParameters], JaxOutputs]:
     """Wraps a circuit `analysis` as a differentiable JAX function.
 
@@ -338,6 +340,11 @@ def function(
     analyses, gradients take the real part of the pullback with respect to JAX complex
     cotangents.
 
+    Supplying `subcircuits` binds SPICE subcircuit instance paths to
+    [`SubcircuitPlacement`][jolty.spice.SubcircuitPlacement] objects so `jax.grad`,
+    `jax.vjp`, and `jax.vmap` differentiate directly through SPICE subcircuit
+    parameters (such as PDK MOSFET `w`, `l`, `nf`, or `mult`).
+
     The callable supports `jax.jit`, `jax.grad`, `jax.value_and_grad`, `jax.vjp`,
     `jax.jacrev`, `jax.remat`, and `jax.vmap` (including empty and nested batches).
     Computation uses `float64` when `jax_enable_x64` is enabled and `float32`
@@ -351,6 +358,8 @@ def function(
         analysis: Differentiable analysis specification with static point count.
         options: Optional solver tolerance, iteration, and nodeset options.
         saved_pullbacks: Maximum forward-pass pullbacks retained in LRU cache.
+        subcircuits: Optional mapping from placed subcircuit paths to
+            [`SubcircuitPlacement`][jolty.spice.SubcircuitPlacement] bindings.
 
     Returns:
         JAX-transformable callable mapping `JaxParameters` to `JaxOutputs`.
@@ -358,10 +367,11 @@ def function(
     Raises:
         ElaborationError: When the circuit fails to elaborate or the first call
             references parameters not present on circuit devices.
-        ValueError: When the circuit contains foundry devices or a transient or driven
-            periodic steady state omits `breakpoints`.
+        ValueError: When the circuit contains foundry devices, a transient or driven
+            periodic steady state omits `breakpoints`, or a `subcircuits` binding does
+            not match the circuit.
     """
-    target = Function(circuit_or_top, analysis, options)
+    target = Function(circuit_or_top, analysis, options, subcircuits=subcircuits)
     _static(target)
     saved = _Saved(saved_pullbacks)
     lock = threading.Lock()
@@ -382,7 +392,7 @@ def function(
         with lock:
             run = runners.get(key)
         if run is None:
-            target.elaborated.check(dict(structure))
+            target.check(dict(structure))
             names = tuple((path, name) for path, named in structure for name in named)
             with lock:
                 run = runners.get(key)

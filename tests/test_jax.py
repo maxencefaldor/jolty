@@ -32,6 +32,7 @@ import pytest
 import jolty.jax as jolty_jax_module
 from jolty import (
     Builder,
+    Component,
     Options,
     Role,
     Simulation,
@@ -41,7 +42,7 @@ from jolty import (
 )
 from jolty import function as jolty_function
 from jolty import vjp as jolty_vjp
-from jolty.errors import ElaborationError, SimulationError
+from jolty.errors import ElaborationError, SimulationError, SpiceError
 from jolty.jax import LOOP_GAIN, NOISE_DENSITY, PERIOD, REFERRED_NOISE, JaxOutputs
 from jolty.jax import function as jax_function
 from jolty.plan import (
@@ -57,7 +58,9 @@ from jolty.plan import (
     Transient,
     decade,
 )
+from jolty.settings import Settings
 from jolty.simulate import BatchPullback, Elaborated, Function, Outputs
+from jolty.spice import Library, SubcircuitPlacement, kits, sky130
 from jolty.units import F, H, Hz, MHz, V, kHz, kohm, mA, ns, ohm, pF, uA, um, us
 from jolty.waveforms import Pulse, Sine
 from sample_circuits import CROSSBAR_WEIGHTS as WEIGHTS
@@ -1834,3 +1837,287 @@ def test_noise_jax_vmap_jacrev_and_errors() -> None:
             match="not an independent source",
         ):
             bad_source({"M1": {"width": jnp.asarray(2e-6, dtype=jnp.float64)}})
+
+# SPICE and PDK subcircuit differentiation through JAX.
+
+SUBCIRCUIT_CENTRAL_DIFF_RTOL: Final = 1e-5
+"""Relative tolerance for `step=1e-4` nonlinear BSIM4 central differences."""
+
+
+def _synthetic_pdk_stage() -> tuple[Component, dict[str, SubcircuitPlacement]]:
+    """Builds a two-bin BSIM4 and geometric-resistor common-source stage for JAX."""
+    loaded = Library()
+    loaded.read(
+        ".option scale=1e-6\n"
+        ".model nmos.0 nmos level=54 version=4.5 "
+        "lmin=0.1u lmax=0.2u wmin=0.5u wmax=2.0u "
+        "vth0=0.4 toxe=4e-9 u0=400 vsat=1e5 rdsw=200 cgso=2e-10 cgdo=2e-10\n"
+        ".model nmos.1 nmos level=54 version=4.5 "
+        "lmin=0.2u lmax=0.5u wmin=0.5u wmax=2.0u "
+        "vth0=0.45 toxe=4e-9 u0=380 vsat=1e5 cgso=2e-10 cgdo=2e-10\n"
+        ".model rpoly r rsh=200 narrow=0.05u short=0.1u\n"
+        ".subckt nfet d g s b w=1.0 l=0.15 nf=1\n"
+        "M1 d g s b nmos w={w} l={l} nf={nf} "
+        "ad={w * 0.27} as={w * 0.27} pd={2 * (w + 0.27)} ps={2 * (w + 0.27)}\n"
+        ".ends\n"
+        ".subckt rload a b w=1.0 l=20.0\n"
+        "R1 a b rpoly w={w} l={l}\n"
+        ".ends\n",
+        "jax_pdk.lib",
+    )
+    mosfet_placement = loaded.placement("nfet", w=1.0, l=0.15, m=1.0)
+    load_placement = loaded.placement("rload", w=1.0, l=20.0)
+
+    @component
+    def stage(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
+        gate = c.place(devices.voltage_source(0.9 * V), name="VG")
+        load = c.place(load_placement.component(), name="RL")
+        mosfet = c.place(mosfet_placement.component(), name="M1")
+        capacitor = c.place(devices.capacitor(0.1 * pF), name="CL")
+        c.connect(supply.positive, load.a, name="vdd")
+        c.connect(load.b, mosfet.d, capacitor.a, name="drain")
+        c.connect(gate.positive, mosfet.g, name="gate")
+        c.connect(
+            supply.negative,
+            gate.negative,
+            mosfet.s,
+            mosfet.b,
+            capacitor.b,
+            ground,
+        )
+
+    return stage(), {"M1": mosfet_placement, "RL": load_placement}
+
+
+def test_subcircuit_jax_jit_grad_jacrev_and_ac() -> None:
+    """Verifies `jit`, `value_and_grad`, `jacrev`, and AC gradients on subcircuits."""
+    stage, subcircuits = _synthetic_pdk_stage()
+    op_wrapped = jax_function(stage, OperatingPoint(), subcircuits=subcircuits)
+    op_target = jolty_function(stage, OperatingPoint(), subcircuits=subcircuits)
+    ac_analysis = Ac("VG", [1 * MHz, 100 * MHz])
+    ac_wrapped = jax_function(stage, ac_analysis, subcircuits=subcircuits)
+    ac_target = jolty_function(stage, ac_analysis, subcircuits=subcircuits)
+
+    point: dict[str, dict[str, float]] = {
+        "M1": {"w": 1.1, "l": 0.16, "m": 1.5},
+        "RL": {"w": 1.2, "l": 18.0},
+        "CL": {"capacitance": 0.12e-12},
+    }
+
+    with jax.enable_x64():
+        jax_point = _as_jax_parameters(point, dtype=jnp.float64)
+
+        def op_loss(parameters: dict[str, dict[str, jax.Array]]) -> jax.Array:
+            drain = op_wrapped(parameters)["drain"]
+            return jnp.sum((drain - 1.0) ** 2)
+
+        value, gradient = jax.jit(jax.value_and_grad(op_loss))(jax_point)
+        target_outputs, pullback = jolty_vjp(op_target, point)
+        expected = pullback(
+            {"drain": 2.0 * (np.asarray(target_outputs["drain"]) - 1.0)}
+        )
+        # XLA JIT scalar arithmetic rounding (~4.5 eps).
+        np.testing.assert_allclose(
+            float(value),
+            float(np.sum((np.asarray(target_outputs["drain"]) - 1.0) ** 2)),
+            rtol=1e-15,
+            atol=0.0,
+        )
+        for instance, inner in point.items():
+            for name in inner:
+                np.testing.assert_array_equal(
+                    float(gradient[instance][name]),
+                    _expect_real_scalar(expected[instance][name]),
+                )
+        _assert_matches_central_difference(
+            op_loss,
+            gradient,
+            point,
+            relative_tolerance=SUBCIRCUIT_CENTRAL_DIFF_RTOL,
+        )
+
+        # `jax.jacrev` agrees with `jolty.vjp` on drain voltage.
+        jacobian = jax.jacrev(lambda current: op_wrapped(current)["drain"][0])(
+            jax_point
+        )
+        unit_expected = pullback({"drain": np.array([1.0])})
+        for instance, inner in point.items():
+            for name in inner:
+                np.testing.assert_array_equal(
+                    float(jacobian[instance][name]),
+                    _expect_real_scalar(unit_expected[instance][name]),
+                )
+
+        # AC Wirtinger gradient matches `jolty.vjp` bit-for-bit and finite differences.
+        def ac_loss(parameters: dict[str, dict[str, jax.Array]]) -> jax.Array:
+            phasor = ac_wrapped(parameters)["drain"]
+            return jnp.sum(phasor.real + 2.0 * phasor.imag)
+
+        ac_gradient = jax.jit(jax.grad(ac_loss))(jax_point)
+        _, ac_pullback = jolty_vjp(ac_target, point)
+        ac_expected = ac_pullback(
+            {"drain": np.full(2, 1.0 - 2.0j, dtype=np.complex128)}
+        )
+        for instance, inner in point.items():
+            for name in inner:
+                np.testing.assert_array_equal(
+                    float(ac_gradient[instance][name]),
+                    float(np.real(ac_expected[instance][name])),
+                )
+        _assert_matches_central_difference(
+            ac_loss,
+            ac_gradient,
+            point,
+            relative_tolerance=SUBCIRCUIT_CENTRAL_DIFF_RTOL,
+        )
+
+        # Invalid subcircuit parameter raises `SpiceError` during structure check.
+        with pytest.raises(SpiceError, match="has no parameter `bogus`"):
+            op_wrapped({"M1": {"bogus": jnp.asarray(1.0, dtype=jnp.float64)}})
+
+
+def test_subcircuit_jax_vmap_across_bins_and_empty() -> None:
+    """Verifies `jax.vmap` on bound subcircuits across BSIM4 bins and empty batches."""
+    stage, subcircuits = _synthetic_pdk_stage()
+    op_wrapped = jax_function(stage, OperatingPoint(), subcircuits=subcircuits)
+
+    with jax.enable_x64():
+        batched_point = {
+            "M1": {
+                "w": jnp.array([0.9, 1.2, 1.0], dtype=jnp.float64),
+                "l": jnp.array([0.14, 0.17, 0.35], dtype=jnp.float64),
+                "m": jnp.array([1.0, 1.5, 2.0], dtype=jnp.float64),
+            },
+            "RL": {
+                "w": jnp.array([1.0, 1.1, 1.2], dtype=jnp.float64),
+                "l": jnp.array([18.0, 20.0, 22.0], dtype=jnp.float64),
+            },
+            "CL": {
+                "capacitance": jnp.array(
+                    [0.1e-12, 0.12e-12, 0.15e-12], dtype=jnp.float64
+                )
+            },
+        }
+        batched_gradients = jax.jit(
+            jax.grad(lambda current: jnp.sum(jax.vmap(op_wrapped)(current)["drain"]))
+        )(batched_point)
+        for index in range(3):
+            row = {
+                instance: {name: values[index] for name, values in inner.items()}
+                for instance, inner in batched_point.items()
+            }
+            scalar_gradient = jax.grad(
+                lambda current: jnp.sum(op_wrapped(current)["drain"])
+            )(row)
+            for instance, inner in batched_point.items():
+                for name in inner:
+                    np.testing.assert_array_equal(
+                        float(batched_gradients[instance][name][index]),
+                        float(scalar_gradient[instance][name]),
+                    )
+
+        # Empty 0-length `jax.vmap` works cleanly on forward and backward passes.
+        empty_point = {
+            "M1": {
+                "w": jnp.empty((0,), dtype=jnp.float64),
+                "l": jnp.empty((0,), dtype=jnp.float64),
+            }
+        }
+        empty_grad = jax.grad(
+            lambda current: jnp.sum(jax.vmap(op_wrapped)(current)["drain"])
+        )(empty_point)
+        assert empty_grad["M1"]["w"].shape == (0,)
+        assert empty_grad["M1"]["l"].shape == (0,)
+
+
+@pytest.fixture(scope="session")
+def sky130_library(pytestconfig: pytest.Config) -> Library:
+    """Loads the SKY130 typical-corner library from pytest's pinned PDK cache."""
+    assert pytestconfig.cache is not None
+    settings = Settings(cache=pytestconfig.cache.mkdir("downloads"))
+    return kits.read(sky130.KIT, ((sky130.LIBRARY, sky130.TYPICAL),), settings=settings)
+
+
+def test_sky130_nfet_jax_jit_value_and_grad_matches_vjp_and_finite_differences(
+    sky130_library: Library,
+) -> None:
+    """Verifies `jax.jit(jax.value_and_grad)` on a real SKY130 BSIM4 MOSFET stage."""
+    baseline = {"w": 0.92, "l": 0.165, "m": 2.0}
+    placement = sky130_library.placement("sky130_fd_pr__nfet_01v8", **baseline)
+
+    @component
+    def stage(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        supply = c.place(devices.voltage_source(1.8 * V), name="VDD")
+        gate = c.place(devices.voltage_source(0.85 * V), name="VG")
+        load = c.place(devices.resistor(5 * kohm), name="RL")
+        capacitor = c.place(devices.capacitor(0.2 * pF), name="CL")
+        mosfet = c.place(placement.component(), name="M1")
+        c.connect(supply.positive, load.a, name="vdd")
+        c.connect(load.b, mosfet.d, capacitor.a, name="drain")
+        c.connect(gate.positive, mosfet.g, name="gate")
+        c.connect(
+            supply.negative,
+            gate.negative,
+            mosfet.s,
+            mosfet.b,
+            capacitor.b,
+            ground,
+        )
+
+    circuit_top = stage()
+    point: dict[str, dict[str, float]] = {"M1": dict(baseline)}
+
+    op_wrapped = jax_function(
+        circuit_top, OperatingPoint(), subcircuits={"M1": placement}
+    )
+    op_target = jolty_function(
+        circuit_top, OperatingPoint(), subcircuits={"M1": placement}
+    )
+    ac_analysis = Ac("VG", [1 * MHz, 100 * MHz])
+    ac_wrapped = jax_function(circuit_top, ac_analysis, subcircuits={"M1": placement})
+    ac_target = jolty_function(circuit_top, ac_analysis, subcircuits={"M1": placement})
+
+    with jax.enable_x64():
+        jax_point = _as_jax_parameters(point, dtype=jnp.float64)
+
+        def op_loss(parameters: dict[str, dict[str, jax.Array]]) -> jax.Array:
+            return jnp.sum(op_wrapped(parameters)["drain"] ** 2)
+
+        _, op_gradient = jax.jit(jax.value_and_grad(op_loss))(jax_point)
+        op_outputs, op_pullback = jolty_vjp(op_target, point)
+        op_expected = op_pullback({"drain": 2.0 * np.asarray(op_outputs["drain"])})
+        for name in baseline:
+            np.testing.assert_array_equal(
+                float(op_gradient["M1"][name]),
+                _expect_real_scalar(op_expected["M1"][name]),
+            )
+        _assert_matches_central_difference(
+            op_loss,
+            op_gradient,
+            point,
+            relative_tolerance=SUBCIRCUIT_CENTRAL_DIFF_RTOL,
+        )
+
+        def ac_loss(parameters: dict[str, dict[str, jax.Array]]) -> jax.Array:
+            phasor = ac_wrapped(parameters)["drain"]
+            return jnp.sum(phasor.real**2 + phasor.imag**2)
+
+        _, ac_gradient = jax.jit(jax.value_and_grad(ac_loss))(jax_point)
+        ac_outputs, ac_pullback = jolty_vjp(ac_target, point)
+        ac_expected = ac_pullback(
+            {"drain": 2.0 * np.conj(np.asarray(ac_outputs["drain"]))}
+        )
+        for name in baseline:
+            np.testing.assert_array_equal(
+                float(ac_gradient["M1"][name]),
+                float(np.real(ac_expected["M1"][name])),
+            )
+        _assert_matches_central_difference(
+            ac_loss,
+            ac_gradient,
+            point,
+            relative_tolerance=SUBCIRCUIT_CENTRAL_DIFF_RTOL,
+        )

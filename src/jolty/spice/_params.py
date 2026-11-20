@@ -4,7 +4,6 @@
 import itertools
 import math
 import re
-import sys
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
@@ -16,15 +15,22 @@ from jolty.errors import SpiceError
 from jolty.spice import models
 from jolty.spice.expressions import (
     Draw,
+    Dual,
+    DualDraw,
     Expression,
     Function,
+    Scalar,
     UndefinedError,
+    compact,
     evaluate,
+    evaluate_dual,
     inlined,
+    is_finite,
     is_statistical,
     names,
     nominal,
     parse,
+    primal,
     walk,
 )
 from jolty.spice.models import ModelCard
@@ -46,9 +52,8 @@ NO_FUNCTIONS: Final[Mapping[str, Function]] = MappingProxyType({})
 NO_MODELS: Final[Mapping[str, ModelCard]] = MappingProxyType({})
 """Empty model mapping passed to `models.read` for non-`AKO:` definitions."""
 
-STEP: Final = sys.float_info.epsilon ** (1 / 3)
-"""Central-difference step per standard deviation for random-variable derivatives
-(W. H. Press et al., *Numerical Recipes*, 3rd edition, 2007, §5.7)."""
+type CallKey = tuple[str, str]
+"""Statistical call identifier `(placement_path, call_name)` matching `Sample`."""
 
 _FUNCTION: Final = re.compile(
     r"\.func\s+(?P<name>[a-z_][a-z0-9_]*)\s*\((?P<parameters>[^()]*)\)\s*=?\s*"
@@ -150,38 +155,46 @@ def standard_deviation(function: str, arguments: tuple[float, ...]) -> float:
 
 
 @dataclass(slots=True)
-class Probe:
-    """Statistical draw probe returning nominal values except for one perturbed call.
+class StatisticalRecorder:
+    """Records SPICE statistical calls and seeds non-global draws as exact `Dual`s.
 
-    The call identified by `moved` returns its nominal value plus `offset`. Every
-    encountered call is recorded under `(scope, call_id)` with its function name and
-    evaluated arguments, matching [`Sample`][jolty.spice.Sample] keys.
+    Each encountered statistical call is recorded under `(scope, call_id)` with its
+    function name and primal numeric arguments, matching [`Sample`][jolty.spice.Sample]
+    keys. Non-global calls (`scope != ""`) with a positive finite standard deviation
+    return a `Dual` seeded with unit derivative wrt `(scope, call_id)`, propagating
+    exact first-order sensitivities in a single translation pass.
     """
 
-    moved: tuple[str, str] | None = None
-    offset: float = 0.0
-    calls: dict[tuple[str, str], tuple[str, tuple[float, ...]]] = field(
-        default_factory=dict
-    )
+    calls: dict[CallKey, tuple[str, tuple[float, ...]]] = field(default_factory=dict)
 
-    def draw(self, scope: str, name: str) -> Draw:
-        """Returns a recording callback for statistical calls in `name` at `scope`.
+    def draw_dual(self, scope: str, name: str) -> DualDraw[CallKey]:
+        """Returns a dual statistical callback recording calls in `name` at `scope`.
 
         Args:
             scope: Hierarchical placement path recorded with each encountered call.
             name: Parameter or element name prefixing sequential call identifiers.
 
         Returns:
-            `Draw` callback recording calls into `self.calls` and perturbing
-            `self.moved`.
+            `DualDraw` callback recording calls into `self.calls` and seeding each
+            active non-global call with unit derivative.
         """
-        calls = itertools.count()
+        counter = itertools.count()
 
-        def drawn(function: str, arguments: tuple[float, ...]) -> float:
-            call = (scope, f"{name}#{next(calls)}")
-            self.calls[call] = (function, arguments)
-            nominal_value = arguments[0]
-            return nominal_value + self.offset if call == self.moved else nominal_value
+        def drawn(function: str, arguments: tuple[Dual[CallKey], ...]) -> Dual[CallKey]:
+            call: CallKey = (scope, f"{name}#{next(counter)}")
+            primal_arguments = tuple(argument.value for argument in arguments)
+            self.calls[call] = (function, primal_arguments)
+            nominal_argument = arguments[0]
+            spread = standard_deviation(function, primal_arguments)
+            if (
+                not scope
+                or spread == 0.0
+                or not (math.isfinite(nominal_argument.value) and math.isfinite(spread))
+            ):
+                return nominal_argument
+            derivatives = dict(nominal_argument.derivatives)
+            derivatives[call] = derivatives.get(call, 0.0) + 1.0
+            return Dual(nominal_argument.value, derivatives)
 
         return drawn
 
@@ -206,13 +219,13 @@ def _encode_path(path: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Drawing:
-    """Statistical sampling context pairing a `Sample` or `Probe` with a circuit path.
+    """Statistical sampling context pairing an optional `Sample` with a circuit path.
 
-    Statistical calls draw from `sample` at `path`, return nominal values when `sample`
-    is None, or record perturbations under a `Probe`.
+    Statistical calls draw from `sample` at `path`, or return nominal values when
+    `sample` is None.
     """
 
-    sample: Sample | Probe | None
+    sample: Sample | None
     path: str
 
     def draws(self, name: str) -> Draw:
@@ -235,7 +248,7 @@ class Drawing:
         untouched for statistical draw keys.
 
         Args:
-            name: Base component name before sample or probe qualification.
+            name: Base component name before sample qualification.
 
         Returns:
             Component name suffixed with encoded placement path and sample coordinates
@@ -459,6 +472,30 @@ def extract_multiplier(
     return multiplier, {key: value for key, value in given.items() if key != "m"}
 
 
+def extract_multiplier_dual[Seed](
+    subcircuit: Subcircuit, given: Mapping[str, Scalar[Seed]]
+) -> tuple[Scalar[Seed], Mapping[str, Scalar[Seed]]]:
+    """Splits dual subcircuit multiplier `m` from `given` when `m` is not formal.
+
+    Args:
+        subcircuit: Subcircuit definition checked for a formal `m` parameter.
+        given: Case-folded scalar or dual parameter overrides passed at placement.
+
+    Returns:
+        Pair of `(multiplier, remaining_parameters)` preserving any derivatives on `m`.
+    """
+    if "m" not in given or "m" in subcircuit.defaults:
+        return 1.0, given
+    multiplier = given["m"]
+    if not (primal(multiplier) > 0 and is_finite(multiplier)):
+        message = (
+            "the subcircuit multiplier `m` is positive and finite, not "
+            f"{primal(multiplier)!r}"
+        )
+        raise subcircuit.statement.fail(message)
+    return multiplier, {key: value for key, value in given.items() if key != "m"}
+
+
 def temperature_closure(
     definitions: Mapping[str, Expression],
     dependents: Mapping[str, list[str]],
@@ -648,6 +685,41 @@ def resolve_into[Scope: MutableMapping[str, float]](
     return values
 
 
+def resolve_into_dual[Seed](
+    definitions: Mapping[str, Expression],
+    values: MutableMapping[str, Scalar[Seed]],
+    draws: Callable[[str], DualDraw[Seed] | None],
+    functions: Mapping[str, Function],
+) -> MutableMapping[str, Scalar[Seed]]:
+    """Evaluates each parameter `definitions` defines into dual `values` in place.
+
+    Args:
+        definitions: Parameter expressions keyed by case-folded parameter name.
+        values: Mutable scalar or dual parameter scope updated in topological order.
+        draws: Factory mapping each parameter name to its optional `DualDraw` callback.
+        functions: Case-folded user-defined functions inlined before evaluation.
+
+    Returns:
+        Updated `values` mapping populated with scalar or `Dual` parameter values.
+
+    Raises:
+        SpiceError: When parameters read one another in a cycle, or an expression fails.
+    """
+    if not definitions:
+        return values
+    pending = {
+        name: inlined(expression, functions) for name, expression in definitions.items()
+    }
+    in_degree, dependents = dependency_graph(pending)
+    ordered, remaining = topological_order(pending, in_degree, dependents)
+    for name in ordered:
+        values[name] = compact(evaluate_dual(pending[name], values, draws(name)))
+    if remaining:
+        message = f"parameters read one another in a cycle: {', '.join(remaining)}"
+        raise SpiceError(message)
+    return values
+
+
 def split_assigned_pairs(words: Sequence[str]) -> tuple[list[str], list[str]]:
     """Splits `words` into non-assignment tokens and ``name = value`` triple tokens.
 
@@ -818,22 +890,22 @@ def check_keywords(
             raise statement.fail(message)
 
 
-def single_keyword(
-    evaluate_word: Callable[[str], float],
+def single_keyword[Value](
+    evaluate_word: Callable[[str], Value],
     statement: Statement,
     name: str,
     words: Sequence[str],
-) -> float:
+) -> Value:
     """Evaluates a single-valued keyword assignment, rejecting empty or extra tokens.
 
     Args:
-        evaluate_word: Evaluator converting a single value token to a float.
+        evaluate_word: Evaluator converting a single value token to a `Value`.
         statement: Element statement used for error attribution.
         name: Case-folded keyword name being evaluated.
         words: Value tokens assigned to `name`.
 
     Returns:
-        Evaluated floating-point value of `words[0]`.
+        Evaluated value of `words[0]`.
     """
     if not words:
         message = f"`{name.upper()}` is not assigned a value"
@@ -844,14 +916,14 @@ def single_keyword(
     return evaluate_word(words[0])
 
 
-def instance_keywords(
-    evaluate_word: Callable[[str], float],
+def instance_keywords[Value](
+    evaluate_word: Callable[[str], Value],
     statement: Statement,
     assigned: Mapping[str, list[str]],
     *,
     flags: frozenset[str] = frozenset({"off", "on"}),
     multi_valued: frozenset[str] = frozenset(),
-) -> dict[str, float]:
+) -> dict[str, Value]:
     """Evaluates element keyword assignments, rejecting empty or stray tokens.
 
     Allows trailing initial-state flags in `flags` (such as ``OFF`` and ``ON``)
@@ -859,16 +931,16 @@ def instance_keywords(
     ``IC=vbe,vce``).
 
     Args:
-        evaluate_word: Evaluator converting each value token to a float.
+        evaluate_word: Evaluator converting each value token to a `Value`.
         statement: Element statement used for error attribution.
         assigned: Keyword token lists keyed by case-folded name.
         flags: Case-folded trailing state flags ignored after keyword values.
         multi_valued: Case-folded keywords accepting multiple comma-separated values.
 
     Returns:
-        Evaluated numeric keyword dictionary keyed by case-folded name.
+        Evaluated keyword dictionary keyed by case-folded name.
     """
-    values: dict[str, float] = {}
+    values: dict[str, Value] = {}
     for key, words in assigned.items():
         if not words:
             message = f"`{key.upper()}` is not assigned a value"

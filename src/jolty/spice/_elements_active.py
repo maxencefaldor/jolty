@@ -5,21 +5,20 @@ import itertools
 import json
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Final
-
-from pydantic import JsonValue
 
 from jolty import _core, ir
 from jolty.spice import models
-from jolty.spice._initial import GROUND, remap_capacitor, remap_net
+from jolty.spice._initial import GROUND, Built, remap_capacitor, remap_net
 from jolty.spice._params import (
+    Subcircuit,
+    instance_keywords,
     split_assigned_pairs,
     split_keywords,
 )
 from jolty.spice._statistics import (
     check_binned_deterministic,
-    instance_keywords_symbolic,
     record_waveform_targets,
     scale_mosfet_instance_symbolic,
 )
@@ -29,14 +28,18 @@ from jolty.spice.expressions import (
     Binary,
     Call,
     Current,
+    DualDraw,
     Expression,
     Number,
+    Scalar,
     Voltage,
     evaluate,
     inlined,
+    is_finite,
     number,
+    primal,
 )
-from jolty.spice.models import ModelCard
+from jolty.spice.models import DualJsonValue, ModelCard
 from jolty.spice.netlist import Statement, tokens
 
 _TRANSIENT_FUNCTIONS: Final = frozenset({"pulse", "sin", "pwl", "exp", "sffm", "am"})
@@ -85,24 +88,48 @@ _ARBITRARY_SOURCE: Final = re.compile(
 """Pattern matching a B-source statement setting ``V=`` or ``I=`` an expression."""
 
 
-def _check_source_waveform(
-    waveform: dict[str, JsonValue] | None,
-    level: float | None,
+def _read_instance_keywords[Seed](
+    translation: Translation[Seed],
+    statement: Statement,
+    assigned: Mapping[str, list[str]],
+    *,
+    multi_valued: frozenset[str] = frozenset(),
+) -> tuple[dict[str, Scalar[Seed]], dict[str, Expression]]:
+    """Evaluates element keywords returning `(values, symbolic_map)`."""
+    evaluated = instance_keywords(
+        translation.value_symbolic,
+        statement,
+        assigned,
+        multi_valued=multi_valued,
+    )
+    values: dict[str, Scalar[Seed]] = {}
+    symbolic: dict[str, Expression] = {}
+    for key, (resolved_value, expression) in evaluated.items():
+        values[key] = resolved_value
+        if expression is not None:
+            symbolic[key] = expression
+    return values, symbolic
+
+
+def _check_source_waveform[Seed](
+    waveform: dict[str, DualJsonValue[Seed]] | None,
+    level: Scalar[Seed] | None,
     level_symbolic: Expression | None,
     statement: Statement,
-) -> dict[str, JsonValue]:
+) -> dict[str, DualJsonValue[Seed]]:
     """Combines optional DC `level` and time-domain `waveform`, checking consistency."""
     if waveform is None:
         return {"dc": 0.0 if level is None else level}
     if level is None:
         return waveform
+    primal_waveform = models.split_dual_parameters(waveform, statement)[0]
     try:
-        at_zero = _core.waveform_value(json.dumps(waveform), 0.0)
+        at_zero = _core.waveform_value(json.dumps(primal_waveform), 0.0)
     except ValueError as error:
         raise statement.fail(str(error)) from None
-    if level != at_zero:
+    if primal(level) != at_zero:
         message = (
-            f"a DC level of {level!r} beside a waveform at {at_zero!r} at time "
+            f"a DC level of {primal(level)!r} beside a waveform at {at_zero!r} at time "
             "zero: jolty's source has one level at zero for every analysis"
         )
         raise statement.fail(message)
@@ -123,7 +150,7 @@ def _independent(model: str) -> ElementTranslator:
     separate DC level is given.
     """
 
-    def translated(translation: Translation, statement: Statement) -> None:
+    def translated[Seed](translation: Translation[Seed], statement: Statement) -> None:
         words = tokens(statement.text)
         if len(words) < 3:  # noqa: PLR2004 - a name and two nodes
             message = "a source joins two nodes"
@@ -155,10 +182,11 @@ def _independent(model: str) -> ElementTranslator:
         resolved_waveform = _check_source_waveform(
             waveform, level, level_symbolic, statement
         )
-        translation.add(
+        parameters: dict[str, DualJsonValue[Seed]] = {"waveform": resolved_waveform}
+        translation.add_dual(
             statement,
             model,
-            {"waveform": resolved_waveform},
+            parameters,
             {
                 "positive": translation.net(positive),
                 "negative": translation.net(negative),
@@ -181,11 +209,11 @@ def _independent(model: str) -> ElementTranslator:
     return translated
 
 
-def _transient_function(
-    translation: Translation, statement: Statement, words: list[str]
+def _transient_function[Seed](
+    translation: Translation[Seed], statement: Statement, words: list[str]
 ) -> tuple[
     list[str],
-    dict[str, JsonValue] | None,
+    dict[str, DualJsonValue[Seed]] | None,
     tuple[str, list[Expression | None]] | None,
 ]:
     """Extracts a SPICE time-domain waveform from `words`, returning remaining tokens.
@@ -216,9 +244,9 @@ def _transient_function(
     return words, None, None
 
 
-def _waveform(
-    name: str, arguments: list[float], statement: Statement
-) -> dict[str, JsonValue]:
+def _waveform[Seed](
+    name: str, arguments: list[Scalar[Seed]], statement: Statement
+) -> dict[str, DualJsonValue[Seed]]:
     """Converts SPICE waveform `name` and numeric `arguments` into a jolty dict.
 
     Raises:
@@ -228,9 +256,12 @@ def _waveform(
     """
     match name, arguments:
         case "pulse", [initial, pulsed, delay, rise, fall, width, *period] if (
-            rise > 0 and fall > 0 and width > 0 and len(period) <= 1
+            primal(rise) > 0
+            and primal(fall) > 0
+            and primal(width) > 0
+            and len(period) <= 1
         ):
-            pulse: dict[str, JsonValue] = {
+            pulse: dict[str, DualJsonValue[Seed]] = {
                 "initial": initial,
                 "pulsed": pulsed,
                 "delay": delay,
@@ -248,9 +279,9 @@ def _waveform(
                 "from no analysis"
             )
             raise statement.fail(message)
-        case "sin", [offset, amplitude, frequency, *more] if frequency > 0 and len(
-            more
-        ) <= len(_SINE_OPTIONS):
+        case "sin", [offset, amplitude, frequency, *more] if primal(
+            frequency
+        ) > 0 and len(more) <= len(_SINE_OPTIONS):
             delay, damping, degrees = [*more, 0.0, 0.0, 0.0][: len(_SINE_OPTIONS)]
             return {
                 "sine": {
@@ -259,7 +290,7 @@ def _waveform(
                     "frequency": frequency,
                     "delay": delay,
                     "damping": damping,
-                    "phase": math.radians(degrees),
+                    "phase": degrees * (math.pi / 180.0),
                 }
             }
         case "sin", _:
@@ -269,7 +300,13 @@ def _waveform(
             )
             raise statement.fail(message)
         case "exp", [initial, pulsed, rise_delay, rise, fall_delay, fall] if (
-            min(rise_delay, rise, fall_delay, fall) > 0
+            min(
+                primal(rise_delay),
+                primal(rise),
+                primal(fall_delay),
+                primal(fall),
+            )
+            > 0
         ):
             return {
                 "exponential": {
@@ -290,7 +327,7 @@ def _waveform(
             )
             raise statement.fail(message)
         case "pwl", [*pairs] if pairs and len(pairs) % 2 == 0:
-            points: list[JsonValue] = [
+            points: list[DualJsonValue[Seed]] = [
                 [pairs[index], pairs[index + 1]] for index in range(0, len(pairs), 2)
             ]
             return {"piecewise": {"points": points}}
@@ -298,9 +335,9 @@ def _waveform(
     raise statement.fail(message)
 
 
-def _scaled_mosfet(
-    instance: dict[str, float], scale: float, statement: Statement
-) -> dict[str, float]:
+def _scaled_mosfet[Seed](
+    instance: dict[str, Scalar[Seed]], scale: float, statement: Statement
+) -> dict[str, Scalar[Seed]]:
     """Scales MOSFET instance sizes by `scale`, raising `SpiceError` on overflow."""
     try:
         scaled = {
@@ -310,19 +347,19 @@ def _scaled_mosfet(
     except OverflowError, ValueError:
         message = f"scale option overflows: {scale!r}"
         raise statement.fail(message) from None
-    if any(not math.isfinite(value) for value in scaled.values()):
+    if any(not is_finite(value) for value in scaled.values()):
         message = f"scale option overflows: {scale!r}"
         raise statement.fail(message)
     return scaled
 
 
-def _resolve_semiconductor_card(  # noqa: PLR0913 - model lookup and bin check context
-    translation: Translation,
+def _resolve_semiconductor_card[Seed](  # noqa: PLR0913 - model lookup and bin check
+    translation: Translation[Seed],
     model_name: str,
     kinds: frozenset[str],
     *,
-    instance: dict[str, float],
-    instance_symbolic: dict[str, Expression],
+    instance: Mapping[str, Scalar[Seed]],
+    instance_symbolic: Mapping[str, Expression],
     statement: Statement,
 ) -> ModelCard:
     """Resolves a semiconductor model card (including binned MOSFET lookup)."""
@@ -331,25 +368,35 @@ def _resolve_semiconductor_card(  # noqa: PLR0913 - model lookup and bin check c
     binned = False
     if card is None and "nmos" in kinds:
         binned = True
-        card = library.binned(
+        primal_instance = {key: primal(value) for key, value in instance.items()}
+        matched = library.binned_with_bounds(
             model_name,
             cards,
-            instance,
-            translation.scope,
+            primal_instance,
+            translation.primal_scope,
             functions=translation.functions,
         )
-        if card is None:
+        if matched is None:
             first_bin = library.card(model_name, cards)
             middle = (
                 None
                 if first_bin is None
                 else models.center(
-                    first_bin, translation.scope, functions=translation.functions
+                    first_bin,
+                    translation.primal_scope,
+                    functions=translation.functions,
                 )
             )
             raise_unbinned(
-                statement, model_name, instance, middle, library.fingers(instance)
+                statement,
+                model_name,
+                primal_instance,
+                middle,
+                library.fingers(primal_instance),
             )
+        else:
+            card, bin_bounds = matched
+            translation.record_bin(statement.text.split()[0], bin_bounds)
     if card is None:
         message = f"no model is named `{model_name}`"
         raise statement.fail(message)
@@ -361,7 +408,7 @@ def _resolve_semiconductor_card(  # noqa: PLR0913 - model lookup and bin check c
             card,
             instance_symbolic,
             translation.statistics,
-            scope=translation.scope,
+            scope=translation.primal_scope,
             functions=translation.functions,
             statement=statement,
         )
@@ -376,15 +423,15 @@ def _semiconductor(
     Validates that the referenced model card has a type in `kinds`.
     """
 
-    def translated(translation: Translation, statement: Statement) -> None:
+    def translated[Seed](translation: Translation[Seed], statement: Statement) -> None:
         positional, assigned = split_keywords(tokens(statement.text))
         nodes = positional[1 : 1 + len(terminals)]
         rest = positional[1 + len(terminals) :]
         if len(nodes) != len(terminals) or not rest:
             message = f"the element joins {len(terminals)} nodes, then names its model"
             raise statement.fail(message)
-        raw_instance, raw_symbolic = instance_keywords_symbolic(
-            translation.value_symbolic, statement, assigned
+        raw_instance, raw_symbolic = _read_instance_keywords(
+            translation, statement, assigned
         )
         instance, instance_symbolic = translation.multiplied_symbolic(
             raw_instance, raw_symbolic
@@ -421,7 +468,13 @@ def _semiconductor(
             terminal: translation.net(node)
             for terminal, node in zip(terminals, nodes, strict=True)
         }
-        translation.add(statement, made.model, made.parameters, joined)
+        translation.add(
+            statement,
+            made.model,
+            made.parameters,
+            joined,
+            derivatives=made.derivatives,
+        )
 
     return translated
 
@@ -432,8 +485,8 @@ _MOSFET: Final = _semiconductor(
 """The translation of a MOSFET element (`M`)."""
 
 
-def _find_model_card(
-    translation: Translation, positional: Sequence[str], first: int
+def _find_model_card[Seed](
+    translation: Translation[Seed], positional: Sequence[str], first: int
 ) -> tuple[int | None, ModelCard | None]:
     """Finds the first token at or after `first` in `positional` naming a model card."""
     for position in range(first, len(positional)):
@@ -458,7 +511,7 @@ def _check_vdmos_flags(statement: Statement, words: Sequence[str]) -> None:
             raise statement.fail(message)
 
 
-def _transistor(translation: Translation, statement: Statement) -> None:
+def _transistor[Seed](translation: Translation[Seed], statement: Statement) -> None:
     """Translates an `M` element into a MOSFET or VDMOS device by its model card.
 
     Follows ngspice model lookup starting at the fourth positional token. MOSFETs
@@ -480,7 +533,7 @@ def _transistor(translation: Translation, statement: Statement) -> None:
         message = f"a VDMOS joins at most {_VDMOS_NODES} nodes, then names its model"
         raise statement.fail(message)
     _check_vdmos_flags(statement, rest)
-    raw_instance: dict[str, float] = {}
+    raw_instance: dict[str, Scalar[Seed]] = {}
     raw_symbolic: dict[str, Expression] = {}
     for key, values in assigned.items():
         if not values:
@@ -501,10 +554,44 @@ def _transistor(translation: Translation, statement: Statement) -> None:
         terminal: translation.net(node)
         for terminal, node in zip(_VDMOS_TERMINALS, nodes, strict=False)
     }
-    translation.add(statement, made.model, made.parameters, joined)
+    translation.add(
+        statement,
+        made.model,
+        made.parameters,
+        joined,
+        derivatives=made.derivatives,
+    )
 
 
-def _bipolar(translation: Translation, statement: Statement) -> None:
+def _vbic_heating[Seed](
+    translation: Translation[Seed],
+    card: ModelCard,
+    instance: Mapping[str, Scalar[Seed]],
+) -> tuple[Scalar[Seed], Scalar[Seed]] | None:
+    """Evaluates 5-node VBIC self-heating `(rth, cth)` in plain or dual mode."""
+    if translation.differentiating:
+        prefix = card.name.casefold()
+
+        def draws(parameter: str) -> DualDraw[Seed] | None:
+            return translation.dual_draws_for(f"{prefix}.{parameter}")
+
+        return models.vbic_heating_dual(
+            card,
+            translation.scope,
+            instance,
+            draws,
+            functions=translation.functions,
+        )
+    primal_instance = {key: primal(value) for key, value in instance.items()}
+    return models.vbic_heating(
+        card,
+        translation.primal_scope,
+        primal_instance,
+        functions=translation.functions,
+    )
+
+
+def _bipolar[Seed](translation: Translation[Seed], statement: Statement) -> None:
     """Translates a `Q` element into a Gummel-Poon BJT or VBIC device by model card.
 
     Locates the model name starting at the fourth positional token after collector,
@@ -525,8 +612,8 @@ def _bipolar(translation: Translation, statement: Statement) -> None:
         message = f"`{card.name}` is a model of type `{card.kind}`"
         raise statement.fail(message)
     nodes, rest = positional[1:named], positional[named + 1 :]
-    raw_instance, raw_symbolic = instance_keywords_symbolic(
-        translation.value_symbolic,
+    raw_instance, raw_symbolic = _read_instance_keywords(
+        translation,
         statement,
         assigned,
         multi_valued=frozenset({"ic"}),
@@ -557,15 +644,15 @@ def _bipolar(translation: Translation, statement: Statement) -> None:
         "substrate": translation.net(substrate),
     }
     five_node_vbic = len(nodes) == most == 5  # noqa: PLR2004 - VBIC thermal node
-    heating = (
-        models.vbic_heating(
-            card, translation.scope, instance, functions=translation.functions
-        )
-        if five_node_vbic
-        else None
-    )
+    heating = _vbic_heating(translation, card, instance) if five_node_vbic else None
     if heating is None:
-        translation.add(statement, made.model, made.parameters, joined)
+        translation.add(
+            statement,
+            made.model,
+            made.parameters,
+            joined,
+            derivatives=made.derivatives,
+        )
         if five_node_vbic:
             translation.record_vbic_heating(
                 card, instance, instance_symbolic, statement, heated=False
@@ -573,16 +660,22 @@ def _bipolar(translation: Translation, statement: Statement) -> None:
         return
     thermal = translation.net(nodes[4])
     joined["thermal"] = thermal
-    translation.add(statement, made.model, {**made.parameters, "thermal": True}, joined)
+    translation.add(
+        statement,
+        made.model,
+        {**made.parameters, "thermal": True},
+        joined,
+        derivatives=made.derivatives,
+    )
     resistance, capacitance = heating
     name = statement.text.split()[0]
-    parts: tuple[tuple[str, str, dict[str, JsonValue]], ...] = (
+    parts: tuple[tuple[str, str, dict[str, DualJsonValue[Seed]]], ...] = (
         ("rth", "thermal_resistance", {"resistance": resistance}),
         ("cth", "thermal_capacitance", {"capacitance": capacitance}),
     )
     between = {"a": thermal, "b": translation.net("0")}
     for suffix, model, parameters in parts:
-        translation.add(
+        translation.add_dual(
             statement, model, parameters, between, identifier=f"{name}.{suffix}"
         )
     translation.record_vbic_heating(
@@ -593,7 +686,7 @@ def _bipolar(translation: Translation, statement: Statement) -> None:
 def _controlled(output: str) -> ElementTranslator:
     """Builds a translator for controlled sources (`E`, `F`, `G`, `H`) by `output`."""
 
-    def translated(translation: Translation, statement: Statement) -> None:
+    def translated[Seed](translation: Translation[Seed], statement: Statement) -> None:
         words = tokens(statement.text)
         if len(words) < 4:  # noqa: PLR2004 - a name, two nodes and a control
             message = "a controlled source joins two nodes, then names its control"
@@ -619,7 +712,7 @@ def _controlled(output: str) -> ElementTranslator:
             control_positive, control_negative, gain = rest
             parameter = "gain" if output == "voltage" else "transconductance"
             gain_value, gain_symbolic = translation.value_symbolic(gain)
-            translation.add(
+            translation.add_dual(
                 statement,
                 f"voltage_controlled_{output}_source",
                 {parameter: gain_value},
@@ -642,8 +735,8 @@ def _controlled(output: str) -> ElementTranslator:
     return translated
 
 
-def _linear_current(
-    translation: Translation,
+def _linear_current[Seed](
+    translation: Translation[Seed],
     statement: Statement,
     nodes: tuple[str, str],
     rest: list[str],
@@ -657,7 +750,7 @@ def _linear_current(
     control_positive, control_negative = translation.sense(source, statement)
     parameter = "gain" if output == "current" else "transresistance"
     gain_value, gain_symbolic = translation.value_symbolic(gain)
-    translation.add(
+    translation.add_dual(
         statement,
         f"current_controlled_{output}_source",
         {parameter: gain_value},
@@ -674,8 +767,8 @@ def _linear_current(
         )
 
 
-def _table(
-    translation: Translation, statement: Statement, rest: list[str]
+def _table[Seed](
+    translation: Translation[Seed], statement: Statement, rest: list[str]
 ) -> Expression:
     """Parses a SPICE ``TABLE {x} = (x1, y1) ...`` lookup table into a call node.
 
@@ -763,7 +856,7 @@ def _split_group(word: str) -> list[str]:
     return [word]
 
 
-def _arbitrary(translation: Translation, statement: Statement) -> None:
+def _arbitrary[Seed](translation: Translation[Seed], statement: Statement) -> None:
     """Translates an arbitrary behavioral `B` source (`V=` or `I=`) into jolty IR."""
     match = _ARBITRARY_SOURCE.match(statement.text)
     if match is None:
@@ -772,11 +865,12 @@ def _arbitrary(translation: Translation, statement: Statement) -> None:
     positive, negative, kind, written = match.groups()
     output = "voltage" if kind.casefold() == "v" else "current"
     if output == "current" and (
-        translation.multiplier != 1 or translation.multiplier_symbolic is not None
+        primal(translation.multiplier) != 1.0
+        or translation.multiplier_symbolic is not None
     ):
         message = (
             "jolty multiplies no behavioral current by its subcircuit's multiplier "
-            f"`m`, here {translation.multiplier!r}"
+            f"`m`, here {primal(translation.multiplier)!r}"
         )
         raise statement.fail(message)
     expression = translation.parse(written)
@@ -789,7 +883,7 @@ def _switch(*, by_current: bool) -> ElementTranslator:
     expected_words = 5 if by_current else 6
     expected_kind = "iswitch" if by_current else "vswitch"
 
-    def translated(translation: Translation, statement: Statement) -> None:
+    def translated[Seed](translation: Translation[Seed], statement: Statement) -> None:
         words = [
             word
             for word in tokens(statement.text)
@@ -827,24 +921,31 @@ def _switch(*, by_current: bool) -> ElementTranslator:
                 "control_positive": translation.net(words[3]),
                 "control_negative": translation.net(words[4]),
             }
-        translation.add(statement, made.model, made.parameters, terminals)
+        translation.add(
+            statement,
+            made.model,
+            made.parameters,
+            terminals,
+            derivatives=made.derivatives,
+        )
 
     return translated
 
 
-def _instance_arguments(
-    translation: Translation, statement: Statement, assigned: list[str]
+def _instance_arguments[Seed](
+    translation: Translation[Seed], statement: Statement, assigned: list[str]
 ) -> tuple[dict[str, float], dict[str, Expression], frozenset[str]]:
     """Evaluates `X` instance arguments with symbolic and probe-stochastic metadata."""
     functions = translation.functions
+    scope = translation.primal_scope
     raw_given: dict[str, float] = {}
     raw_given_symbolic: dict[str, Expression] = {}
     probe_stochastic: set[str] = set()
     for parameter, expression in models.assignments(statement, assigned).items():
         resolved = inlined(expression, functions)
-        raw_given[parameter] = evaluate(resolved, translation.scope, translation.draw)
+        raw_given[parameter] = evaluate(resolved, scope, translation.draw)
         if translation.statistics is not None:
-            lowered = translation.statistics.lower_element(resolved, translation.scope)
+            lowered = translation.statistics.lower_element(resolved, scope)
             if lowered is not None:
                 raw_given_symbolic[parameter] = lowered
         elif translation.probe_compiler is not None and (
@@ -854,14 +955,80 @@ def _instance_arguments(
     given, given_symbolic = translation.multiplied_symbolic(
         raw_given, raw_given_symbolic
     )
+    primal_given = {key: primal(value) for key, value in given.items()}
     if translation.probe_compiler is not None and (
         translation.multiplier_symbolic is not None
     ):
         probe_stochastic.add("m")
-    return given, given_symbolic, frozenset(probe_stochastic)
+    return primal_given, given_symbolic, frozenset(probe_stochastic)
 
 
-def _instance(translation: Translation, statement: Statement) -> None:
+def _place_child[Seed](
+    translation: Translation[Seed],
+    statement: Statement,
+    subcircuit: Subcircuit,
+    name: str,
+    assigned: list[str],
+) -> Built:
+    """Builds child `subcircuit` placement in dual, hoisted, or standard mode."""
+    prefix = f"{name}{ir.SEPARATOR}"
+    if translation.differentiating:
+        given = translation.multiplied(
+            {
+                parameter: translation.evaluate_expression(expression)
+                for parameter, expression in models.assignments(
+                    statement, assigned
+                ).items()
+            }
+        )
+        dual_built = translation.library.place_dual(
+            subcircuit,
+            translation.globals,
+            given,
+            translation.drawing.within(name),
+            translation.instantiating,
+            dual_draws=translation.dual_draw_factory,
+            temperature=translation.temperature_value,
+            temperature_dependent=translation.global_temperature_dependent,
+        )
+        for device_path, parameters in dual_built.derivatives.items():
+            translation.device_derivatives[f"{prefix}{device_path}"] = {
+                parameter: dict(slopes) for parameter, slopes in parameters.items()
+            }
+        for device_path, bin_bounds in dual_built.bins.items():
+            translation.device_bins[f"{prefix}{device_path}"] = bin_bounds
+        return dual_built.built
+    primal_given, given_symbolic, probe_stochastic = _instance_arguments(
+        translation, statement, assigned
+    )
+    if translation.statistics is not None and given_symbolic:
+        return translation.library.place_built(
+            subcircuit,
+            translation.globals,
+            primal_given,
+            translation.drawing.within(name),
+            translation.instantiating,
+            uses=translation.uses,
+            temperature=translation.temperature_value,
+            temperature_dependent=translation.global_temperature_dependent,
+            given_symbolic=given_symbolic,
+            parent_statistics=translation.statistics,
+            hoist_instance=name,
+        )
+    return translation.library.place_built(
+        subcircuit,
+        translation.globals,
+        primal_given,
+        translation.drawing.within(name),
+        translation.instantiating,
+        uses=translation.uses,
+        temperature=translation.temperature_value,
+        temperature_dependent=translation.global_temperature_dependent,
+        given_probe_stochastic=probe_stochastic,
+    )
+
+
+def _instance[Seed](translation: Translation[Seed], statement: Statement) -> None:
     """Translates an `X` subcircuit instantiation statement with its parameters."""
     words = [word for word in tokens(statement.text) if word.casefold() != "params:"]
     # Each parameter is `name = value`; the subcircuit's name is the last word besides,
@@ -880,35 +1047,8 @@ def _instance(translation: Translation, statement: Statement) -> None:
             f"`{subcircuit.name}` has {len(subcircuit.pins)} pins, not {len(nodes)}"
         )
         raise statement.fail(message)
-    given, given_symbolic, probe_stochastic = _instance_arguments(
-        translation, statement, assigned
-    )
-    if translation.statistics is not None and given_symbolic:
-        built = translation.library.place_built(
-            subcircuit,
-            translation.globals,
-            given,
-            translation.drawing.within(name),
-            translation.instantiating,
-            uses=translation.uses,
-            temperature=translation.temperature_value,
-            temperature_dependent=translation.global_temperature_dependent,
-            given_symbolic=given_symbolic,
-            parent_statistics=translation.statistics,
-            hoist_instance=name,
-        )
-    else:
-        built = translation.library.place_built(
-            subcircuit,
-            translation.globals,
-            given,
-            translation.drawing.within(name),
-            translation.instantiating,
-            uses=translation.uses,
-            temperature=translation.temperature_value,
-            temperature_dependent=translation.global_temperature_dependent,
-            given_probe_stochastic=probe_stochastic,
-        )
+    prefix = f"{name}{ir.SEPARATOR}"
+    built = _place_child(translation, statement, subcircuit, name, assigned)
     if built.temperature_dependent:
         translation.mark_temperature_dependent()
     child = built.component
@@ -918,7 +1058,6 @@ def _instance(translation: Translation, statement: Statement) -> None:
     }
     if GROUND in ports:
         terminals[GROUND] = translation.net("0")
-    prefix = f"{name}{ir.SEPARATOR}"
     translation.child_initial_conditions.extend(
         (remap_net(net, terminals, prefix), voltage)
         for net, voltage in built.initial.initial_conditions

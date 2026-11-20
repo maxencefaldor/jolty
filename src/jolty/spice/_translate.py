@@ -7,10 +7,10 @@ import operator
 import re
 import threading
 from collections import deque
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Final, Protocol
+from typing import Final, Protocol, override
 
 from pydantic import JsonValue
 
@@ -25,6 +25,7 @@ from jolty.spice._initial import (
     INITIAL,
     Built,
     DeviceVoltage,
+    DualBuilt,
     InitialState,
     check_net_name,
     parse_voltages,
@@ -39,6 +40,7 @@ from jolty.spice._params import (
     parse_assignments,
     parse_function,
     resolve_into,
+    resolve_into_dual,
 )
 from jolty.spice._preprocess import chosen, keyword, letter, unconditional
 from jolty.spice._statistics import (
@@ -60,23 +62,64 @@ from jolty.spice._survey import (
 from jolty.spice.expressions import (
     Binary,
     Draw,
+    Dual,
+    DualDraw,
     Expression,
     Function,
     Number,
+    Scalar,
     UndefinedError,
     check_core_depth,
+    compact,
     evaluate,
+    evaluate_dual,
+    has_derivatives,
     inlined,
+    is_finite,
     nominal,
     number,
     parse,
+    primal,
     translate,
 )
-from jolty.spice.models import ModelCard
+from jolty.spice.models import BinBounds, DualJsonValue, ModelCard
 from jolty.spice.netlist import Statement, tokens
 
-type ElementTranslator = Callable[[Translation, Statement], None]
-"""Translates one SPICE element statement into a `Translation`."""
+
+class ElementTranslator(Protocol):
+    """Translates one SPICE element statement into a `Translation`."""
+
+    def __call__[Seed](
+        self, translation: Translation[Seed], statement: Statement
+    ) -> None:
+        """Translates `statement` into `translation`."""
+        ...
+
+
+class _PrimalScope[Seed](Mapping[str, float]):
+    """Read-only primal-value view over a scalar or dual parameter scope."""
+
+    __slots__ = ("_values",)
+
+    def __init__(self, values: Mapping[str, Scalar[Seed]]) -> None:
+        self._values = values
+
+    @override
+    def __getitem__(self, key: str) -> float:
+        return primal(self._values[key])
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._values)
+
+    @override
+    def __contains__(self, key: object) -> bool:
+        return key in self._values
+
 
 _SENSED: Final = frozenset({"v", "e", "h", "b"})
 """The letters of the elements whose current others may read: sources of a voltage, and
@@ -149,7 +192,7 @@ class LibraryHost(Protocol):
         """
         ...
 
-    def binned(
+    def binned_with_bounds(
         self,
         name: str,
         local: Mapping[str, ModelCard],
@@ -157,8 +200,8 @@ class LibraryHost(Protocol):
         scope: Mapping[str, float],
         *,
         functions: Mapping[str, Function] = NO_FUNCTIONS,
-    ) -> ModelCard | None:
-        """Selects the matching MOSFET bin for `instance`.
+    ) -> tuple[ModelCard, BinBounds] | None:
+        """Selects the matching MOSFET bin card and its active `BinBounds`.
 
         Args:
             name: Base model name without numeric bin suffix.
@@ -168,7 +211,7 @@ class LibraryHost(Protocol):
             functions: Case-folded user-defined functions inlined before evaluation.
 
         Returns:
-            Matching binned `ModelCard`, or `None` when no bin matches `instance`.
+            Pair `(card, bounds)` for the matching bin, or `None` when none matches.
         """
         ...
 
@@ -232,14 +275,44 @@ class LibraryHost(Protocol):
         """
         ...
 
+    def place_dual[Seed](  # noqa: PLR0913 - dual subcircuit placement state
+        self,
+        subcircuit: Subcircuit,
+        scope: Mapping[str, float],
+        given: Mapping[str, Scalar[Seed]],
+        drawing: Drawing,
+        instantiating: tuple[str, ...] = (),
+        *,
+        dual_draws: Callable[[str, str], DualDraw[Seed]] | None = None,
+        temperature: float | None = None,
+        temperature_dependent: frozenset[str] | None = None,
+    ) -> DualBuilt[Seed]:
+        """Builds a child subcircuit placement propagating exact dual derivatives.
+
+        Args:
+            subcircuit: Target subcircuit definition to instantiate.
+            scope: Enclosing global parameter values in scope.
+            given: Scalar or dual parameter overrides passed on the instance line.
+            drawing: Statistical sampling context and hierarchical placement path.
+            instantiating: Active chain of subcircuit names used to detect recursion.
+            dual_draws: Optional factory mapping `(path, name)` to a `DualDraw`.
+            temperature: Optional library temperature snapshot in kelvins.
+            temperature_dependent: Optional set of global parameter names depending on
+                library temperature.
+
+        Returns:
+            `DualBuilt` bundling the translated child, derivatives, and bin bounds.
+        """
+        ...
+
 
 @dataclass(frozen=True, slots=True)
-class TranslationOptions:
+class TranslationOptions[Seed]:
     """Per-placement options injected into `Translation`."""
 
     drawing: Drawing
     elements: Mapping[str, ElementTranslator]
-    multiplier: float = 1.0
+    multiplier: Scalar[Seed] = 1.0
     parsed_models: dict[Statement, ModelCard] | None = None
     lock: threading.Lock | None = None
     instantiating: tuple[str, ...] = ()
@@ -250,6 +323,8 @@ class TranslationOptions:
     probe_compiler: StatisticalCompiler | None = None
     multiplier_symbolic: Expression | None = None
     hoisted: bool = False
+    differentiating: bool = False
+    dual_draws: Callable[[str, str], DualDraw[Seed]] | None = None
 
 
 @dataclass(slots=True)
@@ -265,25 +340,25 @@ class Sense:
 
 
 @dataclass(frozen=True, slots=True)
-class Coupling:
+class Coupling[Seed]:
     """A mutual inductance: the inductors it couples, by name, coefficient and order."""
 
     statement: Statement
     inductors: tuple[str, ...]
-    coefficient: float
+    coefficient: Scalar[Seed]
     order: int
     coefficient_symbolic: Expression | None = None
 
 
-class Translation:
+class Translation[Seed]:
     """One subcircuit translated into a component, with its parameters' values."""
 
     def __init__(
         self,
         library: LibraryHost,
         subcircuit: Subcircuit,
-        scopes: tuple[Mapping[str, float], MutableMapping[str, float]],
-        options: TranslationOptions,
+        scopes: tuple[Mapping[str, float], Mapping[str, Scalar[Seed]]],
+        options: TranslationOptions[Seed],
     ) -> None:
         """Initializes translation state for `subcircuit` under `scopes`."""
         self.library = library
@@ -291,7 +366,7 @@ class Translation:
         self.globals, self.scope = scopes
         self.drawing = options.drawing
         self._elements = options.elements
-        self.multiplier = options.multiplier
+        self.multiplier: Scalar[Seed] = options.multiplier
         """The subcircuit's multiplier, which multiplies each element it holds."""
         self._parsed_models = options.parsed_models
         self._cache_lock = options.lock
@@ -304,9 +379,13 @@ class Translation:
         self.probe_compiler = options.probe_compiler
         self.multiplier_symbolic = options.multiplier_symbolic
         self._hoisted = options.hoisted
+        self.differentiating = options.differentiating
+        self._dual_draws = options.dual_draws
         self.order = 0
         self.draw: Draw = nominal
         """The draws of the statistical functions of the element being translated."""
+        self.dual_draw: DualDraw[Seed] | None = None
+        """Dual statistical draw callback for the element being translated."""
         self.parameters: dict[str, Expression] = {}
         if self._cache_lock is not None:
             with self._cache_lock:
@@ -322,7 +401,9 @@ class Translation:
         self.instances: list[tuple[int, ir.Instance]] = []
         self.children: dict[str, Component] = {}
         self.senses: dict[str, Sense] = {}
-        self.couplings: list[Coupling] = []
+        self.couplings: list[Coupling[Seed]] = []
+        self.device_derivatives: dict[str, dict[str, dict[Seed, float]]] = {}
+        self.device_bins: dict[str, BinBounds] = {}
         self.initial_statements: list[tuple[str, Statement]] = []
         self.child_initial_conditions: list[tuple[str, float]] = []
         self.child_nodesets: list[tuple[str, float]] = []
@@ -336,6 +417,27 @@ class Translation:
                 message = "a pin named `0`, SPICE's global ground"
                 raise subcircuit.statement.fail(message)
             self.net(pin)
+
+    @property
+    def primal_scope(self) -> Mapping[str, float]:
+        """Read-only primal floating-point view over `self.scope`."""
+        return _PrimalScope(self.scope)
+
+    @property
+    def dual_draw_factory(self) -> Callable[[str, str], DualDraw[Seed]] | None:
+        """Factory producing dual statistical callbacks for nested placements."""
+        return self._dual_draws
+
+    def dual_draws_for(self, name: str) -> DualDraw[Seed] | None:
+        """Returns the dual statistical callback for `name` at `self.drawing.path`."""
+        if self._dual_draws is None:
+            return None
+        return self._dual_draws(self.drawing.path, name)
+
+    def record_bin(self, instance_name: str, bin_bounds: BinBounds) -> None:
+        """Records the active MOSFET `bin_bounds` for `instance_name`."""
+        if self.differentiating:
+            self.device_bins[instance_name] = bin_bounds
 
     @property
     def global_temperature_dependent(self) -> frozenset[str]:
@@ -372,12 +474,12 @@ class Translation:
         def check_condition(statement: Statement, condition: Expression) -> None:
             if self.statistics is not None:
                 check_condition_deterministic(
-                    condition, self.statistics, self.scope, statement
+                    condition, self.statistics, self.primal_scope, statement
                 )
 
         selected = chosen(
             body,
-            self.scope,
+            self.primal_scope,
             self.functions,
             on_condition=check_condition if self.statistics is not None else None,
         )
@@ -398,10 +500,28 @@ class Translation:
         """Resolves conditional `.param` statements into scope and active compilers."""
         if not self.parameters:
             return
-        resolve_into(self.parameters, self.scope, self.drawing.draws, self.functions)
+        if self.differentiating:
+            resolved_scope: dict[str, Scalar[Seed]] = dict(self.scope)
+            resolve_into_dual(
+                self.parameters,
+                resolved_scope,
+                self.dual_draws_for,
+                self.functions,
+            )
+            self.scope = resolved_scope
+        elif isinstance(self.scope, TrackedScope):
+            resolve_into(
+                self.parameters, self.scope, self.drawing.draws, self.functions
+            )
+        else:
+            plain_scope = dict(self.primal_scope)
+            resolve_into(
+                self.parameters, plain_scope, self.drawing.draws, self.functions
+            )
+            self.scope = plain_scope
         active = self.statistics or self.probe_compiler
         if active is not None:
-            active.resolve_into(self.parameters, self.scope, self.functions)
+            active.resolve_into(self.parameters, self.primal_scope, self.functions)
 
     def translate(self, name: str) -> Built:
         """Translates the subcircuit into a `Built` component named `name`.
@@ -453,6 +573,25 @@ class Translation:
             temperature_dependent=self.is_temperature_dependent,
         )
 
+    def translate_dual(self, name: str) -> DualBuilt[Seed]:
+        """Translates the subcircuit returning `DualBuilt` with derivatives and bins."""
+        built = self.translate(name)
+        return DualBuilt(
+            built,
+            MappingProxyType(
+                {
+                    device_path: MappingProxyType(
+                        {
+                            parameter: MappingProxyType(dict(slopes))
+                            for parameter, slopes in parameters.items()
+                        }
+                    )
+                    for device_path, parameters in self.device_derivatives.items()
+                }
+            ),
+            MappingProxyType(dict(self.device_bins)),
+        )
+
     def _initial_state(self) -> InitialState:
         """Evaluates local ``.ic`` / ``.nodeset`` lines and gathers device ``IC=``."""
         initial_conditions = list(self.child_initial_conditions)
@@ -460,7 +599,7 @@ class Translation:
         for directive, statement in self.initial_statements:
             target = initial_conditions if directive == ".ic" else nodesets
             for node, voltage in parse_voltages(
-                statement, self.scope, self.functions
+                statement, self.primal_scope, self.functions
             ).items():
                 resolved = (
                     GROUND if node == "0" else self.nets.get(node.casefold(), node)
@@ -510,37 +649,48 @@ class Translation:
         check_net_name(node, self.subcircuit.statement)
         return self.nets.setdefault(node.casefold(), node)
 
-    def value(self, word: str) -> float:
+    def value(self, word: str) -> Scalar[Seed]:
         """Evaluates numeric literal or parameter expression `word` in current scope.
 
-        Statistical calls sample using the active element's `self.draw` callback.
+        Statistical calls sample using the active element's `self.draw` callback (or
+        `self.dual_draw` when differentiating).
 
         Args:
             word: SPICE literal or parameter expression token to evaluate.
 
         Returns:
-            Evaluated finite floating-point value.
+            Evaluated finite scalar or `Dual` value.
 
         Raises:
-            SpiceError: When `word` evaluates to a non-finite number.
+            SpiceError: When `word` evaluates to a non-finite value or derivative.
         """
         written = number(word)
-        resolved = (
-            evaluate(self.parse(word), self.scope, self.draw)
-            if written is None
-            else written
-        )
-        if not math.isfinite(resolved):
-            message = f"`{word}` evaluates to a non-finite value ({resolved!r})"
+        if written is not None:
+            return written
+        if not self.differentiating:
+            resolved = evaluate(self.parse(word), self.primal_scope, self.draw)
+            if not math.isfinite(resolved):
+                message = f"`{word}` evaluates to a non-finite value ({resolved!r})"
+                raise SpiceError(message)
+            return resolved
+        dual = evaluate_dual(self.parse(word), self.scope, self.dual_draw)
+        if not is_finite(dual):
+            message = (
+                f"`{word}` evaluates to a non-finite value or derivative "
+                f"({dual.value!r})"
+            )
             raise SpiceError(message)
-        return resolved
+        return compact(dual)
 
-    def value_symbolic(self, word: str) -> tuple[float, Expression | None]:
-        """Evaluates `word` and returns `(nominal_value, symbolic_expression)`.
+    def value_symbolic(self, word: str) -> tuple[Scalar[Seed], Expression | None]:
+        """Evaluates `word` and returns `(value, symbolic_expression)`.
 
-        When statistical compilation is active, lowers `word` through the element's
-        active call counter alongside nominal evaluation.
+        In dual differentiation mode, returns `(scalar_or_dual, None)`. Otherwise
+        evaluates the nominal value and, when statistical compilation is active, lowers
+        `word` through the element's active call counter.
         """
+        if self.differentiating:
+            return self.value(word), None
         written = number(word)
         if written is not None:
             if not math.isfinite(written):
@@ -548,18 +698,37 @@ class Translation:
                 raise SpiceError(message)
             return written, None
         parsed = self.parse(word)
-        resolved = evaluate(parsed, self.scope, self.draw)
+        scope = self.primal_scope
+        resolved = evaluate(parsed, scope, self.draw)
         if not math.isfinite(resolved):
             message = f"`{word}` evaluates to a non-finite value ({resolved!r})"
             raise SpiceError(message)
         symbolic = (
             None
             if self.statistics is None
-            else self.statistics.lower_element(parsed, self.scope)
+            else self.statistics.lower_element(parsed, scope)
         )
         return resolved, symbolic
 
-    def multiplied(self, instance: Mapping[str, float]) -> dict[str, float]:
+    def evaluate_expression(
+        self,
+        expression: Expression,
+        *,
+        draw_name: str | None = None,
+    ) -> Scalar[Seed]:
+        """Evaluates parsed `expression` in current scope in plain or dual mode."""
+        resolved = inlined(expression, self.functions)
+        if not self.differentiating:
+            draw = self.draw if draw_name is None else self.drawing.draws(draw_name)
+            return evaluate(resolved, self.primal_scope, draw)
+        dual_draw = (
+            self.dual_draw if draw_name is None else self.dual_draws_for(draw_name)
+        )
+        return compact(evaluate_dual(resolved, self.scope, dual_draw))
+
+    def multiplied(
+        self, instance: Mapping[str, Scalar[Seed]]
+    ) -> dict[str, Scalar[Seed]]:
         """Applies the enclosing subcircuit multiplier `m` to `instance` parameters.
 
         Multiplies instance `m` by `self.multiplier` in all compatibility modes,
@@ -571,25 +740,26 @@ class Translation:
         Returns:
             Copy of `instance` with `m` scaled by `self.multiplier`.
         """
-        if self.multiplier == 1:
+        if primal(self.multiplier) == 1.0 and not has_derivatives(self.multiplier):
             return dict(instance)
         return {**instance, "m": instance.get("m", 1.0) * self.multiplier}
 
     def multiplied_symbolic(
         self,
-        instance: Mapping[str, float],
+        instance: Mapping[str, Scalar[Seed]],
         instance_symbolic: Mapping[str, Expression],
-    ) -> tuple[dict[str, float], dict[str, Expression]]:
-        """Applies enclosing subcircuit multiplier `m` to nominal and symbolic maps."""
+    ) -> tuple[dict[str, Scalar[Seed]], dict[str, Expression]]:
+        """Applies enclosing subcircuit multiplier `m` to value and symbolic maps."""
         values = self.multiplied(instance)
         symbolic = dict(instance_symbolic)
-        if self.multiplier == 1.0 and self.multiplier_symbolic is None:
+        multiplier = primal(self.multiplier)
+        if multiplier == 1.0 and self.multiplier_symbolic is None:
             return values, symbolic
-        own_value = instance.get("m", 1.0)
+        own_value = primal(instance.get("m", 1.0))
         own_symbolic = instance_symbolic.get("m")
         if self.multiplier_symbolic is None:
             if own_symbolic is not None:
-                symbolic["m"] = Binary("*", own_symbolic, Number(self.multiplier))
+                symbolic["m"] = Binary("*", own_symbolic, Number(multiplier))
         elif own_symbolic is None:
             symbolic["m"] = (
                 self.multiplier_symbolic
@@ -614,14 +784,15 @@ class Translation:
         """
         return inlined(parse(text), self.functions)
 
-    def add(
+    def add(  # noqa: PLR0913 - device placement fields and optional derivatives
         self,
         statement: Statement,
         model: str,
-        parameters: dict[str, JsonValue],
+        parameters: Mapping[str, JsonValue],
         terminals: Mapping[str, str],
         *,
         identifier: str | None = None,
+        derivatives: Mapping[str, Mapping[Seed, float]] | None = None,
     ) -> None:
         """Validates and appends a device instance of `model` for `statement`.
 
@@ -634,13 +805,22 @@ class Translation:
             parameters: SI device parameter dictionary validated by the engine.
             terminals: Mapping from jolty terminal names to canonical net names.
             identifier: Optional explicit instance name overriding the element token.
+            derivatives: Optional sparse partial derivatives keyed by dotted parameter
+                path.
         """
-        made = checked_device(statement, model, parameters)
+        made = checked_device(statement, model, dict(parameters))
+        instance_name = identifier or statement.text.split()[0]
+        if self.differentiating and derivatives is not None:
+            non_empty = {
+                key: dict(slopes) for key, slopes in derivatives.items() if slopes
+            }
+            if non_empty:
+                self.device_derivatives[instance_name] = non_empty
         self.instances.append(
             (
                 self.order,
                 ir.Instance(
-                    name=identifier or statement.text.split()[0],
+                    name=instance_name,
                     of=ir.DeviceOf(model=model),
                     parameters=made.parameters,
                     terminals={
@@ -651,6 +831,28 @@ class Translation:
                     ),
                 ),
             )
+        )
+
+    def add_dual(
+        self,
+        statement: Statement,
+        model: str,
+        parameters: Mapping[str, DualJsonValue[Seed]],
+        terminals: Mapping[str, str],
+        *,
+        identifier: str | None = None,
+    ) -> None:
+        """Splits dual parameters into primal JSON and derivatives, then calls `add`."""
+        primal_parameters, derivatives = models.split_dual_parameters(
+            parameters, statement
+        )
+        self.add(
+            statement,
+            model,
+            primal_parameters,
+            terminals,
+            identifier=identifier,
+            derivatives=derivatives,
         )
 
     def _prepare_behavioral_parameters(
@@ -665,14 +867,14 @@ class Translation:
             rewritten, extracted, symbolic = self.statistics.extract_behavioral(
                 element_name,
                 expression,
-                self.scope,
+                self.primal_scope,
                 extra_parameters=extra_parameters,
             )
             return rewritten, extracted, symbolic or None
         if self.probe_compiler is not None:
             rewritten, extracted, symbolic = extract_probe_behavioral(
                 expression,
-                self.scope,
+                self.primal_scope,
                 frozenset(self.probe_compiler.scope_symbols),
                 extra_parameters=probe_extra_parameters,
             )
@@ -686,7 +888,7 @@ class Translation:
         nodes: tuple[str, str],
         expression: Expression,
         *,
-        parameters: Mapping[str, JsonValue] | None = None,
+        parameters: Mapping[str, DualJsonValue[Seed]] | None = None,
         extra_parameters: Mapping[str, tuple[float, Expression]] | None = None,
         probe_extra_parameters: Mapping[str, float] | None = None,
     ) -> None:
@@ -744,7 +946,7 @@ class Translation:
         )
         text = translate(
             translated_expression,
-            self.scope,
+            self.primal_scope,
             node,
             current,
             symbolic=symbolic_names,
@@ -754,11 +956,15 @@ class Translation:
         except SpiceError as error:
             raise statement.fail(str(error)) from None
         combined: dict[str, JsonValue] = {"expression": text}
+        derivatives: dict[str, dict[Seed, float]] | None = None
         if parameters is not None:
-            combined |= parameters
+            primal_parameters, derivatives = models.split_dual_parameters(
+                parameters, statement
+            )
+            combined |= primal_parameters
         if extracted_parameters:
             combined["parameters"] = dict(extracted_parameters)
-        self.add(statement, model, combined, terminals)
+        self.add(statement, model, combined, terminals, derivatives=derivatives)
 
     def sense(self, source: str, statement: Statement) -> tuple[str, str]:
         """Inserts a current-sensing port in series with voltage source `source`.
@@ -928,12 +1134,19 @@ class Translation:
                 key=lambda name: inductors[name][0],
             )
             windings = [inductors[name][1] for name in names]
-            order, instance, coupling_expressions = _coupled(group, names, windings)
+            winding_derivatives = [
+                self.device_derivatives.pop(winding.name, {}) for winding in windings
+            ]
+            order, instance, coupling_expressions, coupled_derivatives = _coupled(
+                group, names, windings, winding_derivatives
+            )
             self.instances.append((order, instance))
             if self.statistics is not None:
                 self.statistics.remap_coupled_inductors(
                     instance.name, names, windings, coupling_expressions
                 )
+            if self.differentiating and coupled_derivatives:
+                self.device_derivatives[instance.name] = coupled_derivatives
             for winding_index, name in enumerate(names, start=1):
                 entry = self.inductor_initial_currents.pop(name, None)
                 if entry is not None:
@@ -962,9 +1175,13 @@ class Translation:
             SpiceError: When jolty cannot translate it, outside a survey.
         """
         name = statement.text.split()[0]
-        self.draw = self.drawing.draws(name.casefold())
+        folded_name = name.casefold()
+        self.draw = self.drawing.draws(folded_name)
+        self.dual_draw = (
+            self.dual_draws_for(folded_name) if self.differentiating else None
+        )
         if self.statistics is not None:
-            self.statistics.begin_element(name.casefold())
+            self.statistics.begin_element(folded_name)
         if self.uses is None:
             self._translated(statement)
             return
@@ -972,7 +1189,7 @@ class Translation:
         def find_card(word: str) -> ModelCard | None:
             return self.library.card(word, self.models)
 
-        model = needed_model(statement, find_card, self.scope, self.functions)
+        model = needed_model(statement, find_card, self.primal_scope, self.functions)
         path = self.drawing.within(name).path
         try:
             self._translated(statement)
@@ -997,11 +1214,11 @@ class Translation:
             raise statement.fail(message)
         element_letter = letter(statement)
         if (
-            self.multiplier != 1 or self.multiplier_symbolic is not None
+            primal(self.multiplier) != 1.0 or self.multiplier_symbolic is not None
         ) and element_letter in UNMULTIPLIED:
             message = (
                 f"jolty multiplies no {ELEMENT_KINDS[element_letter]} by its "
-                f"subcircuit's multiplier `m`, here {self.multiplier!r}"
+                f"subcircuit's multiplier `m`, here {primal(self.multiplier)!r}"
             )
             raise statement.fail(message)
         translator = self._elements.get(element_letter)
@@ -1016,12 +1233,12 @@ class Translation:
     def device(
         self,
         card: ModelCard,
-        instance: Mapping[str, float],
+        instance: Mapping[str, Scalar[Seed]],
         statement: Statement,
         *,
         instance_symbolic: Mapping[str, Expression] | None = None,
-    ) -> models.Made:
-        """Translates model `card` and `instance` parameters into a `Made` device.
+    ) -> models.MadeDual[Seed]:
+        """Translates model `card` and `instance` parameters into a `MadeDual` device.
 
         Statistical functions in `card` sample under keys ``<card_name>.<parameter>``.
 
@@ -1033,54 +1250,91 @@ class Translation:
                 parameters recorded when statistical compilation is active.
 
         Returns:
-            Translated jolty `Made` device pairing model name and SI parameters.
+            Translated jolty `MadeDual` pairing model name, SI parameters, and exact
+            derivatives (empty when not differentiating).
         """
         prefix = card.name.casefold()
+        if self.differentiating:
+
+            def dual_draws(name: str) -> DualDraw[Seed] | None:
+                return self.dual_draws_for(f"{prefix}.{name}")
+
+            return models.device_dual(
+                card,
+                self.scope,
+                instance,
+                statement,
+                dual_draws,
+                functions=self.functions,
+            )
 
         def draws(name: str) -> Draw:
             return self.drawing.draws(f"{prefix}.{name}")
 
+        primal_instance = {key: primal(value) for key, value in instance.items()}
         made = models.device(
             card,
-            self.scope,
-            instance,
+            self.primal_scope,
+            primal_instance,
             statement,
             draws,
             functions=self.functions,
         )
         if self.statistics is not None:
-            card_symbolic: dict[str, Expression] = {}
-            for parameter_name, expression in card.parameters.items():
-                resolved = inlined(expression, self.functions)
-                lowered = self.statistics.lower(
-                    resolved, self.scope, call_name=f"{prefix}.{parameter_name}"
-                )
-                if lowered is not None:
-                    card_symbolic[parameter_name] = lowered
-            if card_symbolic or (instance_symbolic is not None and instance_symbolic):
-                card_values = {
-                    parameter_name: evaluate(
-                        inlined(expression, self.functions), self.scope, nominal
-                    )
-                    for parameter_name, expression in card.parameters.items()
-                }
-                record_device_targets(
-                    self.statistics,
-                    statement.text.split()[0],
-                    card,
-                    card_values=card_values,
-                    card_symbolic=card_symbolic,
-                    instance=instance,
-                    instance_symbolic=instance_symbolic or {},
-                    made=made,
-                    statement=statement,
-                )
-        return made
+            self._record_device_statistics(
+                card,
+                primal_instance,
+                instance_symbolic or {},
+                made,
+                statement,
+            )
+        return models.MadeDual(made.model, made.parameters, {})
+
+    def _record_device_statistics(
+        self,
+        card: ModelCard,
+        instance: Mapping[str, float],
+        instance_symbolic: Mapping[str, Expression],
+        made: models.Made,
+        statement: Statement,
+    ) -> None:
+        """Records symbolic targets for a translated semiconductor or switch device."""
+        if self.statistics is None:
+            return
+        prefix = card.name.casefold()
+        scope = self.primal_scope
+        card_symbolic: dict[str, Expression] = {}
+        for parameter_name, expression in card.parameters.items():
+            resolved = inlined(expression, self.functions)
+            lowered = self.statistics.lower(
+                resolved, scope, call_name=f"{prefix}.{parameter_name}"
+            )
+            if lowered is not None:
+                card_symbolic[parameter_name] = lowered
+        if not card_symbolic and not instance_symbolic:
+            return
+        card_values = {
+            parameter_name: evaluate(
+                inlined(expression, self.functions), scope, nominal
+            )
+            for parameter_name, expression in card.parameters.items()
+        }
+        record_device_targets(
+            self.statistics,
+            statement.text.split()[0],
+            card,
+            card_values=card_values,
+            card_symbolic=card_symbolic,
+            instance=instance,
+            instance_symbolic=instance_symbolic,
+            made=made,
+            statement=statement,
+        )
 
     def record_vbic_heating(
         self,
         card: ModelCard,
-        instance: Mapping[str, float],
+        instance: Mapping[str, Scalar[Seed]],
         instance_symbolic: Mapping[str, Expression],
         statement: Statement,
         *,
@@ -1090,6 +1344,7 @@ class Translation:
         if self.statistics is None:
             return
         prefix = card.name.casefold()
+        scope = self.primal_scope
         card_symbolic: dict[str, Expression] = {}
         card_values: dict[str, float] = {}
         for parameter_name in models.VBIC_SELF_HEATING:
@@ -1098,21 +1353,22 @@ class Translation:
                 continue
             resolved = inlined(expression, self.functions)
             lowered = self.statistics.lower(
-                resolved, self.scope, call_name=f"{prefix}.{parameter_name}"
+                resolved, scope, call_name=f"{prefix}.{parameter_name}"
             )
             if lowered is not None:
                 card_symbolic[parameter_name] = lowered
-            card_values[parameter_name] = evaluate(resolved, self.scope, nominal)
+            card_values[parameter_name] = evaluate(resolved, scope, nominal)
         if card_symbolic or (
             heated and ("area" in instance_symbolic or "m" in instance_symbolic)
         ):
+            primal_instance = {key: primal(value) for key, value in instance.items()}
             record_vbic_heating_targets(
                 self.statistics,
                 statement.text.split()[0],
                 card,
                 card_values=card_values,
                 card_symbolic=card_symbolic,
-                instance=instance,
+                instance=primal_instance,
                 instance_symbolic=instance_symbolic,
                 heated=heated,
                 statement=statement,
@@ -1181,12 +1437,12 @@ def _propagate_thermal(
                 queue.append(neighbor)
 
 
-def _groups(couplings: list[Coupling]) -> list[list[Coupling]]:
+def _groups[Seed](couplings: list[Coupling[Seed]]) -> list[list[Coupling[Seed]]]:
     """Partitions `couplings` into connected components sharing inductor windings.
 
     Each returned group is sorted in expanded statement order.
     """
-    groups: list[list[Coupling]] = []
+    groups: list[list[Coupling[Seed]]] = []
     for coupling in couplings:
         names = {name.casefold() for name in coupling.inductors}
         joined = [
@@ -1199,10 +1455,41 @@ def _groups(couplings: list[Coupling]) -> list[list[Coupling]]:
     return [sorted(group, key=operator.attrgetter("order")) for group in groups]
 
 
-def _coupled(
-    group: list[Coupling], names: list[str], windings: list[ir.Instance]
-) -> tuple[int, ir.Instance, list[tuple[int, Expression | None]]]:
-    """Builds a `coupled_inductors` device and order index for one coupling `group`.
+def _coupled_derivatives[Seed](
+    coefficients: Sequence[Scalar[Seed]],
+    winding_derivatives: Sequence[Mapping[str, Mapping[Seed, float]]],
+    shared_keys: Mapping[str, JsonValue],
+) -> dict[str, dict[Seed, float]]:
+    """Remaps winding and coupling coefficient derivatives onto `coupled_inductors`."""
+    derivatives: dict[str, dict[Seed, float]] = {}
+    for coupling_index, coefficient in enumerate(coefficients):
+        if isinstance(coefficient, Dual) and coefficient.derivatives:
+            derivatives[f"couplings.{coupling_index}.coefficient"] = dict(
+                coefficient.derivatives
+            )
+    for winding_index, entry in enumerate(winding_derivatives):
+        for parameter, slopes in entry.items():
+            if not slopes:
+                continue
+            if parameter in shared_keys:
+                derivatives.setdefault(parameter, dict(slopes))
+            else:
+                derivatives[f"windings.{winding_index}.{parameter}"] = dict(slopes)
+    return derivatives
+
+
+def _coupled[Seed](
+    group: list[Coupling[Seed]],
+    names: list[str],
+    windings: list[ir.Instance],
+    winding_derivatives: Sequence[Mapping[str, Mapping[Seed, float]]],
+) -> tuple[
+    int,
+    ir.Instance,
+    list[tuple[int, Expression | None]],
+    dict[str, dict[Seed, float]],
+]:
+    """Builds a `coupled_inductors` device, order, expressions, and derivatives.
 
     Combines `windings` (matching `names`) and preserves their shared instance
     temperature override.
@@ -1212,7 +1499,7 @@ def _coupled(
             pair, or joins windings with conflicting instance temperatures.
     """
     numbers = {name: index for index, name in enumerate(names, start=1)}
-    pairs: dict[frozenset[int], tuple[float, Expression | None]] = {}
+    pairs: dict[frozenset[int], tuple[Scalar[Seed], Expression | None]] = {}
     for each in group:
         for first, second in itertools.combinations(each.inductors, 2):
             pair = frozenset({numbers[first.casefold()], numbers[second.casefold()]})
@@ -1227,7 +1514,7 @@ def _coupled(
     coupling_expressions: list[tuple[int, Expression | None]] = []
     for index, (pair, (coefficient, symbolic)) in enumerate(pairs.items()):
         numbered: list[JsonValue] = [*sorted(pair)]
-        couplings.append({"windings": numbered, "coefficient": coefficient})
+        couplings.append({"windings": numbered, "coefficient": primal(coefficient)})
         if symbolic is not None:
             coupling_expressions.append((index, symbolic))
     first_coupling = group[0]
@@ -1243,6 +1530,11 @@ def _coupled(
     if any(own != owns[0] for own in owns):
         message = "the inductors it couples run at different temperatures of their own"
         raise first_statement.fail(message)
+    derivatives = _coupled_derivatives(
+        [coefficient for coefficient, _ in pairs.values()],
+        winding_derivatives,
+        owns[0],
+    )
     parameters: dict[str, JsonValue] = {
         "windings": [
             {
@@ -1270,7 +1562,7 @@ def _coupled(
             file=first_statement.file, line=first_statement.line
         ),
     )
-    return first_coupling.order, instance, coupling_expressions
+    return first_coupling.order, instance, coupling_expressions, derivatives
 
 
 def _identifier(name: str, taken: set[str]) -> str:
