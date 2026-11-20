@@ -16,7 +16,7 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Final, Never
+from typing import Final, Never, overload
 
 from pydantic import JsonValue
 
@@ -1853,6 +1853,26 @@ def _defaults(model: str) -> Mapping[str, object]:
     return MappingProxyType(json.loads(_core.defaulted(model, "{}")))
 
 
+@overload
+def _area_scaled(
+    model: str,
+    values: Mapping[str, float],
+    area: float,
+    multiplied: tuple[str, ...],
+    divided: tuple[str, ...],
+) -> dict[str, float]: ...
+
+
+@overload
+def _area_scaled[Seed](
+    model: str,
+    values: Mapping[str, Scalar[Seed]],
+    area: Scalar[Seed],
+    multiplied: tuple[str, ...],
+    divided: tuple[str, ...],
+) -> dict[str, Scalar[Seed]]: ...
+
+
 def _area_scaled[Seed](
     model: str,
     values: Mapping[str, Scalar[Seed]],
@@ -2503,6 +2523,7 @@ def _bsim_card[Seed](
         if name in bsim.unread or name in NOMINAL_TEMPERATURES:
             continue
         if name in bsim.selectors:
+            parameters[bsim.selectors[name]] = _whole(card, name, value, statement)
         elif name in bsim.settings:
             parameters[bsim.settings[name]] = _bsim_setting(
                 card, name, value, statement

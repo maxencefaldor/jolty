@@ -30,7 +30,6 @@ from typing import Final, Literal, cast
 from pydantic import JsonValue
 
 from jolty import _core
-
 from jolty.spice._params import NO_FUNCTIONS, Subcircuit
 from jolty.spice._preprocess import SourceFile
 from jolty.spice._pss import IntegrationMethod, PeriodicSteadyStateCard

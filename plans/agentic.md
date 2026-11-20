@@ -3,7 +3,7 @@
 Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 20 November.
 The archival research report lives in `research/agentic.md`, kept whole.
 
-Plan: ✅ 14 done · 📋 9 planned · ⏸️ 2 parked (§4).
+Plan: ✅ 16 done · 📋 7 planned · ⏸️ 2 parked (§4).
 
 ## 1. Goal and metric
 
@@ -20,7 +20,7 @@ Progress is measured by old roadmap item 8: the same agent runs identical tasks 
 - **Specs and verdicts:** 23 engine measurements and four verdicts reporting measured value, slack, worst corner, and script line, with Wilson yield intervals and corners, Monte Carlo, and worst case in one command.
 - **Twelve analyses:** operating point, operating points, DC sweep, AC, transient, periodic steady state, sensitivity, mismatch, stability, noise, pole-zero, and transfer function.
     Batches parallelize across threads, shards distribute across machines, and outputs enforce hard bounds (300 s per script, 40 unknowns, 20 diagnostics).
-- **Exact derivatives:** unified JVP and VJP for every analysis, exposed in Python via `jolty.function`, `jolty.jvp`, and `jolty.vjp`, and in JAX via `jolty.jax.function` (items 12b and 19).
+- **Exact derivatives:** unified JVP and VJP across all seven differentiable analyses (operating point, DC sweep, AC, stability, noise, transient, and periodic steady state), SPICE/PDK subcircuit geometry via forward dual numbers, exact measure and requirement slack derivatives with linear worst-case bounds, exposed in Python via `jolty.function`, `jolty.jvp`, `jolty.vjp`, `measure_derivatives`, `slack_derivatives`, `requirement_derivatives`, and `linear_worst_case`, and in JAX via `jolty.jax.function` (items 9, 12b, 19, and 23).
 - **Discovery:** six hard design problems with circuits an agent discovered using jolty alone (`docs/discovery`).
 - **Item 8 harness** (`benchmarks/agents/compare.py`): covers both arms with clean configuration, platform sandboxing per session, confined scorers, failure categories, and Wilson intervals.
     Every analysis is counted regardless of caller (item 1), verified on a stub agent.
@@ -29,7 +29,7 @@ Progress is measured by old roadmap item 8: the same agent runs identical tasks 
 
 **Where an agent's effort goes** (observed across discovery scripts, the guide, and the MCP server):
 
-- **Harness code:** agents write manual bisections (50 steps to tune one resistor) and custom measurements because sensitivities target unknowns rather than specs (item 9); multi-corner sizing will compose external optimizers over jolty's differentiable bricks (items 9, 23; item 11 parked).
+- **Harness code:** agents now compose multi-corner sizing in ~25 lines over SciPy or JAX/Optax using jolty's differentiable measure, requirement slack, stability, noise, and PDK-geometry bricks (items 9 and 23; item 11 parked).
 - **Learning the API:** resolved (item 5) by deriving MCP instructions programmatically from code covering every device, real part, analysis, and measurement.
     All 17 guide pages and 33 examples are bundled offline via `jolty read-docs`, `read_docs`, and MCP `jolty://docs/...` resources.
 - **Completed since 15 November:** transistor operating-point regions and margins appear in `OperatingPointResult.region` and `jolty simulate` (items 4 and 4b), and `PeriodicSteadyState(period=None)` solves autonomous oscillators (item 22).
@@ -42,9 +42,8 @@ No published study evaluates the same agent across two toolchains, which item 8 
 ## 3. Gaps
 
 - Agent productivity gains with jolty have not yet been measured on a real agent.
-- Feedback stops at circuit facts: no spec derivatives and no numerical error bounds on measurements (transistor regions and margins are done in items 4 and 4b; built-in optimization is parked in item 11 in favor of composable differentiable bricks).
-- Differentiation covers five analyses and leaf device parameters only: `Stability`, `Noise`, and PDK subcircuit geometry `(w, l, mult)` still lack exact VJP and JVP support (item 23).
-- Every CLI command spawns a fresh Python process with unmeasured startup cost (`speed.md` 8), while saved `.results.npz` session queries (item 15) and offline docs plus programmatic MCP instructions (item 5) are done.
+- Feedback has no numerical error bounds on transient measurements (item 10; transistor regions/margins, spec derivatives, linear worst-case bounds, and Stability/Noise/PDK-geometry VJP are done in items 4, 4b, 9, and 23; built-in optimization is parked in item 11).
+- CLI startup latency was cut with PEP 810 lazy imports and a standby service runner (`speed.md` 8), while cold CLI subprocess wall time still exceeds `ngspice -b`.
 - An agent can still bypass analysis counting by invoking an external binary directly, and the harness sandbox remains untested on Linux.
 
 ## 4. Plan
@@ -121,11 +120,12 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Done when:** the report lists every metric per arm.
     **Source:** row 5.
 
-### 📋 9. Requirement derivatives with respect to named parameters
+### ✅ 9. Requirement derivatives with respect to named parameters
 
 - **What:** compute the derivative of each requirement's slack (distance from its limit) with respect to agent-named parameters at the worst condition, plus linear worst-case estimates.
-- **Why:** agents currently write manual bisection loops to tune designs.
-- **Done when:** each derivative matches a central difference, and reports list the largest derivatives for each failing requirement.
+- **Why:** eliminates manual bisection loops when tuning designs against specifications.
+- **Result** (20 November): added exact sparse reverse-mode measure cotangents in `jolty-engine` (`measure/cotangent.rs`) and exposed `Measure.cotangent`, `Requirement.slack_cotangent`, `measure_derivatives`, `slack_derivatives`, `requirement_derivatives`, `estimate_worst_case`, and `linear_worst_case` across all seven differentiable analyses (including `Stability` loop margins and `Noise` output/input-referred densities) plus bound SPICE subcircuits.
+    `linear_worst_case` computes exact first-order worst-case slack bounds across independent tolerances and shared lots, `report.specs_report` optionally surfaces the largest slack derivatives on failing requirements, and `docs/how-to/differentiate-and-optimize.md` documents composable smooth-minimax multi-corner sizing.
 - **Lead.**
     **Source:** row 7.
 
@@ -270,13 +270,15 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Memory limits (`max_memory`) are now enforced across PSS sensitivity, JVP, and VJP (`DENSE_MATRICES`, `forward_period_numbers`, `pull_period_numbers`).
 - **Source:** row 20.
 
-### 📋 23. Differentiable `Stability`, `Noise`, and PDK subcircuit geometry
+### ✅ 23. Differentiable `Stability`, `Noise`, and PDK subcircuit geometry
 
 - **Priority:** P0 (Wave 2).
-- **What:** extend `Simulator::jvp`, `Simulator::vjp`, and `jolty.jax.function` to `Stability` (loop gain) and `Noise` (output noise spectral density and integrated RMS noise), lifting `NoiseSource` in `jolty-models` to `NoiseSource<R: Real>` for exact operating-point and parameter coupling via `device-derivatives.md` step 2b.
-    Add dual-number PDK subcircuit geometry VJP mapping design variables `(w, l, mult)` to leaf device parameters within bins and reporting bin boundaries as box constraints, closing `models.md` 17's central-difference follow-up on kit parameter derivatives.
-- **Why:** `jolty.vjp` and `jolty.jax.function` currently cover five analyses and leaf `ir.DeviceOf` parameters only, forcing finite differences for phase margin, loop gain, input-referred noise, and foundry-drawn transistor sizes with coupled diffusion parasitics and binned `.param` expressions.
-- **Done when:** `Stability` and `Noise` JVP and VJP pass the dot-product test (`<v, J t> = <Jᵀ v, t>`) to under 1e-14 and match central differences across BSIM4, VBIC, and Gummel-Poon circuits at parameter-independent cost, kit parameter derivatives use dual numbers instead of central differences, and a SKY130 two-stage Miller OTA sizes `(w, l, mult)`, compensation capacitance, and nulling resistance directly through `jolty.vjp` / `jolty.jax.function` for gain, phase margin, GBW, and noise.
+- **What:** extend `Simulator::jvp`, `Simulator::vjp`, and `jolty.jax.function` to `Stability` (loop gain) and `Noise` (output noise spectral density and input-referred noise), lifting `NoiseSource` in `jolty-models` to `NoiseSource<R: Real>` for exact operating-point and parameter coupling via `device-derivatives.md` step 2b.
+    Add dual-number PDK subcircuit geometry VJP mapping design variables `(w, l, nf, m)` to leaf device parameters within bins and reporting bin boundaries as box constraints, closing `models.md` 17's central-difference follow-up on kit parameter derivatives.
+- **Result** (20 November):
+    - `Stability` JVP and VJP differentiate loop gain (`LOOP_GAIN`) through `Simulator::jvp`, `Simulator::vjp`, `Sensitivity`, `Mismatch`, `jolty.function`, `jolty.jax.function`, and `measure_derivatives` / `requirement_derivatives` (`phase_margin`, `gain_margin`, `crossover`, `bandwidth`, `gain`, `phase`).
+    - `Noise` JVP and VJP lift `NoiseSource<R: Real>` across `jolty-models` and `jolty-veriloga`, differentiating both `NOISE_DENSITY` and `REFERRED_NOISE` (including self-heated circuits) through `Simulator`, `Sensitivity`, `Mismatch`, `jolty.function`, `jolty.jax.function`, and `measure_derivatives` / `requirement_derivatives` (`noise_density`, `integrated_noise`).
+    - Dual-number SPICE/PDK differentiation (`Library.placement`, `Library.derivatives`, `SubcircuitDerivatives`, `BinBounds`, and `subcircuits=...` on `jolty.function` and `jolty.jax.function`) propagates exact first-order derivatives through `.param` expressions, `.func` calls, `.model` cards, geometry transforms, and nested placements in one pass, replacing central differences in `Library.random_variables` and composing seamlessly with JAX `jit`/`grad`/`vmap`/`jacrev` and `measure_derivatives`/`slack_derivatives` on real SKY130 BSIM4 stages.
 - **Lead.**
     **Source:** owner approval, 20 November (roadmap N3); closes `models.md` 17's central-difference follow-up.
 

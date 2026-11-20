@@ -178,6 +178,26 @@ def _passive_keywords(
     return drifts, allowed, read, frozenset({"m", *sized})
 
 
+def _resolve_passive_copies[Seed](
+    translation: Translation[Seed],
+    statement: Statement,
+    own: Mapping[str, Scalar[Seed]],
+    own_symbolic: Mapping[str, Expression],
+) -> tuple[Scalar[Seed], Expression | None]:
+    """Resolves and validates effective parallel copies `m` for a passive element."""
+    multiplied_own, multiplied_symbolic = translation.multiplied_symbolic(
+        own, own_symbolic
+    )
+    copies = multiplied_own.get("m", 1.0)
+    copies_symbolic = multiplied_symbolic.get("m")
+    if not (primal(copies) > 0 and is_finite(copies)):
+        message = (
+            f"the element's copies `m` is positive and finite, not {primal(copies)!r}"
+        )
+        raise statement.fail(message)
+    return copies, copies_symbolic
+
+
 def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
     """Builds a translator for passive elements (`resistor`, `capacitor`, `inductor`).
 
@@ -236,17 +256,9 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
         value, given, card_values, card_symbolic = _valued(
             translation, statement, card, own, (element_letter, read)
         )
-        multiplied_own, multiplied_symbolic = translation.multiplied_symbolic(
-            own, own_symbolic
+        copies, copies_symbolic = _resolve_passive_copies(
+            translation, statement, own, own_symbolic
         )
-        copies = multiplied_own.get("m", 1.0)
-        copies_symbolic = multiplied_symbolic.get("m")
-        if not (primal(copies) > 0 and is_finite(copies)):
-            message = (
-                f"the element's copies `m` is positive and finite, not "
-                f"{primal(copies)!r}"
-            )
-            raise statement.fail(message)
         value = value * copies if model == "capacitor" else value / copies
         _check_passive_value(statement, model, parameter, value)
         coefficients, coefficients_symbolic = _coefficients(
@@ -464,50 +476,35 @@ def _card_and_values[Seed](
     return card, values
 
 
-def _keyword_varies_in_probe[Seed](
-    translation: Translation[Seed],
-    assigned: Mapping[str, list[str]],
-    keys: Sequence[str],
-) -> bool:
-    """Returns whether any token under `keys` varies in `probe_compiler`."""
-    probe = translation.probe_compiler
-    if probe is None:
-        return False
-    for key in keys:
-        for word in assigned.get(key, ()):
-            if probe.depends_on_statistics(translation.parse(word)):
-                return True
-    return False
-
-
 def _behavioral_resistor_copies[Seed](
     translation: Translation[Seed],
-    assigned: Mapping[str, list[str]],
     resistance: Expression,
-    copies: float,
+    copies: Scalar[Seed],
     copies_symbolic: Expression | None,
 ) -> tuple[
     Expression,
     dict[str, tuple[float, Expression]] | None,
-    dict[str, float] | None,
+    dict[str, Scalar[Seed]] | None,
 ]:
     """Scales `resistance` by parallel copies `m`, extracting `__jolty_m` if varying."""
+    primal_copies = primal(copies)
     if copies_symbolic is not None:
         return (
             Binary("/", resistance, Name("__jolty_m")),
-            {"__jolty_m": (copies, copies_symbolic)},
+            {"__jolty_m": (primal_copies, copies_symbolic)},
             None,
         )
-    if translation.probe_compiler is not None and (
-        translation.multiplier_symbolic is not None
-        or _keyword_varies_in_probe(translation, assigned, ("m",))
-    ):
+    if translation.dual_draw_factory is not None and has_derivatives(copies):
         return (
             Binary("/", resistance, Name("__jolty_m")),
             None,
             {"__jolty_m": copies},
         )
-    scaled = resistance if copies == 1.0 else Binary("/", resistance, Number(copies))
+    scaled = (
+        resistance
+        if primal_copies == 1.0
+        else Binary("/", resistance, Number(primal_copies))
+    )
     return scaled, None, None
 
 
@@ -572,8 +569,8 @@ def _value_of_voltage[Seed](
             f"the element's copies `m` is positive and finite, not {primal(copies)!r}"
         )
         raise statement.fail(message)
-    scaled, extra_parameters, probe_extra_parameters = _behavioral_resistor_copies(
-        translation, assigned, resistance, primal(copies), copies_symbolic
+    scaled, extra_parameters, dual_extra_parameters = _behavioral_resistor_copies(
+        translation, resistance, copies, copies_symbolic
     )
     parameters: dict[str, DualJsonValue[Seed]] = _temperatures(
         given, statement, allow_tref=True
@@ -585,7 +582,7 @@ def _value_of_voltage[Seed](
         scaled,
         parameters=parameters,
         extra_parameters=extra_parameters,
-        probe_extra_parameters=probe_extra_parameters,
+        dual_extra_parameters=dual_extra_parameters,
     )
     if translation.statistics is not None and (drift_symbolic or temperatures_symbolic):
         record_behavioral_resistor_targets(
@@ -744,16 +741,13 @@ def _charge_of_voltage[Seed](
         raise statement.fail(message)
     primal_copies = primal(copies)
     extra_parameters: dict[str, tuple[float, Expression]] | None = None
-    probe_extra_parameters: dict[str, float] | None = None
+    dual_extra_parameters: dict[str, Scalar[Seed]] | None = None
     if copies_symbolic is not None:
         held: Expression = Binary("*", charge, Name("__jolty_copies"))
         extra_parameters = {"__jolty_copies": (primal_copies, copies_symbolic)}
-    elif translation.probe_compiler is not None and (
-        translation.multiplier_symbolic is not None
-        or _keyword_varies_in_probe(translation, assigned, ("m",))
-    ):
+    elif translation.dual_draw_factory is not None and has_derivatives(copies):
         held = Binary("*", charge, Name("__jolty_copies"))
-        probe_extra_parameters = {"__jolty_copies": primal_copies}
+        dual_extra_parameters = {"__jolty_copies": copies}
     else:
         held = (
             charge
@@ -766,7 +760,7 @@ def _charge_of_voltage[Seed](
         nodes,
         held,
         extra_parameters=extra_parameters,
-        probe_extra_parameters=probe_extra_parameters,
+        dual_extra_parameters=dual_extra_parameters,
     )
 
 

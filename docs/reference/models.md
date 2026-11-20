@@ -26,8 +26,9 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `expression` | required | Expression defining nominal resistance at `nominal_temperature`, in ohms, as a function of sensed terminal voltages, port currents, and simulation time. |
+| `expression` | required | Expression defining nominal resistance at `nominal_temperature`, in ohms, as a function of sensed terminal voltages, port currents, named parameters, and simulation time. |
 | `nominal_temperature` | `300.15` | Nominal measurement temperature, in kelvins; default 27 °C. |
+| `parameters` | `{}` | Named numeric parameters read via `p(name)` inside `expression`. |
 | `quadratic_temperature_coefficient` | `0` | Quadratic temperature coefficient `tc2`, per kelvin squared; default 0. |
 | `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
 | `temperature_coefficient` | `0` | Linear temperature coefficient `tc1`, per kelvin; default 0. |

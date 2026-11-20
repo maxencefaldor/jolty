@@ -5622,6 +5622,7 @@ def test_built_cache_keeps_temper_free_subcircuits_and_updates_temper_dependents
 
     fixed_at_27 = loaded.component("fixed_load")
     overridden_parent_at_27 = loaded.component("parent_of_overridden_default")
+    vres_at_27 = loaded.component("vres_tc")
     assert _devices(loaded.component("direct_warm"))["R1"][1][
         "resistance"
     ] == pytest.approx(1270.0, rel=1e-12)
@@ -5639,7 +5640,9 @@ def test_built_cache_keeps_temper_free_subcircuits_and_updates_temper_dependents
     assert loaded.initial_conditions_of("ic_warm")["a"] == pytest.approx(
         0.27, rel=1e-12
     )
-    vres_27 = circuit(loaded.component("vres_tc"))
+    vres_27 = circuit(vres_at_27)
+    assert _devices(vres_at_27)["R1"][0] == "behavioral_resistor"
+    assert _devices(vres_at_27)["R1"][1]["temperature_coefficient"] == 1e-3
     assert _devices(loaded.component("binned_warm"))["M1"][1]["vth0"] == 0.8
 
     # Raise temperature to 85 C (358.15 K) and compare every subcircuit against a fresh
@@ -5649,9 +5652,11 @@ def test_built_cache_keeps_temper_free_subcircuits_and_updates_temper_dependents
     fresh_hot = spice.Library(hot_kelvins)
     fresh_hot.read(source, "parts.lib")
 
-    # Temperature-independent subcircuits stay cached (exact object identity).
+    # Temperature-independent subcircuits (including behavioral resistors with dynamic
+    # `tc1`) stay cached (exact object identity).
     assert loaded.component("fixed_load") is fixed_at_27
     assert loaded.component("parent_of_overridden_default") is overridden_parent_at_27
+    assert loaded.component("vres_tc") is vres_at_27
 
     # Every temperature-dependent subcircuit re-evaluates bit-identically to fresh.
     for subcircuit_name in (
@@ -5679,12 +5684,12 @@ def test_built_cache_keeps_temper_free_subcircuits_and_updates_temper_dependents
     assert loaded.initial_conditions_of("ic_warm")["a"] == pytest.approx(
         0.85, rel=1e-12
     )
-    assert circuit(loaded.component("vres_tc")) != vres_27
+    assert circuit(loaded.component("vres_tc")) == vres_27
 
     # Returning to 27 C reuses the cached 27 C temperature-dependent entries too.
     loaded.temperature = celsius(27).value
     assert _devices(loaded.component("branch_warm"))["R1"][1]["resistance"] == 1000.0
-    assert circuit(loaded.component("vres_tc")) == vres_27
+    assert loaded.component("vres_tc") is vres_at_27
 
 
 def test_global_plan_retargets_without_rebuild_when_no_param_uses_temper() -> None:

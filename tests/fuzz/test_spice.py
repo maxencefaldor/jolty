@@ -11,9 +11,9 @@ from hypothesis import strategies as st
 
 from fuzz.helpers import FAST_FUZZ, FUZZ
 from jolty import Builder, Role, Simulation, _core, circuit, component, devices
-from jolty.errors import SpiceError
+from jolty.errors import ElaborationError, SpiceError
 from jolty.spice import Library, Sample, export, models, netlist
-from jolty.units import V
+from jolty.units import K, V
 
 _SPICE_NODES: Final = ("0", "a", "b", "c", "d", "n1", "n2", "t", "ground", "a/b")
 _SPICE_NUMBERS: Final = (
@@ -444,9 +444,6 @@ def test_valid_spice_subcircuits_round_trip_through_export(text: str) -> None:
             300.15,
             "positive and finite",
         ),
-        # Behavioral resistor temperature factor zero / overflow.
-        (".subckt s a b\nR1 a b {v(a,b)} tc1=-1\n.ends", 301.15, "temperature factor"),
-        (".subckt s a b\nR1 a b {v(a,b)} tc2=1\n.ends", 1e200, "temperature factor"),
         # Capacitor huge exponent integral (was RecursionError / hang).
         (
             ".subckt s a b\nC1 a b C={v(a,b)^500}\n.ends",
@@ -556,6 +553,42 @@ def test_spice_component_regression_bugs(
         library.component(target)
     # survey() must report the SpiceError cleanly and never crash.
     assert library.survey(target)
+
+
+@pytest.mark.parametrize(
+    ("text", "temperature", "match"),
+    [
+        # Behavioral resistor temperature factor validates dynamically at elaboration.
+        (
+            ".subckt s a b\nR1 a b {v(a,b)} tc1=-1\n.ends",
+            301.15,
+            "temperature coefficients",
+        ),
+        (
+            ".subckt s a b\nR1 a b {v(a,b)} tc2=1\n.ends",
+            1e200,
+            "temperature coefficients",
+        ),
+    ],
+)
+def test_behavioral_resistor_temperature_factor_errors_at_elaboration(
+    text: str, temperature: float, match: str
+) -> None:
+    library = Library(temperature=temperature)
+    library.read(text, "regression.lib")
+    part = library.component("s")
+    assert library.survey("s")
+
+    @component
+    def bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        placed = c.place(part, name="X1")
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        c.connect(source.positive, placed["a"])
+        c.connect(source.negative, placed["b"], ground)
+
+    with pytest.raises(ElaborationError, match=match):
+        Simulation(bench(), temperature=temperature * K)
 
 
 def test_spice_include_and_survey_model_regression_bugs(tmp_path: Path) -> None:

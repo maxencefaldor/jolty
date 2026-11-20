@@ -32,19 +32,23 @@ from jolty.spice.expressions import (
     Call,
     Conditional,
     Current,
+    Dual,
     Expression,
     Function,
     Name,
     Number,
+    Scalar,
     Unary,
     UndefinedError,
     Voltage,
     check_core_depth,
     evaluate,
     fold,
+    has_derivatives,
     inlined,
     is_statistical,
     nominal,
+    primal,
     rebuild,
     translate,
     walk,
@@ -866,42 +870,47 @@ class StatisticalCompiler:
         )
 
 
-def extract_probe_behavioral(
+def extract_dual_behavioral[Seed](
     expression: Expression,
-    scope: Mapping[str, float],
-    stochastic_names: frozenset[str],
+    scope: Mapping[str, Scalar[Seed]],
     *,
-    extra_parameters: Mapping[str, float] | None = None,
-) -> tuple[Expression, dict[str, float], dict[str, str]]:
-    """Extracts stochastic `Name` parameters for `Probe` behavioral translation."""
+    extra_parameters: Mapping[str, Scalar[Seed]] | None = None,
+) -> tuple[Expression, dict[str, float], dict[str, str], dict[str, dict[Seed, float]]]:
+    """Extracts dual-bearing `Name` parameters for behavioral mismatch differentiation.
+
+    Mirrors `StatisticalCompiler.extract_behavioral` parameter naming so extracted
+    `parameters.<name>` derivative keys match the nominal IR component built with
+    statistical hoisting.
+    """
     extra = {} if extra_parameters is None else extra_parameters
-    if not extra and not stochastic_names:
-        return expression, {}, {}
     parameters: dict[str, float] = {}
     symbolic_names: dict[str, str] = {}
+    derivatives: dict[str, dict[Seed, float]] = {}
     by_source_name: dict[str, str] = {}
     generated = itertools.count()
 
-    def bind(source_name: str, nominal_value: float) -> Name:
+    def bind(source_name: str, value: Scalar[Seed]) -> Name:
         if source_name not in by_source_name:
             parameter_name = _allocate_parameter_name(
                 source_name, parameters, generated
             )
             by_source_name[source_name] = parameter_name
-            parameters[parameter_name] = nominal_value
+            parameters[parameter_name] = primal(value)
             symbolic_names[parameter_name] = parameter_name
+            if isinstance(value, Dual) and value.derivatives:
+                derivatives[f"parameters.{parameter_name}"] = dict(value.derivatives)
         return Name(by_source_name[source_name])
 
     def leaf(node: Expression) -> Expression | None:
         if isinstance(node, Name):
             if node.name in extra:
                 return bind(node.name, extra[node.name])
-            if node.name in stochastic_names and node.name in scope:
+            if node.name in scope and has_derivatives(scope[node.name]):
                 return bind(node.name, scope[node.name])
         return None
 
     rewritten = fold(expression, leaf, rebuild)
-    return rewritten, parameters, symbolic_names
+    return rewritten, parameters, symbolic_names, derivatives
 
 
 # ---------------------------------------------------------------------------
@@ -1088,16 +1097,16 @@ def record_behavioral_resistor_targets(
     temperatures_symbolic: Mapping[str, Expression],
 ) -> None:
     """Records symbolic temperature and drift targets for a `behavioral_resistor`."""
-    _record_nominal_temperature(
-        compiler, element_name, drift_symbolic, allow_tref=True
-    )
+    _record_nominal_temperature(compiler, element_name, drift_symbolic, allow_tref=True)
     _record_own_temperature(
         compiler, element_name, drift_symbolic, temperatures_symbolic
     )
     for spice_name in ("tc1", "tc2"):
         if spice_name in drift_symbolic:
             compiler.add_target(
-                element_name, models.PASSIVE_DRIFT[spice_name], drift_symbolic[spice_name]
+                element_name,
+                models.PASSIVE_DRIFT[spice_name],
+                drift_symbolic[spice_name],
             )
 
 

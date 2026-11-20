@@ -1121,6 +1121,36 @@ mod tests {
     }
 
     #[test]
+    fn zero_slope_guards_infinite_adjoint_without_nan() {
+        // `pow(abs(v(x)), 0.35)` at 0: `pow` has +inf base slope while `abs` has slope 0.
+        let (value, gradient) = evaluate("pow(abs(v(x)), 0.35)", &[0.0]);
+        assert_eq!(value, 0.0);
+        assert_eq!(gradient, vec![0.0]);
+
+        // `sqrt(min(v(x), v(y)))` at (0, 1): untaken branch `v(y)` has exact slope 0.
+        let (value, gradient) = evaluate("sqrt(min(v(x), v(y)))", &[0.0, 1.0]);
+        assert_eq!(value, 0.0);
+        assert!(gradient[0].is_infinite() && gradient[0].is_sign_positive());
+        assert_eq!(gradient[1], 0.0);
+
+        // `sqrt(uramp(v(x)))` at -1: inactive ramp is identically 0 with slope 0.
+        let (value, gradient) = evaluate("sqrt(uramp(v(x)))", &[-1.0]);
+        assert_eq!(value, 0.0);
+        assert_eq!(gradient, vec![0.0]);
+
+        // Directional tangent along an unmoved cusp variable stays finite.
+        let cusp_sum: Expression = "pow(abs(v(x)), 0.35) + v(y) ^ 2".parse().expect("valid");
+        let mut workspace = Workspace::new(&cusp_sum);
+        let mut gradient = [0.0; 2];
+        let _ = cusp_sum.evaluate(&[0.0, 1.0], &mut workspace, &mut gradient);
+        assert_eq!(gradient, [0.0, 2.0]);
+        let mut gradient_tangent = [0.0; 2];
+        let value_tangent = cusp_sum.along(&[0.0, 1.0], &mut workspace, &mut gradient_tangent);
+        assert_eq!(value_tangent, 2.0);
+        assert_eq!(gradient_tangent, [0.0, 2.0]);
+    }
+
+    #[test]
     fn parser_rejects_excessive_nesting_depth_without_stack_overflow() {
         let limit = parser::MAX_DEPTH;
         let at_limit = format!("{}1{}", "(".repeat(limit), ")".repeat(limit));

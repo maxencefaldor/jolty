@@ -110,7 +110,6 @@ from jolty.spice.expressions import (
     DualDraw,
     Expression,
     Function,
-    Name,
     Scalar,
     UndefinedError,
     evaluate,
@@ -1338,7 +1337,7 @@ class Library:
         surveying: bool,
         temperature_dependent: frozenset[str],
     ) -> bool:
-        """Resolves omitted `defaults` into `local`; returns whether temperature read."""
+        """Resolves omitted `defaults` into `local`; returns if temperature was read."""
         if not defaults:
             return False
         if drawing.sample is None and not surveying and temperature_dependent:
@@ -1407,52 +1406,6 @@ class Library:
         finally:
             parent_statistics.restore_state(saved)
 
-    def _build_probed(  # noqa: PLR0913 - probed child translation context
-        self,
-        subcircuit: Subcircuit,
-        scopes: tuple[Mapping[str, float], dict[str, float]],
-        name: str,
-        *,
-        drawing: Drawing,
-        multiplier: float,
-        chain: tuple[str, ...],
-        given: Mapping[str, float],
-        probe_overrides: set[str],
-        probe_multiplier_stochastic: bool,
-        defaults: Mapping[str, Expression],
-        scoped_functions: Mapping[str, Function],
-        temperature: float,
-        temperature_dependent: frozenset[str],
-    ) -> Built:
-        """Translates a subcircuit under `Probe`, extracting behavioral parameters."""
-        probe_compiler = StatisticalCompiler(self._global_symbolic_plan())
-        probe_compiler.set_given(given)
-        for parameter_key in sorted(probe_overrides):
-            probe_compiler.scope_symbols[parameter_key] = Name(
-                probe_compiler.allocate_external_step()
-            )
-        probe_multiplier_expression: Expression | None = (
-            Name(probe_compiler.allocate_external_step())
-            if probe_multiplier_stochastic
-            else None
-        )
-        if probe_multiplier_expression is not None:
-            probe_compiler.scope_symbols["m"] = probe_multiplier_expression
-        probe_compiler.resolve_into(defaults, scopes[1], scoped_functions)
-        options = TranslationOptions[Never](
-            drawing=drawing,
-            elements=_ELEMENTS,
-            multiplier=multiplier,
-            parsed_models=self._parsed_models,
-            lock=self._cache_lock,
-            instantiating=chain,
-            temperature=temperature,
-            temperature_dependent=temperature_dependent,
-            probe_compiler=probe_compiler,
-            multiplier_symbolic=probe_multiplier_expression,
-        )
-        return Translation(self, subcircuit, scopes, options).translate(name)
-
     def _filter_unknown_overrides(
         self,
         subcircuit: Subcircuit,
@@ -1486,7 +1439,6 @@ class Library:
         given_symbolic: Mapping[str, Expression] | None = None,
         parent_statistics: StatisticalCompiler | None = None,
         hoist_instance: str | None = None,
-        given_probe_stochastic: frozenset[str] = frozenset(),
     ) -> Built:
         """Builds `subcircuit` with `given` parameter overrides under `scope`.
 
@@ -1504,17 +1456,12 @@ class Library:
         multiplier_symbolic: Expression | None = (
             symbolic_overrides.pop("m", None) if had_multiplier_override else None
         )
-        probe_overrides = set(given_probe_stochastic)
-        probe_multiplier_stochastic = had_multiplier_override and "m" in probe_overrides
-        if had_multiplier_override:
-            probe_overrides.discard("m")
         given = self._filter_unknown_overrides(subcircuit, given, drawing, uses)
         symbolic_overrides = {
             name: expression
             for name, expression in symbolic_overrides.items()
             if name in given
         }
-        probe_overrides &= set(given)
         defaults = {
             parameter: default
             for parameter, default in subcircuit.defaults.items()
@@ -1583,22 +1530,6 @@ class Library:
                     temperature_dependent=True,
                 )
             return built
-        if isinstance(drawing.sample, Probe):
-            return self._build_probed(
-                subcircuit,
-                (scope, local),
-                name,
-                drawing=drawing,
-                multiplier=multiplier,
-                chain=chain,
-                given=given,
-                probe_overrides=probe_overrides,
-                probe_multiplier_stochastic=probe_multiplier_stochastic,
-                defaults=defaults,
-                scoped_functions=scoped_functions,
-                temperature=resolved_temperature,
-                temperature_dependent=resolved_temperature_dependent,
-            )
         options = TranslationOptions[Never](
             drawing=drawing,
             elements=_ELEMENTS,
@@ -2019,7 +1950,6 @@ class Library:
         given_symbolic: Mapping[str, Expression] | None = None,
         parent_statistics: StatisticalCompiler | None = None,
         hoist_instance: str | None = None,
-        given_probe_stochastic: frozenset[str] = frozenset(),
     ) -> Built:
         """Builds a child `Built` placement (component, nets, and initial state).
 
@@ -2036,7 +1966,6 @@ class Library:
             given_symbolic: Optional symbolic expressions for stochastic `given` args.
             parent_statistics: Enclosing `StatisticalCompiler` when hoisting this child.
             hoist_instance: Local instance name under `parent_statistics` when hoisting.
-            given_probe_stochastic: Names in `given` that vary under `Probe`.
 
         Returns:
             Full `Built` record bundling the component, net names, and initial state.
@@ -2053,7 +1982,6 @@ class Library:
             given_symbolic=given_symbolic,
             parent_statistics=parent_statistics,
             hoist_instance=hoist_instance,
-            given_probe_stochastic=given_probe_stochastic,
         )
 
     def place_dual[Seed](  # noqa: PLR0913 - dual subcircuit placement state

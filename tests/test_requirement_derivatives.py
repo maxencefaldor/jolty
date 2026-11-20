@@ -105,6 +105,13 @@ exact up to sparse LU solve rounding (~1e-15) and subtraction cancellation acros
 multi-term sums.
 """
 
+PULLBACK_ROUNDING = 1e-13
+"""Relative tolerance comparing direct `vjp` pullbacks to batched measure derivatives.
+
+Both paths run the same reverse adjoint solve on identical cotangents and differ only
+by IEEE-754 summation order (~1e-15 floating-point rounding).
+"""
+
 
 def _tight_options(*, fixed_steps: bool = False) -> Options:
     """Returns tight solver options, optionally holding time steps at `max_step`."""
@@ -939,7 +946,7 @@ def test_stability_measure_derivatives_match_central_differences() -> None:
     for instance, named in parameters.items():
         for name in named:
             assert direct[instance][name] == pytest.approx(
-                batched.derivatives[instance][name], rel=1e-13, abs=1e-15
+                batched.derivatives[instance][name], rel=PULLBACK_ROUNDING, abs=1e-15
             )
 
 
@@ -979,7 +986,7 @@ def test_noise_measure_derivatives_match_central_differences() -> None:
     for instance, named in parameters.items():
         for name in named:
             assert direct[instance][name] == pytest.approx(
-                batched.derivatives[instance][name], rel=1e-13, abs=1e-15
+                batched.derivatives[instance][name], rel=PULLBACK_ROUNDING, abs=1e-15
             )
 
 
@@ -999,12 +1006,12 @@ def test_stability_and_noise_requirement_derivatives_and_linear_worst_case() -> 
             zip(stages, poles, strict=True), 1
         ):
             resistor = c.place(
-                devices.resistor(load, tolerance=ir.Tolerance(relative=0.02)),
+                devices.resistor(load, tolerance=0.02),
                 name=f"R{index}",
             )
             capacitance = 1 / (2 * math.pi * pole * load.value) * F
             capacitor = c.place(
-                devices.capacitor(capacitance, tolerance=ir.Tolerance(relative=0.02)),
+                devices.capacitor(capacitance, tolerance=0.02),
                 name=f"C{index}",
             )
             c.connect(stage.control_positive, driving)
@@ -1119,8 +1126,8 @@ def test_subcircuit_measure_and_slack_derivatives_match_central_differences() ->
     )
     assert slack_item.reason is None
     assert slack_item.derivatives["X1"]["w"] == pytest.approx(
-        derived[1].derivatives["X1"]["w"], rel=1e-13, abs=1e-15
+        derived[1].derivatives["X1"]["w"], rel=PULLBACK_ROUNDING, abs=1e-15
     )
     assert slack_item.derivatives["X1"]["l"] == pytest.approx(
-        derived[1].derivatives["X1"]["l"], rel=1e-13, abs=1e-15
+        derived[1].derivatives["X1"]["l"], rel=PULLBACK_ROUNDING, abs=1e-15
     )

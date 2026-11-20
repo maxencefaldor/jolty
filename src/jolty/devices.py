@@ -808,6 +808,20 @@ def wrap_overrides(
     return wrapped
 
 
+def _validated_parameters(
+    model: str,
+    values: Mapping[str, object],
+    conditional: Mapping[str, Dimension] | None = None,
+) -> dict[str, JsonValue]:
+    """Validates non-`None` parameter `values` against engine metadata for `model`."""
+    kinds = _model_kinds(model)
+    return {
+        name: _parameter_value(name, value, kinds[name], conditional)
+        for name, value in values.items()
+        if value is not None
+    }
+
+
 def _device(
     model: str,
     values: Mapping[str, object],
@@ -823,12 +837,7 @@ def _device(
         TypeError: If a choice parameter is not a string, integer, or boolean.
         ValueError: If a value is not finite or the engine rejects the device.
     """
-    kinds = _model_kinds(model)
-    parameters: dict[str, JsonValue] = {
-        name: _parameter_value(name, value, kinds[name], conditional)
-        for name, value in values.items()
-        if value is not None
-    }
+    parameters = _validated_parameters(model, values, conditional)
     if card is not None and card_dimension is not None:
         _card(parameters, card, card_dimension)
     return device(model, parameters)
@@ -1209,60 +1218,103 @@ def current_controlled_voltage_source(transresistance: Quantity) -> Device:
     return _device("current_controlled_voltage_source", locals())
 
 
-def behavioral_voltage_source(expression: str) -> Device:
+def _behavioral_parameters(
+    parameters: Mapping[str, float],
+) -> dict[str, JsonValue]:
+    """Validates named numeric parameters read via ``p(name)`` in an expression."""
+    return {
+        name: _check_scalar(value, None, f"parameters.{name}")
+        for name, value in parameters.items()
+    }
+
+
+def _behavioral_source(
+    model: str,
+    expression: str,
+    parameters: Mapping[str, float] | None,
+) -> Device:
+    """Builds a behavioral source or capacitor with optional named `parameters`."""
+    payload: dict[str, JsonValue] = {"expression": expression}
+    if parameters is not None:
+        payload["parameters"] = _behavioral_parameters(parameters)
+    return device(model, payload)
+
+
+def behavioral_voltage_source(
+    expression: str,
+    *,
+    parameters: Mapping[str, float] | None = None,
+) -> Device:
     """Creates a behavioral voltage source driving ``positive`` minus ``negative``.
 
     The `expression` evaluates in SI units: ``v(a)`` reads node voltage ``a``,
     ``v(a, b)`` reads differential voltage ``a`` minus ``b``, ``i(p)`` reads sensing
-    port current ``p``, and ``time`` reads simulation time. Terminals are ordered as
-    ``positive``, ``negative``, each referenced voltage terminal, and ``p_positive``
-    followed by ``p_negative`` for each short-circuit sensing port ``p`` (exposing
-    unknown ``p``). Output branch current from ``positive`` to ``negative`` is exposed
-    as ``current``. Refer to the expressions reference page for operators and
-    functions.
+    port current ``p``, ``p(name)`` reads a named numeric parameter from `parameters`,
+    and ``time`` reads simulation time. Terminals are ordered as ``positive``,
+    ``negative``, each referenced voltage terminal, and ``p_positive`` followed by
+    ``p_negative`` for each short-circuit sensing port ``p`` (exposing unknown ``p``).
+    Output branch current from ``positive`` to ``negative`` is exposed as ``current``.
+    Refer to the expressions reference page for operators and functions.
 
     Args:
-        expression: SI voltage expression over node voltages, currents, and time.
+        expression: SI voltage expression over node voltages, currents, parameters,
+            and time.
+        parameters: Optional mapping of finite numeric values read via ``p(name)``
+            inside `expression` and addressable as ``parameters.<name>`` for sweeps
+            or differentiation.
 
     Returns:
         Behavioral voltage-source `Device` with expression-derived terminals.
 
     Raises:
-        ValueError: If `expression` cannot be parsed as a valid behavioral expression.
+        DimensionError: If a value in `parameters` is not a plain number.
+        ValueError: If `expression` cannot be parsed or a parameter value is not finite.
 
     Examples:
         >>> behavioral_voltage_source("1e5 * v(inp, inn)").terminals
         ('positive', 'negative', 'inp', 'inn')
     """
-    return device("behavioral_voltage_source", {"expression": expression})
+    return _behavioral_source("behavioral_voltage_source", expression, parameters)
 
 
-def behavioral_current_source(expression: str) -> Device:
+def behavioral_current_source(
+    expression: str,
+    *,
+    parameters: Mapping[str, float] | None = None,
+) -> Device:
     """Creates a behavioral current source driving `expression` across its terminals.
 
-    Expression syntax and terminal ordering match
+    Expression syntax, `parameters`, and terminal ordering match
     [`behavioral_voltage_source`][jolty.devices.behavioral_voltage_source].
 
     Args:
-        expression: SI current expression over node voltages, currents, and time.
+        expression: SI current expression over node voltages, currents, parameters,
+            and time.
+        parameters: Optional mapping of finite numeric values read via ``p(name)``
+            inside `expression`.
 
     Returns:
         Behavioral current-source `Device` with expression-derived terminals.
 
     Raises:
-        ValueError: If `expression` cannot be parsed as a valid behavioral expression.
+        DimensionError: If a value in `parameters` is not a plain number.
+        ValueError: If `expression` cannot be parsed or a parameter value is not finite.
 
     Examples:
         >>> behavioral_current_source("limit(1e-3 * v(c), -1e-3, 1e-3)").terminals
         ('positive', 'negative', 'c')
     """
-    return device("behavioral_current_source", {"expression": expression})
+    return _behavioral_source("behavioral_current_source", expression, parameters)
 
 
-def behavioral_capacitor(expression: str) -> Device:
+def behavioral_capacitor(
+    expression: str,
+    *,
+    parameters: Mapping[str, float] | None = None,
+) -> Device:
     """Creates a charge-conserving behavioral capacitor defined by `expression`.
 
-    Expression syntax (in coulombs) and terminal ordering match
+    Expression syntax (in coulombs), `parameters`, and terminal ordering match
     [`behavioral_voltage_source`][jolty.devices.behavioral_voltage_source]. Capacitor
     current from ``positive`` through the device to ``negative`` equals the time
     derivative of charge using exact symbolic derivatives, conserving charge across
@@ -1270,30 +1322,35 @@ def behavioral_capacitor(expression: str) -> Device:
 
     Args:
         expression: SI charge expression in coulombs differentiated over time.
+        parameters: Optional mapping of finite numeric values read via ``p(name)``
+            inside `expression`.
 
     Returns:
         Charge-conserving behavioral capacitor `Device`.
 
     Raises:
-        ValueError: If `expression` cannot be parsed as a valid behavioral expression.
+        DimensionError: If a value in `parameters` is not a plain number.
+        ValueError: If `expression` cannot be parsed or a parameter value is not finite.
 
     Examples:
         >>> behavioral_capacitor("1e-12 * tanh(v(positive, negative))").terminals
         ('positive', 'negative')
     """
-    return device("behavioral_capacitor", {"expression": expression})
+    return _behavioral_source("behavioral_capacitor", expression, parameters)
 
 
 def behavioral_resistor(
     expression: str,
     *,
+    parameters: Mapping[str, float] | None = None,
     temperature_coefficient: Quantity | None = None,
     quadratic_temperature_coefficient: Quantity | None = None,
     nominal_temperature: Quantity | None = None,
 ) -> Device:
     """Creates a behavioral resistor whose nominal resistance follows `expression`.
 
-    Expression syntax (in ohms at `nominal_temperature`) and terminal ordering match
+    Expression syntax (in ohms at `nominal_temperature`), `parameters`, and terminal
+    ordering match
     [`behavioral_voltage_source`][jolty.devices.behavioral_voltage_source]. Effective
     resistance scales with simulation temperature as
     ``R_expr * (1 + tc1 * dT + tc2 * dT**2)`` where ``dT = T - nominal_temperature``.
@@ -1303,6 +1360,8 @@ def behavioral_resistor(
 
     Args:
         expression: SI nominal resistance expression in ohms.
+        parameters: Optional mapping of finite numeric values read via ``p(name)``
+            inside `expression`.
         temperature_coefficient: Linear temperature coefficient ``tc1`` in K⁻¹.
         quadratic_temperature_coefficient: Quadratic temperature coefficient ``tc2``
             in K⁻².
@@ -1313,9 +1372,10 @@ def behavioral_resistor(
         Behavioral resistor `Device` with expression-derived terminals.
 
     Raises:
-        DimensionError: If a temperature parameter has the wrong physical dimension.
-        ValueError: If `expression` cannot be parsed or evaluates to a non-positive
-            constant resistance.
+        DimensionError: If a temperature parameter has the wrong physical dimension or
+            a value in `parameters` is not a plain number.
+        ValueError: If `expression` cannot be parsed, a parameter is not finite, or
+            `expression` evaluates to a non-positive constant resistance.
 
     Examples:
         >>> from jolty.units import K
@@ -1325,7 +1385,12 @@ def behavioral_resistor(
         ... ).terminals
         ('positive', 'negative')
     """
-    return _device("behavioral_resistor", locals())
+    values = locals()
+    named = values.pop("parameters")
+    resolved = _validated_parameters("behavioral_resistor", values)
+    if named is not None:
+        resolved["parameters"] = _behavioral_parameters(named)
+    return device("behavioral_resistor", resolved)
 
 
 def voltage_controlled_switch(

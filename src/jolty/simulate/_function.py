@@ -446,6 +446,14 @@ def loop_cotangent_entries(
     return [(point, 0, real, imag) for point, real, imag in cotangent.entries]
 
 
+_SPARSE_ANALYSES: Final[dict[type, tuple[type, ...]]] = {
+    specs.RealCotangent: (OperatingPoint, DcSweep, Transient, PeriodicSteadyState),
+    specs.ComplexCotangent: (Ac,),
+    specs.LoopCotangent: (Stability,),
+    specs.NoiseCotangent: (Noise,),
+}
+
+
 def _check_sparse_domain(
     analysis: Differentiable,
     cotangent: specs.RealCotangent
@@ -454,30 +462,35 @@ def _check_sparse_domain(
     | specs.NoiseCotangent,
 ) -> None:
     """Validates that a sparse `cotangent` matches `analysis`'s domain."""
-    if isinstance(cotangent, specs.RealCotangent):
-        if isinstance(analysis, Ac | Stability | Noise):
-            message = (
-                f"a {type(analysis).__name__} pullback does not take RealCotangent"
-            )
-            raise ValueError(message)
-        return
-    if isinstance(cotangent, specs.ComplexCotangent):
-        if not isinstance(analysis, Ac):
-            message = (
-                f"a {type(analysis).__name__} pullback does not take ComplexCotangent"
-            )
-            raise ValueError(message)
-        return
-    if isinstance(cotangent, specs.LoopCotangent):
-        if not isinstance(analysis, Stability):
-            message = (
-                f"a {type(analysis).__name__} pullback does not take LoopCotangent"
-            )
-            raise ValueError(message)
-        return
-    if not isinstance(analysis, Noise):
-        message = f"a {type(analysis).__name__} pullback does not take NoiseCotangent"
+    cotangent_type = type(cotangent)
+    if type(analysis) not in _SPARSE_ANALYSES[cotangent_type]:
+        message = (
+            f"a {type(analysis).__name__} pullback does not take "
+            f"{cotangent_type.__name__}"
+        )
         raise ValueError(message)
+
+
+def _contract_pulled(
+    parameters: Parameters,
+    evaluated: Mapping[str, SubcircuitDerivatives],
+    primitive_gradients: Gradient,
+    *,
+    complex_result: bool,
+) -> Gradient:
+    """Maps primitive gradients back to top-level and bound subcircuit parameters."""
+    if not evaluated:
+        return primitive_gradients
+    pulled: Gradient = {}
+    for path, named in parameters.items():
+        subcircuit = evaluated.get(path)
+        if subcircuit is None:
+            pulled[path] = {name: primitive_gradients[path][name] for name in named}
+        else:
+            pulled[path] = _contract_subcircuit(
+                subcircuit, primitive_gradients, phasors=complex_result
+            )
+    return pulled
 
 
 def _pull_sparse(
@@ -760,7 +773,8 @@ class Function:
             subcircuits: Optional mapping from placed SPICE subcircuit instance paths
                 to [`SubcircuitPlacement`][jolty.spice.SubcircuitPlacement] bindings,
                 enabling exact differentiation through SPICE subcircuit parameters.
-            temperature: Optional ambient temperature, defaulting to 27 °C when ``None``.
+            temperature: Optional ambient temperature, defaulting to 27 °C when
+                ``None``.
 
         Raises:
             ElaborationError: Lists every problem reported during elaboration.
@@ -1114,21 +1128,12 @@ class Function:
                 primitive_names, found.tolist(), strict=True
             ):
                 primitive_gradients.setdefault(path, {})[name] = value
-            if not evaluated:
-                return primitive_gradients
-            complex_result = phasors and not sparse
-            pulled: Gradient = {}
-            for path, named in parameters.items():
-                subcircuit = evaluated.get(path)
-                if subcircuit is None:
-                    pulled[path] = {
-                        name: primitive_gradients[path][name] for name in named
-                    }
-                else:
-                    pulled[path] = _contract_subcircuit(
-                        subcircuit, primitive_gradients, phasors=complex_result
-                    )
-            return pulled
+            return _contract_pulled(
+                parameters,
+                evaluated,
+                primitive_gradients,
+                complex_result=phasors and not sparse,
+            )
 
         return outputs, pull
 

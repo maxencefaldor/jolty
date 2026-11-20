@@ -3,7 +3,7 @@
 Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 20 November.
 Full background research remains archived in `research/speed.md`.
 
-Plan: ✅ 6 done · 🚧 3 in progress · 📋 14 planned · ⏸️ 2 parked (§4).
+Plan: ✅ 6 done · 🚧 4 in progress · 📋 13 planned · ⏸️ 2 parked (§4).
 
 ## 1. Goal and metric
 
@@ -40,9 +40,11 @@ Progress is measured by the speed suite in `benchmarks.md`, fixture by fixture, 
 On machine A, the dissected 300 × 300 mesh ran 2.80× faster on 32 threads than on 1 thread, and 3.7× faster than undissected serial execution.
 On machine D (18 November), the mesh ran 7.07× faster on 24 threads than serially, and the 5,000-inverter chain reached 2.18× on 16 threads (item 1).
 
-**End-to-end agent command** (machine D, 18 November, item 8): `jolty simulate bjt_amp.py` takes 951.7 ms without images, 1,336.9 ms with schematic only, and 2,101.0 ms with schematic and plots.
-Against 3.8 ms for `ngspice -b`, the default CLI invocation is 553× slower.
-The simulation engine itself takes only 1.24 ms (0.13%), while cold `import jolty` takes 440 ms and executes twice because `jolty.runner` spawns a fresh child Python process.
+**End-to-end agent command** (machine D, 20 November, item 8): after PEP 810 lazy imports and a standby service runner, cold `import jolty` dropped from 440.0 ms to 13.2 ms and `import jolty.cli` from 522.4 ms to 15.5 ms, over 33× faster.
+Cold `jolty simulate bjt_amp.py` takes 687.4 ms without images, 987.0 ms with schematic only, and 1,322.4 ms with schematic and plots, down from 951.7 ms, 1,336.9 ms, and 2,101.0 ms previously.
+Warm `service.simulate` (MCP path) dropped from 504.7 ms to 149.9 ms without images (139.4 ms on standby hit), 266.9 ms with schematic only, and 647.7 ms with schematic and plots.
+Against 3.8 ms for `ngspice -b`, cold CLI execution remains dominated by spawning the isolated `jolty.runner` child process and matplotlib plotting rather than the 1.24 ms engine run.
+
 **Not measured yet:** circuits above 350,004 unknowns.
 
 **Memory, the first wall at ten million devices** (code estimates): group state requires about 1.4 KB per MOSFET alongside 1 to 2 KB of global arrays.
@@ -53,10 +55,9 @@ Recording every unknown at every time point takes 2.1 GiB for the 50,000-inverte
 
 - Small runs cost roughly three times ngspice per Newton iteration.
 - Large runs reach 2.8× on 16 cores instead of the 6× target.
-- An agent CLI command takes 952 ms without images (2,101 ms with schematic and plots) versus 3.8 ms for `ngspice -b`.
-    Double Python startup (`jolty.cli` plus the `jolty.runner` child) and matplotlib plotting dominate, not the 1.24 ms engine run.
+- A cold agent CLI command still takes 687 ms without images (1,322 ms with schematic and plots; 150 ms warm via `service.simulate`) versus 3.8 ms for `ngspice -b`, dominated by subprocess isolation and matplotlib plotting rather than the 1.24 ms engine run (item 8).
 - Memory and recording hit limits first at ten million devices, and nothing is measured above 350,004 unknowns.
-- PDK loading and translation dominate multi-corner and Monte Carlo workflows: reading SKY130 takes 2.0 to 3.1 s per corner, temperature changes clear `Library._built`, and Python SPICE translation accounts for over 95% of wall time on a 25-device multi-corner build (item 22).
+- PDK cache deserialization still takes 0.592 s across six SKY130 corners in a cold process (down from 4.35 s cold parse; item 22 target is under 0.5 s), while native parallel Monte Carlo already runs 100 SKY130 `tt_mm` draws on 25 transistors in 42.0 ms.
 
 ## 4. Plan
 
@@ -247,7 +248,26 @@ Any optimization that speeds up one fixture while slowing another requires inves
     Top cumulative import times from `python -X importtime -c "import jolty.cli"` totaled 371.8 ms (`jolty` 322.1 ms, `jolty._core` 0.018 ms).
     Major import contributors were `jolty.files` (209.0 ms: `numpy` 81.8 ms, `jolty.plan` 72.8 ms, `jolty.spice` 60.0 ms, `jolty.spice.download` 43.3 ms) and `jolty.devices` (80.9 ms).
     Remaining contributors were `jolty.service` (41.1 ms: `jolty.settings` 30.6 ms via `pydantic_settings` 28.8 ms), `pydantic` (23.4 ms), `jolty.results` (23.1 ms), and `jolty.ir` (19.4 ms).
-- **Not done:** cutting cold import cost (lazier imports in `jolty/__init__.py` and `jolty.files`), keeping a warm `jolty.runner` worker between MCP/CLI calls, and faster or parallel image generation.
+- **Result, in part** (20 November, machine D, AMD EPYC 9B14, host load 60.8 to 78.2 over 96 cores): adopted PEP 810 lazy imports across `jolty/__init__.py`, `jolty.cli`, `jolty.files`, and `jolty.service`, plus a prewarmed standby `jolty.runner` worker for `service` calls.
+
+    Updated machine D timings (median and IQR over 7 cold subprocess runs; median over 5 warm `service.simulate` runs):
+
+    | Command / call | 18 Nov | 20 Nov | Speedup / notes |
+    | --- | ---: | ---: | --- |
+    | `python -c pass` | 13.5 ms | 13.1 ms | IQR 11.8 to 14.4 ms (bare interpreter) |
+    | `import jolty._core` | 447.6 ms | 13.8 ms | 32× faster (IQR 12.9 to 16.5 ms) |
+    | `import jolty` | 440.0 ms | 13.2 ms | 33× faster (IQR 12.5 to 13.9 ms; 0.20 ms in `-X importtime`) |
+    | `import jolty.cli` | 522.4 ms | 15.5 ms | 34× faster (IQR 14.3 to 18.1 ms; 1.46 ms in `-X importtime`) |
+    | `import jolty.plots` | 791.5 ms | 497.2 ms | 1.6× faster (IQR 494.8 to 502.1 ms) |
+    | `jolty simulate bjt_amp.py --no-schematic --no-plot` | 951.7 ms | 687.4 ms | -28% (IQR 684.7 to 688.0 ms) |
+    | `jolty simulate bjt_amp.py --no-check --no-schematic --no-plot` | 988.5 ms | 666.8 ms | -33% (IQR 663.7 to 669.6 ms) |
+    | `jolty simulate bjt_amp.py --no-plot` | 1,336.9 ms | 987.0 ms | -26% (IQR 875.4 to 994.2 ms) |
+    | `jolty simulate bjt_amp.py` (default: schematic + plots) | 2,101.0 ms | 1,322.4 ms | -37% (IQR 1,305.7 to 1,473.1 ms) |
+    | Warm `service.simulate` (`schematic=False, plot=False`) | 504.7 ms | 149.9 ms | 3.4× faster (139.4 ms on standby hit) |
+    | Warm `service.simulate` (`schematic=True, plot=False`) | 631.7 ms | 266.9 ms | 2.4× faster (257.5 to 367.1 ms) |
+    | Warm `service.simulate` (`schematic=True, plot=True`) | 1,294.2 ms | 647.7 ms | 2.0× faster (642.1 to 681.5 ms) |
+
+- **Not done:** persistent CLI runner or lightweight CLI launcher to cut remaining cold subprocess overhead, and faster or non-matplotlib plotting to approach `ngspice -b`.
 - **Done when:** the speed suite reports `jolty simulate` wall time on `bjt_amp`, with and without images, below `ngspice -b`.
 - **Source:** row S5; `research/agentic.md` row 6; `research/benchmarks.md` row B15.
     Item 8 replaces the duplicate entries previously in `agentic.md` and `benchmarks.md`.
@@ -339,14 +359,19 @@ Any optimization that speeds up one fixture while slowing another requires inves
 - **Done when:** a 10⁵-instance array draws and views within a defined time budget.
 - **Source:** blueprint §3.6.
 
-### 📋 22. Fast cached PDK subcircuit translation and multi-corner reuse
+### 🚧 22. Fast cached PDK subcircuit translation and multi-corner reuse
 
 - **Priority:** P1 (Wave 2).
 - **What:** cache parsed subcircuit definitions, pre-indexed MOSFET bin tables, and deterministic global parameter plans on disk per `(kit_digest, section)` keyed by kit digest and jolty version.
     Separate temperature sweeps from structural translation so sweeping `Simulation` temperature does not invalidate `Library._built` once `models.md` 24 moves resistor `TC1`/`TC2` into the engine (for devices without static `temper` `.param` references).
     Move hot `Library.component` and `Library.drawn` bin selection and `.param` evaluation into Rust via `jolty-expressions` for sub-second SKY130 Monte Carlo builds.
-- **Why:** `kits.read` on SKY130 currently takes 2.0 to 3.1 s per corner (12 to 18 s for six corners `tt`, `ff`, `ss`, `sf`, `fs`, `tt_mm`), changing `Library.temperature` clears `self._built`, and building a 25-device SKY130 circuit across corners and Monte Carlo samples spends over 95% of wall time in Python AST and parameter translation while each Rust operating point takes ~3 ms.
-- **Needs:** `models.md` 24 (roadmap N2) to decouple temperature sweeps from structural translation.
+- **Why:** `kits.read` on SKY130 previously took 2.0 to 3.1 s per corner (12 to 18 s for six corners `tt`, `ff`, `ss`, `sf`, `fs`, `tt_mm`), changing `Library.temperature` cleared `self._built`, and building a 25-device SKY130 circuit across corners and Monte Carlo samples spent over 95% of wall time in Python AST and parameter translation while each Rust operating point took ~3 ms.
+- **Needs:** `models.md` 24 (roadmap N2) to decouple temperature sweeps from structural translation (done).
+- **Result, in part** (20 November, machine D, AMD EPYC 9B14, host load 46.0 to 56.6 over 96 cores):
+    - Added persistent zlib-compressed typed JSON disk caching (`jolty.spice._cache`, `LibrarySnapshot`) keyed by source manifest digests, parser fingerprint, and compatibility mode, plus temperature-decoupled `Library._built` caching (`Library.temperature` preserves `temper`-free subcircuits, including `behavioral_resistor` elements with `TC1`/`TC2`).
+    - Cold-process loading of all six SKY130 corners (`tt`, `ff`, `ss`, `sf`, `fs`, `tt_mm`) from a warm disk cache measured **0.592 s** median across 5 runs (0.591 to 0.595 s) versus **4.349 s** cold parse on machine D (7.3× faster, and ~25× faster than the ~15 s baseline), with circuit IR bit-identical to uncached translation.
+    - Native parallel PDK draws in `MonteCarlo` (`models.md` 23b) run 100 SKY130 `tt_mm` mismatch draws and operating points across 25 transistors (`13 nfet_01v8 + 12 pfet_01v8`) in **42.0 ms** median (37.5 to 52.2 ms, 12× under the 0.5 s budget) versus **6.827 s** to build 100 × 25 devices via Python `Library.drawn` alone.
+- **Left:** moving disk-cache decoding and hot `Library.component` bin/parameter evaluation into Rust to bring warm six-corner cold-process loading under 0.5 s.
 - **Done when:** cold-process loading of all six SKY130 corners from a warm cache drops from ~15 s to under 0.5 s, and building 100 SKY130 `tt_mm` Monte Carlo draws of a 25-device bandgap takes under 0.5 s with circuit IR bit-identical to uncached translation.
 - **Source:** owner approval, 20 November (roadmap N5).
 

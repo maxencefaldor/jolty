@@ -46,7 +46,7 @@ from jolty.spice._preprocess import chosen, keyword, letter, unconditional
 from jolty.spice._statistics import (
     StatisticalCompiler,
     check_condition_deterministic,
-    extract_probe_behavioral,
+    extract_dual_behavioral,
     record_device_targets,
     record_vbic_heating_targets,
 )
@@ -251,7 +251,6 @@ class LibraryHost(Protocol):
         given_symbolic: Mapping[str, Expression] | None = None,
         parent_statistics: StatisticalCompiler | None = None,
         hoist_instance: str | None = None,
-        given_probe_stochastic: frozenset[str] = frozenset(),
     ) -> Built:
         """Builds a child subcircuit placement.
 
@@ -268,7 +267,6 @@ class LibraryHost(Protocol):
             given_symbolic: Optional symbolic expressions for stochastic `given` args.
             parent_statistics: Enclosing `StatisticalCompiler` when hoisting this child.
             hoist_instance: Local instance name under `parent_statistics` when hoisting.
-            given_probe_stochastic: Names in `given` that vary under `Probe`.
 
         Returns:
             Full `Built` record bundling the component, net names, and initial state.
@@ -320,7 +318,6 @@ class TranslationOptions[Seed]:
     temperature: float = _core.REFERENCE_TEMPERATURE
     temperature_dependent: frozenset[str] = frozenset()
     statistics: StatisticalCompiler | None = None
-    probe_compiler: StatisticalCompiler | None = None
     multiplier_symbolic: Expression | None = None
     hoisted: bool = False
     differentiating: bool = False
@@ -376,7 +373,6 @@ class Translation[Seed]:
         self._global_temperature_dependent = options.temperature_dependent
         self._temperature_dependent = False
         self.statistics = options.statistics
-        self.probe_compiler = options.probe_compiler
         self.multiplier_symbolic = options.multiplier_symbolic
         self._hoisted = options.hoisted
         self.differentiating = options.differentiating
@@ -387,15 +383,7 @@ class Translation[Seed]:
         self.dual_draw: DualDraw[Seed] | None = None
         """Dual statistical draw callback for the element being translated."""
         self.parameters: dict[str, Expression] = {}
-        if self._cache_lock is not None:
-            with self._cache_lock:
-                global_functions = dict(library.functions)
-        else:
-            global_functions = dict(library.functions)
-        self.functions: dict[str, Function] = {
-            **global_functions,
-            **subcircuit.functions,
-        }
+        self.functions: dict[str, Function] = self._merge_functions(library, subcircuit)
         self.models: dict[str, ModelCard] = {}
         self.nets: dict[str, str] = {}
         self.instances: list[tuple[int, ir.Instance]] = []
@@ -404,6 +392,27 @@ class Translation[Seed]:
         self.couplings: list[Coupling[Seed]] = []
         self.device_derivatives: dict[str, dict[str, dict[Seed, float]]] = {}
         self.device_bins: dict[str, BinBounds] = {}
+        self._init_initial_state()
+        self.grounded = False
+        for pin in subcircuit.pins:
+            if pin == "0":
+                message = "a pin named `0`, SPICE's global ground"
+                raise subcircuit.statement.fail(message)
+            self.net(pin)
+
+    def _merge_functions(
+        self, library: LibraryHost, subcircuit: Subcircuit
+    ) -> dict[str, Function]:
+        """Snapshots library functions and merges subcircuit-local overrides."""
+        if self._cache_lock is not None:
+            with self._cache_lock:
+                global_functions = dict(library.functions)
+        else:
+            global_functions = dict(library.functions)
+        return {**global_functions, **subcircuit.functions}
+
+    def _init_initial_state(self) -> None:
+        """Initializes `.ic`, `.nodeset`, and device `IC=` accumulators."""
         self.initial_statements: list[tuple[str, Statement]] = []
         self.child_initial_conditions: list[tuple[str, float]] = []
         self.child_nodesets: list[tuple[str, float]] = []
@@ -411,12 +420,6 @@ class Translation[Seed]:
         self.inductor_initial_currents: dict[str, tuple[str, float]] = {}
         self.coupled_initial_currents: list[tuple[str, float]] = []
         self.child_initial_currents: list[tuple[str, float]] = []
-        self.grounded = False
-        for pin in subcircuit.pins:
-            if pin == "0":
-                message = "a pin named `0`, SPICE's global ground"
-                raise subcircuit.statement.fail(message)
-            self.net(pin)
 
     @property
     def primal_scope(self) -> Mapping[str, float]:
@@ -519,9 +522,10 @@ class Translation[Seed]:
                 self.parameters, plain_scope, self.drawing.draws, self.functions
             )
             self.scope = plain_scope
-        active = self.statistics or self.probe_compiler
-        if active is not None:
-            active.resolve_into(self.parameters, self.primal_scope, self.functions)
+        if self.statistics is not None:
+            self.statistics.resolve_into(
+                self.parameters, self.primal_scope, self.functions
+            )
 
     def translate(self, name: str) -> Built:
         """Translates the subcircuit into a `Built` component named `name`.
@@ -860,9 +864,14 @@ class Translation[Seed]:
         element_name: str,
         expression: Expression,
         extra_parameters: Mapping[str, tuple[float, Expression]] | None,
-        probe_extra_parameters: Mapping[str, float] | None,
-    ) -> tuple[Expression, dict[str, float], dict[str, str] | None]:
-        """Extracts stochastic behavioral parameters for statistics or probe mode."""
+        dual_extra_parameters: Mapping[str, Scalar[Seed]] | None,
+    ) -> tuple[
+        Expression,
+        dict[str, float],
+        dict[str, str] | None,
+        dict[str, dict[Seed, float]],
+    ]:
+        """Extracts stochastic behavioral parameters for statistics or dual mode."""
         if self.statistics is not None:
             rewritten, extracted, symbolic = self.statistics.extract_behavioral(
                 element_name,
@@ -870,16 +879,15 @@ class Translation[Seed]:
                 self.primal_scope,
                 extra_parameters=extra_parameters,
             )
-            return rewritten, extracted, symbolic or None
-        if self.probe_compiler is not None:
-            rewritten, extracted, symbolic = extract_probe_behavioral(
+            return rewritten, extracted, symbolic or None, {}
+        if self._dual_draws is not None:
+            rewritten, extracted, symbolic, dual_derivatives = extract_dual_behavioral(
                 expression,
-                self.primal_scope,
-                frozenset(self.probe_compiler.scope_symbols),
-                extra_parameters=probe_extra_parameters,
+                self.scope,
+                extra_parameters=dual_extra_parameters,
             )
-            return rewritten, extracted, symbolic or None
-        return expression, {}, None
+            return rewritten, extracted, symbolic or None, dual_derivatives
+        return expression, {}, None, {}
 
     def add_behavioral(  # noqa: PLR0913 - behavioral device placement and statistics
         self,
@@ -890,14 +898,14 @@ class Translation[Seed]:
         *,
         parameters: Mapping[str, DualJsonValue[Seed]] | None = None,
         extra_parameters: Mapping[str, tuple[float, Expression]] | None = None,
-        probe_extra_parameters: Mapping[str, float] | None = None,
+        dual_extra_parameters: Mapping[str, Scalar[Seed]] | None = None,
     ) -> None:
         """Places a behavioral device of `model` between `nodes` using `expression`.
 
         Adds dedicated sense terminals for referenced node voltages and inserts series
         sensing ports for referenced source currents. When statistical compilation or
-        mismatch probing is active, extracts stochastic parameter leaves as named
-        behavioral device parameters (`p(<name>)`).
+        dual mismatch extraction is active, extracts stochastic parameter leaves as
+        named behavioral device parameters (`p(<name>)`).
 
         Args:
             statement: Source SPICE element statement providing location metadata.
@@ -907,8 +915,8 @@ class Translation[Seed]:
             parameters: Optional extra device parameters merged alongside `expression`.
             extra_parameters: Optional `(nominal, step_expression)` map for synthesized
                 stochastic factors (such as behavioral resistor copy scaling).
-            probe_extra_parameters: Optional nominal map matching `extra_parameters`
-                during `Probe` mismatch extraction.
+            dual_extra_parameters: Optional dual scalar map matching `extra_parameters`
+                during dual mismatch extraction.
         """
         terminals = {
             "positive": self.net(nodes[0]),
@@ -936,13 +944,16 @@ class Translation[Seed]:
                 terminals[f"{port}_positive"], terminals[f"{port}_negative"] = sensed
             return ports[key]
 
-        translated_expression, extracted_parameters, symbolic_names = (
-            self._prepare_behavioral_parameters(
-                statement.text.split()[0],
-                expression,
-                extra_parameters,
-                probe_extra_parameters,
-            )
+        (
+            translated_expression,
+            extracted_parameters,
+            symbolic_names,
+            extracted_derivatives,
+        ) = self._prepare_behavioral_parameters(
+            statement.text.split()[0],
+            expression,
+            extra_parameters,
+            dual_extra_parameters,
         )
         text = translate(
             translated_expression,
@@ -964,6 +975,12 @@ class Translation[Seed]:
             combined |= primal_parameters
         if extracted_parameters:
             combined["parameters"] = dict(extracted_parameters)
+        if extracted_derivatives:
+            derivatives = (
+                {**derivatives, **extracted_derivatives}
+                if derivatives is not None
+                else extracted_derivatives
+            )
         self.add(statement, model, combined, terminals, derivatives=derivatives)
 
     def sense(self, source: str, statement: Statement) -> tuple[str, str]:

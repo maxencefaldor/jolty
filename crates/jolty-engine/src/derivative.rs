@@ -564,6 +564,7 @@ impl StabilityPullContext<'_> {
             slot_products,
         }))
     }
+}
 
 /// Shared immutable context for per-frequency noise forward-mode tangents.
 struct NoiseTangentContext<'a> {
@@ -2386,7 +2387,6 @@ fn accumulate_stability_pulls(
         }
     }
 }
-
 
 /// Computes directional noise derivatives for every tangent in `context` at frequency `index`.
 fn noise_frequency_tangent(

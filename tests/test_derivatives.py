@@ -555,6 +555,7 @@ def test_noise_function_batch_and_batch_vjp() -> None:
             {"RD": {"resistance": 10e3}}
         )
 
+
 # SPICE and PDK subcircuit differentiation.
 
 SUBCIRCUIT_FD_STEP: Final = 1e-4

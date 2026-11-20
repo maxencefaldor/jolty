@@ -625,7 +625,10 @@ mod tests {
         assert_eq!(
             declared,
             [
+                "behavioral_capacitor",
+                "behavioral_current_source",
                 "behavioral_resistor",
+                "behavioral_voltage_source",
                 "bipolar_transistor",
                 "bsim3",
                 "bsim4",

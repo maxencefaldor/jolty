@@ -227,6 +227,77 @@ def _pull_real_batch(
     return _unpack_gradients(context.names, np.asarray(matrix, dtype=np.float64))
 
 
+def _pull_ac_batch(
+    context: _PullbackContext,
+    pullback: _core.Pullback,
+    cotangents: Sequence[specs.MeasureCotangent],
+) -> tuple[RealGradient, ...]:
+    """Pulls sparse AC `ComplexCotangent`s back in one batched backward pass."""
+    payload: list[list[tuple[int, int, float, float]]] = []
+    for cotangent in cotangents:
+        if not isinstance(cotangent, specs.ComplexCotangent):
+            message = (
+                "a small-signal response pullback takes ComplexCotangent, "
+                f"not {type(cotangent).__name__}"
+            )
+            raise specs.MeasureError(message)
+        payload.append(list(cotangent.entries))
+    return _pull_complex_batch(context, pullback, payload)
+
+
+def _pull_stability_batch(
+    context: _PullbackContext,
+    pullback: _core.Pullback,
+    cotangents: Sequence[specs.MeasureCotangent],
+) -> tuple[RealGradient, ...]:
+    """Pulls sparse `LoopCotangent`s back in one batched backward pass."""
+    payload: list[list[tuple[int, int, float, float]]] = []
+    for cotangent in cotangents:
+        if not isinstance(cotangent, specs.LoopCotangent):
+            message = (
+                "a stability pullback takes LoopCotangent, "
+                f"not {type(cotangent).__name__}"
+            )
+            raise specs.MeasureError(message)
+        payload.append(loop_cotangent_entries(cotangent))
+    return _pull_complex_batch(context, pullback, payload)
+
+
+def _pull_noise_batch(
+    context: _PullbackContext,
+    pullback: _core.Pullback,
+    cotangents: Sequence[specs.MeasureCotangent],
+) -> tuple[RealGradient, ...]:
+    """Pulls sparse `NoiseCotangent`s back in one batched backward pass."""
+    payload: list[tuple[list[tuple[int, int, float]], float]] = []
+    for cotangent in cotangents:
+        if not isinstance(cotangent, specs.NoiseCotangent):
+            message = (
+                f"a noise pullback takes NoiseCotangent, not {type(cotangent).__name__}"
+            )
+            raise specs.MeasureError(message)
+        payload.append((noise_cotangent_entries(cotangent), 0.0))
+    return _pull_real_batch(context, pullback, payload)
+
+
+def _pull_real_entries_batch(
+    context: _PullbackContext,
+    pullback: _core.Pullback,
+    cotangents: Sequence[specs.MeasureCotangent],
+) -> tuple[RealGradient, ...]:
+    """Pulls sparse `RealCotangent`s back in one batched backward pass."""
+    payload: list[tuple[list[tuple[int, int, float]], float]] = []
+    for cotangent in cotangents:
+        if not isinstance(cotangent, specs.RealCotangent):
+            message = (
+                "a real analysis pullback takes RealCotangent, "
+                f"not {type(cotangent).__name__}"
+            )
+            raise specs.MeasureError(message)
+        payload.append((list(cotangent.entries), cotangent.period))
+    return _pull_real_batch(context, pullback, payload)
+
+
 def _pull_batch(
     context: _PullbackContext,
     pullback: _core.Pullback,
@@ -238,48 +309,12 @@ def _pull_batch(
     if not context.names:
         return tuple({} for _ in cotangents)
     if isinstance(context.analysis, Ac):
-        complex_payload: list[list[tuple[int, int, float, float]]] = []
-        for cotangent in cotangents:
-            if not isinstance(cotangent, specs.ComplexCotangent):
-                message = (
-                    "a small-signal response pullback takes ComplexCotangent, "
-                    f"not {type(cotangent).__name__}"
-                )
-                raise specs.MeasureError(message)
-            complex_payload.append(list(cotangent.entries))
-        return _pull_complex_batch(context, pullback, complex_payload)
+        return _pull_ac_batch(context, pullback, cotangents)
     if isinstance(context.analysis, Stability):
-        loop_payload: list[list[tuple[int, int, float, float]]] = []
-        for cotangent in cotangents:
-            if not isinstance(cotangent, specs.LoopCotangent):
-                message = (
-                    "a stability pullback takes LoopCotangent, "
-                    f"not {type(cotangent).__name__}"
-                )
-                raise specs.MeasureError(message)
-            loop_payload.append(loop_cotangent_entries(cotangent))
-        return _pull_complex_batch(context, pullback, loop_payload)
+        return _pull_stability_batch(context, pullback, cotangents)
     if isinstance(context.analysis, Noise):
-        noise_payload: list[tuple[list[tuple[int, int, float]], float]] = []
-        for cotangent in cotangents:
-            if not isinstance(cotangent, specs.NoiseCotangent):
-                message = (
-                    "a noise pullback takes NoiseCotangent, "
-                    f"not {type(cotangent).__name__}"
-                )
-                raise specs.MeasureError(message)
-            noise_payload.append((noise_cotangent_entries(cotangent), 0.0))
-        return _pull_real_batch(context, pullback, noise_payload)
-    real_payload: list[tuple[list[tuple[int, int, float]], float]] = []
-    for cotangent in cotangents:
-        if not isinstance(cotangent, specs.RealCotangent):
-            message = (
-                "a real analysis pullback takes RealCotangent, "
-                f"not {type(cotangent).__name__}"
-            )
-            raise specs.MeasureError(message)
-        real_payload.append((list(cotangent.entries), cotangent.period))
-    return _pull_real_batch(context, pullback, real_payload)
+        return _pull_noise_batch(context, pullback, cotangents)
+    return _pull_real_entries_batch(context, pullback, cotangents)
 
 
 def _verdict_from_reading(
@@ -421,9 +456,7 @@ def measure_derivatives(
     return tuple(
         replace(
             item,
-            derivatives=contract_real_gradient(
-                parameters, evaluated, item.derivatives
-            ),
+            derivatives=contract_real_gradient(parameters, evaluated, item.derivatives),
         )
         for item in pulled
     )
@@ -468,9 +501,7 @@ def slack_derivatives(
     return tuple(
         replace(
             item,
-            derivatives=contract_real_gradient(
-                parameters, evaluated, item.derivatives
-            ),
+            derivatives=contract_real_gradient(parameters, evaluated, item.derivatives),
         )
         if item.reason is None
         else item

@@ -3,7 +3,7 @@
 import inspect
 import math
 from collections.abc import Callable
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 
@@ -43,6 +43,9 @@ from jolty.waveforms import Exponential, Piecewise, Pulse, Sine
 
 ANNOTATED_BUILDERS: tuple[tuple[str, Callable[..., devices.Device], set[str]], ...] = (
     ("resistor", devices.resistor, {"tolerance"}),
+    ("behavioral_voltage_source", devices.behavioral_voltage_source, set()),
+    ("behavioral_current_source", devices.behavioral_current_source, set()),
+    ("behavioral_capacitor", devices.behavioral_capacitor, set()),
     ("behavioral_resistor", devices.behavioral_resistor, set()),
     ("capacitor", devices.capacitor, {"tolerance"}),
     ("inductor", devices.inductor, {"tolerance"}),
@@ -172,18 +175,35 @@ def test_passive_and_analog_builders_validate_parameters() -> None:
     assert made_resistor.tolerances["resistance"].relative == 0.01
 
     made_behavioral_resistor = devices.behavioral_resistor(
-        "1e3 * (1 + 0.1 * v(positive, negative))",
+        "p(r0) * (1 + 0.1 * v(positive, negative))",
+        parameters={"r0": 1e3},
         temperature_coefficient=1e-3 / K,
         quadratic_temperature_coefficient=1e-5 / K**2,
         nominal_temperature=300 * K,
     )
     assert made_behavioral_resistor.terminals == ("positive", "negative")
     assert made_behavioral_resistor.parameters == {
-        "expression": "1e3 * (1 + 0.1 * v(positive, negative))",
+        "expression": "p(r0) * (1 + 0.1 * v(positive, negative))",
+        "parameters": {"r0": 1000.0},
         "temperature_coefficient": 1e-3,
         "quadratic_temperature_coefficient": 1e-5,
         "nominal_temperature": 300.0,
     }
+    wrong_parameters: Any = {"scale": 1 * V}
+    for builder in (
+        devices.behavioral_voltage_source,
+        devices.behavioral_current_source,
+        devices.behavioral_capacitor,
+        devices.behavioral_resistor,
+    ):
+        made_behavioral = builder(
+            "p(scale) * (1 + 0 * v(positive))", parameters={"scale": 2.5}
+        )
+        assert made_behavioral.parameters["parameters"] == {"scale": 2.5}
+        with pytest.raises(DimensionError, match=r"parameters\.scale"):
+            builder("p(scale)", parameters=wrong_parameters)
+        with pytest.raises(ValueError, match=r"parameters\.scale"):
+            builder("p(scale)", parameters={"scale": math.inf})
 
     made_capacitor = devices.capacitor(1 * uF, tolerance=0.05)
     assert made_capacitor.tolerances["capacitance"].relative == 0.05
@@ -324,7 +344,7 @@ def _sample_devices() -> list[devices.Device]:
         devices.voltage_controlled_current_source(1e-3 * S),
         devices.current_controlled_current_source(2.0),
         devices.current_controlled_voltage_source(1 * kohm),
-        devices.behavioral_voltage_source("1"),
+        devices.behavioral_voltage_source("p(scale)", parameters={"scale": 1.0}),
         devices.behavioral_current_source("1"),
         devices.behavioral_capacitor("1e-12 * v(positive, negative)"),
         devices.behavioral_resistor(

@@ -252,13 +252,13 @@ class Drawing:
 
         Returns:
             Component name suffixed with encoded placement path and sample coordinates
-            when sampled or probed.
+            when sampled.
         """
-        match self.sample:
-            case Sample(seed=seed, index=index):
-                return f"{name}@{_encode_path(self.path)}#{seed}:{index}"
-            case Probe():
-                return f"{name}@{_encode_path(self.path)}"
+        if isinstance(self.sample, Sample):
+            return (
+                f"{name}@{_encode_path(self.path)}"
+                f"#{self.sample.seed}:{self.sample.index}"
+            )
         return name
 
     def within(self, instance: str) -> Drawing:

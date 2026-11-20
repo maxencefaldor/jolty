@@ -934,13 +934,12 @@ def _switch(*, by_current: bool) -> ElementTranslator:
 
 def _instance_arguments[Seed](
     translation: Translation[Seed], statement: Statement, assigned: list[str]
-) -> tuple[dict[str, float], dict[str, Expression], frozenset[str]]:
-    """Evaluates `X` instance arguments with symbolic and probe-stochastic metadata."""
+) -> tuple[dict[str, float], dict[str, Expression]]:
+    """Evaluates `X` instance arguments with optional symbolic expressions."""
     functions = translation.functions
     scope = translation.primal_scope
     raw_given: dict[str, float] = {}
     raw_given_symbolic: dict[str, Expression] = {}
-    probe_stochastic: set[str] = set()
     for parameter, expression in models.assignments(statement, assigned).items():
         resolved = inlined(expression, functions)
         raw_given[parameter] = evaluate(resolved, scope, translation.draw)
@@ -948,19 +947,11 @@ def _instance_arguments[Seed](
             lowered = translation.statistics.lower_element(resolved, scope)
             if lowered is not None:
                 raw_given_symbolic[parameter] = lowered
-        elif translation.probe_compiler is not None and (
-            translation.probe_compiler.depends_on_statistics(resolved)
-        ):
-            probe_stochastic.add(parameter)
     given, given_symbolic = translation.multiplied_symbolic(
         raw_given, raw_given_symbolic
     )
     primal_given = {key: primal(value) for key, value in given.items()}
-    if translation.probe_compiler is not None and (
-        translation.multiplier_symbolic is not None
-    ):
-        probe_stochastic.add("m")
-    return primal_given, given_symbolic, frozenset(probe_stochastic)
+    return primal_given, given_symbolic
 
 
 def _place_child[Seed](
@@ -998,9 +989,7 @@ def _place_child[Seed](
         for device_path, bin_bounds in dual_built.bins.items():
             translation.device_bins[f"{prefix}{device_path}"] = bin_bounds
         return dual_built.built
-    primal_given, given_symbolic, probe_stochastic = _instance_arguments(
-        translation, statement, assigned
-    )
+    primal_given, given_symbolic = _instance_arguments(translation, statement, assigned)
     if translation.statistics is not None and given_symbolic:
         return translation.library.place_built(
             subcircuit,
@@ -1024,7 +1013,6 @@ def _place_child[Seed](
         uses=translation.uses,
         temperature=translation.temperature_value,
         temperature_dependent=translation.global_temperature_dependent,
-        given_probe_stochastic=probe_stochastic,
     )
 
 

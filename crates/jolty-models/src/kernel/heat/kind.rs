@@ -276,7 +276,7 @@ fn heat<K: Kernel, R: Heating>(
         } else {
             R::seed(temperature)
         };
-        if let Ok(heated) = K::prepare(&prepared.parameters, moving) {
+        if let Ok(heated) = K::prepare_heated(&prepared.parameters, &prepared.at_ambient, moving) {
             if let Some(slot) = &mut memory.prepared {
                 **slot = heated;
             } else {
@@ -576,7 +576,9 @@ impl<K: Kernel> Kind for HeatedKernel<K> {
             } else {
                 Gradient::<SEEDS>::seed(temperature)
             };
-            if let Ok(heated) = K::prepare(&prepared.parameters, moving) {
+            if let Ok(heated) =
+                K::prepare_heated(&prepared.parameters, &prepared.at_ambient, moving)
+            {
                 if let Some(slot) = &mut memory.prepared {
                     **slot = heated;
                 } else {

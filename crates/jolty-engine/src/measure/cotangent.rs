@@ -2120,6 +2120,92 @@ mod tests {
         }
     }
 
+    fn verify_noise_measure(
+        label: &str,
+        measure: Measure,
+        frequencies: &[f64],
+        densities: &mut [f64],
+        gains: &[Complex64],
+    ) {
+        let result = AnalysisResult::Noise {
+            frequencies,
+            densities,
+            gains: Some(gains),
+        };
+        let (value, cotangent) = measure.cotangent(&result).unwrap();
+        assert_eq!(value.to_bits(), measure.measure(&result).unwrap().to_bits());
+        let MeasureCotangent::Noise {
+            densities: density_entries,
+            referred: referred_entries,
+        } = cotangent
+        else {
+            panic!("{label}: expected noise cotangent");
+        };
+        let density_lookup: BTreeMap<usize, f64> = density_entries.into_iter().collect();
+        let referred_lookup: BTreeMap<usize, f64> = referred_entries.into_iter().collect();
+        let expected_densities: BTreeMap<usize, f64> = (0..densities.len())
+            .map(|index| {
+                let magnitude = arithmetic::magnitude(gains[index]);
+                let from_density = density_lookup.get(&index).copied().unwrap_or(0.0);
+                let from_referred =
+                    referred_lookup.get(&index).copied().unwrap_or(0.0) / (magnitude * magnitude);
+                (index, from_density + from_referred)
+            })
+            .collect();
+        let expected_gains: Vec<(usize, Complex64)> = referred_lookup
+            .iter()
+            .map(|(&index, &weight)| {
+                let magnitude = arithmetic::magnitude(gains[index]);
+                let referred_value = densities[index] / (magnitude * magnitude);
+                let gain_weight = arithmetic::divide(
+                    Complex64::new(-2.0 * weight * referred_value, 0.0),
+                    gains[index],
+                );
+                (index, gain_weight)
+            })
+            .collect();
+        let density_scale = expected_densities
+            .values()
+            .fold(0.0_f64, |largest, &weight| largest.max(weight.abs()));
+        for index in 0..densities.len() {
+            let original = densities[index];
+            let step = STEP * original;
+            densities[index] = original + step;
+            let above = measure
+                .measure(&AnalysisResult::Noise {
+                    frequencies,
+                    densities,
+                    gains: Some(gains),
+                })
+                .unwrap();
+            densities[index] = original - step;
+            let below = measure
+                .measure(&AnalysisResult::Noise {
+                    frequencies,
+                    densities,
+                    gains: Some(gains),
+                })
+                .unwrap();
+            densities[index] = original;
+            let exact = expected_densities.get(&index).copied().unwrap_or(0.0);
+            assert_close(exact, (above - below) / (2.0 * step), density_scale, label);
+        }
+        verify_complex_vector(
+            gains,
+            &expected_gains,
+            |perturbed| {
+                measure
+                    .measure(&AnalysisResult::Noise {
+                        frequencies,
+                        densities,
+                        gains: Some(perturbed),
+                    })
+                    .unwrap()
+            },
+            label,
+        );
+    }
+
     #[test]
     fn noise_cotangents_match_finite_differences() {
         // Include a 1/f segment (growth == 0) alongside general power-law segments.
@@ -2164,83 +2250,7 @@ mod tests {
                 },
             ),
         ] {
-            let result = AnalysisResult::Noise {
-                frequencies: &frequencies,
-                densities: &densities,
-                gains: Some(&gains),
-            };
-            let (value, cotangent) = measure.cotangent(&result).unwrap();
-            assert_eq!(value.to_bits(), measure.measure(&result).unwrap().to_bits());
-            let MeasureCotangent::Noise {
-                densities: density_entries,
-                referred: referred_entries,
-            } = cotangent
-            else {
-                panic!("{label}: expected noise cotangent");
-            };
-            let density_lookup: BTreeMap<usize, f64> = density_entries.into_iter().collect();
-            let referred_lookup: BTreeMap<usize, f64> = referred_entries.into_iter().collect();
-            let expected_densities: BTreeMap<usize, f64> = (0..densities.len())
-                .map(|index| {
-                    let magnitude = arithmetic::magnitude(gains[index]);
-                    let from_density = density_lookup.get(&index).copied().unwrap_or(0.0);
-                    let from_referred = referred_lookup.get(&index).copied().unwrap_or(0.0)
-                        / (magnitude * magnitude);
-                    (index, from_density + from_referred)
-                })
-                .collect();
-            let expected_gains: Vec<(usize, Complex64)> = referred_lookup
-                .iter()
-                .map(|(&index, &weight)| {
-                    let magnitude = arithmetic::magnitude(gains[index]);
-                    let referred_value = densities[index] / (magnitude * magnitude);
-                    let gain_weight = arithmetic::divide(
-                        Complex64::new(-2.0 * weight * referred_value, 0.0),
-                        gains[index],
-                    );
-                    (index, gain_weight)
-                })
-                .collect();
-            let density_scale = expected_densities
-                .values()
-                .fold(0.0_f64, |largest, &weight| largest.max(weight.abs()));
-            for index in 0..densities.len() {
-                let original = densities[index];
-                let step = STEP * original;
-                densities[index] = original + step;
-                let above = measure
-                    .measure(&AnalysisResult::Noise {
-                        frequencies: &frequencies,
-                        densities: &densities,
-                        gains: Some(&gains),
-                    })
-                    .unwrap();
-                densities[index] = original - step;
-                let below = measure
-                    .measure(&AnalysisResult::Noise {
-                        frequencies: &frequencies,
-                        densities: &densities,
-                        gains: Some(&gains),
-                    })
-                    .unwrap();
-                densities[index] = original;
-                let exact = expected_densities.get(&index).copied().unwrap_or(0.0);
-                assert_close(exact, (above - below) / (2.0 * step), density_scale, label);
-            }
-            verify_complex_vector(
-                &gains,
-                &expected_gains,
-                |perturbed| {
-                    measure
-                        .measure(&AnalysisResult::Noise {
-                            frequencies: &frequencies,
-                            densities: &densities,
-                            gains: Some(perturbed),
-                        })
-                        .unwrap()
-                },
-                label,
-            );
+            verify_noise_measure(label, measure, &frequencies, &mut densities, &gains);
         }
     }
 

@@ -57,7 +57,7 @@ As of 18 November 2026, `main` includes the following completed capabilities:
     Agent tooling adds programmatic MCP instructions with an offline docs bundle (`agentic.md` 5) and `jolty measure` / `measure_results` session queries (`agentic.md` 15).
 - **Quality and robustness:** upfront multi-error plan and spec validation (`quality.md` 8, 9) and audited engine constants and test tolerances with an AST guard (`quality.md` 10, 11).
     Parser safety adds Hypothesis fuzzing alongside an iterative Rust expression parser, compiler, and drop implementation (`quality.md` 18).
-    Recent completions in CI (20 November): dimensioned quantities everywhere (`quality.md` 7) and tighter guide prose with five Diátaxis how-to pages (`quality.md` 20).
+    Recent completions (20 November): dimensioned quantities everywhere (`quality.md` 7), tighter guide prose with five Diátaxis how-to pages (`quality.md` 20), IEEE-754 derived minimum transient step and unknown-space error control (`accuracy.md` 5, 18), `behavioral_resistor` with dynamic `TC1`/`TC2` and thermal noise plus `TREF` (`models.md` 24), nested `Library.drawn` fix and native parallel PDK `MonteCarlo` draws (`models.md` 23, 23b), PEP 810 lazy imports and standby service runner (`speed.md` 8), persistent SPICE PDK disk caching with temperature decoupling (`speed.md` 22), differentiable `Stability`, `Noise`, and dual-number PDK geometry (`agentic.md` 23), and exact measure/requirement slack derivatives with linear worst-case bounds (`agentic.md` 9).
 
 **The order of the work** (owner, 16 November):
 

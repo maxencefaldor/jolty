@@ -1758,20 +1758,23 @@ def _differentiated(
     """Extracts analysis kind, point count, unit, and operating point from `result`."""
     match result:
         case results.OperatingPointResult():
-            return "operating_point", 1, "", result
+            found: tuple[
+                Differentiated, int, str, results.OperatingPointResult | None
+            ] = ("operating_point", 1, "", result)
         case results.DcSweepResult():
             unit = "" if result.nature is None else unknowns.SYMBOLS[result.nature]
-            return "dc_sweep", len(result.swept), unit, None
+            found = ("dc_sweep", len(result.swept), unit, None)
         case results.AcResult():
-            return "ac", len(result.frequencies), "Hz", result.operating_point
+            found = ("ac", len(result.frequencies), "Hz", result.operating_point)
         case results.StabilityResult():
-            return "stability", len(result.frequencies), "Hz", result.operating_point
+            found = ("stability", len(result.frequencies), "Hz", result.operating_point)
         case results.NoiseResult():
-            return "noise", len(result.frequencies), "Hz", result.operating_point
+            found = ("noise", len(result.frequencies), "Hz", result.operating_point)
         case results.PeriodicSteadyStateResult():
-            return "periodic_steady_state", len(result.times), "s", None
+            found = ("periodic_steady_state", len(result.times), "s", None)
         case results.TransientResult():
-            return "transient", len(result.times), "s", None
+            found = ("transient", len(result.times), "s", None)
+    return found
 
 
 def _sensitivities(

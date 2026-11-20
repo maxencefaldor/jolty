@@ -144,6 +144,22 @@ pub trait Kernel: Send + Sync + 'static {
         temperature: R,
     ) -> Result<Self::Prepared<R>, ParameterError>;
 
+    /// Re-prepares temperature-dependent values at `temperature` in kelvins for a self-heating
+    /// evaluation step, reusing temperature-independent state already prepared in `at_ambient`.
+    ///
+    /// Implementations must avoid heap allocation so heated evaluation remains allocation-free.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParameterError`] when a parameter is out of range at `temperature`.
+    fn prepare_heated<R: Real>(
+        parameters: &Self::Parameters<R>,
+        _at_ambient: &Self::Prepared<R>,
+        temperature: R,
+    ) -> Result<Self::Prepared<R>, ParameterError> {
+        Self::prepare(parameters, temperature)
+    }
+
     /// Claims internal unknowns and matrix entries in `layout` for `parameters` and
     /// `prepared` (produced by [`Kernel::prepare`]), returning the instance shape.
     ///

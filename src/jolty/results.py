@@ -1791,11 +1791,7 @@ def result_kind(result: AnalysisResult) -> str:
 
 
 def axis_of(
-    result: DcSweepResult
-    | AcResult
-    | StabilityResult
-    | NoiseResult
-    | TransientResult,
+    result: DcSweepResult | AcResult | StabilityResult | NoiseResult | TransientResult,
 ) -> Real:
     """Returns the sweep values, frequencies, or time axis array of `result`.
 

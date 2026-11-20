@@ -1893,7 +1893,20 @@ mod tests {
         let photocell_lag = merge(photocell, r#"{"response_time": 0.01}"#);
         check("photocell", &photocell_lag, &[1.0, 0.0, 50.0, 0.0, 2.5]);
 
+        let behavioral_resistor = r#"{"expression": "p(rbody) * (1 + p(vc1) * tanh(v(positive, negative)))",
+            "parameters": {"rbody": 1e3, "vc1": 0.2},
+            "temperature_coefficient": 3e-3, "quadratic_temperature_coefficient": 1e-5,
+            "nominal_temperature": 290}"#;
+        check("behavioral_resistor", behavioral_resistor, &[1.0, 0.0]);
+        let behavioral_resistor_heated = merge(behavioral_resistor, r#"{"thermal": true}"#);
+        check(
+            "behavioral_resistor",
+            &behavioral_resistor_heated,
+            &[1.0, 0.0, 5.0],
+        );
+
         let covered: std::collections::BTreeSet<&str> = [
+            "behavioral_resistor",
             "bipolar_transistor",
             "bsim3",
             "bsim4",

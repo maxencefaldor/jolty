@@ -217,12 +217,19 @@ pub(crate) fn evaluate(
             Instruction::Constant(_) => {}
             Instruction::Variable(variable) => gradient[*variable] += adjoint,
             Instruction::Unary(operation, x) => {
-                adjoints[*x] += adjoint * operation.slope(values[*x], values[index]);
+                let slope = operation.slope(values[*x], values[index]);
+                if slope != 0.0 || adjoint.is_nan() {
+                    adjoints[*x] += adjoint * slope;
+                }
             }
             Instruction::Binary(operation, a, b) => {
                 let (slope_a, slope_b) = operation.slopes(values[*a], values[*b], values[index]);
-                adjoints[*a] += adjoint * slope_a;
-                adjoints[*b] += adjoint * slope_b;
+                if slope_a != 0.0 || adjoint.is_nan() {
+                    adjoints[*a] += adjoint * slope_a;
+                }
+                if slope_b != 0.0 || adjoint.is_nan() {
+                    adjoints[*b] += adjoint * slope_b;
+                }
             }
             Instruction::Limit(operands) => adjoints[limit_chosen(*operands, values)] += adjoint,
             Instruction::Conditional(operands) => adjoints[choose(*operands, values)] += adjoint,
@@ -338,12 +345,14 @@ fn along_backward(
                 if adjoint_tangent != 0.0 || has_curvature {
                     let slope = operation.slope(values[*x], values[index]);
                     let mut delta = 0.0;
-                    if adjoint_tangent != 0.0 {
+                    if adjoint_tangent != 0.0 && (slope != 0.0 || adjoint_tangent.is_nan()) {
                         delta += adjoint_tangent * slope;
                     }
                     if has_curvature {
                         let curvature = operation.curvature(values[*x], values[index], slope);
-                        delta += adjoint * curvature * tangents[*x];
+                        if curvature != 0.0 || adjoint.is_nan() {
+                            delta += adjoint * curvature * tangents[*x];
+                        }
                     }
                     adjoint_tangents[*x] += delta;
                 }
@@ -355,8 +364,12 @@ fn along_backward(
                     let (slope_a, slope_b) =
                         operation.slopes(values[*a], values[*b], values[index]);
                     if adjoint_tangent != 0.0 {
-                        adjoint_tangents[*a] += adjoint_tangent * slope_a;
-                        adjoint_tangents[*b] += adjoint_tangent * slope_b;
+                        if slope_a != 0.0 || adjoint_tangent.is_nan() {
+                            adjoint_tangents[*a] += adjoint_tangent * slope_a;
+                        }
+                        if slope_b != 0.0 || adjoint_tangent.is_nan() {
+                            adjoint_tangents[*b] += adjoint_tangent * slope_b;
+                        }
                     }
                     if has_curvature {
                         let [by_a, mixed, by_b] =
