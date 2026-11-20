@@ -1,9 +1,9 @@
 # Agentic design
 
-Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 19 November.
+Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 20 November.
 The archival research report lives in `research/agentic.md`, kept whole.
 
-Plan: ✅ 14 done · 📋 9 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 14 done · 📋 9 planned · ⏸️ 2 parked (§4).
 
 ## 1. Goal and metric
 
@@ -29,7 +29,7 @@ Progress is measured by old roadmap item 8: the same agent runs identical tasks 
 
 **Where an agent's effort goes** (observed across discovery scripts, the guide, and the MCP server):
 
-- **Harness code:** agents write manual bisections (50 steps to tune one resistor), Monte Carlo loops, and custom measurements because sensitivities target unknowns rather than specs and jolty lacks an optimizer (items 9 and 11).
+- **Harness code:** agents write manual bisections (50 steps to tune one resistor) and custom measurements because sensitivities target unknowns rather than specs (item 9); multi-corner sizing will compose external optimizers over jolty's differentiable bricks (items 9, 23; item 11 parked).
 - **Learning the API:** resolved (item 5) by deriving MCP instructions programmatically from code covering every device, real part, analysis, and measurement.
     All 17 guide pages and 33 examples are bundled offline via `jolty read-docs`, `read_docs`, and MCP `jolty://docs/...` resources.
 - **Completed since 15 November:** transistor operating-point regions and margins appear in `OperatingPointResult.region` and `jolty simulate` (items 4 and 4b), and `PeriodicSteadyState(period=None)` solves autonomous oscillators (item 22).
@@ -42,7 +42,8 @@ No published study evaluates the same agent across two toolchains, which item 8 
 ## 3. Gaps
 
 - Agent productivity gains with jolty have not yet been measured on a real agent.
-- Feedback stops at circuit facts: no spec derivatives, no numerical error bounds on measurements, and no built-in optimizer (transistor regions and margins are done in items 4 and 4b).
+- Feedback stops at circuit facts: no spec derivatives and no numerical error bounds on measurements (transistor regions and margins are done in items 4 and 4b; built-in optimization is parked in item 11 in favor of composable differentiable bricks).
+- Differentiation covers five analyses and leaf device parameters only: `Stability`, `Noise`, and PDK subcircuit geometry `(w, l, mult)` still lack exact VJP and JVP support (item 23).
 - Every CLI command spawns a fresh Python process with unmeasured startup cost (`speed.md` 8), while saved `.results.npz` session queries (item 15) and offline docs plus programmatic MCP instructions (item 5) are done.
 - An agent can still bypass analysis counting by invoking an external binary directly, and the harness sandbox remains untested on Linux.
 
@@ -135,9 +136,12 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Lead.**
     **Source:** row 10.
 
-### 📋 11. Built-in optimization in the plan
+### ⏸️ 11. Built-in optimization in the plan
 
 - **What:** deterministic gradient-based optimization over bounded or catalog-constrained parameters maximizing worst slack across requirements and corners, reporting each iterate and the best reachable slack when negative.
+- **Parked** (the owner, 20 November): jolty focuses on sharp, orthogonal bricks rather than embedding an opinionated optimization engine.
+    Agents compose multi-corner smooth minimax or SQP in ~25 lines over SciPy or JAX/Optax using four jolty bricks: full analysis and PDK-geometry VJP (item 23), differentiable measures and requirement slacks (item 9), parallel multi-corner batched VJP (`Function.batch_vjp` plus `speed.md` 22), and non-crashing per-run failure reporting in batches, documented via a Diátaxis how-to recipe.
+    Revisit only if CLI/MCP-only agents later prove a declarative optimizer is needed.
 - **Done when:** bandgap flattening and cost-down resistor sizing each solve in one call using fewer solves than hand-written loops.
 - **Lead.**
     **Source:** row 11.
@@ -266,7 +270,18 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Memory limits (`max_memory`) are now enforced across PSS sensitivity, JVP, and VJP (`DENSE_MATRICES`, `forward_period_numbers`, `pull_period_numbers`).
 - **Source:** row 20.
 
-**Elsewhere:** end-to-end agent command timing and a warm runner live in `speed.md` 8; exact result caching lives in `speed.md` 16.
+### 📋 23. Differentiable `Stability`, `Noise`, and PDK subcircuit geometry
+
+- **Priority:** P0 (Wave 2).
+- **What:** extend `Simulator::jvp`, `Simulator::vjp`, and `jolty.jax.function` to `Stability` (loop gain) and `Noise` (output noise spectral density and integrated RMS noise), lifting `NoiseSource` in `jolty-models` to `NoiseSource<R: Real>` for exact operating-point and parameter coupling via `device-derivatives.md` step 2b.
+    Add dual-number PDK subcircuit geometry VJP mapping design variables `(w, l, mult)` to leaf device parameters within bins and reporting bin boundaries as box constraints, closing `models.md` 17's central-difference follow-up on kit parameter derivatives.
+- **Why:** `jolty.vjp` and `jolty.jax.function` currently cover five analyses and leaf `ir.DeviceOf` parameters only, forcing finite differences for phase margin, loop gain, input-referred noise, and foundry-drawn transistor sizes with coupled diffusion parasitics and binned `.param` expressions.
+- **Done when:** `Stability` and `Noise` JVP and VJP pass the dot-product test (`<v, J t> = <Jᵀ v, t>`) to under 1e-14 and match central differences across BSIM4, VBIC, and Gummel-Poon circuits at parameter-independent cost, kit parameter derivatives use dual numbers instead of central differences, and a SKY130 two-stage Miller OTA sizes `(w, l, mult)`, compensation capacitance, and nulling resistance directly through `jolty.vjp` / `jolty.jax.function` for gain, phase margin, GBW, and noise.
+- **Lead.**
+    **Source:** owner approval, 20 November (roadmap N3); closes `models.md` 17's central-difference follow-up.
+
+**Elsewhere:** end-to-end agent command timing and a warm runner live in `speed.md` 8, and exact result caching lives in `speed.md` 16.
+Transient noise (`trnoise`, `models.md` 25, roadmap N4) will pair with seeded pathwise SDE adjoints extending item 13's discrete transient VJP through bias-dependent noise amplitudes along fixed noise realizations at O(1) parameter cost, matching fixed-seed central differences within 1e-7.
 
 ## 5. Decided
 
@@ -275,6 +290,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - Run limits (time, turns, and budget) have no defaults; the owner specifies limits for each paid run.
 - Item 8 waited for item 1 because undercounting one arm's tries would invalidate the comparison.
 - PyTorch support (`jolty.torch`) was explicitly rejected by the owner on 19 November 2026, standardizing ML differentiation solely on JAX (`jolty[jax]`).
+- On 20 November the owner adopted differentiable `Stability`, `Noise`, and PDK subcircuit geometry VJP (item 23, roadmap N3) and parked built-in optimization (item 11) in favor of composable differentiable bricks (items 9 and 23, parallel batched VJP, per-run batch failure reporting, and a Diátaxis how-to recipe).
 
 ## 6. Open principles
 

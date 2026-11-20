@@ -1,9 +1,9 @@
 # Models and coverage
 
-Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 18 November.
+Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 20 November.
 Full background research remains archived in `research/models.md`.
 
-Plan: ✅ 9 done · 🚧 5 in progress · 📋 7 planned · ⏳ 1 waits for the owner · ⏸️ 2 parked (§4).
+Plan: ✅ 9 done · 🚧 5 in progress · 📋 12 planned · ⏳ 1 waits for the owner · ⏸️ 2 parked (§4).
 
 ## 1. Goal and metric
 
@@ -32,9 +32,11 @@ Progress is measured by the coverage matrix (`benchmarks.md` item 9), where ever
 
 ## 3. Gaps
 
-- Remaining open-kit devices: 12 in SKY130, 7 in GF180MCU, and 17 in SG13G2, needing BSIM4 4.6/4.62 and BSIM3 3.2 among other additions (items 8, 11, and 13).
-- No CMC standard model in the library yet: four compile whole awaiting QA tests, while FinFET and SiGe models are not yet compiled (items 12 to 15).
+- Remaining open-kit devices: 12 in SKY130, 7 in GF180MCU, and 17 in SG13G2, needing BSIM4 4.6/4.62, BSIM3 3.2, and `TREF` on `res` cards among other additions (items 8, 11, 13, and 24).
+- No CMC standard model in the library yet: four compile whole awaiting formal CMC `qaSpec` golden QA packages, while FinFET and SiGe models are not yet compiled (items 12 to 15).
 - Missing CMC QA suite (item 15) and measured silicon benchmarks (item 16); the common physical-law suite is complete (item 3, `6a5a8c0`).
+- Live SKY130 PDK gaps: nested subcircuit names in `Library.drawn` collide with the `'/'` hierarchy separator (item 23), `MonteCarlo` does not yet draw kit mismatch natively (item 23b), and voltage-dependent PDK resistors freeze `TC1`/`TC2` at library temperature and emit zero thermal noise (item 24).
+- Transient noise (`trnoise`) remains unsupported in the coverage matrix (item 25), and SPICE export flattens PDK subcircuits rather than emitting LVS-ready hierarchical calls (item 26).
 - Only directional second derivatives in kernels: AC sensitivities are exact (`device-derivatives.md` 2b), while distortion and higher-order analyses await full second and higher derivatives (item 6).
 - Model metadata remains duplicated across several files (item 4).
 
@@ -251,7 +253,8 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ### ⏳ 15. A CMC QA harness
 
-- **Waits for:** owner download of CMC QA files through the Si2 registration form.
+- **Waits for:** separate CMC `qaSpec` and `.standard` golden QA packages required for formal QA certification.
+    On 20 November the owner downloaded the Si2 archive (38 files), which supplied official unpatched `.va` sources, licenses, and PDF manuals for all CMC models, while leaving the separate `qaSpec` and `.standard` reference packages still needed.
 - **What:** parse each standard model's `qaSpec`, execute its tests in jolty, and compare outputs against the accompanying reference data.
 - **Done when:** QA tests for every compiled model run and pass in CI.
 - **Lead.**
@@ -283,7 +286,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Loader optimizations also cache parsed non-`AKO:` local `.model` cards as read-only `MappingProxyType` views, use `split(maxsplit=1)` in `_keyword`, and fast-path finite `Number`/`Name`/`Unary` literals in `evaluate`.
     On SKY130 `tt_mm`, per-sample `drawn` time dropped from ~49 ms to 1.69 ms on `sky130_fd_pr__cap_mim_m3_1` (29× faster; 400-sample AC Monte Carlo in 0.75 s).
     On `sky130_fd_pr__nfet_01v8`, `drawn` dropped from ~420 ms to 5.67 ms (74× faster).
-    Remaining work: kit parameter derivatives still use central differences (exact to rounding up to quadratic kit expressions) rather than dual numbers, and `MonteCarlo` does not yet draw kit mismatch natively.
+    Remaining work: kit parameter derivatives still use central differences (exact to rounding up to quadratic kit expressions) rather than dual numbers (`agentic.md` 23), and `MonteCarlo` does not yet draw kit mismatch natively (item 23b).
 - **Lead.**
     **Source:** row 20.
 
@@ -332,6 +335,53 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     `files.save_raw(path, results, binary=True)` exports operating points, sweeps, AC, and transients in deterministic ASCII or binary ngspice raw format (omitting timestamps) readable by `ngspice.read`, and both matrix rows agree.
     Follow-ups completed (18 November): `.func` inside subcircuits and `.model` cards, `ngspice.parse_raw` and `files.load_raw` returning typed results, and CLI/MCP `--raw`/`--raw-format` (`binary` or `ascii`) options.
 
+### 📋 23. Nested subcircuit paths in `Library.drawn`
+
+- **Priority:** P0 (Wave 1 bug fix).
+- **What:** sanitize or encode hierarchical scopes in `Drawing.named` (`src/jolty/spice/_params.py`) so generated component definition names never contain `'/'`, while keeping the unchanged `self.path` string passed to `_core.variate` so statistical draws remain bit-identical.
+- **Why:** `Drawing.within` joins nested subcircuit scopes with `'/'` and `Drawing.named` embeds that path into `ComponentDefinition.name`, which `jolty-ir` rejects because `'/'` separates hierarchy levels.
+    Every nested PDK subcircuit instantiated through `Library.drawn` currently fails elaboration, including SKY130 `res_xhigh_po_*`, `res_high_po_*`, and RF MOSFETs.
+- **Done when:** a regression test in `tests/test_spice.py` instantiates nested SKY130 subcircuits (`res_xhigh_po_0p69`, `res_high_po_0p69`, and an RF MOSFET) through `Library.drawn` across multiple seeds and indices, simulates cleanly, and preserves bit-identical `_core.variate` paths.
+- **Source:** owner approval, 20 November (roadmap N1a); follow-up to item 10.
+
+### 📋 23b. Native PDK statistical draws in `MonteCarlo`
+
+- **Priority:** P0 (Wave 1).
+- **What:** draw kit-level statistical variation (`Library.drawn` and `Drawn::Kit`) natively inside `MonteCarlo` across worker threads rather than rebuilding the Python circuit per sample.
+- **Why:** closes item 17's follow-up so process and mismatch Monte Carlo runs execute through one native engine path with thread and shard determinism.
+- **Needs:** item 23.
+- **Done when:** `MonteCarlo` executes SKY130 `tt_mm` mismatch sweeps natively with bit-identical results across thread counts and shard counts, matching `Mismatch` within statistical standard error.
+- **Source:** owner approval, 20 November (roadmap N1b); follow-up to items 10 and 17.
+
+### 📋 24. Temperature coefficients and thermal noise on behavioral PDK resistors
+
+- **Priority:** P0 (Wave 1 silicon physics).
+- **What:** add a dedicated behavioral resistor kernel supporting voltage-dependent resistance expressions with dynamic simulation-temperature `TC1` and `TC2` scaling and Johnson-Nyquist thermal noise (`4kT / R(V, T)`), and accept `TREF` as a nominal-temperature alias on `res` cards.
+- **Why:** `_value_of_voltage` (`src/jolty/spice/_elements_passive.py`) currently lowers voltage-dependent PDK resistors (`sky130_fd_pr__res_xhigh_po_*`, `sky130_fd_pr__res_high_po_*`) to `behavioral_current_source`, freezing `TC1`/`TC2` at library read temperature (up to ~20% error across -40 to 125 °C unless `Library` is re-translated) and emitting zero thermal noise.
+    Separately, `sky130_fd_pr__res_generic_po__monte` fails translation on `TREF`.
+- **Done when:** one built SKY130 `res_xhigh_po_0p69` circuit swept via `Simulation(circuit, temperature=...)` across -40, 27, and 125 °C matches ngspice 47 without rebuilding `Library`, `Noise` matches ngspice 47 thermal noise spectral density across bias and temperature on `res_xhigh_po_0p69` and `res_high_po_0p69`, and `sky130_fd_pr__res_generic_po__monte` translates and agrees natively.
+- **Source:** owner approval, 20 November (roadmap N2).
+
+### 📋 25. Transient noise (`trnoise`)
+
+- **Priority:** P1 (Wave 3).
+- **What:** add deterministic, seeded transient thermal noise (Gaussian current sources at user bandwidth `f_max` matching ngspice `TRNOISE`) and pink `1/f` noise filters driven by hash-based per-instance variates, handling adaptive step-size control via fixed noise grids or Brownian-bridge refinement so integrated noise variance stays invariant to step rejections and subdivisions.
+- **Why:** `trnoise` is one of the 15 unsupported coverage-matrix rows, and small-signal `Noise` assumes a stationary DC operating point and cannot model dynamic comparators, switched-capacitor sampling noise, autonomous oscillator jitter, or stochastic CMOS circuits.
+    Paired with seeded pathwise SDE adjoints in `agentic.md`, this enables exact differentiation through noisy transients absent from ngspice, Xyce, and Spectre.
+- **Done when:** coverage-matrix row `trnoise` moves from `unsupported` to `agreed`, an RC circuit reproduces exact `kT/C` thermal noise variance across tolerances, and noisy transients match ngspice `TRNOISE` at equal bandwidth.
+- **Elsewhere:** seeded pathwise SDE adjoints extending `agentic.md` 13's discrete transient VJP along fixed noise realizations live in `agentic.md` (§4, Elsewhere).
+- **Lead** when paired with pathwise SDE adjoints.
+    **Source:** owner approval, 20 November (roadmap N4).
+
+### 📋 26. LVS-ready PDK SPICE export and post-layout RC-extracted fixture
+
+- **Priority:** P2 (Wave 3).
+- **What:** attach optional PDK provenance metadata (`kit_device`, `parameters`) to components built by `Library.component` so `jolty.spice.export` can emit LVS-ready hierarchical PDK `.subckt` calls alongside flattened simulation netlists, and add an integration fixture exercising a real post-layout Magic-extracted SKY130 RC-parasitic netlist (1,000+ parasitic R/C elements plus BSIM4 subcircuits) against ngspice 47.
+- **Why:** `Library.component` currently expands subcircuits into low-level primitives, so exported SPICE writes flattened internals instead of the hierarchical `.subckt` calls required by Magic, KLayout, and Netgen LVS.
+    Testing a real post-layout RC-extracted SKY130 netlist validates pre-layout to post-layout simulation natively and provides a realistic fixture for `speed.md` items 6, 12, and 13.
+- **Done when:** exporting a SKY130 circuit built via `kits.read` emits a hierarchical `.subckt` netlist that passes `netgen` LVS and simulates identically in ngspice 47 with `.lib sky130.lib.spice tt`, and the RC-extracted SKY130 fixture runs OP, AC, stability, and transient natively in jolty matching ngspice 47 within standard tolerances.
+- **Source:** owner approval, 20 November (roadmap N6).
+
 **Not recommended:** OSDI via `unsafe` in a separate crate (row 21), which adds breadth quickly but lacks parameter derivatives and bypasses jolty's kernel safety rules.
 **Out of scope:** CIDER numerical devices and SPICE control language; device bypass exists only as an opt-in approximation knob (`speed.md` 18).
 
@@ -341,6 +391,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - BSIM3 was ported before BSIM4; in hindsight BSIM4 covers more active targets, including SKY130, predictive cards, and GF180MCU.
 - Tests construct synthetic transistor models rather than redistributing copyrighted vendor model cards.
 - VBIC self-heating (from card `RTH` and `CTH`) is verified against ngspice: the 29 K rise and node values agree within 1e-6 (`test_a_heated_vbic_agrees`).
+- On 20 November the owner adopted roadmap items N1a, N1b, N2, N4, and N6 (items 23, 23b, 24, 25, and 26), prioritizing N1a/N1b and N2 ahead of further SKY130 benchmark runs.
 
 ## 6. Open principles
 

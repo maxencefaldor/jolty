@@ -1,9 +1,9 @@
 # Speed
 
-Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 18 November.
+Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 20 November.
 Full background research remains archived in `research/speed.md`.
 
-Plan: ✅ 6 done · 🚧 3 in progress · 📋 13 planned · ⏸️ 2 parked (§4).
+Plan: ✅ 6 done · 🚧 3 in progress · 📋 14 planned · ⏸️ 2 parked (§4).
 
 ## 1. Goal and metric
 
@@ -56,6 +56,7 @@ Recording every unknown at every time point takes 2.1 GiB for the 50,000-inverte
 - An agent CLI command takes 952 ms without images (2,101 ms with schematic and plots) versus 3.8 ms for `ngspice -b`.
     Double Python startup (`jolty.cli` plus the `jolty.runner` child) and matplotlib plotting dominate, not the 1.24 ms engine run.
 - Memory and recording hit limits first at ten million devices, and nothing is measured above 350,004 unknowns.
+- PDK loading and translation dominate multi-corner and Monte Carlo workflows: reading SKY130 takes 2.0 to 3.1 s per corner, temperature changes clear `Library._built`, and Python SPICE translation accounts for over 95% of wall time on a 25-device multi-corner build (item 22).
 
 ## 4. Plan
 
@@ -299,11 +300,12 @@ Any optimization that speeds up one fixture while slowing another requires inves
 
 ### 📋 15. Samples in vector lanes
 
-- **What:** evaluate multiple batch samples concurrently in SIMD lanes, with each lane advancing independently and reproducing single-sample bits exactly.
-- **Needs:** cross-platform bit identity first (`accuracy.md` 13).
+- **What:** evaluate multiple batch samples concurrently in SIMD lanes using a structure-of-arrays sample layout, with each lane advancing independently and reproducing single-sample bits on the same host.
+- **Role:** serves as the CPU AVX-512 precursor to batched H100 GPU execution (`gpu.md`), validating the exact memory layout required for batched GPU ensembles while delivering immediate multi-lane CPU throughput.
+- **Needs:** cross-platform bit identity (`accuracy.md` 13, parked) only if bit identity is required across platforms as well as SIMD widths.
 - **Done when:** k SIMD lanes reproduce k single runs bit for bit, with throughput measured.
 - **Lead.**
-    **Source:** row M2; blueprint §3.3.
+    **Source:** row M2; blueprint §3.3; owner prioritization, 20 November.
 
 ### 📋 16. An exact cache of results
 
@@ -337,6 +339,17 @@ Any optimization that speeds up one fixture while slowing another requires inves
 - **Done when:** a 10⁵-instance array draws and views within a defined time budget.
 - **Source:** blueprint §3.6.
 
+### 📋 22. Fast cached PDK subcircuit translation and multi-corner reuse
+
+- **Priority:** P1 (Wave 2).
+- **What:** cache parsed subcircuit definitions, pre-indexed MOSFET bin tables, and deterministic global parameter plans on disk per `(kit_digest, section)` keyed by kit digest and jolty version.
+    Separate temperature sweeps from structural translation so sweeping `Simulation` temperature does not invalidate `Library._built` once `models.md` 24 moves resistor `TC1`/`TC2` into the engine (for devices without static `temper` `.param` references).
+    Move hot `Library.component` and `Library.drawn` bin selection and `.param` evaluation into Rust via `jolty-expressions` for sub-second SKY130 Monte Carlo builds.
+- **Why:** `kits.read` on SKY130 currently takes 2.0 to 3.1 s per corner (12 to 18 s for six corners `tt`, `ff`, `ss`, `sf`, `fs`, `tt_mm`), changing `Library.temperature` clears `self._built`, and building a 25-device SKY130 circuit across corners and Monte Carlo samples spends over 95% of wall time in Python AST and parameter translation while each Rust operating point takes ~3 ms.
+- **Needs:** `models.md` 24 (roadmap N2) to decouple temperature sweeps from structural translation.
+- **Done when:** cold-process loading of all six SKY130 corners from a warm cache drops from ~15 s to under 0.5 s, and building 100 SKY130 `tt_mm` Monte Carlo draws of a 25-device bandgap takes under 0.5 s with circuit IR bit-identical to uncached translation.
+- **Source:** owner approval, 20 November (roadmap N5).
+
 **Elsewhere:** stamping BSIM3, VDMOS, and VBIC via summed derivatives is `quality.md` 5 (with speed measurements there).
 Transient adjoint sensitivities are `agentic.md` 13, and built-in correctly rounded elementary functions for cross-platform bit identity are `accuracy.md` 13.
 
@@ -367,6 +380,7 @@ Schematic and viewer instancing (§3.6) maps to item 21, and differentiable simu
 - One scheduler: a single caller-owned rayon pool runs all parallelism levels to prevent oversubscription, and device kernels have no dependency on threads (archived note).
 - mimalloc serves as the Python extension allocator, keeping Monte Carlo at 95.9% of linear scaling on 8 threads versus 64 to 68% previously.
 - Speed claims follow `benchmarks.md`: references at best configuration, both engine and end-to-end timings, and efficiency relative to attainable throughput.
+- 20 November (owner): adopted cached PDK translation and Rust-side bin/expression evaluation (item 22, roadmap N5) and staged SIMD sample lanes (item 15) as the CPU AVX-512 precursor to batched H100 GPU execution (`gpu.md`).
 
 ## 6. Open principles
 

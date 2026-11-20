@@ -57,6 +57,7 @@ As of 18 November 2026, `main` includes the following completed capabilities:
     Agent tooling adds programmatic MCP instructions with an offline docs bundle (`agentic.md` 5) and `jolty measure` / `measure_results` session queries (`agentic.md` 15).
 - **Quality and robustness:** upfront multi-error plan and spec validation (`quality.md` 8, 9) and audited engine constants and test tolerances with an AST guard (`quality.md` 10, 11).
     Parser safety adds Hypothesis fuzzing alongside an iterative Rust expression parser, compiler, and drop implementation (`quality.md` 18).
+    Recent completions in CI (20 November): dimensioned quantities everywhere (`quality.md` 7) and tighter guide prose with five Diátaxis how-to pages (`quality.md` 20).
 
 **The order of the work** (owner, 16 November):
 
@@ -70,6 +71,7 @@ As of 18 November 2026, `main` includes the following completed capabilities:
 
 Each open decision awaits owner approval.
 On 20 November the owner decided four: Newton omits both early cuts (`accuracy.md` 6), `measure::Signal` keeps its name (`quality.md` 12), `Mismatch` and `random_variables` keep their names (`models.md` 17), and derivative chunks stay at most 8 wide (`device-derivatives.md` 2.3).
+On the same day the owner adopted roadmap additions N1a/N1b, N2, N3, N4, N5, and N6 (`models.md` 23, 23b, 24 to 26; `agentic.md` 23; `speed.md` 22), parked built-in optimization (`agentic.md` 11) in favor of composable differentiable bricks plus a Diátaxis how-to recipe, and noted that Borg/XManager H100s lift the FP64 hardware blocker in `gpu.md` while keeping GPU work staged behind Waves 1 to 2 and `speed.md` 15.
 
 - **Device derivatives** (`device-derivatives.md`): two items await decision.
     First, whether exact-by-construction Gummel-Poon and JFET derivatives justify 2 to 8% more instructions per evaluation (step 1.3).
@@ -77,6 +79,6 @@ On 20 November the owner decided four: Newton omits both early cuts (`accuracy.m
 - **`ln1p` and `expm1` in jolty's Verilog-A:** both extensions sit outside the Verilog-AMS standard and remain reversible.
 - **Generated kernel parameters:** whether generated kernels may declare parameters via a table rather than derived serialization.
     A table cuts a third of PSP's 1.54 MB footprint and 122 s release build time, while giving generated and hand-written kernels two different forms.
-- **CMC QA files:** R3_CMC 1.1.2 QA tests are distributed only through an Si2 form requiring the owner's name and email, blocking the compiler QA harness (`models.md` 12, 15).
-    The owner agreed on 20 November to download them; the harness starts once the files arrive.
+- **CMC QA files:** on 20 November the owner downloaded the Si2 archive (38 files), supplying official unpatched `.va` sources, licenses, and PDF manuals for all CMC models, without the separate CMC `qaSpec` and `.standard` golden QA packages.
+    Formal QA certification and the compiler QA harness (`models.md` 12, 15) still await those separate `qaSpec` / `.standard` packages.
 - **Item 8 paid run** (`agentic.md` 14): deferred pending owner go-ahead.
