@@ -70,7 +70,7 @@ pub struct Circuit {
     pub components: BTreeMap<Name, Component>,
 }
 
-/// Component definition declaring exposed ports and placed instances.
+/// Component definition declaring exposed ports, placed instances, and optional statistical model.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Component {
@@ -80,6 +80,127 @@ pub struct Component {
     /// Device and subcircuit instances placed inside the component.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instances: Vec<Instance>,
+    /// Statistical draw graph computing per-sample device parameters for Monte Carlo runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statistical: Option<Statistical>,
+}
+
+/// Statistical parameter model attached to a [`Component`] for native Monte Carlo draws.
+///
+/// Each step defines a named variable either by drawing from a SPICE statistical distribution
+/// (`agauss`, `gauss`, `aunif`, `unif`, or `limit`) or by evaluating a jolty expression over
+/// earlier variables via `p(<name>)`. Each target computes one device parameter inside the
+/// component from those variables.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Statistical {
+    /// Ordered variable definitions evaluated top-to-bottom per sample.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<StatisticalStep>,
+    /// Device parameter expressions evaluated after `steps`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<StatisticalTarget>,
+}
+
+impl Statistical {
+    /// Returns whether this statistical model defines no steps and no targets.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.steps.is_empty() && self.targets.is_empty()
+    }
+}
+
+/// Predicate for serde `skip_serializing_if` on optional boolean flags defaulting to `false`.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if passes a reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// One named variable definition inside a component's [`Statistical`] evaluation graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StatisticalStep {
+    /// Draws a variate via a SPICE statistical distribution function using the engine's
+    /// deterministic kit variate generator.
+    Draw {
+        /// Identifier referenced as `p(<name>)` by subsequent steps and targets.
+        name: String,
+        /// Shared library-level draw when true (empty RNG scope `""`); per-placement draw
+        /// when false.
+        #[serde(default, skip_serializing_if = "is_false")]
+        shared: bool,
+        /// Relative subcircuit path appended to the placement path when `shared` is false
+        /// (empty for draws directly in the owning component).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        scope: String,
+        /// Call identifier matching `Library.drawn` (such as `vth0#0`).
+        call: String,
+        /// SPICE statistical distribution function applied to the arguments.
+        function: StatisticalFunction,
+        /// Nominal argument expression (first argument of the SPICE function).
+        nominal: String,
+        /// Spread argument expression (second argument of the SPICE function).
+        spread: String,
+        /// Sigma divisor expression for `agauss` and `gauss` (third argument).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sigma: Option<String>,
+    },
+    /// Evaluates an intermediate jolty expression over earlier step variables.
+    Value {
+        /// Identifier referenced as `p(<name>)` by subsequent steps and targets.
+        name: String,
+        /// Jolty expression reading earlier variables via `p(<name>)`.
+        expression: String,
+    },
+}
+
+impl StatisticalStep {
+    /// Returns the variable name defined by this step.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Draw { name, .. } | Self::Value { name, .. } => name,
+        }
+    }
+}
+
+/// SPICE statistical distribution function evaluated by [`StatisticalStep::Draw`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatisticalFunction {
+    /// Absolute Gaussian: `x + (a / s) * z` when `a > 0` and `s > 0`, else `x`.
+    Agauss,
+    /// Relative Gaussian: `x + (x * r / s) * z` when `r > 0` and `s > 0`, else `x`.
+    Gauss,
+    /// Absolute uniform: `x + a * u` with `u` in `[-1, 1)`.
+    Aunif,
+    /// Relative uniform: `x + (x * r) * u` with `u` in `[-1, 1)`.
+    Unif,
+    /// Two-point limit: `x + a` when `u > 0`, else `x - a`.
+    Limit,
+}
+
+impl StatisticalFunction {
+    /// Returns whether this statistical function takes a third `sigma` divisor argument.
+    #[must_use]
+    pub const fn takes_sigma(self) -> bool {
+        matches!(self, Self::Agauss | Self::Gauss)
+    }
+}
+
+/// Device parameter driven by a component's [`Statistical`] variables.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatisticalTarget {
+    /// Instance path relative to the owning component (such as `M1` or `X1/R1`).
+    pub instance: String,
+    /// Dotted parameter path on the target device (such as `vth0` or `parameters.rbody`).
+    pub parameter: String,
+    /// Jolty expression reading step variables via `p(<name>)`.
+    pub expression: String,
 }
 
 /// External port exposing an internal component net to parent components.

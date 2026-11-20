@@ -14,6 +14,7 @@ pub(crate) fn circuit(instances: impl IntoIterator<Item = Instance>) -> Circuit 
             role: Role::Ground,
         }],
         instances: instances.into_iter().collect(),
+        statistical: None,
     };
     Circuit {
         components: BTreeMap::from([(top.clone(), component)]),

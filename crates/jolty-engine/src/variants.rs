@@ -10,6 +10,8 @@
 //! identical whether drawn standalone or inside any parallel batch, and adding a part never
 //! perturbs draws for unrelated parts.
 
+mod statistical;
+
 use std::collections::HashSet;
 
 use jolty_ir::{Circuit, Component, Distribution, Of, Tolerance};
@@ -21,6 +23,9 @@ use serde::Deserialize;
 use crate::batch::Variants;
 use crate::elaborate::{ElaborationError, ElaborationProblem};
 use crate::{Elaborated, ParameterId, Values};
+
+use statistical::StatisticalPlan;
+pub use statistical::{StatisticalPlacement, statistical};
 
 /// Explicit list of per-run [`Values`].
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -223,7 +228,12 @@ pub enum Variate {
 /// matching `NumPy` uniform and standard-normal transformations.
 #[must_use]
 pub fn variate(variate: Variate, seed: u64, index: u64, scope: &str, call: &str) -> f64 {
-    let mut generator = generator(seed, index, key(scope, call), Drawn::Kit);
+    variate_by_key(variate, seed, index, key(scope, call))
+}
+
+/// Draws a standard `variate` for sample `index` from `seed` using precomputed FNV-1a `key`.
+pub(super) fn variate_by_key(variate: Variate, seed: u64, index: u64, key: u64) -> f64 {
+    let mut generator = generator(seed, index, key, Drawn::Kit);
     match variate {
         Variate::Normal => normal(&mut generator, 0.0, 1.0),
         Variate::Uniform => uniform(&mut generator, -1.0, 1.0),
@@ -487,12 +497,14 @@ fn walk(circuit: &Circuit, found: &mut Vec<Toleranced>) -> Result<(), Toleranced
 }
 
 /// Monte Carlo variant generator drawing each toleranced parameter via
-/// [drawn](Toleranced::drawn) from a fixed seed.
+/// [drawn](Toleranced::drawn) and each component's [`jolty_ir::Statistical`] parameter model
+/// from a fixed seed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonteCarlo {
     seed: u64,
     samples: u64,
     toleranced: Vec<(ParameterId, Toleranced)>,
+    statistical: Option<StatisticalPlan>,
 }
 
 impl MonteCarlo {
@@ -509,6 +521,25 @@ impl MonteCarlo {
         samples: u64,
         toleranced: Vec<Toleranced>,
     ) -> Result<Self, ElaborationError> {
+        Self::with_statistical(elaborated, seed, samples, toleranced, Vec::new())
+    }
+
+    /// Creates a [`MonteCarlo`] generator producing `samples` draws of `toleranced`
+    /// parameters alongside compiled [`StatisticalPlacement`] models on `elaborated` from
+    /// `seed`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ElaborationProblem::UnknownParameter`] for unrecognized parameter paths,
+    /// [`ElaborationProblem::UnknownOverride`] for nonexistent instances, and
+    /// [`ElaborationProblem::Parameters`] for invalid statistical expressions.
+    pub fn with_statistical(
+        elaborated: &Elaborated,
+        seed: u64,
+        samples: u64,
+        toleranced: Vec<Toleranced>,
+        statistical_placements: Vec<StatisticalPlacement>,
+    ) -> Result<Self, ElaborationError> {
         let mut problems = Vec::new();
         let mut found = Vec::with_capacity(toleranced.len());
         for item in toleranced {
@@ -523,11 +554,14 @@ impl MonteCarlo {
                 }),
             }
         }
+        let statistical =
+            StatisticalPlan::compile(elaborated, statistical_placements, &mut problems);
         if problems.is_empty() {
             Ok(Self {
                 seed,
                 samples,
                 toleranced: found,
+                statistical,
             })
         } else {
             Err(ElaborationError::new(problems))
@@ -542,6 +576,9 @@ impl Variants for MonteCarlo {
 
     fn values(&self, index: u64) -> Values {
         let mut values = Values::default();
+        if let Some(statistical) = &self.statistical {
+            statistical.evaluate(self.seed, index, &mut values);
+        }
         for (parameter, toleranced) in &self.toleranced {
             values.set(*parameter, toleranced.drawn(self.seed, index));
         }
@@ -722,5 +759,274 @@ mod tests {
         let items = toleranced(&deep).expect("deep chain must succeed");
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].nominal.to_bits(), 50.0_f64.to_bits());
+    }
+
+    #[test]
+    fn statistical_walks_root_nested_diamonds_and_rejects_cycles() {
+        let model = serde_json::json!({
+            "steps": [{
+                "kind": "draw",
+                "name": "d0",
+                "call": "r#0",
+                "function": "agauss",
+                "nominal": "1000.0",
+                "spread": "10.0",
+                "sigma": "3.0"
+            }],
+            "targets": [{
+                "instance": "R1",
+                "parameter": "resistance",
+                "expression": "p(d0)"
+            }]
+        });
+        let hierarchy = circuit_from_components(
+            "top",
+            &serde_json::json!({
+                "top": {
+                    "ports": [{"name": "0", "role": "ground"}],
+                    "instances": [
+                        {"name": "R1", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 1000.0},
+                         "terminals": {"a": "n1", "b": "0"}},
+                        {"name": "X1", "of": {"component": "cell"},
+                         "terminals": {"a": "n1", "b": "0"}},
+                        {"name": "X2", "of": {"component": "cell"},
+                         "terminals": {"a": "n1", "b": "0"}},
+                        {"name": "Xempty", "of": {"component": "empty"},
+                         "terminals": {"a": "n1", "b": "0"}}
+                    ],
+                    "statistical": model
+                },
+                "cell": {
+                    "ports": [
+                        {"name": "a", "role": "signal"},
+                        {"name": "b", "role": "signal"}
+                    ],
+                    "instances": [
+                        {"name": "R1", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 1000.0},
+                         "terminals": {"a": "a", "b": "b"}}
+                    ],
+                    "statistical": model
+                },
+                "empty": {
+                    "ports": [
+                        {"name": "a", "role": "signal"},
+                        {"name": "b", "role": "signal"}
+                    ],
+                    "instances": [],
+                    "statistical": {}
+                }
+            }),
+        );
+        let placements = statistical(&hierarchy).expect("acyclic hierarchy");
+        let paths: Vec<&str> = placements
+            .iter()
+            .map(|placement| placement.path.as_str())
+            .collect();
+        assert_eq!(paths, vec!["", "X1", "X2"]);
+
+        let cycle = circuit_from_components(
+            "top",
+            &serde_json::json!({
+                "top": {
+                    "instances": [{"name": "X1", "of": {"component": "top"}, "terminals": {}}]
+                }
+            }),
+        );
+        let error = statistical(&cycle).expect_err("self-cycle must fail");
+        assert_eq!(
+            error,
+            TolerancedError::Recursive {
+                component: "top".to_owned(),
+                cycle: vec!["top".to_owned(), "top".to_owned()],
+            }
+        );
+    }
+
+    /// Builds a circuit placing two statistical subcircuits alongside a toleranced resistor.
+    fn statistical_test_circuit() -> Circuit {
+        let cell_statistical = serde_json::json!({
+            "steps": [
+                {"kind": "draw", "name": "lot", "shared": true, "call": "lot#0",
+                 "function": "agauss", "nominal": "0.0", "spread": "0.06", "sigma": "3.0"},
+                {"kind": "draw", "name": "mm", "call": "mm#0",
+                 "function": "gauss", "nominal": "1000.0", "spread": "0.03", "sigma": "3.0"},
+                {"kind": "draw", "name": "uabs", "scope": "inner", "call": "u#0",
+                 "function": "aunif", "nominal": "0.0", "spread": "0.02"},
+                {"kind": "draw", "name": "urel", "call": "ur#0",
+                 "function": "unif", "nominal": "2.0", "spread": "0.1"},
+                {"kind": "draw", "name": "lim", "call": "lim#0",
+                 "function": "limit", "nominal": "1.0", "spread": "0.05"},
+                {"kind": "draw", "name": "folded", "call": "zero#0",
+                 "function": "agauss", "nominal": "42.0", "spread": "0.0", "sigma": "3.0"},
+                {"kind": "value", "name": "body",
+                 "expression": "p(mm) * (1.0 + p(lot) + p(uabs)) + p(urel) + p(lim) + p(folded)"}
+            ],
+            "targets": [
+                {"instance": "R1", "parameter": "resistance", "expression": "p(body)"},
+                {"instance": "B1", "parameter": "parameters.rbody", "expression": "p(body) * 0.5"}
+            ]
+        });
+        circuit_from_components(
+            "top",
+            &serde_json::json!({
+                "top": {
+                    "ports": [{"name": "0", "role": "ground"}],
+                    "instances": [
+                        {"name": "V1", "of": {"model": "voltage_source"},
+                         "parameters": {"waveform": {"dc": 1.0}},
+                         "terminals": {"positive": "in", "negative": "0"}},
+                        {"name": "X1", "of": {"component": "cell"},
+                         "terminals": {"a": "in", "b": "n1"}},
+                        {"name": "X2", "of": {"component": "cell"},
+                         "terminals": {"a": "in", "b": "n2"}},
+                        {"name": "RT", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 500.0},
+                         "terminals": {"a": "n1", "b": "0"},
+                         "tolerances": {
+                             "resistance": {"relative": 0.05, "distribution": "uniform"}
+                         }},
+                        {"name": "R2", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 500.0},
+                         "terminals": {"a": "n2", "b": "0"}}
+                    ]
+                },
+                "cell": {
+                    "ports": [
+                        {"name": "a", "role": "signal"},
+                        {"name": "b", "role": "signal"}
+                    ],
+                    "instances": [
+                        {"name": "R1", "of": {"model": "resistor"},
+                         "parameters": {"resistance": 1000.0},
+                         "terminals": {"a": "a", "b": "mid"}},
+                        {"name": "B1", "of": {"model": "behavioral_current_source"},
+                         "parameters": {
+                             "expression": "v(positive, negative) / p(rbody)",
+                             "parameters": {"rbody": 500.0}
+                         },
+                         "terminals": {"positive": "mid", "negative": "b"}}
+                    ],
+                    "statistical": cell_statistical
+                }
+            }),
+        )
+    }
+
+    #[test]
+    fn monte_carlo_evaluates_statistical_models_and_matches_variate() {
+        let circuit = statistical_test_circuit();
+        let elaborated = Elaborated::new(
+            &circuit,
+            &jolty_models::Library::standard(),
+            &crate::Structure::default(),
+        )
+        .expect("valid circuit");
+        let toleranced_items = toleranced(&circuit).expect("toleranced items");
+        let statistical_items = statistical(&circuit).expect("statistical placements");
+        assert_eq!(toleranced_items.len(), 1);
+        assert_eq!(statistical_items.len(), 2);
+
+        let seed = 19;
+        let samples = 12;
+        let variants = MonteCarlo::with_statistical(
+            &elaborated,
+            seed,
+            samples,
+            toleranced_items.clone(),
+            statistical_items,
+        )
+        .expect("compiled statistical Monte Carlo");
+        assert_eq!(variants.len(), samples);
+
+        let x1_r = elaborated.parameter("X1/R1", "resistance").expect("X1/R1");
+        let x2_r = elaborated.parameter("X2/R1", "resistance").expect("X2/R1");
+        let x1_b = elaborated
+            .parameter("X1/B1", "parameters.rbody")
+            .expect("X1/B1");
+        let x2_b = elaborated
+            .parameter("X2/B1", "parameters.rbody")
+            .expect("X2/B1");
+        let rt = elaborated.parameter("RT", "resistance").expect("RT");
+
+        for index in 0..samples {
+            let values = variants.values(index);
+            let lot = (0.06 / 3.0) * variate(Variate::Normal, seed, index, "", "lot#0");
+            for (scope, r_id, b_id) in [("X1", x1_r, x1_b), ("X2", x2_r, x2_b)] {
+                let mm = 1000.0
+                    + (0.03 / 3.0) * 1000.0 * variate(Variate::Normal, seed, index, scope, "mm#0");
+                let nested_scope = format!("{scope}/inner");
+                let uabs = 0.02 * variate(Variate::Uniform, seed, index, &nested_scope, "u#0");
+                let urel = 2.0 + 2.0 * 0.1 * variate(Variate::Uniform, seed, index, scope, "ur#0");
+                let u_lim = variate(Variate::Uniform, seed, index, scope, "lim#0");
+                let lim = 1.0 + if u_lim > 0.0 { 0.05 } else { -0.05 };
+                let expected_body = mm * (1.0 + lot + uabs) + urel + lim + 42.0;
+                assert_eq!(
+                    values.get(r_id).expect("R1 override").to_bits(),
+                    expected_body.to_bits()
+                );
+                assert_eq!(
+                    values.get(b_id).expect("B1 override").to_bits(),
+                    (expected_body * 0.5).to_bits()
+                );
+            }
+            assert_ne!(
+                values.get(x1_r).expect("X1/R1").to_bits(),
+                values.get(x2_r).expect("X2/R1").to_bits()
+            );
+            assert_eq!(
+                values.get(rt).expect("RT override").to_bits(),
+                toleranced_items[0].drawn(seed, index).to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn monte_carlo_reports_invalid_statistical_models() {
+        let circuit = statistical_test_circuit();
+        let elaborated = Elaborated::new(
+            &circuit,
+            &jolty_models::Library::standard(),
+            &crate::Structure::default(),
+        )
+        .expect("valid circuit");
+        let bad: Vec<StatisticalPlacement> = serde_json::from_value(serde_json::json!([{
+            "path": "X1",
+            "statistical": {
+                "steps": [
+                    {"kind": "draw", "name": "shared_scoped", "shared": true, "scope": "inner",
+                     "call": "c#0", "function": "agauss", "nominal": "0", "spread": "1",
+                     "sigma": "3"},
+                    {"kind": "draw", "name": "missing_sigma", "call": "c#1", "function": "gauss",
+                     "nominal": "1", "spread": "0.1"},
+                    {"kind": "draw", "name": "extra_sigma", "call": "c#2", "function": "aunif",
+                     "nominal": "1", "spread": "0.1", "sigma": "3"},
+                    {"kind": "value", "name": "ok", "expression": "1.0"},
+                    {"kind": "value", "name": "ok", "expression": "2.0"},
+                    {"kind": "value", "name": "undef", "expression": "p(missing) + 1"},
+                    {"kind": "value", "name": "voltage", "expression": "v(a) + 1"},
+                    {"kind": "value", "name": "syntax", "expression": "1 +"}
+                ],
+                "targets": [
+                    {"instance": "NOPE", "parameter": "resistance", "expression": "p(ok)"},
+                    {"instance": "R1", "parameter": "bogus", "expression": "p(ok)"}
+                ]
+            }
+        }]))
+        .expect("valid placement JSON");
+        let error = MonteCarlo::with_statistical(&elaborated, 1, 4, Vec::new(), bad)
+            .expect_err("invalid statistical placement must fail");
+        let problems = error.problems();
+        assert_eq!(problems.len(), 9);
+        assert!(problems.iter().any(|problem| {
+            matches!(problem, ElaborationProblem::UnknownOverride(path) if path == "X1/NOPE")
+        }));
+        assert!(problems.iter().any(|problem| {
+            matches!(
+                problem,
+                ElaborationProblem::UnknownParameter { parameter, .. } if parameter == "bogus"
+            )
+        }));
     }
 }

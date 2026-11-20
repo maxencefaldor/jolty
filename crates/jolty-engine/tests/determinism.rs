@@ -30,7 +30,8 @@ use inductor::inductor;
 use jolty_engine::batch::{Batch, Measured, Run, Sink, Summary, Variants};
 use jolty_engine::measure::{Measure, Signal};
 use jolty_engine::variants::{
-    Axis, Explicit, Grid, GridChain, MonteCarlo, Product, Toleranced, toleranced,
+    Axis, Explicit, Grid, GridChain, MonteCarlo, Product, Toleranced, Variate, statistical,
+    toleranced, variate,
 };
 use jolty_engine::{
     Analysis, AnalysisResult, BREAK_EVENS, Elaborated, OperatingPoints, Options, Parallelism,
@@ -1112,4 +1113,145 @@ fn a_dissected_run_solves_afresh_what_a_serial_one_left() {
     assert_ne!(serial.0, alone.0, "the orders of operations differ");
     assert_eq!(point(&mut used, &dissected), alone);
     assert_eq!(point(&mut used, &options), serial);
+}
+
+/// Builds a hierarchical circuit combining a component statistical model (targeting both a
+/// linear resistor and a parameterized behavioral resistor) with a discrete toleranced load.
+fn statistical_bench() -> Circuit {
+    let stage_statistical = json!({
+        "steps": [
+            {"kind": "draw", "name": "lot", "shared": true, "call": "lot#0",
+             "function": "agauss", "nominal": "0.0", "spread": "0.09", "sigma": "3.0"},
+            {"kind": "draw", "name": "mm", "call": "mm#0",
+             "function": "gauss", "nominal": "1000.0", "spread": "0.06", "sigma": "3.0"},
+            {"kind": "value", "name": "rbody",
+             "expression": "p(mm) * (1.0 + p(lot))"}
+        ],
+        "targets": [
+            {"instance": "R1", "parameter": "resistance", "expression": "p(rbody)"},
+            {"instance": "B1", "parameter": "parameters.rbody", "expression": "p(rbody) * 2.0"},
+            {"instance": "B1", "parameter": "parameters.vc1",
+             "expression": "0.05 * (1.0 + 0.5 * p(lot))"}
+        ]
+    });
+    let document = json!({
+        "format": "jolty-circuit", "version": jolty_ir::VERSION, "top": "top",
+        "components": {
+            "top": {
+                "ports": [{"name": "0", "role": "ground"}],
+                "instances": [
+                    {"name": "V1", "of": {"model": "voltage_source"},
+                     "parameters": {"waveform": {"dc": 1.8}},
+                     "terminals": {"positive": "vdd", "negative": "0"}},
+                    {"name": "X1", "of": {"component": "stage"},
+                     "terminals": {"in": "vdd", "out": "out1"}},
+                    {"name": "X2", "of": {"component": "stage"},
+                     "terminals": {"in": "vdd", "out": "out2"}},
+                    {"name": "RL1", "of": {"model": "resistor"},
+                     "parameters": {"resistance": 1500.0},
+                     "terminals": {"a": "out1", "b": "0"},
+                     "tolerances": {
+                         "resistance": {"relative": 0.05, "distribution": "normal"}
+                     }},
+                    {"name": "RL2", "of": {"model": "resistor"},
+                     "parameters": {"resistance": 1500.0},
+                     "terminals": {"a": "out2", "b": "0"}}
+                ]
+            },
+            "stage": {
+                "ports": [
+                    {"name": "in", "role": "signal"},
+                    {"name": "out", "role": "signal"}
+                ],
+                "instances": [
+                    {"name": "R1", "of": {"model": "resistor"},
+                     "parameters": {"resistance": 1000.0},
+                     "terminals": {"a": "in", "b": "mid"}},
+                    {"name": "B1", "of": {"model": "behavioral_current_source"},
+                     "parameters": {
+                         "expression": concat!(
+                             "v(positive, negative) / ",
+                             "(p(rbody) * (1 + p(vc1) * abs(v(positive, negative))))",
+                         ),
+                         "parameters": {"rbody": 2000.0, "vc1": 0.05}
+                     },
+                     "terminals": {"positive": "mid", "negative": "out"}}
+                ],
+                "statistical": stage_statistical
+            }
+        }
+    });
+    Circuit::from_json(&document.to_string()).expect("valid statistical circuit")
+}
+
+/// Verifies that [`MonteCarlo::with_statistical`] combined with tolerances and temperature
+/// grids is bitwise deterministic across all thread counts and matches explicit single runs.
+#[test]
+fn statistical_monte_carlo_is_deterministic_and_matches_explicit_runs() {
+    let circuit = statistical_bench();
+    let elaborated = shared(&circuit);
+    let toleranced_items = toleranced(&circuit).expect("toleranced items");
+    let statistical_items = statistical(&circuit).expect("statistical placements");
+    let seed = 41;
+    let samples = 12;
+    let monte_carlo = MonteCarlo::with_statistical(
+        &elaborated,
+        seed,
+        samples,
+        toleranced_items.clone(),
+        statistical_items,
+    )
+    .expect("compiled statistical Monte Carlo");
+    let batch = Batch::new(
+        Arc::clone(&elaborated),
+        with(vec![Analysis::OperatingPoint], &Options::default()),
+        Vec::new(),
+    )
+    .expect("a batch");
+    assert_same_everywhere(&batch, &monte_carlo, &[vec![0..4, 4..samples]]);
+
+    let temperatures = Grid::new(
+        vec![(Axis::Temperature, vec![273.15, 323.15])],
+        GridChain::Independent,
+    )
+    .expect("a temperature grid");
+    let product = Product::new(temperatures, monte_carlo.clone()).expect("a product");
+    assert_same_everywhere(&batch, &product, &[vec![0..9, 9..24]]);
+
+    let (all, _) = run_on(&batch, &monte_carlo, &only(0..samples), 4);
+    for index in 0..samples {
+        let lot = (0.09 / 3.0) * variate(Variate::Normal, seed, index, "", "lot#0");
+        let mut overrides = BTreeMap::new();
+        for scope in ["X1", "X2"] {
+            let mm = 1000.0
+                + (0.06 / 3.0) * 1000.0 * variate(Variate::Normal, seed, index, scope, "mm#0");
+            let rbody = mm * (1.0 + lot);
+            let vc1 = 0.05 * (1.0 + 0.5 * lot);
+            overrides.insert(
+                format!("{scope}/R1"),
+                BTreeMap::from([("resistance".to_owned(), rbody)]),
+            );
+            overrides.insert(
+                format!("{scope}/B1"),
+                BTreeMap::from([
+                    ("parameters.rbody".to_owned(), rbody * 2.0),
+                    ("parameters.vc1".to_owned(), vc1),
+                ]),
+            );
+        }
+        overrides.insert(
+            "RL1".to_owned(),
+            BTreeMap::from([(
+                "resistance".to_owned(),
+                toleranced_items[0].drawn(seed, index),
+            )]),
+        );
+        let values = elaborated
+            .values(&overrides, None)
+            .expect("valid overrides");
+        let mut simulator =
+            Simulator::from_elaborated(Arc::clone(&elaborated), values).expect("a run");
+        let expected = bits(&simulator.run(&Analysis::OperatingPoint, &Options::default()));
+        assert_eq!(all[&index].0, vec![expected], "sample {index}");
+    }
 }

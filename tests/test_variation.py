@@ -8,6 +8,7 @@ import pytest
 
 from jolty import (
     Builder,
+    Component,
     ElaborationError,
     Role,
     Simulation,
@@ -16,13 +17,22 @@ from jolty import (
     devices,
     files,
     ir,
+    shards,
 )
 from jolty.devices import ParameterValue
 from jolty.plan import MonteCarlo, OperatingPoint, WorstCase
-from jolty.runner import BATCHES, MONTE_CARLO, Built, Job, run
+from jolty.runner import BATCHES, MONTE_CARLO, SHARD, Built, Job, run
 from jolty.specs import Specs, value
+from jolty.spice import Library, Sample
 from jolty.units import A, Quantity, V, kohm, nF, ohm
-from jolty.variation import Toleranced, extreme, moved, sample, toleranced
+from jolty.variation import (
+    Toleranced,
+    extreme,
+    moved,
+    sample,
+    statistical,
+    toleranced,
+)
 
 
 def _si(value: ParameterValue) -> float:
@@ -577,3 +587,212 @@ def test_the_runner_saves_its_batches_tracing_what_their_plots_draw(
     unplotted.mkdir()
     run(Job(script=script, plan=script, max_unknowns=10), unplotted)
     assert files.load_batches(unplotted / BATCHES)[MONTE_CARLO].result.traces == ()
+
+
+STATISTICAL_SPICE = """
+.param sw = 1
+.param proc_shift = {sw * agauss(0, 0.06, 3)}
+
+.subckt leaf_det a b rnom=500
+.param rval = {rnom * (1 + sw * agauss(0, 0.03, 3))}
+Rleaf a b {rval}
+.ends leaf_det
+
+.subckt leaf_hoist a b rbase=400
+.param rval = {rbase * (1 + sw * aunif(0, 0.02))}
+Rhoist a b {rval}
+.ends leaf_hoist
+
+.subckt stage a b
+.param gval = {gauss(1000, sw * 0.04, 3)}
+.param uval = {unif(1, sw * 0.02)}
+.param lval = {limit(1, sw * 0.01)}
+.param folded = {agauss(1, 0, 3)}
+.param rbody = {gval * (1 + proc_shift) * uval * lval * folded}
+.param rchild = {400 * (1 + 0.5 * proc_shift + 0.02 * sw * agauss(0, 1, 1))}
+R1 a n1 {rbody}
+Rbeh n1 n2 r = {rbody * (1 + 0.02 * abs(v(n1, n2)))}
+Xdet n2 n3 leaf_det rnom=500
+Xhoist n3 b leaf_hoist rbase={rchild}
+.ends stage
+"""
+
+
+def _statistical_bench(
+    library: Library, drawn_sample: Sample | None = None
+) -> Component:
+    """Builds a bench mixing SPICE statistical stages and a toleranced load."""
+    builder = Builder("statistical_bench")
+    ground = builder.port("ground", Role.GROUND)
+    supply = builder.place(devices.voltage_source(2 * V), name="V1")
+    first_stage = (
+        library.component("stage")
+        if drawn_sample is None
+        else library.drawn("stage", drawn_sample, "X1")
+    )
+    second_stage = (
+        library.component("stage")
+        if drawn_sample is None
+        else library.drawn("stage", drawn_sample, "X2")
+    )
+    first = builder.place(first_stage, name="X1")
+    second = builder.place(second_stage, name="X2")
+    load_one = builder.place(devices.resistor(1 * kohm, tolerance=0.05), name="RL1")
+    load_two = builder.place(devices.resistor(1 * kohm), name="RL2")
+    builder.connect(supply.positive, first.a, second.a, name="vdd")
+    builder.connect(first.b, load_one.a, name="out1")
+    builder.connect(second.b, load_two.a, name="out2")
+    builder.connect(load_one.b, load_two.b, supply.negative, ground)
+    return builder.finish()
+
+
+def test_native_spice_statistical_monte_carlo_matches_drawn() -> None:
+    """Verifies native statistical Monte Carlo matches `Library.drawn` sample by sample.
+
+    Exercises global shared process draws, local per-placement mismatch across all five
+    SPICE statistical functions (`agauss`, `gauss`, `aunif`, `unif`, `limit`), zero-
+    spread folding, nested cached children, hoisted stochastic-argument children,
+    behavioral resistors (`p(...)`), and a discrete toleranced load in one batch.
+    Operating-point voltages agree within `rel=1e-10` (covering Newton reltol `1e-6`
+    residual convergence and floating-point expression order differences).
+    """
+    active = Library()
+    active.read(STATISTICAL_SPICE, "statistical.sp")
+    nominal_bench = _statistical_bench(active)
+    built = circuit(nominal_bench)
+    placements = statistical(built)
+    assert [path for path, _ in placements] == ["X1", "X1/Xdet", "X2", "X2/Xdet"]
+
+    seed, count = 23, 12
+    batch = Simulation(built).batch(
+        {"op": OperatingPoint()},
+        MonteCarlo(count, seed=seed),
+        traces=["out1", "out2"],
+    )
+    assert not batch.failed.any()
+    assert "RL1 resistance" in batch.parameters
+    assert "X1/R1 resistance" in batch.parameters
+    assert "X1/Rbeh parameters.rbody" in batch.parameters
+    assert "X1/Xdet/Rleaf resistance" in batch.parameters
+    assert "X1/Xhoist/Rhoist resistance" in batch.parameters
+    assert "X2/R1 resistance" in batch.parameters
+
+    toleranced_loads = toleranced(built)
+    out1 = batch.traces[0].values_of("out1")[:, 0]
+    out2 = batch.traces[0].values_of("out2")[:, 0]
+    for index in range(count):
+        drawn_bench = _statistical_bench(active, Sample(seed, index))
+        drawn_load = sample(toleranced_loads, seed, index)
+        point = Simulation(drawn_bench, overrides=drawn_load).run(OperatingPoint())
+        assert out1[index] == pytest.approx(point.voltage("out1"), rel=1e-10)
+        assert out2[index] == pytest.approx(point.voltage("out2"), rel=1e-10)
+    assert not np.array_equal(out1, out2)
+
+    disabled = Library()
+    disabled.read(
+        STATISTICAL_SPICE.replace(".param sw = 1", ".param sw = 0"), "disabled.sp"
+    )
+    inactive_built = circuit(_statistical_bench(disabled))
+    assert statistical(inactive_built) == ()
+    assert all(
+        definition.statistical is None
+        for definition in inactive_built.components.values()
+    )
+
+
+STATISTICAL_SCRIPT = """
+from jolty import Builder, MonteCarlo, OperatingPoint, Plan, Role, Specs, component
+from jolty import devices
+from jolty.specs import value
+from jolty.spice import Library
+from jolty.units import V, kohm
+
+SPICE = \"\"\"
+.param proc = {agauss(0, 0.03, 3)}
+.subckt cell a b
+.param rv = {1000 * (1 + proc + agauss(0, 0.03, 3))}
+R1 a b {rv}
+.ends cell
+\"\"\"
+
+
+@component
+def divider(c: Builder) -> None:
+    library = Library()
+    library.read(SPICE, "stat_divider.sp")
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(2 * V), name="V1")
+    top = c.place(library.component("cell"), name="X1")
+    bottom = c.place(library.component("cell"), name="X2")
+    load = c.place(devices.resistor(2 * kohm, tolerance=0.05), name="RL")
+    c.connect(source.positive, top.a)
+    c.connect(top.b, bottom.a, load.a, name="out")
+    c.connect(bottom.b, load.b, source.negative, ground)
+
+
+def build():
+    return divider()
+
+
+def plan():
+    return Plan({"op": OperatingPoint()}, monte_carlo=MonteCarlo(24, seed=7))
+
+
+def specs():
+    return Specs([value("op", "out").within(0.8 * V, 0.2 * V)], yield_target=0.5)
+"""
+
+
+def test_statistical_monte_carlo_round_trips_runner_and_shards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifies runner batch serialization and shard merging with statistics."""
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "stat_divider.py"
+    script.write_text(STATISTICAL_SCRIPT, encoding="utf-8")
+    whole_dir = tmp_path / "whole"
+    whole_dir.mkdir()
+    outcome = run(
+        Job(script=script, plan=script, max_unknowns=20, plot=True), whole_dir
+    )
+    assert isinstance(outcome, Built), str(outcome)
+    mc_report = outcome.monte_carlo
+    assert mc_report is not None
+    assert (mc_report.samples, mc_report.toleranced, mc_report.mismatched) == (24, 1, 2)
+    assert mc_report.failed == 0
+
+    loaded = files.load_batches(whole_dir / BATCHES)[MONTE_CARLO].result
+    assert loaded.runs == 24
+    assert set(loaded.parameters) == {
+        "temperature",
+        "RL resistance",
+        "X1/R1 resistance",
+        "X2/R1 resistance",
+    }
+
+    shard_paths: list[Path] = []
+    for start, stop in ((0, 12), (12, 24)):
+        work = tmp_path / f"shard-{start}-{stop}"
+        work.mkdir()
+        shard_outcome = run(
+            Job(
+                script=script,
+                plan=script,
+                max_unknowns=20,
+                samples=(start, stop),
+                plot=True,
+            ),
+            work,
+        )
+        assert isinstance(shard_outcome, Built), str(shard_outcome)
+        shard_file = work / SHARD
+        loaded_shard = files.load_shard(shard_file)
+        assert (loaded_shard.toleranced, loaded_shard.mismatched) == (1, 2)
+        shard_paths.append(shard_file)
+
+    merged_shard, _ = shards.merge(shard_paths)
+    merged_report, merged_batch = shards.monte_carlo(merged_shard)
+    assert merged_report == mc_report
+    assert merged_batch is not None
+    assert np.array_equal(merged_batch.result.values, loaded.values)
+    assert np.array_equal(merged_batch.result.measured, loaded.measured)

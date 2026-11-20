@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use jolty_expressions::{Expression, Variable, Workspace};
@@ -27,7 +28,7 @@ fn reference_temperature<R: Real>() -> R {
 const MIN_RESISTANCE: f64 = 1e-12;
 
 /// Parsed behavioral [expression](jolty_expressions) depending on sensed node voltages,
-/// dedicated current-sensing port currents, and simulation time.
+/// dedicated current-sensing port currents, named numeric parameters, and simulation time.
 ///
 /// The device exposes `positive` and `negative` terminals, followed by each referenced
 /// voltage terminal and each sensing port's `p_positive` and `p_negative` terminals. Each
@@ -40,18 +41,21 @@ pub struct Behavior {
     text: String,
     expression: Arc<Expression>,
     terminals: Vec<String>,
-    /// Input binding (voltage, port current, or time) for each expression variable.
+    /// Input binding (voltage, port current, named parameter, or time) for each variable.
     reads: Vec<Reading>,
     /// Sensing port names paired with their `[positive, negative]` terminal indices.
     ports: Vec<(String, [usize; 2])>,
+    /// Named numeric parameters referenced via `p(name)` in order of first appearance.
+    parameters: Vec<String>,
 }
 
 /// Source quantity sampled by one expression variable: a terminal voltage difference, a
-/// sensing port current, or simulation time.
+/// sensing port current, a named numeric parameter, or simulation time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reading {
     Voltage(usize, Option<usize>),
     Current(usize),
+    Parameter(usize),
     Time,
 }
 
@@ -81,6 +85,7 @@ impl TryFrom<String> for Behavior {
         }
         let mut reads = Vec::new();
         let mut ports: Vec<(String, [usize; 2])> = Vec::new();
+        let mut parameters: Vec<String> = Vec::new();
         for variable in expression.variables() {
             reads.push(match variable {
                 Variable::Voltage(positive, negative) => {
@@ -100,6 +105,10 @@ impl TryFrom<String> for Behavior {
                     ports.push((port.clone(), ends));
                     Reading::Current(ports.len() - 1)
                 }
+                Variable::Parameter(name) => {
+                    parameters.push(name.clone());
+                    Reading::Parameter(parameters.len() - 1)
+                }
                 Variable::Time => Reading::Time,
             });
         }
@@ -109,6 +118,7 @@ impl TryFrom<String> for Behavior {
             terminals,
             reads,
             ports,
+            parameters,
         })
     }
 }
@@ -140,11 +150,58 @@ impl Behavior {
 /// [`BehavioralCapacitor`].
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
 #[serde(deny_unknown_fields)]
-pub struct BehavioralParameters {
+#[schemars(bound = "R: Serialize + JsonSchema")]
+pub struct BehavioralParameters<R: Real = f64> {
     /// Expression defining output current, voltage, or stored charge as a function of sensed
-    /// terminal voltages, port currents, and simulation time.
+    /// terminal voltages, port currents, named parameters, and simulation time.
     #[schemars(with = "String")]
     pub expression: Behavior,
+    /// Named numeric parameters read via `p(name)` inside `expression`.
+    #[serde(default)]
+    pub parameters: BTreeMap<String, R>,
+}
+
+/// Prepared expression paired with its resolved parameter values in variable order.
+#[derive(Debug, Clone)]
+pub struct PreparedBehavior<R: Real = f64> {
+    expression: Arc<Expression>,
+    parameters: Vec<R>,
+}
+
+impl<R: Real> PreparedBehavior<R> {
+    /// Validates `parameters` and resolves every `p(name)` read by `behavior`.
+    fn from_parts(
+        behavior: &Behavior,
+        parameters: &BTreeMap<String, R>,
+    ) -> Result<Self, ParameterError> {
+        for (name, value) in parameters {
+            if !value.value().is_finite() {
+                return Err(ParameterError(format!(
+                    "parameter `{name}` is finite, not {:?}",
+                    value.value()
+                )));
+            }
+        }
+        let mut resolved = Vec::with_capacity(behavior.parameters.len());
+        for name in &behavior.parameters {
+            let Some(&value) = parameters.get(name) else {
+                return Err(ParameterError(format!(
+                    "the expression `{}` reads `p({name})`, which is not in `parameters`",
+                    behavior.text
+                )));
+            };
+            resolved.push(value);
+        }
+        Ok(Self {
+            expression: Arc::clone(&behavior.expression),
+            parameters: resolved,
+        })
+    }
+
+    /// Validates `parameters` and resolves every `p(name)` read by `parameters.expression`.
+    fn new(parameters: &BehavioralParameters<R>) -> Result<Self, ParameterError> {
+        Self::from_parts(&parameters.expression, &parameters.parameters)
+    }
 }
 
 /// Layout shape for a behavioral device mapping expression outputs, variable bindings,
@@ -165,11 +222,12 @@ pub struct BehavioralShape {
 }
 
 /// Local-index binding for one expression variable: a local voltage difference, a port
-/// current unknown, or simulation time.
+/// current unknown, a named parameter index, or simulation time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Read {
     Voltage(usize, Option<usize>),
     Current(usize),
+    Parameter(usize),
     Time,
 }
 
@@ -212,6 +270,7 @@ impl BehavioralShape {
                 Reading::Current(port) => {
                     Read::Current(ports.get(port).map_or(usize::MAX, CurrentBranch::unknown))
                 }
+                Reading::Parameter(parameter) => Read::Parameter(parameter),
                 Reading::Time => Read::Time,
             })
             .collect();
@@ -223,7 +282,7 @@ impl BehavioralShape {
                         .chain(negative.map(|negative| (negative, -1.0)))
                         .collect(),
                     Read::Current(current) => vec![(current, 1.0)],
-                    Read::Time => Vec::new(),
+                    Read::Parameter(_) | Read::Time => Vec::new(),
                 };
                 let mut entries = Vec::with_capacity(rows.len() * columns.len());
                 for &(row, factor) in &rows {
@@ -249,28 +308,32 @@ impl BehavioralShape {
         self.reads.contains(&Read::Time)
     }
 
-    /// Evaluates `expression` into `room` at `at`, marking `stamp` limited if a rounded
-    /// table clamped and computing directional derivatives along unknown seeds when active.
+    /// Evaluates `prepared` into `room` at `at`, marking `stamp` limited if a rounded table
+    /// clamped and computing directional derivatives along unknown or parameter seeds when
+    /// active.
     fn evaluate_expression<R: Real>(
         &self,
-        expression: &Expression,
+        prepared: &PreparedBehavior<R>,
         room: &mut Room,
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
     ) -> (f64, Option<[f64; crate::Seeds::MAX]>) {
-        self.read(at, &mut room.values);
+        self.read(&prepared.parameters, at, &mut room.values);
         if !at.limiting {
             room.workspace.forget();
         }
-        let value = expression.evaluate(&room.values, &mut room.workspace, &mut room.gradient);
+        let value =
+            prepared
+                .expression
+                .evaluate(&room.values, &mut room.workspace, &mut room.gradient);
         if room.workspace.limited() {
             stamp.mark_limited();
         }
-        let seeded = R::SEEDS > 0 && at.seeds_unknowns();
+        let seeded = R::SEEDS > 0 && (at.seeds_unknowns() || !prepared.parameters.is_empty());
         let value_derivatives = if seeded {
             let mut value_derivatives = [0.0; crate::Seeds::MAX];
             for slot in 0..R::SEEDS.min(crate::Seeds::MAX) {
-                self.read_tangent(at, slot, &mut room.tangent);
+                self.read_tangent(&prepared.parameters, at, slot, &mut room.tangent);
                 if room.tangent.iter().all(|&rate| rate == 0.0) {
                     if let Some(target) = value_derivatives.get_mut(slot) {
                         *target = 0.0;
@@ -281,7 +344,7 @@ impl BehavioralShape {
                         }
                     }
                 } else {
-                    let moved = expression.along(
+                    let moved = prepared.expression.along(
                         &room.tangent,
                         &mut room.workspace,
                         &mut room.gradient_tangent,
@@ -307,11 +370,11 @@ impl BehavioralShape {
         (value, value_derivatives)
     }
 
-    /// Evaluates `expression` at `at`, updating `memory` and stamping row values, exact
+    /// Evaluates `prepared` at `at`, updating `memory` and stamping row values, exact
     /// derivatives, and sensing-port equations into `stamp`.
     fn add<R: Real>(
         &self,
-        expression: &Expression,
+        prepared: &PreparedBehavior<R>,
         memory: &mut BehavioralMemory,
         at: &Local<'_>,
         stamp: &mut Stamp<'_, R>,
@@ -321,7 +384,7 @@ impl BehavioralShape {
             branch.add(at, stamp, branch.voltage(at));
         }
         let Some(room) = &mut memory.0 else { return };
-        let (value, value_derivatives) = self.evaluate_expression(expression, room, at, stamp);
+        let (value, value_derivatives) = self.evaluate_expression(prepared, room, at, stamp);
         self.stamp_contribution(
             stamp,
             value,
@@ -377,46 +440,61 @@ impl BehavioralShape {
     }
 
     /// Reads the expression's variables' derivatives along `slot` at `at` into `tangent`.
-    fn read_tangent(&self, at: &Local<'_>, slot: usize, tangent: &mut [f64]) {
+    fn read_tangent<R: Real>(
+        &self,
+        parameters: &[R],
+        at: &Local<'_>,
+        slot: usize,
+        tangent: &mut [f64],
+    ) {
+        let unknowns = at.seeds_unknowns();
         for (rate, read) in tangent.iter_mut().zip(&self.reads) {
             *rate = match *read {
-                Read::Voltage(positive, negative) => {
+                Read::Voltage(positive, negative) if unknowns => {
                     at.unknown_derivative(positive, slot)
                         - negative.map_or(0.0, |node| at.unknown_derivative(node, slot))
                 }
-                Read::Current(current) => at.unknown_derivative(current, slot),
-                Read::Time => 0.0,
+                Read::Current(current) if unknowns => at.unknown_derivative(current, slot),
+                Read::Parameter(index) => parameters
+                    .get(index)
+                    .map_or(0.0, |parameter| parameter.derivative(slot)),
+                Read::Voltage(..) | Read::Current(_) | Read::Time => 0.0,
             };
         }
     }
 
     /// Reads the expression's variables at `at` into `values`.
-    fn read(&self, at: &Local<'_>, values: &mut [f64]) {
+    fn read<R: Real>(&self, parameters: &[R], at: &Local<'_>, values: &mut [f64]) {
         for (value, read) in values.iter_mut().zip(&self.reads) {
             *value = match *read {
                 Read::Voltage(positive, negative) => {
                     at.value(positive) - negative.map_or(0.0, |negative| at.value(negative))
                 }
                 Read::Current(current) => at.value(current),
+                Read::Parameter(index) => parameters
+                    .get(index)
+                    .map_or(0.0, |parameter| parameter.value()),
                 Read::Time => at.time,
             };
         }
     }
 
-    /// Appends the choices `expression` turns on at `at` to `found`, evaluating it afresh in
+    /// Appends the choices `prepared` turns on at `at` to `found`, evaluating it afresh in
     /// the workspace of `memory` apart, its tables' inputs unlimited.
-    fn choices(
+    fn choices<R: Real>(
         &self,
-        expression: &Expression,
+        prepared: &PreparedBehavior<R>,
         memory: &mut BehavioralMemory,
         at: &Local<'_>,
         found: &mut Vec<Choice>,
     ) {
         let Some(room) = &mut memory.0 else { return };
-        self.read(at, &mut room.values);
+        self.read(&prepared.parameters, at, &mut room.values);
         room.choosing.forget();
-        expression.evaluate(&room.values, &mut room.choosing, &mut room.gradient);
-        expression.choices(&room.choosing, found);
+        prepared
+            .expression
+            .evaluate(&room.values, &mut room.choosing, &mut room.gradient);
+        prepared.expression.choices(&room.choosing, found);
     }
 
     /// Allocates initial evaluation workspaces and variable buffers for `expression`.
@@ -480,25 +558,25 @@ macro_rules! behavioral_kernel {
     ) => {
         impl Kernel for $kernel {
             const NAME: &'static str = $name;
-            type Parameters<R: Real> = BehavioralParameters;
+            type Parameters<R: Real> = BehavioralParameters<R>;
             type Shape = BehavioralShape;
-            type Prepared<R: Real> = Arc<Expression>;
+            type Prepared<R: Real> = PreparedBehavior<R>;
             type Memory = BehavioralMemory;
 
-            fn interface<R: Real>(parameters: &BehavioralParameters) -> Interface {
+            fn interface<R: Real>(parameters: &BehavioralParameters<R>) -> Interface {
                 parameters.expression.interface($kind.branch())
             }
 
             fn prepare<R: Real>(
-                parameters: &BehavioralParameters,
+                parameters: &BehavioralParameters<R>,
                 _: R,
-            ) -> Result<Arc<Expression>, ParameterError> {
-                Ok(Arc::clone(&parameters.expression.expression))
+            ) -> Result<PreparedBehavior<R>, ParameterError> {
+                PreparedBehavior::new(parameters)
             }
 
             fn layout<R: Real>(
-                parameters: &BehavioralParameters,
-                _: &Arc<Expression>,
+                parameters: &BehavioralParameters<R>,
+                _: &PreparedBehavior<R>,
                 layout: &mut Layout,
             ) -> Result<BehavioralShape, ParameterError> {
                 Ok($kind.shape(&parameters.expression, layout))
@@ -506,32 +584,32 @@ macro_rules! behavioral_kernel {
 
             fn memory<R: Real>(
                 shape: &BehavioralShape,
-                expression: &Arc<Expression>,
+                prepared: &PreparedBehavior<R>,
             ) -> BehavioralMemory {
-                shape.memory(expression)
+                shape.memory(&prepared.expression)
             }
 
             fn evaluate<R: Real>(
                 shape: &BehavioralShape,
-                expression: &Arc<Expression>,
+                prepared: &PreparedBehavior<R>,
                 memory: &mut BehavioralMemory,
                 at: &Local<'_>,
                 stamp: &mut Stamp<'_, R>,
             ) {
-                shape.add(expression, memory, at, stamp);
+                shape.add(prepared, memory, at, stamp);
             }
 
             fn choices<R: Real>(
                 shape: &BehavioralShape,
-                expression: &Arc<Expression>,
+                prepared: &PreparedBehavior<R>,
                 memory: &mut BehavioralMemory,
                 at: &Local<'_>,
                 found: &mut Vec<Choice>,
             ) {
-                shape.choices(expression, memory, at, found);
+                shape.choices(prepared, memory, at, found);
             }
 
-            fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &Arc<Expression>) -> bool {
+            fn varies_in_time<R: Real>(shape: &BehavioralShape, _: &PreparedBehavior<R>) -> bool {
                 shape.reads_time()
             }
         }
@@ -587,9 +665,13 @@ behavioral_kernel! {
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct BehavioralResistorParameters<R: Real = f64> {
     /// Expression defining nominal resistance at `nominal_temperature`, in ohms, as a
-    /// function of sensed terminal voltages, port currents, and simulation time.
+    /// function of sensed terminal voltages, port currents, named parameters, and simulation
+    /// time.
     #[schemars(with = "String")]
     pub expression: Behavior,
+    /// Named numeric parameters read via `p(name)` inside `expression`.
+    #[serde(default)]
+    pub parameters: BTreeMap<String, R>,
     /// Linear temperature coefficient `tc1`, per kelvin; default 0.
     #[serde(default)]
     #[dimension(PER_KELVIN)]
@@ -607,7 +689,7 @@ pub struct BehavioralResistorParameters<R: Real = f64> {
 /// Prepared parameters for [`BehavioralResistor`] at operating temperature.
 #[derive(Debug, Clone)]
 pub struct PreparedBehavioralResistor<R: Real> {
-    expression: Arc<Expression>,
+    behavior: PreparedBehavior<R>,
     factor: R,
     temperature: R,
 }
@@ -668,9 +750,15 @@ impl Kernel for BehavioralResistor {
                 temperatures.actual.value()
             )));
         }
-        let expression = &parameters.expression.expression;
-        if expression.variables().is_empty() {
-            let nominal = expression.value(&[]);
+        let behavior = PreparedBehavior::from_parts(&parameters.expression, &parameters.parameters)?;
+        if behavior
+            .expression
+            .variables()
+            .iter()
+            .all(|variable| matches!(variable, Variable::Parameter(_)))
+        {
+            let values: Vec<f64> = behavior.parameters.iter().map(|value| value.value()).collect();
+            let nominal = behavior.expression.value(&values);
             if !(nominal > 0.0 && nominal.is_finite()) {
                 return Err(ParameterError(format!(
                     "resistance expression evaluates to {nominal:?}, not a positive resistance"
@@ -678,7 +766,7 @@ impl Kernel for BehavioralResistor {
             }
         }
         Ok(PreparedBehavioralResistor {
-            expression: Arc::clone(expression),
+            behavior,
             factor,
             temperature: temperatures.actual,
         })
@@ -703,7 +791,7 @@ impl Kernel for BehavioralResistor {
         shape: &BehavioralResistorShape,
         prepared: &PreparedBehavioralResistor<R>,
     ) -> BehavioralMemory {
-        shape.behavior.memory(&prepared.expression)
+        shape.behavior.memory(&prepared.behavior.expression)
     }
 
     fn evaluate<R: Real>(
@@ -716,7 +804,7 @@ impl Kernel for BehavioralResistor {
         let Some(room) = &mut memory.0 else { return };
         let behavior = &shape.behavior;
         let (raw, raw_derivatives) =
-            behavior.evaluate_expression(&prepared.expression, room, at, stamp);
+            behavior.evaluate_expression(&prepared.behavior, room, at, stamp);
         let voltage: R = shape.pair.across(at, shape.pair.voltage(at));
         if raw <= 0.0 {
             stamp.mark_limited();
@@ -770,17 +858,27 @@ impl Kernel for BehavioralResistor {
     ) {
         let count = shape.behavior.reads.len();
         let mut values = vec![0.0; count];
-        shape.behavior.read(at, &mut values);
-        let resistance = if R::SEEDS > 0 && at.seeds_unknowns() {
-            let mut workspace = prepared.expression.workspace();
+        shape
+            .behavior
+            .read(&prepared.behavior.parameters, at, &mut values);
+        let seeded = R::SEEDS > 0
+            && (at.seeds_unknowns() || !prepared.behavior.parameters.is_empty());
+        let resistance = if seeded {
+            let mut workspace = prepared.behavior.expression.workspace();
             let mut gradient = vec![0.0; count];
             let raw = prepared
+                .behavior
                 .expression
                 .evaluate(&values, &mut workspace, &mut gradient);
             let mut tangent = vec![0.0; count];
             let mut rates = [0.0; crate::Seeds::MAX];
             for slot in 0..R::SEEDS.min(crate::Seeds::MAX) {
-                shape.behavior.read_tangent(at, slot, &mut tangent);
+                shape.behavior.read_tangent(
+                    &prepared.behavior.parameters,
+                    at,
+                    slot,
+                    &mut tangent,
+                );
                 let rate: f64 = gradient
                     .iter()
                     .zip(&tangent)
@@ -792,7 +890,7 @@ impl Kernel for BehavioralResistor {
             }
             R::seeded(raw, &rates)
         } else {
-            R::constant(prepared.expression.value(&values))
+            R::constant(prepared.behavior.expression.value(&values))
         };
         let effective = resistance * prepared.factor;
         if effective.value() > 0.0 {
@@ -817,7 +915,7 @@ impl Kernel for BehavioralResistor {
     ) {
         shape
             .behavior
-            .choices(&prepared.expression, memory, at, found);
+            .choices(&prepared.behavior, memory, at, found);
     }
 
     fn varies_in_time<R: Real>(
@@ -1027,6 +1125,41 @@ mod tests {
             error
                 .0
                 .ends_with("but `current` names the source's own current")
+        );
+        let missing = Bench::try_new::<BehavioralCurrentSource>(&parameters("p(rbody) * v(a)"))
+            .expect_err("a missing parameter");
+        assert!(
+            missing
+                .0
+                .contains("reads `p(rbody)`, which is not in `parameters`")
+        );
+    }
+
+    #[test]
+    fn named_parameters_evaluate_and_differentiate() {
+        let model = crate::Differentiable::<BehavioralCurrentSource>::new();
+        let raw = concat!(
+            r#"{"expression": "v(positive, negative) / "#,
+            r#"(p(rbody) * (1 + p(vc1) * abs(v(positive, negative))))","#,
+            r#""parameters": {"rbody": 1000.0, "vc1": 0.05}}"#,
+        );
+        let mut bench = Bench::new::<BehavioralCurrentSource>(raw);
+        let evaluation = bench.evaluate(&[2.0, 0.0]);
+        let expected_current = 2.0 / (1000.0 * (1.0 + 0.05 * 2.0));
+        assert_close(&evaluation.residual, &[expected_current, -expected_current]);
+        crate::testing::assert_model_parameter_gradients_match(&model, raw, &[2.0, 0.0], None);
+
+        let capacitor = crate::Differentiable::<BehavioralCapacitor>::new();
+        let charge_raw = concat!(
+            r#"{"expression": "p(cmin) * v(positive, negative) + "#,
+            r#"0.5 * (p(cmax) - p(cmin)) * tanh(v(positive, negative))","#,
+            r#""parameters": {"cmin": 1e-13, "cmax": 5e-13}}"#,
+        );
+        crate::testing::assert_model_parameter_gradients_match(
+            &capacitor,
+            charge_raw,
+            &[0.8, 0.0],
+            None,
         );
     }
 

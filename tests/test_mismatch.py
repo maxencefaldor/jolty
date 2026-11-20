@@ -54,6 +54,7 @@ from jolty.units import (
     uA,
     um,
 )
+from jolty.variation import sample, toleranced
 
 STANDARD_ERRORS: Final = 5
 """Number of Monte Carlo standard errors allowed between standard deviations."""
@@ -735,3 +736,224 @@ def test_sky130s_generic_poly_resistor_reads_tref_and_draws_mismatch(
         .current("V1")
     )
     assert drawn_current != nominal_current
+
+
+@pytest.mark.parametrize(
+    ("bench", "output"),
+    [(bipolar_pair, "out"), (bipolar_mirror, "VOUT:current")],
+    ids=["pair-offset", "mirror-output"],
+)
+def test_native_monte_carlo_matches_sg13g2_drawn_and_mismatch(
+    hbt: Library,
+    bench: Callable[[Library, int | None], Component],
+    output: str,
+) -> None:
+    """Verifies native Monte Carlo matches SG13G2 `Library.drawn` and `Mismatch`.
+
+    Operating-point outputs match `Library.drawn` sample-by-sample within `rel=1e-10,
+    abs=1e-12` (Newton DC reltol `1e-6` convergence and floating-point expression
+    evaluation order), and native batch standard deviation over `SAMPLES` draws agrees
+    with first-order `Mismatch` within five standard errors.
+    """
+    given = [
+        variable
+        for path in ("Q1", "Q2")
+        for variable in hbt.random_variables("npn13G2", path, mm_ok=1)
+    ]
+    nominal = bench(hbt, None)
+    simulation = Simulation(nominal)
+    first_order = simulation.run(Mismatch([output], random_variables=given))
+    column = results.column(first_order.unknowns, output)
+
+    checked = 16
+    batch = simulation.batch(
+        {"op": OperatingPoint()}, MonteCarlo(checked, seed=5), traces=[output]
+    )
+    assert not batch.failed.any()
+    native = batch.traces[0].values_of(output)[:, 0]
+    for index in range(checked):
+        expected = Simulation(bench(hbt, index)).run(OperatingPoint()).values[column]
+        assert native[index] == pytest.approx(expected, rel=1e-10, abs=1e-12)
+
+    large = simulation.batch(
+        {"op": OperatingPoint()}, MonteCarlo(SAMPLES, seed=5), traces=[output]
+    )
+    assert not large.failed.any()
+    agrees(
+        float(first_order.standard_deviation(output)),
+        large.traces[0].values_of(output)[:, 0],
+    )
+
+
+def test_native_monte_carlo_matches_sky130_mosfet_drawn_and_mismatch(
+    mim: Library,
+) -> None:
+    """Verifies native Monte Carlo matches SKY130 BSIM4 `Library.drawn` and `Mismatch`.
+
+    Sample-by-sample agreement uses `rel=1e-10, abs=1e-12` for Newton convergence and
+    floating-point evaluation order; batch spread agrees with first-order `Mismatch`
+    within five standard errors.
+    """
+    given = [
+        variable
+        for path in ("M1", "M2")
+        for variable in mim.random_variables(NFET, path, w=1.0, l=0.15)
+    ]
+    simulation = Simulation(sky130_nfet_pair(mim, None))
+    first_order = simulation.run(Mismatch(["out"], random_variables=given))
+    column = results.column(first_order.unknowns, "out")
+
+    checked = 12
+    batch = simulation.batch(
+        {"op": OperatingPoint()}, MonteCarlo(checked, seed=11), traces=["out"]
+    )
+    assert not batch.failed.any()
+    native = batch.traces[0].values_of("out")[:, 0]
+    for index in range(checked):
+        expected = (
+            Simulation(sky130_nfet_pair(mim, index))
+            .run(OperatingPoint())
+            .values[column]
+        )
+        assert native[index] == pytest.approx(expected, rel=1e-10, abs=1e-12)
+
+    large = simulation.batch(
+        {"op": OperatingPoint()}, MonteCarlo(KIT_SAMPLES, seed=11), traces=["out"]
+    )
+    assert not large.failed.any()
+    agrees(
+        float(first_order.standard_deviation("out")),
+        large.traces[0].values_of("out")[:, 0],
+    )
+
+
+def test_native_monte_carlo_matches_sky130_passives_drawn_and_mismatch(
+    mim: Library,
+) -> None:
+    """Verifies native Monte Carlo on SKY130 MIM cap, nested poly, and generic poly.
+
+    Each device matches `Library.drawn` sample-by-sample within `rel=1e-10, abs=1e-12`
+    (Newton / linear-solve rounding and floating-point expression order), and nested
+    `res_xhigh_po_0p69` exposes behavioral resistor mismatch variables agreeing with
+    native Monte Carlo spread within five standard errors.
+    """
+    ac = Ac("V1", decade(10 * MHz, 1 * GHz, 2))
+    mim_batch = Simulation(mim_low_pass(mim, None)).batch(
+        {"ac": ac}, MonteCarlo(10, seed=9), traces=["out"]
+    )
+    assert not mim_batch.failed.any()
+    mim_phasors = mim_batch.traces[0].values_of("out")
+    for index in range(10):
+        expected = Simulation(mim_low_pass(mim, index)).run(ac).voltage("out")
+        assert np.abs(mim_phasors[index]) == pytest.approx(
+            np.abs(expected), rel=1e-10, abs=1e-12
+        )
+        assert np.angle(mim_phasors[index]) == pytest.approx(
+            np.angle(expected), rel=1e-10, abs=1e-12
+        )
+
+    xhigh_variables = mim.random_variables(XHIGH_PO, "R1")
+    assert {variable.name for variable in xhigh_variables} == {
+        "res_match#0",
+        "rend#0",
+    }
+    xhigh_simulation = Simulation(sky130_xhigh_po_bench(mim.component(XHIGH_PO)))
+    xhigh_mismatch = xhigh_simulation.run(
+        Mismatch(["V1:current"], random_variables=xhigh_variables)
+    )
+    xhigh_batch = xhigh_simulation.batch(
+        {"op": OperatingPoint()}, MonteCarlo(10, seed=17), traces=["V1:current"]
+    )
+    assert not xhigh_batch.failed.any()
+    xhigh_currents = xhigh_batch.traces[0].values_of("V1:current")[:, 0]
+    for index in range(10):
+        expected_current = (
+            Simulation(
+                sky130_xhigh_po_bench(mim.drawn(XHIGH_PO, Sample(17, index), "R1"))
+            )
+            .run(OperatingPoint())
+            .current("V1")
+        )
+        assert xhigh_currents[index] == pytest.approx(
+            expected_current, rel=1e-10, abs=1e-12
+        )
+    xhigh_large = xhigh_simulation.batch(
+        {"op": OperatingPoint()},
+        MonteCarlo(KIT_SAMPLES, seed=17),
+        traces=["V1:current"],
+    )
+    assert not xhigh_large.failed.any()
+    agrees(
+        float(xhigh_mismatch.standard_deviation("V1:current")),
+        xhigh_large.traces[0].values_of("V1:current")[:, 0],
+    )
+
+    generic_simulation = Simulation(
+        sky130_generic_po_bench(mim.component(GENERIC_PO, w=1, l=10))
+    )
+    generic_batch = generic_simulation.batch(
+        {"op": OperatingPoint()}, MonteCarlo(10, seed=19), traces=["V1:current"]
+    )
+    assert not generic_batch.failed.any()
+    generic_currents = generic_batch.traces[0].values_of("V1:current")[:, 0]
+    for index in range(10):
+        expected_current = (
+            Simulation(
+                sky130_generic_po_bench(
+                    mim.drawn(GENERIC_PO, Sample(19, index), "R1", w=1, l=10)
+                )
+            )
+            .run(OperatingPoint())
+            .current("V1")
+        )
+        assert generic_currents[index] == pytest.approx(
+            expected_current, rel=1e-10, abs=1e-12
+        )
+
+
+def test_native_monte_carlo_combines_sky130_and_toleranced_resistor(
+    mim: Library,
+) -> None:
+    """Verifies a circuit mixing SKY130 BSIM4 and a toleranced resistor varies both.
+
+    Operating-point drain voltage matches `Library.drawn` plus standalone tolerance
+    draws sample-by-sample within `rel=1e-10, abs=1e-12` (Newton convergence rounding).
+    """
+
+    def mixed_bench(drawn_sample: Sample | None = None) -> Component:
+        builder = Builder("mixed_sky130_bench")
+        ground = builder.port("ground", Role.GROUND)
+        supply = builder.place(devices.voltage_source(1.8 * V), name="VDD")
+        gate = builder.place(devices.voltage_source(1.0 * V), name="VG")
+        load = builder.place(devices.resistor(5 * kohm, tolerance=0.05), name="R1")
+        mosfet_part = (
+            mim.component(NFET, w=1.0, l=0.15)
+            if drawn_sample is None
+            else mim.drawn(NFET, drawn_sample, "M1", w=1.0, l=0.15)
+        )
+        mosfet = builder.place(mosfet_part, name="M1")
+        builder.connect(supply.positive, load.a, name="vdd")
+        builder.connect(load.b, mosfet.d, name="drain")
+        builder.connect(gate.positive, mosfet.g, name="gate")
+        builder.connect(mosfet.s, mosfet.b, supply.negative, gate.negative, ground)
+        return builder.finish()
+
+    nominal_built = circuit(mixed_bench())
+    toleranced_load = toleranced(nominal_built)
+    seed, count = 29, 12
+    batch = Simulation(nominal_built).batch(
+        {"op": OperatingPoint()}, MonteCarlo(count, seed=seed), traces=["drain"]
+    )
+    assert not batch.failed.any()
+    assert "R1 resistance" in batch.parameters
+    assert any(label.startswith("M1/") for label in batch.parameters)
+    assert np.std(batch.parameter("R1 resistance")) > 0
+    drain_voltages = batch.traces[0].values_of("drain")[:, 0]
+    for index in range(count):
+        drawn_load = sample(toleranced_load, seed, index)
+        expected = (
+            Simulation(mixed_bench(Sample(seed, index)), overrides=drawn_load)
+            .run(OperatingPoint())
+            .voltage("drain")
+        )
+        assert drain_voltages[index] == pytest.approx(expected, rel=1e-10, abs=1e-12)

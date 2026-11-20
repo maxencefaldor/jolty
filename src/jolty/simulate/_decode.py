@@ -338,6 +338,21 @@ def toleranced_payload(
     )
 
 
+def statistical_payload(
+    built: ir.Circuit, substituted: Collection[str]
+) -> list[JsonValue]:
+    """Extracts component statistical model payloads, skipping substituted subtrees.
+
+    Args:
+        built: Circuit whose component statistical models are collected.
+        substituted: Component instance paths replaced by substitute device models.
+
+    Returns:
+        JSON-serializable payloads describing active component statistical models.
+    """
+    return variation.statistical_payload(built, substituted)
+
+
 def encode_analysis(
     built: ir.Circuit, substituted: Collection[str], analysis: Analysis
 ) -> JsonValue:

@@ -172,8 +172,23 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
         &[1.0, 0.0, 0.7, 0.3, 0.0, 0.0, 2e-3],
     ),
     (
+        "behavioral_current_source",
+        concat!(
+            r#"{"expression": "v(positive, negative) / "#,
+            r#"(p(rbody) * (1 + p(vc2) * v(positive, negative) ^ 2))","#,
+            r#" "parameters": {"rbody": 1e3, "vc2": 0.05}}"#,
+        ),
+        &[1.0, 0.0],
+    ),
+    (
         "behavioral_capacitor",
         r#"{"expression": "1e-12 * v(positive, negative) + 1e-13 * tanh(v(a, b))"}"#,
+        &[1.0, 0.0, 0.7, 0.3],
+    ),
+    (
+        "behavioral_capacitor",
+        r#"{"expression": "p(c0) * v(positive, negative) + p(c1) * tanh(v(a, b))",
+                "parameters": {"c0": 1e-12, "c1": 1e-13}}"#,
         &[1.0, 0.0, 0.7, 0.3],
     ),
     (
@@ -185,7 +200,8 @@ pub(crate) const CASES: &[(&str, &str, &[f64])] = &[
     ),
     (
         "behavioral_resistor",
-        r#"{"expression": "1e3 * (1 + 0.2 * tanh(v(positive, negative)))",
+        r#"{"expression": "p(rbody) * (1 + p(vc1) * tanh(v(positive, negative)))",
+                "parameters": {"rbody": 1e3, "vc1": 0.2},
                 "temperature_coefficient": 3e-3, "quadratic_temperature_coefficient": 1e-5,
                 "thermal": true}"#,
         &[1.0, 0.0, 5.0],

@@ -783,8 +783,16 @@ class Simulation:
                         _decode.toleranced_payload(self.circuit, self._substituted),
                         allow_nan=False,
                     )
+                    statistical_entries = _decode.statistical_payload(
+                        self.circuit, self._substituted
+                    )
+                    statistical = (
+                        json.dumps(statistical_entries, allow_nan=False)
+                        if statistical_entries
+                        else None
+                    )
                     return _core.Variants.monte_carlo(
-                        elaborated, toleranced, seed, samples
+                        elaborated, toleranced, seed, samples, statistical
                     )
                 case Grid(axes=axes, warm=warm):
                     stepped = [

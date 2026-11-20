@@ -81,6 +81,11 @@ from jolty.spice._pss import (
     PeriodicSteadyStateCard,
     parse_periodic_steady_state,
 )
+from jolty.spice._statistics import (
+    GlobalSymbolic,
+    StatisticalCompiler,
+    build_global_symbolic,
+)
 from jolty.spice._survey import (
     BIN_SUFFIX,
     MULTIPLIED,
@@ -99,6 +104,7 @@ from jolty.spice._translate import (
 from jolty.spice.expressions import (
     Expression,
     Function,
+    Name,
     UndefinedError,
     evaluate,
     inlined,
@@ -209,6 +215,7 @@ class Library:
         self._generation = 0
         self._parameters: list[tuple[str, Expression]] = []
         self._global_plan: GlobalPlan | None = None
+        self._global_symbolic: tuple[GlobalPlan, GlobalSymbolic] | None = None
         self._scopes: OrderedDict[tuple[Sample, float], dict[str, float]] = (
             OrderedDict()
         )
@@ -371,6 +378,7 @@ class Library:
     def _clear_caches_locked(self) -> None:
         """Clears all cached plans, scopes and builds under `_cache_lock`."""
         self._global_plan = None
+        self._global_symbolic = None
         self._scopes.clear()
         self._clear_built_locked()
 
@@ -896,6 +904,19 @@ class Library:
                 return self._global_plan
             return plan
 
+    def _global_symbolic_plan(self) -> GlobalSymbolic:
+        """Returns the cached `GlobalSymbolic` compiled from `self._plan()`."""
+        plan = self._plan()
+        with self._cache_lock:
+            cached = self._global_symbolic
+            if cached is not None and cached[0] is plan:
+                return cached[1]
+        symbolic = build_global_symbolic(plan)
+        with self._cache_lock:
+            if self._global_plan is plan:
+                self._global_symbolic = (plan, symbolic)
+        return symbolic
+
     def _scope(self, sample: Sample | None) -> Mapping[str, float]:
         """Returns the cached global parameter scope for `(sample, self.temperature)`.
 
@@ -933,31 +954,29 @@ class Library:
         """
         return evaluate_stochastic(self._plan(), drawing)
 
-    def _resolve_defaults(  # noqa: PLR0913 - subcircuit defaults resolution context
-        self,
-        subcircuit: Subcircuit,
-        local: dict[str, float],
-        given: Mapping[str, float],
-        drawing: Drawing,
-        *,
-        surveying: bool,
-        temperature_dependent: frozenset[str],
-    ) -> bool:
-        """Resolves omitted defaults into `local`; returns whether temperature read."""
-        defaults = {
-            parameter: default
-            for parameter, default in subcircuit.defaults.items()
-            if parameter not in given
-        }
-        if not defaults:
-            return False
+    def _scoped_functions(self, subcircuit: Subcircuit) -> dict[str, Function]:
+        """Returns global and subcircuit-local user functions for `subcircuit`."""
         with self._cache_lock:
             library_functions = dict(self.functions)
-        scoped_functions = (
+        return (
             {**library_functions, **subcircuit.functions}
             if subcircuit.functions
             else library_functions
         )
+
+    def _resolve_defaults(  # noqa: PLR0913 - subcircuit defaults resolution context
+        self,
+        defaults: Mapping[str, Expression],
+        local: dict[str, float],
+        drawing: Drawing,
+        scoped_functions: Mapping[str, Function],
+        *,
+        surveying: bool,
+        temperature_dependent: frozenset[str],
+    ) -> bool:
+        """Resolves omitted `defaults` into `local`; returns whether temperature read."""
+        if not defaults:
+            return False
         if drawing.sample is None and not surveying and temperature_dependent:
             tracked = TrackedScope(local, temperature_dependent)
             resolve_into(
@@ -977,7 +996,119 @@ class Library:
         )
         return False
 
-    def _build(  # noqa: PLR0913 - build context, temperature snapshot and survey list
+    def _build_hoisted(  # noqa: PLR0913 - hoisted child translation context
+        self,
+        subcircuit: Subcircuit,
+        scopes: tuple[Mapping[str, float], dict[str, float]],
+        name: str,
+        *,
+        drawing: Drawing,
+        multiplier: float,
+        multiplier_symbolic: Expression | None,
+        chain: tuple[str, ...],
+        given: Mapping[str, float],
+        symbolic_overrides: Mapping[str, Expression],
+        defaults: Mapping[str, Expression],
+        scoped_functions: Mapping[str, Function],
+        parent_statistics: StatisticalCompiler,
+        hoist_instance: str,
+        temperature: float,
+        temperature_dependent: frozenset[str],
+    ) -> Built:
+        """Translates a hoisted child placement directly into `parent_statistics`."""
+        tag = parent_statistics.hoisted_tag(symbolic_overrides, multiplier_symbolic)
+        hoisted_name = f"{name}~{tag}"
+        saved = parent_statistics.child_state(hoist_instance, symbolic_overrides)
+        try:
+            parent_statistics.set_given(given, symbolic_overrides)
+            if multiplier_symbolic is not None:
+                parent_statistics.bind_symbol("m", multiplier_symbolic)
+            parent_statistics.resolve_into(defaults, scopes[1], scoped_functions)
+            options = TranslationOptions(
+                drawing=drawing,
+                elements=_ELEMENTS,
+                multiplier=multiplier,
+                parsed_models=self._parsed_models,
+                lock=self._cache_lock,
+                instantiating=chain,
+                temperature=temperature,
+                temperature_dependent=temperature_dependent,
+                statistics=parent_statistics,
+                multiplier_symbolic=multiplier_symbolic,
+                hoisted=True,
+            )
+            return Translation(self, subcircuit, scopes, options).translate(
+                hoisted_name
+            )
+        finally:
+            parent_statistics.restore_state(saved)
+
+    def _build_probed(  # noqa: PLR0913 - probed child translation context
+        self,
+        subcircuit: Subcircuit,
+        scopes: tuple[Mapping[str, float], dict[str, float]],
+        name: str,
+        *,
+        drawing: Drawing,
+        multiplier: float,
+        chain: tuple[str, ...],
+        given: Mapping[str, float],
+        probe_overrides: set[str],
+        probe_multiplier_stochastic: bool,
+        defaults: Mapping[str, Expression],
+        scoped_functions: Mapping[str, Function],
+        temperature: float,
+        temperature_dependent: frozenset[str],
+    ) -> Built:
+        """Translates a subcircuit under `Probe`, extracting behavioral parameters."""
+        probe_compiler = StatisticalCompiler(self._global_symbolic_plan())
+        probe_compiler.set_given(given)
+        for parameter_key in sorted(probe_overrides):
+            probe_compiler.scope_symbols[parameter_key] = Name(
+                probe_compiler.allocate_external_step()
+            )
+        probe_multiplier_expression: Expression | None = (
+            Name(probe_compiler.allocate_external_step())
+            if probe_multiplier_stochastic
+            else None
+        )
+        if probe_multiplier_expression is not None:
+            probe_compiler.scope_symbols["m"] = probe_multiplier_expression
+        probe_compiler.resolve_into(defaults, scopes[1], scoped_functions)
+        options = TranslationOptions(
+            drawing=drawing,
+            elements=_ELEMENTS,
+            multiplier=multiplier,
+            parsed_models=self._parsed_models,
+            lock=self._cache_lock,
+            instantiating=chain,
+            temperature=temperature,
+            temperature_dependent=temperature_dependent,
+            probe_compiler=probe_compiler,
+            multiplier_symbolic=probe_multiplier_expression,
+        )
+        return Translation(self, subcircuit, scopes, options).translate(name)
+
+    def _filter_unknown_overrides(
+        self,
+        subcircuit: Subcircuit,
+        given: Mapping[str, float],
+        drawing: Drawing,
+        uses: list[Use] | None,
+    ) -> dict[str, float]:
+        """Rejects unknown parameter overrides, or filters them during a survey."""
+        unknown = sorted(set(given) - set(subcircuit.defaults))
+        if not unknown:
+            return dict(given)
+        message = f"`{subcircuit.name}` has no parameter `{unknown[0]}`"
+        error = subcircuit.statement.fail(message)
+        if uses is None:
+            raise error
+        # A survey states the placement's problem and reads on within it.
+        uses.append(Use(drawing.path, "", str(error)))
+        return {key: value for key, value in given.items() if key not in unknown}
+
+    def _build(  # noqa: PLR0913 - build context, survey list, and statistical hoisting
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
@@ -988,6 +1119,10 @@ class Library:
         uses: list[Use] | None = None,
         temperature: float | None = None,
         temperature_dependent: frozenset[str] | None = None,
+        given_symbolic: Mapping[str, Expression] | None = None,
+        parent_statistics: StatisticalCompiler | None = None,
+        hoist_instance: str | None = None,
+        given_probe_stochastic: frozenset[str] = frozenset(),
     ) -> Built:
         """Builds `subcircuit` with `given` parameter overrides under `scope`.
 
@@ -999,33 +1134,42 @@ class Library:
         if uses is not None and drawing.path:
             # A survey states each placement within, and what it gives.
             uses.append(Use(drawing.path, "", placed=(subcircuit.name, dict(given))))
+        had_multiplier_override = "m" in given and "m" not in subcircuit.defaults
         multiplier, given = extract_multiplier(subcircuit, given)
-        unknown = sorted(set(given) - set(subcircuit.defaults))
-        if unknown:
-            message = f"`{subcircuit.name}` has no parameter `{unknown[0]}`"
-            error = subcircuit.statement.fail(message)
-            if uses is None:
-                raise error
-            # A survey states the placement's problem and reads on within it.
-            uses.append(Use(drawing.path, "", str(error)))
-            given = {
-                key_name: value
-                for key_name, value in given.items()
-                if key_name not in unknown
-            }
+        symbolic_overrides = {} if given_symbolic is None else dict(given_symbolic)
+        multiplier_symbolic: Expression | None = (
+            symbolic_overrides.pop("m", None) if had_multiplier_override else None
+        )
+        probe_overrides = set(given_probe_stochastic)
+        probe_multiplier_stochastic = had_multiplier_override and "m" in probe_overrides
+        if had_multiplier_override:
+            probe_overrides.discard("m")
+        given = self._filter_unknown_overrides(subcircuit, given, drawing, uses)
+        symbolic_overrides = {
+            name: expression
+            for name, expression in symbolic_overrides.items()
+            if name in given
+        }
+        probe_overrides &= set(given)
+        defaults = {
+            parameter: default
+            for parameter, default in subcircuit.defaults.items()
+            if parameter not in given
+        }
         resolved_temperature = self.temperature if temperature is None else temperature
         resolved_temperature_dependent = (
             self._plan().temperature_dependent
             if temperature_dependent is None
             else temperature_dependent
         )
+        scoped_functions = self._scoped_functions(subcircuit)
         local = dict(scope)
         local.update(given)
         defaults_used_temperature = self._resolve_defaults(
-            subcircuit,
+            defaults,
             local,
-            given,
             drawing,
+            scoped_functions,
             surveying=uses is not None,
             temperature_dependent=resolved_temperature_dependent,
         )
@@ -1038,16 +1182,66 @@ class Library:
             # ngspice gives the subcircuit a parameter `m` that its elements read
             # (`inp_fix_subckt_multiplier` in `inpcom.c`, lines 4216 to 4230).
             local["m"] = values["m"] = multiplier
+        elif multiplier_symbolic is not None:
+            local["m"] = multiplier
         listed = ",".join(f"{name}={value!r}" for name, value in values.items())
         name = f"{subcircuit.name}[{listed}]" if values else subcircuit.name
         name = drawing.named(name)
+        chain = (*instantiating, key)
+        if (
+            drawing.sample is None
+            and uses is None
+            and parent_statistics is not None
+            and hoist_instance is not None
+        ):
+            built = self._build_hoisted(
+                subcircuit,
+                (scope, local),
+                name,
+                drawing=drawing,
+                multiplier=multiplier,
+                multiplier_symbolic=multiplier_symbolic,
+                chain=chain,
+                given=given,
+                symbolic_overrides=symbolic_overrides,
+                defaults=defaults,
+                scoped_functions=scoped_functions,
+                parent_statistics=parent_statistics,
+                hoist_instance=hoist_instance,
+                temperature=resolved_temperature,
+                temperature_dependent=resolved_temperature_dependent,
+            )
+            if defaults_used_temperature and not built.temperature_dependent:
+                return Built(
+                    built.component,
+                    built.nets,
+                    built.initial,
+                    temperature_dependent=True,
+                )
+            return built
+        if isinstance(drawing.sample, Probe):
+            return self._build_probed(
+                subcircuit,
+                (scope, local),
+                name,
+                drawing=drawing,
+                multiplier=multiplier,
+                chain=chain,
+                given=given,
+                probe_overrides=probe_overrides,
+                probe_multiplier_stochastic=probe_multiplier_stochastic,
+                defaults=defaults,
+                scoped_functions=scoped_functions,
+                temperature=resolved_temperature,
+                temperature_dependent=resolved_temperature_dependent,
+            )
         options = TranslationOptions(
             drawing=drawing,
             elements=_ELEMENTS,
             multiplier=multiplier,
             parsed_models=self._parsed_models,
             lock=self._cache_lock,
-            instantiating=(*instantiating, key),
+            instantiating=chain,
             uses=uses,
             temperature=resolved_temperature,
             temperature_dependent=resolved_temperature_dependent,
@@ -1064,6 +1258,9 @@ class Library:
             name,
             options,
             body_temperature_keys=body_temperature_keys,
+            given=given,
+            defaults=defaults,
+            scoped_functions=scoped_functions,
         )
         if defaults_used_temperature and not built.temperature_dependent:
             return Built(
@@ -1074,7 +1271,7 @@ class Library:
             )
         return built
 
-    def _translate_cached(  # noqa: PLR0913 - subcircuit build context and tracking keys
+    def _translate_cached(  # noqa: PLR0913 - nominal build context and compiler inputs
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
@@ -1083,6 +1280,9 @@ class Library:
         options: TranslationOptions,
         *,
         body_temperature_keys: frozenset[str],
+        given: Mapping[str, float],
+        defaults: Mapping[str, Expression],
+        scoped_functions: Mapping[str, Function],
     ) -> Built:
         """Returns the cached nominal build of `subcircuit`, translating on a miss."""
         temperature_key = (name, options.temperature)
@@ -1100,14 +1300,29 @@ class Library:
             if cached is not None:
                 self._built_by_temperature.move_to_end(temperature_key)
                 return cached
+        compiler = StatisticalCompiler(self._global_symbolic_plan())
+        compiler.set_given(given)
+        compiler.resolve_into(defaults, local, scoped_functions)
+        compiled_options = TranslationOptions(
+            drawing=options.drawing,
+            elements=options.elements,
+            multiplier=options.multiplier,
+            parsed_models=options.parsed_models,
+            lock=options.lock,
+            instantiating=options.instantiating,
+            uses=options.uses,
+            temperature=options.temperature,
+            temperature_dependent=options.temperature_dependent,
+            statistics=compiler,
+        )
         body_scope: MutableMapping[str, float] = (
             TrackedScope(local, body_temperature_keys)
             if body_temperature_keys
             else local
         )
-        built = Translation(self, subcircuit, (scope, body_scope), options).translate(
-            name
-        )
+        built = Translation(
+            self, subcircuit, (scope, body_scope), compiled_options
+        ).translate(name)
         with self._cache_lock:
             if (
                 self._generation == generation
@@ -1317,7 +1532,7 @@ class Library:
             subcircuit, scope, given, drawing, instantiating, uses=uses
         ).component
 
-    def place_built(  # noqa: PLR0913 - subcircuit placement state and optional survey list
+    def place_built(  # noqa: PLR0913 - subcircuit placement state and statistical hoisting
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
@@ -1328,6 +1543,10 @@ class Library:
         uses: list[Use] | None = None,
         temperature: float | None = None,
         temperature_dependent: frozenset[str] | None = None,
+        given_symbolic: Mapping[str, Expression] | None = None,
+        parent_statistics: StatisticalCompiler | None = None,
+        hoist_instance: str | None = None,
+        given_probe_stochastic: frozenset[str] = frozenset(),
     ) -> Built:
         """Builds a child `Built` placement (component, nets, and initial state).
 
@@ -1341,6 +1560,10 @@ class Library:
             temperature: Optional library temperature snapshot in kelvins.
             temperature_dependent: Optional set of global parameter names depending on
                 library temperature.
+            given_symbolic: Optional symbolic expressions for stochastic `given` args.
+            parent_statistics: Enclosing `StatisticalCompiler` when hoisting this child.
+            hoist_instance: Local instance name under `parent_statistics` when hoisting.
+            given_probe_stochastic: Names in `given` that vary under `Probe`.
 
         Returns:
             Full `Built` record bundling the component, net names, and initial state.
@@ -1354,6 +1577,10 @@ class Library:
             uses=uses,
             temperature=temperature,
             temperature_dependent=temperature_dependent,
+            given_symbolic=given_symbolic,
+            parent_statistics=parent_statistics,
+            hoist_instance=hoist_instance,
+            given_probe_stochastic=given_probe_stochastic,
         )
 
     @classmethod

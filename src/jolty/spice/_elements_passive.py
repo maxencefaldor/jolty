@@ -12,10 +12,14 @@ from jolty.spice._initial import DeviceVoltage
 from jolty.spice._params import (
     NO_FUNCTIONS,
     check_keywords,
-    single_keyword,
     split_keywords,
 )
 from jolty.spice._preprocess import letter
+from jolty.spice._statistics import (
+    record_behavioral_resistor_targets,
+    record_passive_targets,
+    single_keyword_symbolic,
+)
 from jolty.spice._survey import ELEMENT_KINDS
 from jolty.spice._translate import Coupling, ElementTranslator, Translation
 from jolty.spice.expressions import (
@@ -24,6 +28,7 @@ from jolty.spice.expressions import (
     Draw,
     Expression,
     Function,
+    Name,
     Number,
     Unary,
     Voltage,
@@ -85,6 +90,91 @@ def _passive_value_words(
     values.extend(assigned[element_letter])
 
 
+def _read_single_keywords(
+    translation: Translation,
+    statement: Statement,
+    assigned: Mapping[str, list[str]],
+    keys: frozenset[str],
+) -> tuple[dict[str, float], dict[str, Expression]]:
+    """Evaluates single-valued keywords in `keys` returning `(values, symbolic)`."""
+    values: dict[str, float] = {}
+    symbolic: dict[str, Expression] = {}
+    for name, words in assigned.items():
+        if name in keys:
+            resolved_value, expression = single_keyword_symbolic(
+                translation.value_symbolic, statement, name, words
+            )
+            values[name] = resolved_value
+            if expression is not None:
+                symbolic[name] = expression
+    return values, symbolic
+
+
+def _read_initial_condition(
+    translation: Translation,
+    statement: Statement,
+    assigned: Mapping[str, list[str]],
+) -> float | None:
+    """Evaluates optional passive `IC=` value and rejects stochastic initial state."""
+    if "ic" not in assigned:
+        return None
+    initial_value, initial_symbolic = single_keyword_symbolic(
+        translation.value_symbolic, statement, "ic", assigned["ic"]
+    )
+    if initial_symbolic is not None:
+        message = (
+            "statistical variation on `IC` changes initial state outside "
+            "Monte Carlo device parameters"
+        )
+        raise statement.fail(message)
+    return initial_value
+
+
+def _passive_keywords(
+    model: str, element_letter: str
+) -> tuple[frozenset[str], frozenset[str], frozenset[str], frozenset[str]]:
+    """Returns `(drifts, allowed, read, own_keys)` keyword sets for passive `model`."""
+    curved: frozenset[str] = (
+        frozenset(models.PASSIVE_CURVATURE) if model != "inductor" else frozenset()
+    )
+    drifts: frozenset[str] = (
+        frozenset(models.PASSIVE_DRIFT)
+        if model == "resistor"
+        else frozenset({"tc1", "tc2"})
+    ) | curved
+    noisy: frozenset[str] = (
+        frozenset({"kf", "af"}) if model == "resistor" else frozenset()
+    )
+    sized: frozenset[str] = (
+        frozenset({"w", "l", "scale"}) if model != "inductor" else frozenset()
+    )
+    stored: frozenset[str] = frozenset({"q"}) if model == "capacitor" else frozenset()
+    initial: frozenset[str] = (
+        frozenset({"ic"}) if model in {"capacitor", "inductor"} else frozenset()
+    )
+    allowed: frozenset[str] = frozenset(
+        {
+            element_letter,
+            "m",
+            "tc",
+            "temp",
+            "dtemp",
+            *(("tnom",) if model == "resistor" else ()),
+            *drifts,
+            *sized,
+            *stored,
+            *initial,
+        }
+    )
+    nominal_keys: frozenset[str] = (
+        models.NOMINAL_TEMPERATURES_WITH_TREF
+        if model == "resistor"
+        else models.NOMINAL_TEMPERATURES
+    )
+    read: frozenset[str] = nominal_keys | models.OWN_TEMPERATURES | drifts | noisy
+    return drifts, allowed, read, frozenset({"m", *sized})
+
+
 def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
     """Builds a translator for passive elements (`resistor`, `capacitor`, `inductor`).
 
@@ -100,31 +190,9 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
     flicker noise as ``m · KF · (|I| / m)^AF`` (``resnoise.c``, line 109).
     """
     element_letter = kind[0]
-    curved = frozenset(models.PASSIVE_CURVATURE) if model != "inductor" else frozenset()
-    drifts = (
-        frozenset(models.PASSIVE_DRIFT)
-        if model == "resistor"
-        else frozenset({"tc1", "tc2"})
-    )
-    drifts |= curved
-    noisy = frozenset({"kf", "af"}) if model == "resistor" else frozenset()
-    sized = frozenset({"w", "l", "scale"}) if model != "inductor" else frozenset()
-    stored = frozenset({"q"}) if model == "capacitor" else frozenset()
-    initial = frozenset({"ic"}) if model in {"capacitor", "inductor"} else frozenset()
-    allowed = frozenset(
-        {
-            element_letter,
-            "m",
-            "tc",
-            "temp",
-            "dtemp",
-            *(("tnom",) if model == "resistor" else ()),
-            *drifts,
-            *sized,
-            *stored,
-            *initial,
-        }
-    )
+    drifts, allowed, read, own_keys = _passive_keywords(model, element_letter)
+    temperature_keys = frozenset({"temp", "dtemp"})
+    nominal_keys = frozenset({"tnom"}) if model == "resistor" else frozenset()
 
     def translated(translation: Translation, statement: Statement) -> None:
         positional, assigned = split_keywords(tokens(statement.text))
@@ -137,11 +205,7 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
             translation, rest, {kind, element_letter} & _CARDS
         )
         _passive_value_words(statement, element_letter, values, assigned)
-        initial_value = (
-            single_keyword(translation.value, statement, "ic", assigned["ic"])
-            if "ic" in assigned
-            else None
-        )
+        initial_value = _read_initial_condition(translation, statement, assigned)
         if _behaves(translation, statement, (a, b), values, assigned):
             _record_passive_initial(
                 translation,
@@ -156,33 +220,40 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
         if len(values) > 1 or not (values or geometric):
             message = f"a {model} accepts one value"
             raise statement.fail(message)
-        own = {
-            name: single_keyword(translation.value, statement, name, words)
-            for name, words in assigned.items()
-            if name in {"m", *sized}
-        }
+        own, own_symbolic = _read_single_keywords(
+            translation, statement, assigned, own_keys
+        )
         scale = translation.library.options.get("scale", 1.0)
         own |= {name: own[name] * scale for name in ("w", "l") if name in own}
         if values:
-            own[element_letter] = translation.value(values[0])
-        nominal_keys = (
-            models.NOMINAL_TEMPERATURES_WITH_TREF
-            if model == "resistor"
-            else models.NOMINAL_TEMPERATURES
-        )
-        read = nominal_keys | models.OWN_TEMPERATURES | drifts | noisy
-        value, given = _valued(
+            resolved_value, symbolic = translation.value_symbolic(values[0])
+            own[element_letter] = resolved_value
+            if symbolic is not None:
+                own_symbolic[element_letter] = symbolic
+        value, given, card_values, card_symbolic = _valued(
             translation, statement, card, own, (element_letter, read)
         )
-        copies = translation.multiplied(own).get("m", 1.0)
+        multiplied_own, multiplied_symbolic = translation.multiplied_symbolic(
+            own, own_symbolic
+        )
+        copies = multiplied_own.get("m", 1.0)
+        copies_symbolic = multiplied_symbolic.get("m")
         if not (copies > 0 and math.isfinite(copies)):
             message = f"the element's copies `m` is positive and finite, not {copies!r}"
             raise statement.fail(message)
         value = value * copies if model == "capacitor" else value / copies
         _check_passive_value(statement, model, parameter, value)
-        given |= _coefficients(translation, statement, assigned, drifts)
-        nominal, temperatures = _element_temperatures(translation, statement, assigned)
-        given |= nominal
+        coefficients, coefficients_symbolic = _coefficients(
+            translation, statement, assigned, drifts
+        )
+        nominal, nominal_symbolic = _read_single_keywords(
+            translation, statement, assigned, nominal_keys
+        )
+        given |= coefficients | nominal
+        coefficients_symbolic |= nominal_symbolic
+        temperatures, temperatures_symbolic = _read_single_keywords(
+            translation, statement, assigned, temperature_keys
+        )
         parameters: dict[str, JsonValue] = {parameter: value}
         parameters |= _temperatures(given, statement, allow_tref=model == "resistor")
         parameters |= models.own_temperature(given, temperatures, statement)
@@ -194,6 +265,25 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
         parameters |= _flicker_parameters(statement, given, copies)
         net_a, net_b = translation.net(a), translation.net(b)
         translation.add(statement, model, parameters, {"a": net_a, "b": net_b})
+        _record_passive_statistics(
+            translation,
+            element_name,
+            model,
+            parameter,
+            card=card,
+            own=own,
+            own_symbolic=own_symbolic,
+            card_values=card_values,
+            card_symbolic=card_symbolic,
+            given=given,
+            coefficients=coefficients,
+            coefficients_symbolic=coefficients_symbolic,
+            temperatures_symbolic=temperatures_symbolic,
+            copies=copies,
+            copies_symbolic=copies_symbolic,
+            scale=scale,
+            statement=statement,
+        )
         _record_passive_initial(
             translation,
             statement,
@@ -205,6 +295,63 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
         )
 
     return translated
+
+
+def _record_passive_statistics(  # noqa: PLR0913 - passive statistical recording inputs
+    translation: Translation,
+    element_name: str,
+    model: str,
+    parameter: str,
+    *,
+    card: ModelCard | None,
+    own: Mapping[str, float],
+    own_symbolic: Mapping[str, Expression],
+    card_values: Mapping[str, float],
+    card_symbolic: Mapping[str, Expression],
+    given: Mapping[str, float],
+    coefficients: Mapping[str, float],
+    coefficients_symbolic: Mapping[str, Expression],
+    temperatures_symbolic: Mapping[str, Expression],
+    copies: float,
+    copies_symbolic: Expression | None,
+    scale: float,
+    statement: Statement,
+) -> None:
+    """Records symbolic targets for a passive element during statistical compilation."""
+    if translation.statistics is None:
+        return
+    element_letter = model[0]
+    filtered_card = {
+        key: expression
+        for key, expression in card_symbolic.items()
+        if key == element_letter or key not in coefficients
+    }
+    if not (
+        own_symbolic
+        or filtered_card
+        or coefficients_symbolic
+        or temperatures_symbolic
+        or copies_symbolic is not None
+    ):
+        return
+    record_passive_targets(
+        translation.statistics,
+        element_name,
+        model,
+        parameter,
+        card=card,
+        own=own,
+        own_symbolic=own_symbolic,
+        card_values=card_values,
+        card_symbolic=filtered_card,
+        given=given,
+        given_symbolic=coefficients_symbolic,
+        temperatures_symbolic=temperatures_symbolic,
+        copies=copies,
+        copies_symbolic=copies_symbolic,
+        scale_option=scale,
+        statement=statement,
+    )
 
 
 def _flicker_parameters(
@@ -309,6 +456,53 @@ def _card_and_values(
     return card, values
 
 
+def _keyword_varies_in_probe(
+    translation: Translation,
+    assigned: Mapping[str, list[str]],
+    keys: Sequence[str],
+) -> bool:
+    """Returns whether any token under `keys` varies in `probe_compiler`."""
+    probe = translation.probe_compiler
+    if probe is None:
+        return False
+    for key in keys:
+        for word in assigned.get(key, ()):
+            if probe.depends_on_statistics(translation.parse(word)):
+                return True
+    return False
+
+
+def _behavioral_resistor_copies(
+    translation: Translation,
+    assigned: Mapping[str, list[str]],
+    resistance: Expression,
+    copies: float,
+    copies_symbolic: Expression | None,
+) -> tuple[
+    Expression,
+    dict[str, tuple[float, Expression]] | None,
+    dict[str, float] | None,
+]:
+    """Scales `resistance` by parallel copies `m`, extracting `__jolty_m` if varying."""
+    if copies_symbolic is not None:
+        return (
+            Binary("/", resistance, Name("__jolty_m")),
+            {"__jolty_m": (copies, copies_symbolic)},
+            None,
+        )
+    if translation.probe_compiler is not None and (
+        translation.multiplier_symbolic is not None
+        or _keyword_varies_in_probe(translation, assigned, ("m",))
+    ):
+        return (
+            Binary("/", resistance, Name("__jolty_m")),
+            None,
+            {"__jolty_m": copies},
+        )
+    scaled = resistance if copies == 1.0 else Binary("/", resistance, Number(copies))
+    return scaled, None, None
+
+
 def _value_of_voltage(
     translation: Translation,
     statement: Statement,
@@ -336,7 +530,7 @@ def _value_of_voltage(
             "ngspice makes a behavioral source"
         )
         raise statement.fail(message)
-    given = _coefficients(
+    given, given_symbolic = _coefficients(
         translation,
         statement,
         assigned,
@@ -349,16 +543,28 @@ def _value_of_voltage(
             "voltage or a current"
         )
         raise statement.fail(message)
-    nominal, temperatures = _element_temperatures(translation, statement, assigned)
+    nominal, nominal_symbolic = _read_single_keywords(
+        translation, statement, assigned, frozenset({"tnom"})
+    )
+    temperatures, temperatures_symbolic = _read_single_keywords(
+        translation, statement, assigned, frozenset({"temp", "dtemp"})
+    )
     given |= nominal
-    own: dict[str, float] = {}
-    if "m" in assigned:
-        own["m"] = single_keyword(translation.value, statement, "m", assigned["m"])
-    copies = translation.multiplied(own).get("m", 1.0)
+    drift_symbolic = {**given_symbolic, **nominal_symbolic}
+    own, own_symbolic = _read_single_keywords(
+        translation, statement, assigned, frozenset({"m"})
+    )
+    multiplied_own, multiplied_symbolic = translation.multiplied_symbolic(
+        own, own_symbolic
+    )
+    copies = multiplied_own.get("m", 1.0)
+    copies_symbolic = multiplied_symbolic.get("m")
     if not (copies > 0 and math.isfinite(copies)):
         message = f"the element's copies `m` is positive and finite, not {copies!r}"
         raise statement.fail(message)
-    scaled = resistance if copies == 1 else Binary("/", resistance, Number(copies))
+    scaled, extra_parameters, probe_extra_parameters = _behavioral_resistor_copies(
+        translation, assigned, resistance, copies, copies_symbolic
+    )
     parameters: dict[str, JsonValue] = _temperatures(
         given, statement, allow_tref=True
     ) | models.own_temperature({}, temperatures, statement)
@@ -368,7 +574,16 @@ def _value_of_voltage(
         nodes,
         scaled,
         parameters=parameters,
+        extra_parameters=extra_parameters,
+        probe_extra_parameters=probe_extra_parameters,
     )
+    if translation.statistics is not None and (drift_symbolic or temperatures_symbolic):
+        record_behavioral_resistor_targets(
+            translation.statistics,
+            statement.text.split()[0],
+            drift_symbolic,
+            temperatures_symbolic,
+        )
 
 
 def _charge(
@@ -385,9 +600,17 @@ def _charge(
     omitting the ngspice 1e15 Ω anti-floating shunt (line 6978).
 
     Raises:
-        SpiceError: When `capacitance` depends on another voltage or current, or has no
-            closed-form antiderivative.
+        SpiceError: When `capacitance` depends on another voltage or current, varies
+            statistically, or has no closed-form antiderivative.
     """
+    if translation.statistics is not None and (
+        translation.statistics.depends_on_statistics(capacitance)
+    ):
+        message = (
+            "statistical variation on a voltage-dependent capacitor value cannot "
+            "compile to a closed-form charge integral"
+        )
+        raise statement.fail(message)
     own = Voltage(*nodes)
     written = _of_own_voltage(_folded(translation, capacitance), nodes)
     found = None if written is None else integral(written, own)
@@ -497,14 +720,82 @@ def _charge_of_voltage(
         )
         raise statement.fail(message)
     own: dict[str, float] = {}
+    own_symbolic: dict[str, Expression] = {}
     if "m" in assigned:
-        own["m"] = single_keyword(translation.value, statement, "m", assigned["m"])
-    copies = translation.multiplied(own).get("m", 1.0)
+        resolved_value, symbolic = single_keyword_symbolic(
+            translation.value_symbolic, statement, "m", assigned["m"]
+        )
+        own["m"] = resolved_value
+        if symbolic is not None:
+            own_symbolic["m"] = symbolic
+    multiplied_own, multiplied_symbolic = translation.multiplied_symbolic(
+        own, own_symbolic
+    )
+    copies = multiplied_own.get("m", 1.0)
+    copies_symbolic = multiplied_symbolic.get("m")
     if not (copies > 0 and math.isfinite(copies)):
         message = f"the element's copies `m` is positive and finite, not {copies!r}"
         raise statement.fail(message)
-    held = charge if copies == 1 else Binary("*", charge, Number(copies))
-    translation.add_behavioral(statement, "behavioral_capacitor", nodes, held)
+    extra_parameters: dict[str, tuple[float, Expression]] | None = None
+    probe_extra_parameters: dict[str, float] | None = None
+    if copies_symbolic is not None:
+        held: Expression = Binary("*", charge, Name("__jolty_copies"))
+        extra_parameters = {"__jolty_copies": (copies, copies_symbolic)}
+    elif translation.probe_compiler is not None and (
+        translation.multiplier_symbolic is not None
+        or _keyword_varies_in_probe(translation, assigned, ("m",))
+    ):
+        held = Binary("*", charge, Name("__jolty_copies"))
+        probe_extra_parameters = {"__jolty_copies": copies}
+    else:
+        held = charge if copies == 1 else Binary("*", charge, Number(copies))
+    translation.add_behavioral(
+        statement,
+        "behavioral_capacitor",
+        nodes,
+        held,
+        extra_parameters=extra_parameters,
+        probe_extra_parameters=probe_extra_parameters,
+    )
+
+
+def _geometric_valued(
+    translation: Translation,
+    statement: Statement,
+    card: ModelCard,
+    own: Mapping[str, float],
+) -> tuple[float, dict[str, float], dict[str, float], dict[str, Expression]]:
+    """Evaluates a SPICE3 geometric passive card and lowers its symbolic expressions."""
+    prefix = card.name.casefold()
+
+    def draws(name: str) -> Draw:
+        return translation.drawing.draws(f"{prefix}.{name}")
+
+    values = models.geometric_values(
+        card,
+        translation.scope,
+        draws,
+        statement,
+        functions=translation.functions,
+    )
+    made = models.geometric(card, values, own, statement)
+    card_symbolic: dict[str, Expression] = {}
+    if translation.statistics is not None:
+        table = models.GEOMETRIC[card.kind]
+        for name, expression in card.parameters.items():
+            canonical = table[name]
+            if canonical == "bv_max":
+                continue
+            lowered = translation.statistics.lower(
+                inlined(expression, translation.functions),
+                translation.scope,
+                call_name=f"{prefix}.{name}",
+            )
+            if lowered is not None:
+                card_symbolic[canonical] = lowered
+            else:
+                card_symbolic.pop(canonical, None)
+    return made.value, made.drift, values, card_symbolic
 
 
 def _valued(
@@ -513,8 +804,8 @@ def _valued(
     card: ModelCard | None,
     own: Mapping[str, float],
     reading: tuple[str, frozenset[str]],
-) -> tuple[float, dict[str, float]]:
-    """Computes pre-multiplicity passive value and card drift parameters from `card`.
+) -> tuple[float, dict[str, float], dict[str, float], dict[str, Expression]]:
+    """Computes pre-multiplicity passive value, drift, card values, and symbolic map.
 
     Unpacks `reading` into `(element_letter, allowed_card_keys)`. Evaluates SPICE3
     geometric cards through `models.geometric`, and applies PSpice card multipliers
@@ -525,42 +816,53 @@ def _valued(
     """
     element_letter, read = reading
     if card is not None and card.kind in models.GEOMETRIC:
-        prefix = card.name.casefold()
-
-        def draws(name: str) -> Draw:
-            return translation.drawing.draws(f"{prefix}.{name}")
-
-        values = models.geometric_values(
-            card,
-            translation.scope,
-            draws,
-            statement,
-            functions=translation.functions,
-        )
-        made = models.geometric(card, values, own, statement)
-        return made.value, made.drift
+        return _geometric_valued(translation, statement, card, own)
     value = own[element_letter] * own.get("scale", 1.0)
     if card is None:
-        return value, {}
+        return value, {}, {}, {}
     drawing, prefix = translation.drawing, card.name.casefold()
     functions = translation.functions
-    factor = card.parameters.get(element_letter, Number(1.0))
-    value *= evaluate(
-        inlined(factor, functions),
+    factor_expression = inlined(
+        card.parameters.get(element_letter, Number(1.0)), functions
+    )
+    factor_value = evaluate(
+        factor_expression,
         translation.scope,
         drawing.draws(f"{prefix}.{element_letter}"),
     )
+    value *= factor_value
     _check_model(card, translation.scope, read | {element_letter}, statement, functions)
-    given = {
-        name: evaluate(
-            inlined(expression, functions),
+    given: dict[str, float] = {}
+    card_values: dict[str, float] = {element_letter: factor_value}
+    card_symbolic: dict[str, Expression] = {}
+    if translation.statistics is not None and element_letter in card.parameters:
+        lowered_factor = translation.statistics.lower(
+            factor_expression,
+            translation.scope,
+            call_name=f"{prefix}.{element_letter}",
+        )
+        if lowered_factor is not None:
+            card_symbolic[element_letter] = lowered_factor
+    for name, expression in card.parameters.items():
+        if name not in read:
+            continue
+        resolved = inlined(expression, functions)
+        evaluated = evaluate(
+            resolved,
             translation.scope,
             drawing.draws(f"{prefix}.{name}"),
         )
-        for name, expression in card.parameters.items()
-        if name in read
-    }
-    return value, given
+        given[name] = evaluated
+        card_values[name] = evaluated
+        if translation.statistics is not None:
+            lowered = translation.statistics.lower(
+                resolved,
+                translation.scope,
+                call_name=f"{prefix}.{name}",
+            )
+            if lowered is not None:
+                card_symbolic[name] = lowered
+    return value, given, card_values, card_symbolic
 
 
 def _check_passive_value(
@@ -582,25 +884,6 @@ def _check_passive_value(
         raise statement.fail(message)
 
 
-def _element_temperatures(
-    translation: Translation,
-    statement: Statement,
-    assigned: Mapping[str, list[str]],
-) -> tuple[dict[str, float], dict[str, float]]:
-    """Extracts element-level ``TNOM`` and ``TEMP``/``DTEMP`` overrides."""
-    nominal = (
-        {"tnom": single_keyword(translation.value, statement, "tnom", assigned["tnom"])}
-        if "tnom" in assigned
-        else {}
-    )
-    temperatures = {
-        name: single_keyword(translation.value, statement, name, words)
-        for name, words in assigned.items()
-        if name in {"temp", "dtemp"}
-    }
-    return nominal, temperatures
-
-
 def _temperatures(
     given: Mapping[str, float],
     statement: Statement,
@@ -620,7 +903,7 @@ def _coefficients(
     statement: Statement,
     assigned: Mapping[str, list[str]],
     drifts: frozenset[str],
-) -> dict[str, float]:
+) -> tuple[dict[str, float], dict[str, Expression]]:
     """Extracts temperature and voltage coefficients from `assigned` under SPICE names.
 
     Accepts both positional ``TC=tc1,tc2`` syntax and individual keywords in `drifts`.
@@ -636,15 +919,25 @@ def _coefficients(
         if len(listed) > 2:  # noqa: PLR2004 - the linear and the quadratic coefficient
             message = "`TC` gives two coefficients at most"
             raise statement.fail(message)
-    given = {
-        name: translation.value(word)
-        for name, word in zip(("tc1", "tc2"), listed or (), strict=False)
-    }
+    given: dict[str, float] = {}
+    symbolic: dict[str, Expression] = {}
+    for name, word in zip(("tc1", "tc2"), listed or (), strict=False):
+        resolved_value, expression = translation.value_symbolic(word)
+        given[name] = resolved_value
+        if expression is not None:
+            symbolic[name] = expression
     for name in drifts:
         words = assigned.get(name)
         if words is not None:
-            given[name] = single_keyword(translation.value, statement, name, words)
-    return given
+            resolved_value, expression = single_keyword_symbolic(
+                translation.value_symbolic, statement, name, words
+            )
+            given[name] = resolved_value
+            if expression is not None:
+                symbolic[name] = expression
+            else:
+                symbolic.pop(name, None)
+    return given, symbolic
 
 
 def _check_model(
@@ -683,14 +976,43 @@ def _mutual(translation: Translation, statement: Statement) -> None:
     if not all(name[0].casefold() == "l" for name in inductors):
         message = "jolty has no magnetic core: a mutual inductance couples inductors"
         raise statement.fail(message)
+    coefficient_value, coefficient_symbolic = translation.value_symbolic(coefficient)
     translation.couplings.append(
         Coupling(
             statement,
             tuple(inductors),
-            translation.value(coefficient),
+            coefficient_value,
             translation.order,
+            coefficient_symbolic,
         )
     )
+
+
+def _transmission_line_delay(
+    length_entry: tuple[float, Expression | None] | None,
+    frequency_entry: tuple[float, Expression | None] | None,
+    statement: Statement,
+) -> tuple[float, Expression | None]:
+    """Computes transmission-line delay (`NL / F`) and its symbolic expression."""
+    default_length, default_frequency = _QUARTER_WAVE_AT_GHZ
+    length_value, length_symbolic = (
+        (default_length, None) if length_entry is None else length_entry
+    )
+    divisor, frequency_symbolic = (
+        (default_frequency, None) if frequency_entry is None else frequency_entry
+    )
+    if not (divisor > 0 and math.isfinite(divisor)):
+        message = (
+            f"a transmission line's frequency `F` is positive and finite, not "
+            f"{divisor!r}"
+        )
+        raise statement.fail(message)
+    delay = length_value / divisor
+    if length_symbolic is None and frequency_symbolic is None:
+        return delay, None
+    numerator = Number(length_value) if length_symbolic is None else length_symbolic
+    denominator = Number(divisor) if frequency_symbolic is None else frequency_symbolic
+    return delay, Binary("/", numerator, denominator)
 
 
 def _transmission_line(translation: Translation, statement: Statement) -> None:
@@ -706,35 +1028,32 @@ def _transmission_line(translation: Translation, statement: Statement) -> None:
     if len(positional) != 5:  # noqa: PLR2004 - a name and four nodes
         message = "a transmission line joins four nodes"
         raise statement.fail(message)
-    _, *nodes = positional
+    element_name, *nodes = positional
 
-    def given(name: str) -> float | None:
+    def given(name: str) -> tuple[float, Expression | None] | None:
         words = assigned.get(name)
         if words is None:
             return None
-        return single_keyword(translation.value, statement, name, words)
+        return single_keyword_symbolic(
+            translation.value_symbolic, statement, name, words
+        )
 
-    read: dict[str, float] = {}
+    read: dict[str, tuple[float, Expression | None]] = {}
     for spice, name in TRANSMISSION_LINE.items():
         value = given(spice)
         if value is not None:
             read.setdefault(name, value)
-    impedance = read.get("characteristic_impedance")
-    if impedance is None:
+    impedance_entry = read.get("characteristic_impedance")
+    if impedance_entry is None:
         message = "a transmission line gives its characteristic impedance, `Z0`"
         raise statement.fail(message)
-    delay = read.get("delay")
-    if delay is None:
-        length, frequency = given("nl"), given("f")
-        default_length, default_frequency = _QUARTER_WAVE_AT_GHZ
-        divisor = default_frequency if frequency is None else frequency
-        if not (divisor > 0 and math.isfinite(divisor)):
-            message = (
-                f"a transmission line's frequency `F` is positive and finite, not "
-                f"{divisor!r}"
-            )
-            raise statement.fail(message)
-        delay = (default_length if length is None else length) / divisor
+    impedance, impedance_symbolic = impedance_entry
+    delay_entry = read.get("delay")
+    delay, delay_symbolic = (
+        delay_entry
+        if delay_entry is not None
+        else _transmission_line_delay(given("nl"), given("f"), statement)
+    )
     parameters: dict[str, JsonValue] = {
         "characteristic_impedance": impedance,
         "delay": delay,
@@ -749,6 +1068,11 @@ def _transmission_line(translation: Translation, statement: Statement) -> None:
             for terminal, node in zip(_TRANSMISSION_LINE_TERMINALS, nodes, strict=True)
         },
     )
+    if translation.statistics is not None:
+        translation.statistics.add_target(
+            element_name, "characteristic_impedance", impedance_symbolic
+        )
+        translation.statistics.add_target(element_name, "delay", delay_symbolic)
 
 
 PASSIVE_ELEMENTS: Final[dict[str, ElementTranslator]] = {

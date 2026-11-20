@@ -32,7 +32,7 @@ Examples:
 
 import json
 import math
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from pydantic import JsonValue
@@ -110,6 +110,104 @@ def payload(toleranced: Iterable[Toleranced]) -> list[JsonValue]:
             "tolerance": parameter.tolerance.model_dump(mode="json"),
         }
         for parameter in toleranced
+    ]
+
+
+def _resolved_path(prefix: str, suffix: str) -> str:
+    """Joins `prefix` and `suffix` with `/` when both are non-empty."""
+    if not prefix:
+        return suffix
+    if not suffix:
+        return prefix
+    return f"{prefix}{ir.SEPARATOR}{suffix}"
+
+
+def _filter_statistical(
+    path: str,
+    model: ir.Statistical | None,
+    replaced: frozenset[str],
+    prefixes: tuple[str, ...],
+) -> ir.Statistical | None:
+    """Filters `model` targets falling under `replaced` or `prefixes`."""
+    if model is None or not model.targets:
+        return None
+    if not replaced:
+        return model
+    kept = tuple(
+        target
+        for target in model.targets
+        if (resolved := _resolved_path(path, target.instance)) not in replaced
+        and not resolved.startswith(prefixes)
+    )
+    if not kept:
+        return None
+    return ir.Statistical(steps=model.steps, targets=kept)
+
+
+def statistical(
+    circuit: ir.Circuit, substituted: Collection[str] = ()
+) -> tuple[tuple[str, ir.Statistical], ...]:
+    """Collects every component statistical model in `circuit` in hierarchy order.
+
+    Skips component subtrees replaced in `substituted` and filters out any hoisted
+    targets whose resolved device paths fall beneath a substituted component.
+
+    Args:
+        circuit: Circuit IR inspected for component statistical models.
+        substituted: Component instance paths replaced by substitute device models.
+
+    Returns:
+        Hierarchy-ordered tuple of `(placement_path, statistical)` pairs.
+    """
+    replaced = frozenset(substituted)
+    prefixes = tuple(f"{inside}{ir.SEPARATOR}" for inside in substituted)
+    found: list[tuple[str, ir.Statistical]] = []
+
+    def record(path: str, component_name: str) -> ir.Component | None:
+        component = circuit.components.get(component_name)
+        if component is None:
+            return None
+        kept = _filter_statistical(path, component.statistical, replaced, prefixes)
+        if kept is not None:
+            found.append((path, kept))
+        return component
+
+    def walk(component_name: str, prefix: str, active: set[str]) -> None:
+        if component_name in active:
+            return
+        component = record(prefix.rstrip(ir.SEPARATOR), component_name)
+        if component is None:
+            return
+        active.add(component_name)
+        try:
+            for instance in component.instances:
+                if not isinstance(instance.of, ir.ComponentOf):
+                    continue
+                path = f"{prefix}{instance.name}"
+                if path not in replaced:
+                    walk(instance.of.component, f"{path}{ir.SEPARATOR}", active)
+        finally:
+            active.remove(component_name)
+
+    walk(circuit.top, "", set())
+    return tuple(found)
+
+
+def statistical_payload(
+    circuit: ir.Circuit, substituted: Collection[str] = ()
+) -> list[JsonValue]:
+    """Encodes component statistical models in `circuit` for the Rust engine.
+
+    Args:
+        circuit: Circuit IR whose component statistical models are serialized.
+        substituted: Component instance paths replaced by substitute device models.
+
+    Returns:
+        JSON-compatible list of `{"path": ..., "statistical": ...}` dictionaries.
+    """
+    return [
+        {"path": path, "statistical": model.model_dump(mode="json")}
+        for path, model in statistical(circuit, substituted)
     ]
 
 

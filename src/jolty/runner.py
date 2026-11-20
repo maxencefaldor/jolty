@@ -830,7 +830,12 @@ def _sampled(
         samples=monte_carlo.samples,
         seed=monte_carlo.seed,
         toleranced=0 if nominal is None else len(variation.toleranced(nominal.built)),
-        mismatched=len(context.simulation.foundry),
+        mismatched=len(context.simulation.foundry)
+        + (
+            0
+            if nominal is None
+            else len(variation.statistical(nominal.built, nominal.matched))
+        ),
         corners=tuple(condition.corner or "" for condition in context.conditions[1:]),
         analyses=tuple(context.plan.analyses),
         specs=context.specs,

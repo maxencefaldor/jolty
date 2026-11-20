@@ -380,6 +380,11 @@ impl Parser {
                         self.expect(Symbol::Close)?;
                         return Ok(self.variable(Variable::Current(port)));
                     }
+                    "p" => {
+                        let parameter = self.name()?;
+                        self.expect(Symbol::Close)?;
+                        return Ok(self.variable(Variable::Parameter(parameter)));
+                    }
                     _ => {
                         self.push_nested(
                             stack,

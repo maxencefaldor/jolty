@@ -8,7 +8,8 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `expression` | required | Expression defining output current, voltage, or stored charge as a function of sensed terminal voltages, port currents, and simulation time. |
+| `expression` | required | Expression defining output current, voltage, or stored charge as a function of sensed terminal voltages, port currents, named parameters, and simulation time. |
+| `parameters` | `{}` | Named numeric parameters read via `p(name)` inside `expression`. |
 | `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
 | `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
@@ -16,7 +17,8 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `expression` | required | Expression defining output current, voltage, or stored charge as a function of sensed terminal voltages, port currents, and simulation time. |
+| `expression` | required | Expression defining output current, voltage, or stored charge as a function of sensed terminal voltages, port currents, named parameters, and simulation time. |
+| `parameters` | `{}` | Named numeric parameters read via `p(name)` inside `expression`. |
 | `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
 | `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 
@@ -36,7 +38,8 @@ Values are in SI base units, as the circuit format holds them, while the functio
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `expression` | required | Expression defining output current, voltage, or stored charge as a function of sensed terminal voltages, port currents, and simulation time. |
+| `expression` | required | Expression defining output current, voltage, or stored charge as a function of sensed terminal voltages, port currents, named parameters, and simulation time. |
+| `parameters` | `{}` | Named numeric parameters read via `p(name)` inside `expression`. |
 | `temperature` |  | Fixed device operating temperature, in kelvins (at least 0); defaults to the global simulation temperature when omitted. |
 | `temperature_offset` |  | Offset added to the global simulation temperature, in kelvins (resulting temperature at least 0); defaults to zero when omitted. |
 

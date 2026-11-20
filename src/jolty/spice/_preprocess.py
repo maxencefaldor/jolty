@@ -2,14 +2,14 @@
 """SPICE preprocessing: ``.include``, ``.lib``, and ``.if`` conditional blocks."""
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
 from jolty.errors import SpiceError
-from jolty.spice.expressions import Function, evaluate, inlined, parse
+from jolty.spice.expressions import Expression, Function, evaluate, inlined, parse
 from jolty.spice.netlist import Statement, statements, tokens
 
 
@@ -275,6 +275,8 @@ def chosen(
     body: Sequence[Statement],
     scope: Mapping[str, float],
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
+    *,
+    on_condition: Callable[[Statement, Expression], None] | None = None,
 ) -> list[Statement]:
     """Selects statements from `body` by evaluating ``.if`` blocks in `scope`.
 
@@ -282,6 +284,8 @@ def chosen(
         body: Subcircuit body statements potentially containing ``.if`` blocks.
         scope: Case-folded parameter values used to evaluate branch conditions.
         functions: Case-folded user-defined functions inlined in branch conditions.
+        on_condition: Optional callback invoked with `(statement, expression)` for each
+            evaluated ``.if`` or ``.elseif`` condition.
 
     Returns:
         Active non-directive statements selected across all conditional branches.
@@ -299,7 +303,7 @@ def chosen(
             raise statement.fail(message)
         match directive:
             case ".if":
-                held = within and _condition(statement, scope, functions)
+                held = within and _condition(statement, scope, functions, on_condition)
                 blocks.append(_Block(chosen=held, taken=held))
             case ".elseif" | ".else":
                 block = blocks[-1]
@@ -308,7 +312,8 @@ def chosen(
                     outer
                     and not block.taken
                     and (
-                        directive == ".else" or _condition(statement, scope, functions)
+                        directive == ".else"
+                        or _condition(statement, scope, functions, on_condition)
                     )
                 )
                 block.chosen, block.taken = held, block.taken or held
@@ -326,8 +331,12 @@ def _condition(
     statement: Statement,
     scope: Mapping[str, float],
     functions: Mapping[str, Function] = _NO_FUNCTIONS,
+    on_condition: Callable[[Statement, Expression], None] | None = None,
 ) -> bool:
     """Returns whether an ``.if`` or ``.elseif`` condition evaluates nonzero."""
     parts = statement.text.split(maxsplit=1)
     condition = parts[1] if len(parts) > 1 else ""
-    return evaluate(inlined(parse(condition), functions), scope) != 0
+    parsed = inlined(parse(condition), functions)
+    if on_condition is not None:
+        on_condition(statement, parsed)
+    return evaluate(parsed, scope) != 0

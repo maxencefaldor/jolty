@@ -14,6 +14,7 @@ categories.workspace = true
 exclude = ["tests/data/kernels.json"]
 
 [dependencies]
+jolty-expressions.workspace = true
 jolty-ir.workspace = true
 jolty-models.workspace = true
 jolty-numerics.workspace = true

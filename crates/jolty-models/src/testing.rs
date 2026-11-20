@@ -1466,6 +1466,11 @@ fn schema_number_kind(schema: &serde_json::Value, path: &[String]) -> Option<Num
     {
         return schema_number_kind(property, rest);
     }
+    if let Some(additional) = schema.get("additionalProperties")
+        && additional.is_object()
+    {
+        return schema_number_kind(additional, rest);
+    }
     if let Ok(index) = step.parse::<usize>() {
         if let Some(item) = schema
             .get("prefixItems")

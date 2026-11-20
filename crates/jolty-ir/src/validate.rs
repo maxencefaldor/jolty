@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::{Circuit, Component, Lot, Name, Of, Stress};
+use crate::{
+    Circuit, Component, Lot, Name, Of, Statistical, StatisticalStep, StatisticalTarget, Stress,
+};
 
 /// Structural validation failure in a circuit definition.
 ///
@@ -158,6 +160,14 @@ pub enum Problem {
         first: String,
         /// An instance that spreads it otherwise, as `component/instance`.
         second: String,
+    },
+    /// A component defines a malformed [`Statistical`] parameter model.
+    #[error("component `{component}` has invalid statistical model: {detail}")]
+    InvalidStatistical {
+        /// The component declaring the malformed statistical model.
+        component: Name,
+        /// Description of the structural problem.
+        detail: String,
     },
     /// A component instances itself, directly or through others.
     #[error("component `{}` contains itself: {}", .cycle[0], join(.cycle, " -> "))]
@@ -420,6 +430,138 @@ fn check_component(
             }
         }
     }
+    if let Some(statistical) = &component.statistical {
+        check_statistical(name, statistical, problems);
+    }
+}
+
+/// Returns whether `text` is a valid expression identifier (`[A-Za-z_][A-Za-z0-9_]*`).
+fn is_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|character| character.is_ascii_alphanumeric() || character == '_')
+}
+
+/// Checks structural invariants on `statistical` defined on `component`.
+fn check_statistical(component: &Name, statistical: &Statistical, problems: &mut Vec<Problem>) {
+    check_statistical_steps(component, &statistical.steps, problems);
+    check_statistical_targets(component, &statistical.targets, problems);
+}
+
+/// Checks step naming, scoping, and expression invariants for `steps` on `component`.
+fn check_statistical_steps(
+    component: &Name,
+    steps: &[StatisticalStep],
+    problems: &mut Vec<Problem>,
+) {
+    let mut push = |detail: String| {
+        problems.push(Problem::InvalidStatistical {
+            component: component.clone(),
+            detail,
+        });
+    };
+    let mut seen_steps: BTreeSet<&str> = BTreeSet::new();
+    for step in steps {
+        let step_name = step.name();
+        if !is_identifier(step_name) {
+            push(format!("step name `{step_name}` is not a valid identifier"));
+        } else if !seen_steps.insert(step_name) {
+            push(format!("step `{step_name}` is defined twice"));
+        }
+        match step {
+            StatisticalStep::Draw {
+                name,
+                shared,
+                scope,
+                call,
+                function,
+                nominal,
+                spread,
+                sigma,
+            } => {
+                if call.is_empty() {
+                    push(format!("draw step `{name}` has an empty call identifier"));
+                }
+                if *shared && !scope.is_empty() {
+                    push(format!(
+                        "shared draw step `{name}` specifies local scope `{scope}`"
+                    ));
+                }
+                if !scope.is_empty() && scope.split('/').any(str::is_empty) {
+                    push(format!(
+                        "draw step `{name}` has malformed scope path `{scope}`"
+                    ));
+                }
+                if nominal.trim().is_empty() || spread.trim().is_empty() {
+                    push(format!(
+                        "draw step `{name}` has an empty argument expression"
+                    ));
+                }
+                match (function.takes_sigma(), sigma) {
+                    (true, None) => push(format!(
+                        "draw step `{name}` requires a sigma argument expression"
+                    )),
+                    (true, Some(text)) if text.trim().is_empty() => {
+                        push(format!("draw step `{name}` has an empty sigma expression"));
+                    }
+                    (false, Some(_)) => push(format!(
+                        "draw step `{name}` supplies a sigma expression not accepted by its \
+                         function"
+                    )),
+                    _ => {}
+                }
+            }
+            StatisticalStep::Value { name, expression } => {
+                if expression.trim().is_empty() {
+                    push(format!("value step `{name}` has an empty expression"));
+                }
+            }
+        }
+    }
+}
+
+/// Checks instance path, parameter path, and uniqueness invariants for `targets` on `component`.
+fn check_statistical_targets(
+    component: &Name,
+    targets: &[StatisticalTarget],
+    problems: &mut Vec<Problem>,
+) {
+    let mut push = |detail: String| {
+        problems.push(Problem::InvalidStatistical {
+            component: component.clone(),
+            detail,
+        });
+    };
+    let mut seen_targets: BTreeSet<(&str, &str)> = BTreeSet::new();
+    for target in targets {
+        if target.instance.is_empty() || target.instance.split('/').any(str::is_empty) {
+            push(format!(
+                "target has malformed instance path `{}`",
+                target.instance
+            ));
+        }
+        if target.parameter.is_empty() {
+            push(format!(
+                "target on `{}` has an empty parameter path",
+                target.instance
+            ));
+        }
+        if target.expression.trim().is_empty() {
+            push(format!(
+                "target `{}` parameter `{}` has an empty expression",
+                target.instance, target.parameter
+            ));
+        }
+        if !seen_targets.insert((target.instance.as_str(), target.parameter.as_str())) {
+            push(format!(
+                "target `{}` parameter `{}` is assigned twice",
+                target.instance, target.parameter
+            ));
+        }
+    }
 }
 
 /// Returns the distinct defined component targets instantiated by `component`, in the order
@@ -529,6 +671,7 @@ mod tests {
                 },
             ],
             instances: vec![],
+            statistical: None,
         }
     }
 
@@ -540,6 +683,7 @@ mod tests {
                 role: Role::Ground,
             }],
             instances: vec![instance_of("X1", "cell", &[("a", "in"), ("b", "ground")])],
+            statistical: None,
         };
         assert_eq!(
             circuit(vec![("top", top), ("cell", cell())]).validate(),
@@ -564,6 +708,7 @@ mod tests {
                 instance_of("X1", "cell", &[("a", "n1"), ("c", "n2")]),
                 instance_of("X1", "missing", &[]),
             ],
+            statistical: None,
         };
         let problems = circuit(vec![("top", top), ("cell", cell())])
             .validate()
@@ -896,5 +1041,78 @@ mod tests {
         handle
             .join()
             .expect("thread succeeded without stack overflow");
+    }
+
+    #[test]
+    fn checks_statistical_models() {
+        use crate::StatisticalFunction;
+
+        let valid = Component {
+            statistical: Some(Statistical {
+                steps: vec![
+                    StatisticalStep::Draw {
+                        name: "d0".to_owned(),
+                        shared: false,
+                        scope: String::new(),
+                        call: "vth0#0".to_owned(),
+                        function: StatisticalFunction::Agauss,
+                        nominal: "0.5".to_owned(),
+                        spread: "0.03".to_owned(),
+                        sigma: Some("3.0".to_owned()),
+                    },
+                    StatisticalStep::Value {
+                        name: "v0".to_owned(),
+                        expression: "p(d0) * 1.1".to_owned(),
+                    },
+                ],
+                targets: vec![StatisticalTarget {
+                    instance: "M1".to_owned(),
+                    parameter: "vth0".to_owned(),
+                    expression: "p(v0)".to_owned(),
+                }],
+            }),
+            ..Component::default()
+        };
+        assert_eq!(circuit(vec![("top", valid)]).validate(), Ok(()));
+
+        let broken = Component {
+            statistical: Some(Statistical {
+                steps: vec![
+                    StatisticalStep::Draw {
+                        name: "bad-name".to_owned(),
+                        shared: true,
+                        scope: "X1".to_owned(),
+                        call: String::new(),
+                        function: StatisticalFunction::Aunif,
+                        nominal: "0".to_owned(),
+                        spread: "1".to_owned(),
+                        sigma: Some("3".to_owned()),
+                    },
+                    StatisticalStep::Value {
+                        name: "v0".to_owned(),
+                        expression: "1".to_owned(),
+                    },
+                    StatisticalStep::Value {
+                        name: "v0".to_owned(),
+                        expression: "   ".to_owned(),
+                    },
+                ],
+                targets: vec![
+                    StatisticalTarget {
+                        instance: "M1".to_owned(),
+                        parameter: "vth0".to_owned(),
+                        expression: "p(v0)".to_owned(),
+                    },
+                    StatisticalTarget {
+                        instance: "M1".to_owned(),
+                        parameter: "vth0".to_owned(),
+                        expression: "p(v0)".to_owned(),
+                    },
+                ],
+            }),
+            ..Component::default()
+        };
+        let problems = circuit(vec![("top", broken)]).validate().unwrap_err();
+        assert_eq!(problems.len(), 7);
     }
 }

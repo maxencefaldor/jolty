@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use jolty_engine::batch::Variants as EngineVariants;
-use jolty_engine::variants::{Axis, Explicit, Grid, GridChain, MonteCarlo, Product, Toleranced};
+use jolty_engine::variants::{
+    Axis, Explicit, Grid, GridChain, MonteCarlo, Product, StatisticalPlacement, Toleranced,
+};
 use jolty_engine::{ParameterId, Values};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -208,34 +210,65 @@ impl Variants {
         })
     }
 
-    /// Creates `samples` Monte Carlo variants of `toleranced` parameters drawn from `seed`
-    /// via [`crate::sample`].
+    /// Creates `samples` Monte Carlo variants of `toleranced` parameters and optional
+    /// component `statistical` models drawn from `seed` via [`crate::sample`] and
+    /// [`crate::variate`].
     ///
     /// `toleranced` is a JSON list of objects with `instance`, `parameter`, `nominal`, and
-    /// `tolerance` fields. Raises `ElaborationError` naming every unrecognized parameter
-    /// path.
+    /// `tolerance` fields. `statistical`, when provided, is a JSON list of
+    /// `{path, statistical}` placement objects extracted from the circuit. Raises
+    /// `ElaborationError` naming every unrecognized parameter path or invalid expression.
     #[staticmethod]
+    #[pyo3(signature = (elaborated, toleranced, seed, samples, statistical = None))]
     fn monte_carlo(
         py: Python<'_>,
         elaborated: &Elaborated,
         toleranced: &str,
         seed: u64,
         samples: u64,
+        statistical: Option<&str>,
     ) -> PyResult<Self> {
         let circuit = &elaborated.inner;
         let toleranced: Vec<Toleranced> = parse_json!(toleranced)?;
-        let columns = toleranced
-            .iter()
-            .filter_map(|item| {
-                let parameter = circuit.parameter(&item.instance, &item.parameter)?;
-                Some(Column::Parameter(
+        let placements: Vec<StatisticalPlacement> = match statistical {
+            Some(text) => parse_json!(text)?,
+            None => Vec::new(),
+        };
+        let mut columns = Vec::new();
+        let mut recorded = BTreeSet::new();
+        for item in &toleranced {
+            if let Some(parameter) = circuit.parameter(&item.instance, &item.parameter)
+                && recorded.insert(parameter)
+            {
+                columns.push(Column::Parameter(
                     parameter,
                     item.instance.clone(),
                     item.parameter.clone(),
-                ))
-            })
-            .collect();
-        let drawn = elaboration_result(py, MonteCarlo::new(circuit, seed, samples, toleranced))?;
+                ));
+            }
+        }
+        for placement in &placements {
+            for target in &placement.statistical.targets {
+                let instance = match (placement.path.is_empty(), target.instance.is_empty()) {
+                    (true, _) => target.instance.clone(),
+                    (_, true) => placement.path.clone(),
+                    (false, false) => format!("{}/{}", placement.path, target.instance),
+                };
+                if let Some(parameter) = circuit.parameter(&instance, &target.parameter)
+                    && recorded.insert(parameter)
+                {
+                    columns.push(Column::Parameter(
+                        parameter,
+                        instance,
+                        target.parameter.clone(),
+                    ));
+                }
+            }
+        }
+        let drawn = elaboration_result(
+            py,
+            MonteCarlo::with_statistical(circuit, seed, samples, toleranced, placements),
+        )?;
         Ok(Self {
             toleranced: TolerancedParameter::MonteCarlo(Arc::new(drawn), seed),
             elaborated: Arc::clone(circuit),

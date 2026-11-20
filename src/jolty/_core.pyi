@@ -397,7 +397,11 @@ class Variants:
     ) -> Variants: ...
     @staticmethod
     def monte_carlo(
-        elaborated: Elaborated, toleranced: str, seed: int, samples: int
+        elaborated: Elaborated,
+        toleranced: str,
+        seed: int,
+        samples: int,
+        statistical: str | None = None,
     ) -> Variants: ...
     @staticmethod
     def product(first: Variants, second: Variants) -> Variants: ...

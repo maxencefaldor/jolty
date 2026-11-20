@@ -40,6 +40,8 @@ pub enum Variable {
     Voltage(String, Option<String>),
     /// The current through a sensing port, `i(p)`.
     Current(String),
+    /// A named numeric parameter, `p(name)`.
+    Parameter(String),
     /// The time, `time`, in seconds.
     Time,
 }
@@ -506,6 +508,23 @@ impl Expression {
             "one value per variable"
         );
         tape::value(&self.tape, variables)
+    }
+
+    /// Evaluates this expression at `variables` (in [`Expression::variables`] order) using
+    /// reusable scratch storage `values` without computing gradients, returning the scalar
+    /// result.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `variables` does not hold one value per variable.
+    #[must_use]
+    pub fn evaluate_value(&self, variables: &[f64], values: &mut Vec<f64>) -> f64 {
+        assert_eq!(
+            variables.len(),
+            self.variables.len(),
+            "one value per variable"
+        );
+        tape::evaluate_value(&self.tape, variables, values)
     }
 
     /// Evaluates this expression at `variables` (in [`Expression::variables`] order), writes
@@ -1380,5 +1399,36 @@ mod tests {
             parsed_long.value(&[0.25]).to_bits(),
             expected_long.to_bits()
         );
+    }
+
+    #[test]
+    fn parameter_variables_evaluate_with_and_without_gradients() {
+        let expression: Expression =
+            "if(p(gain) > 0, p(gain) * sqrt(abs(p(offset))) + p(gain), limit(p(offset), -1, 1))"
+                .parse()
+                .expect("valid parameter expression");
+        assert_eq!(
+            expression.variables(),
+            [
+                Variable::Parameter("gain".to_owned()),
+                Variable::Parameter("offset".to_owned()),
+            ]
+        );
+        assert!(matches!(
+            expression.tree(),
+            Term::Operation("if", ref operands) if operands.len() == 3
+        ));
+        let mut workspace = Workspace::new(&expression);
+        let mut gradient = [0.0; 2];
+        let mut scratch = Vec::new();
+        for point in [[2.5, 4.0], [-1.0, 3.0], [1.25, -9.0]] {
+            let full = expression.evaluate(&point, &mut workspace, &mut gradient);
+            let scalar = expression.evaluate_value(&point, &mut scratch);
+            assert_eq!(scalar.to_bits(), full.to_bits());
+        }
+        let with_gradient = expression.evaluate(&[2.5, 4.0], &mut workspace, &mut gradient);
+        assert!(close(with_gradient, 7.5));
+        assert!(close(gradient[0], 3.0));
+        assert!(close(gradient[1], 0.625));
     }
 }

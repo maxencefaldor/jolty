@@ -374,7 +374,9 @@ Each sample draws every toleranced instance parameter independently (so repeated
 Exponential parameters use multiplicative spreads: `"log_uniform"` keeps saturation current within `1.08×` (`±2` mV on `Vbe`), and `"log_normal"` sets that factor at 3σ.
 Correlated parts (such as on-die resistors) share an `ir.Lot(name="die", relative=0.2)`, multiplying each part's individual draw by one shared per-sample lot draw regardless of hierarchy location.
 Each sample reuses identical part draws across corners sharing the same toleranced parameters, taking each requirement's worst corner verdict.
-Circuits with foundry devices additionally draw PDK [mismatch](foundry.md#mismatch) per sample.
+Circuits placing SPICE or PDK components from a [`Library`](foundry.md#the-open-process-kits) evaluate compiled statistical expressions natively inside the engine alongside device tolerances.
+Global library calls vary process parameters together across placements, while subcircuit calls draw independent per-placement mismatch.
+Foundry devices simulated in ngspice additionally draw PDK [mismatch](foundry.md#mismatch) per sample.
 Samples execute as a parallel [batch](#batches) per condition on a shared elaborated circuit, seeded solely by `(seed, sample_index)` for bit-identical outputs across any thread count or [shard](machines.md) split.
 Reports count elaboration and analysis failures alongside requirement distributions and yield ([Specs](specs.md)).
 Plots render nominal-condition requirement histograms and trace envelopes ([Results](results.md#plots)).

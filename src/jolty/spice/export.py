@@ -1081,7 +1081,11 @@ def _behavioral_value(
     written = f"{output}={{{expression}}}"
     if model != "behavioral_resistor":
         return written
-    rest = [(key, amount) for key, amount in values.items() if key != "expression"]
+    rest = [
+        (key, amount)
+        for key, amount in values.items()
+        if key not in {"expression", "parameters"}
+    ]
     drift = _passive_drift(model, rest, "")
     return " ".join([written, *drift])
 
@@ -1469,6 +1473,9 @@ def _behavior(instance: ir.Instance, ground: str) -> tuple[str, list[str]]:
 
     senses: dict[str, str] = {}
 
+    raw_parameters = instance.parameters.get("parameters")
+    named_parameters = raw_parameters if isinstance(raw_parameters, Mapping) else {}
+
     def read(variable: JsonValue) -> str:
         match variable:
             case {"voltage": [str(positive), None]}:
@@ -1480,6 +1487,15 @@ def _behavior(instance: ir.Instance, ground: str) -> tuple[str, list[str]]:
                 ends = (net(f"{port}_positive"), net(f"{port}_negative"))
                 senses[sense] = f"{sense} {ends[0]} {ends[1]} DC 0"
                 return f"i({sense})"
+            case {"parameter": str(name)} if name in named_parameters:
+                amount = named_parameters[name]
+                if (
+                    isinstance(amount, int | float)
+                    and not isinstance(amount, bool)
+                    and math.isfinite(amount)
+                ):
+                    numeric = float(amount)
+                    return repr(numeric) if numeric >= 0 else f"({numeric!r})"
         message = f"{instance.name}'s expression reads {variable}, which ngspice cannot"
         raise _unwritable(message)
 
@@ -1537,7 +1553,7 @@ def _push_written_node(
             results.append(repr(value) if value >= 0 else f"({value!r})")
         case "time":
             results.append("time")
-        case {"voltage": _} | {"current": _}:
+        case {"voltage": _} | {"current": _} | {"parameter": _}:
             results.append(read(current))
         case {"operation": str(), "operands": list(operands)}:
             frames.append((current, True))

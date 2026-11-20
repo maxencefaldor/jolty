@@ -821,7 +821,7 @@ fn constant(expression: &str) -> PyResult<f64> {
 /// Parses `expression` and serializes its [`jolty_expressions::Term`] AST to JSON.
 ///
 /// Node forms are numbers, `"time"`, `{"voltage": [a, b]}` (`b` null for ground),
-/// `{"current": p}`, `{"operation": name, "operands": [...]}`, and
+/// `{"current": p}`, `{"parameter": name}`, `{"operation": name, "operands": [...]}`, and
 /// `{"table": input, "abscissae": [...], "ordinates": [...], "rounding": r}`.
 #[pyfunction]
 fn expression_tree(expression: &str) -> PyResult<String> {
@@ -886,6 +886,11 @@ fn term_to_json_string(root: &jolty_expressions::Term) -> serde_json::Result<Str
             Segment::Term(Term::Variable(Variable::Current(port))) => {
                 output.push_str("{\"current\":");
                 output.push_str(&serde_json::to_string(port)?);
+                output.push('}');
+            }
+            Segment::Term(Term::Variable(Variable::Parameter(name))) => {
+                output.push_str("{\"parameter\":");
+                output.push_str(&serde_json::to_string(name)?);
                 output.push('}');
             }
             Segment::Term(Term::Operation(name, operands)) => {

@@ -4,10 +4,11 @@ A behavioral source's output is an expression of the voltages and currents it re
 
 ## Variables
 
-An expression reads three kinds of variable:
+An expression reads four kinds of variable:
 
 - `v(a)` is the voltage of terminal `a`, and `v(a, b)` the voltage of `a` over `b`.
 - `i(p)` is the current through the source's internal short-circuit sensing port `p`.
+- `p(name)` is a named numeric parameter supplied alongside the expression.
 - `time` is the time, in seconds: 0 at the operating point.
 
 Numbers are plain, such as `2.5e-3`, and `pi` is π.

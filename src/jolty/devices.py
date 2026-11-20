@@ -595,6 +595,28 @@ def _top_dimension(
     raise KeyError(parameter)
 
 
+def _behavioral_dimension(parameter: str) -> Dimension | None:
+    """Validates a behavioral device parameter path (`parameters.<name>`)."""
+    parts = parameter.split(".")
+    if len(parts) == 2 and parts[0] == "parameters" and parts[1]:  # noqa: PLR2004 - parameters.<name>
+        return None
+    raise KeyError(parameter)
+
+
+def _logic_source_dimension(parameter: str) -> Dimension:
+    """Returns the dimension (`TIME`) of a `logic_source` parameter path."""
+    parts = parameter.split(".")
+    is_change_time = (
+        len(parts) == 3  # noqa: PLR2004 - changes.<index>.0 time entry
+        and parts[0] == "changes"
+        and parts[1].isdecimal()
+        and parts[2] == "0"
+    )
+    if parameter == "transition" or is_change_time:
+        return TIME
+    raise KeyError(parameter)
+
+
 def parameter_dimension(
     target: ir.DeviceOf,
     parameter: str,
@@ -624,26 +646,32 @@ def parameter_dimension(
         "temperature_offset",
     }:
         return TEMPERATURE
-    if model in {"voltage_source", "current_source"}:
-        return _waveform_dimension(
-            VOLTAGE if model == "voltage_source" else CURRENT, parameter
-        )
-    if model == "coupled_inductors":
-        return _coupled_inductor_dimension(parameter)
-    if model == "logic_cell":
-        return _logic_cell_dimension(parameter)
-    if model == "logic_source":
-        parts = parameter.split(".")
-        is_change_time = (
-            len(parts) == 3  # noqa: PLR2004 - changes.<index>.0 time entry
-            and parts[0] == "changes"
-            and parts[1].isdecimal()
-            and parts[2] == "0"
-        )
-        if parameter == "transition" or is_change_time:
-            return TIME
-        raise KeyError(parameter)
-    return _top_dimension(model, parameter, parameters or {})
+    match model:
+        case (
+            "behavioral_voltage_source"
+            | "behavioral_current_source"
+            | "behavioral_capacitor"
+        ):
+            dimension = _behavioral_dimension(parameter)
+        case "behavioral_resistor":
+            dimension = (
+                _behavioral_dimension(parameter)
+                if parameter.startswith("parameters.")
+                else _top_dimension(model, parameter, parameters or {})
+            )
+        case "voltage_source" | "current_source":
+            dimension = _waveform_dimension(
+                VOLTAGE if model == "voltage_source" else CURRENT, parameter
+            )
+        case "coupled_inductors":
+            dimension = _coupled_inductor_dimension(parameter)
+        case "logic_cell":
+            dimension = _logic_cell_dimension(parameter)
+        case "logic_source":
+            dimension = _logic_source_dimension(parameter)
+        case _:
+            dimension = _top_dimension(model, parameter, parameters or {})
+    return dimension
 
 
 def convert_parameter(

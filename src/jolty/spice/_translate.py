@@ -41,6 +41,13 @@ from jolty.spice._params import (
     resolve_into,
 )
 from jolty.spice._preprocess import chosen, keyword, letter, unconditional
+from jolty.spice._statistics import (
+    StatisticalCompiler,
+    check_condition_deterministic,
+    extract_probe_behavioral,
+    record_device_targets,
+    record_vbic_heating_targets,
+)
 from jolty.spice._survey import (
     ELEMENT_KINDS,
     UNMULTIPLIED,
@@ -51,9 +58,11 @@ from jolty.spice._survey import (
     needed_model,
 )
 from jolty.spice.expressions import (
+    Binary,
     Draw,
     Expression,
     Function,
+    Number,
     UndefinedError,
     check_core_depth,
     evaluate,
@@ -185,7 +194,7 @@ class LibraryHost(Protocol):
         """
         ...
 
-    def place_built(  # noqa: PLR0913 - subcircuit placement state and survey list
+    def place_built(  # noqa: PLR0913 - subcircuit placement state and statistical hoisting
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
@@ -196,6 +205,10 @@ class LibraryHost(Protocol):
         uses: list[Use] | None = None,
         temperature: float | None = None,
         temperature_dependent: frozenset[str] | None = None,
+        given_symbolic: Mapping[str, Expression] | None = None,
+        parent_statistics: StatisticalCompiler | None = None,
+        hoist_instance: str | None = None,
+        given_probe_stochastic: frozenset[str] = frozenset(),
     ) -> Built:
         """Builds a child subcircuit placement.
 
@@ -209,6 +222,10 @@ class LibraryHost(Protocol):
             temperature: Optional library temperature snapshot in kelvins.
             temperature_dependent: Optional set of global parameter names depending on
                 library temperature.
+            given_symbolic: Optional symbolic expressions for stochastic `given` args.
+            parent_statistics: Enclosing `StatisticalCompiler` when hoisting this child.
+            hoist_instance: Local instance name under `parent_statistics` when hoisting.
+            given_probe_stochastic: Names in `given` that vary under `Probe`.
 
         Returns:
             Full `Built` record bundling the component, net names, and initial state.
@@ -229,6 +246,10 @@ class TranslationOptions:
     uses: list[Use] | None = None
     temperature: float = _core.REFERENCE_TEMPERATURE
     temperature_dependent: frozenset[str] = frozenset()
+    statistics: StatisticalCompiler | None = None
+    probe_compiler: StatisticalCompiler | None = None
+    multiplier_symbolic: Expression | None = None
+    hoisted: bool = False
 
 
 @dataclass(slots=True)
@@ -251,6 +272,7 @@ class Coupling:
     inductors: tuple[str, ...]
     coefficient: float
     order: int
+    coefficient_symbolic: Expression | None = None
 
 
 class Translation:
@@ -278,6 +300,10 @@ class Translation:
         self._temperature = options.temperature
         self._global_temperature_dependent = options.temperature_dependent
         self._temperature_dependent = False
+        self.statistics = options.statistics
+        self.probe_compiler = options.probe_compiler
+        self.multiplier_symbolic = options.multiplier_symbolic
+        self._hoisted = options.hoisted
         self.order = 0
         self.draw: Draw = nominal
         """The draws of the statistical functions of the element being translated."""
@@ -337,6 +363,46 @@ class Translation:
             isinstance(self.scope, TrackedScope) and self.scope.read_temperature
         )
 
+    def _select_body(self) -> list[Statement]:
+        """Evaluates `.if` blocks, runs directives, and returns active elements."""
+        body = self.subcircuit.body
+        outside_conditions = {id(statement) for statement in unconditional(body)}
+        elements: list[Statement] = []
+
+        def check_condition(statement: Statement, condition: Expression) -> None:
+            if self.statistics is not None:
+                check_condition_deterministic(
+                    condition, self.statistics, self.scope, statement
+                )
+
+        selected = chosen(
+            body,
+            self.scope,
+            self.functions,
+            on_condition=check_condition if self.statistics is not None else None,
+        )
+        for statement in selected:
+            directive = keyword(statement)
+            if id(statement) in outside_conditions and directive in {
+                FUNCTION,
+                *PARAMETERS,
+            }:
+                continue
+            if statement.text.startswith("."):
+                self._define(statement)
+            else:
+                elements.append(statement)
+        return elements
+
+    def _resolve_conditional_parameters(self) -> None:
+        """Resolves conditional `.param` statements into scope and active compilers."""
+        if not self.parameters:
+            return
+        resolve_into(self.parameters, self.scope, self.drawing.draws, self.functions)
+        active = self.statistics or self.probe_compiler
+        if active is not None:
+            active.resolve_into(self.parameters, self.scope, self.functions)
+
     def translate(self, name: str) -> Built:
         """Translates the subcircuit into a `Built` component named `name`.
 
@@ -350,24 +416,8 @@ class Translation:
             Translated `Built` bundle containing the component, net map, and initial
             state.
         """
-        body = self.subcircuit.body
-        outside_conditions = {id(statement) for statement in unconditional(body)}
-        elements: list[Statement] = []
-        for statement in chosen(body, self.scope, self.functions):
-            directive = keyword(statement)
-            if id(statement) in outside_conditions and directive in {
-                FUNCTION,
-                *PARAMETERS,
-            }:
-                continue
-            if statement.text.startswith("."):
-                self._define(statement)
-            else:
-                elements.append(statement)
-        if self.parameters:
-            resolve_into(
-                self.parameters, self.scope, self.drawing.draws, self.functions
-            )
+        elements = self._select_body()
+        self._resolve_conditional_parameters()
         for statement in elements:
             if letter(statement) in _SENSED:
                 self._source(statement)
@@ -387,7 +437,14 @@ class Translation:
             instance
             for _, instance in sorted(self.instances, key=operator.itemgetter(0))
         )
-        definition = ir.Component(ports=tuple(ports), instances=instances)
+        statistical = (
+            None
+            if self.statistics is None or self._hoisted
+            else self.statistics.finalize()
+        )
+        definition = ir.Component(
+            ports=tuple(ports), instances=instances, statistical=statistical
+        )
         component = Component(name, definition, tuple(self.children.values()))
         return Built(
             component,
@@ -478,6 +535,30 @@ class Translation:
             raise SpiceError(message)
         return resolved
 
+    def value_symbolic(self, word: str) -> tuple[float, Expression | None]:
+        """Evaluates `word` and returns `(nominal_value, symbolic_expression)`.
+
+        When statistical compilation is active, lowers `word` through the element's
+        active call counter alongside nominal evaluation.
+        """
+        written = number(word)
+        if written is not None:
+            if not math.isfinite(written):
+                message = f"`{word}` evaluates to a non-finite value ({written!r})"
+                raise SpiceError(message)
+            return written, None
+        parsed = self.parse(word)
+        resolved = evaluate(parsed, self.scope, self.draw)
+        if not math.isfinite(resolved):
+            message = f"`{word}` evaluates to a non-finite value ({resolved!r})"
+            raise SpiceError(message)
+        symbolic = (
+            None
+            if self.statistics is None
+            else self.statistics.lower_element(parsed, self.scope)
+        )
+        return resolved, symbolic
+
     def multiplied(self, instance: Mapping[str, float]) -> dict[str, float]:
         """Applies the enclosing subcircuit multiplier `m` to `instance` parameters.
 
@@ -493,6 +574,31 @@ class Translation:
         if self.multiplier == 1:
             return dict(instance)
         return {**instance, "m": instance.get("m", 1.0) * self.multiplier}
+
+    def multiplied_symbolic(
+        self,
+        instance: Mapping[str, float],
+        instance_symbolic: Mapping[str, Expression],
+    ) -> tuple[dict[str, float], dict[str, Expression]]:
+        """Applies enclosing subcircuit multiplier `m` to nominal and symbolic maps."""
+        values = self.multiplied(instance)
+        symbolic = dict(instance_symbolic)
+        if self.multiplier == 1.0 and self.multiplier_symbolic is None:
+            return values, symbolic
+        own_value = instance.get("m", 1.0)
+        own_symbolic = instance_symbolic.get("m")
+        if self.multiplier_symbolic is None:
+            if own_symbolic is not None:
+                symbolic["m"] = Binary("*", own_symbolic, Number(self.multiplier))
+        elif own_symbolic is None:
+            symbolic["m"] = (
+                self.multiplier_symbolic
+                if own_value == 1.0
+                else Binary("*", Number(own_value), self.multiplier_symbolic)
+            )
+        else:
+            symbolic["m"] = Binary("*", own_symbolic, self.multiplier_symbolic)
+        return values, symbolic
 
     def parse(self, text: str) -> Expression:
         """Parses SPICE expression `text` and inlines all visible user functions.
@@ -547,7 +653,33 @@ class Translation:
             )
         )
 
-    def add_behavioral(
+    def _prepare_behavioral_parameters(
+        self,
+        element_name: str,
+        expression: Expression,
+        extra_parameters: Mapping[str, tuple[float, Expression]] | None,
+        probe_extra_parameters: Mapping[str, float] | None,
+    ) -> tuple[Expression, dict[str, float], dict[str, str] | None]:
+        """Extracts stochastic behavioral parameters for statistics or probe mode."""
+        if self.statistics is not None:
+            rewritten, extracted, symbolic = self.statistics.extract_behavioral(
+                element_name,
+                expression,
+                self.scope,
+                extra_parameters=extra_parameters,
+            )
+            return rewritten, extracted, symbolic or None
+        if self.probe_compiler is not None:
+            rewritten, extracted, symbolic = extract_probe_behavioral(
+                expression,
+                self.scope,
+                frozenset(self.probe_compiler.scope_symbols),
+                extra_parameters=probe_extra_parameters,
+            )
+            return rewritten, extracted, symbolic or None
+        return expression, {}, None
+
+    def add_behavioral(  # noqa: PLR0913 - behavioral device placement and statistics
         self,
         statement: Statement,
         model: str,
@@ -555,11 +687,15 @@ class Translation:
         expression: Expression,
         *,
         parameters: Mapping[str, JsonValue] | None = None,
+        extra_parameters: Mapping[str, tuple[float, Expression]] | None = None,
+        probe_extra_parameters: Mapping[str, float] | None = None,
     ) -> None:
         """Places a behavioral device of `model` between `nodes` using `expression`.
 
         Adds dedicated sense terminals for referenced node voltages and inserts series
-        sensing ports for referenced source currents.
+        sensing ports for referenced source currents. When statistical compilation or
+        mismatch probing is active, extracts stochastic parameter leaves as named
+        behavioral device parameters (`p(<name>)`).
 
         Args:
             statement: Source SPICE element statement providing location metadata.
@@ -567,6 +703,10 @@ class Translation:
             nodes: Pair of `(positive_node, negative_node)` SPICE node tokens.
             expression: Inlined SPICE `Expression` governing the behavioral output.
             parameters: Optional extra device parameters merged alongside `expression`.
+            extra_parameters: Optional `(nominal, step_expression)` map for synthesized
+                stochastic factors (such as behavioral resistor copy scaling).
+            probe_extra_parameters: Optional nominal map matching `extra_parameters`
+                during `Probe` mismatch extraction.
         """
         terminals = {
             "positive": self.net(nodes[0]),
@@ -594,7 +734,21 @@ class Translation:
                 terminals[f"{port}_positive"], terminals[f"{port}_negative"] = sensed
             return ports[key]
 
-        text = translate(expression, self.scope, node, current)
+        translated_expression, extracted_parameters, symbolic_names = (
+            self._prepare_behavioral_parameters(
+                statement.text.split()[0],
+                expression,
+                extra_parameters,
+                probe_extra_parameters,
+            )
+        )
+        text = translate(
+            translated_expression,
+            self.scope,
+            node,
+            current,
+            symbolic=symbolic_names,
+        )
         try:
             check_core_depth(text)
         except SpiceError as error:
@@ -602,6 +756,8 @@ class Translation:
         combined: dict[str, JsonValue] = {"expression": text}
         if parameters is not None:
             combined |= parameters
+        if extracted_parameters:
+            combined["parameters"] = dict(extracted_parameters)
         self.add(statement, model, combined, terminals)
 
     def sense(self, source: str, statement: Statement) -> tuple[str, str]:
@@ -772,8 +928,12 @@ class Translation:
                 key=lambda name: inductors[name][0],
             )
             windings = [inductors[name][1] for name in names]
-            order, instance = _coupled(group, names, windings)
+            order, instance, coupling_expressions = _coupled(group, names, windings)
             self.instances.append((order, instance))
+            if self.statistics is not None:
+                self.statistics.remap_coupled_inductors(
+                    instance.name, names, windings, coupling_expressions
+                )
             for winding_index, name in enumerate(names, start=1):
                 entry = self.inductor_initial_currents.pop(name, None)
                 if entry is not None:
@@ -803,6 +963,8 @@ class Translation:
         """
         name = statement.text.split()[0]
         self.draw = self.drawing.draws(name.casefold())
+        if self.statistics is not None:
+            self.statistics.begin_element(name.casefold())
         if self.uses is None:
             self._translated(statement)
             return
@@ -834,7 +996,9 @@ class Translation:
             )
             raise statement.fail(message)
         element_letter = letter(statement)
-        if self.multiplier != 1 and element_letter in UNMULTIPLIED:
+        if (
+            self.multiplier != 1 or self.multiplier_symbolic is not None
+        ) and element_letter in UNMULTIPLIED:
             message = (
                 f"jolty multiplies no {ELEMENT_KINDS[element_letter]} by its "
                 f"subcircuit's multiplier `m`, here {self.multiplier!r}"
@@ -850,7 +1014,12 @@ class Translation:
         translator(self, statement)
 
     def device(
-        self, card: ModelCard, instance: Mapping[str, float], statement: Statement
+        self,
+        card: ModelCard,
+        instance: Mapping[str, float],
+        statement: Statement,
+        *,
+        instance_symbolic: Mapping[str, Expression] | None = None,
     ) -> models.Made:
         """Translates model `card` and `instance` parameters into a `Made` device.
 
@@ -860,6 +1029,8 @@ class Translation:
             card: Parsed SPICE `.model` card describing the device.
             instance: Evaluated element-level geometric, area, and multiplicity values.
             statement: Element statement used for error attribution.
+            instance_symbolic: Optional symbolic expressions for stochastic instance
+                parameters recorded when statistical compilation is active.
 
         Returns:
             Translated jolty `Made` device pairing model name and SI parameters.
@@ -869,7 +1040,7 @@ class Translation:
         def draws(name: str) -> Draw:
             return self.drawing.draws(f"{prefix}.{name}")
 
-        return models.device(
+        made = models.device(
             card,
             self.scope,
             instance,
@@ -877,6 +1048,75 @@ class Translation:
             draws,
             functions=self.functions,
         )
+        if self.statistics is not None:
+            card_symbolic: dict[str, Expression] = {}
+            for parameter_name, expression in card.parameters.items():
+                resolved = inlined(expression, self.functions)
+                lowered = self.statistics.lower(
+                    resolved, self.scope, call_name=f"{prefix}.{parameter_name}"
+                )
+                if lowered is not None:
+                    card_symbolic[parameter_name] = lowered
+            if card_symbolic or (instance_symbolic is not None and instance_symbolic):
+                card_values = {
+                    parameter_name: evaluate(
+                        inlined(expression, self.functions), self.scope, nominal
+                    )
+                    for parameter_name, expression in card.parameters.items()
+                }
+                record_device_targets(
+                    self.statistics,
+                    statement.text.split()[0],
+                    card,
+                    card_values=card_values,
+                    card_symbolic=card_symbolic,
+                    instance=instance,
+                    instance_symbolic=instance_symbolic or {},
+                    made=made,
+                    statement=statement,
+                )
+        return made
+
+    def record_vbic_heating(
+        self,
+        card: ModelCard,
+        instance: Mapping[str, float],
+        instance_symbolic: Mapping[str, Expression],
+        statement: Statement,
+        *,
+        heated: bool,
+    ) -> None:
+        """Records symbolic targets for 5-node VBIC self-heating `.rth`/`.cth`."""
+        if self.statistics is None:
+            return
+        prefix = card.name.casefold()
+        card_symbolic: dict[str, Expression] = {}
+        card_values: dict[str, float] = {}
+        for parameter_name in models.VBIC_SELF_HEATING:
+            expression = card.parameters.get(parameter_name)
+            if expression is None:
+                continue
+            resolved = inlined(expression, self.functions)
+            lowered = self.statistics.lower(
+                resolved, self.scope, call_name=f"{prefix}.{parameter_name}"
+            )
+            if lowered is not None:
+                card_symbolic[parameter_name] = lowered
+            card_values[parameter_name] = evaluate(resolved, self.scope, nominal)
+        if card_symbolic or (
+            heated and ("area" in instance_symbolic or "m" in instance_symbolic)
+        ):
+            record_vbic_heating_targets(
+                self.statistics,
+                statement.text.split()[0],
+                card,
+                card_values=card_values,
+                card_symbolic=card_symbolic,
+                instance=instance,
+                instance_symbolic=instance_symbolic,
+                heated=heated,
+                statement=statement,
+            )
 
 
 type _ThermalAdjacency = dict[str, list[tuple[str, ir.Instance]]]
@@ -961,7 +1201,7 @@ def _groups(couplings: list[Coupling]) -> list[list[Coupling]]:
 
 def _coupled(
     group: list[Coupling], names: list[str], windings: list[ir.Instance]
-) -> tuple[int, ir.Instance]:
+) -> tuple[int, ir.Instance, list[tuple[int, Expression | None]]]:
     """Builds a `coupled_inductors` device and order index for one coupling `group`.
 
     Combines `windings` (matching `names`) and preserves their shared instance
@@ -972,7 +1212,7 @@ def _coupled(
             pair, or joins windings with conflicting instance temperatures.
     """
     numbers = {name: index for index, name in enumerate(names, start=1)}
-    pairs: dict[frozenset[int], float] = {}
+    pairs: dict[frozenset[int], tuple[float, Expression | None]] = {}
     for each in group:
         for first, second in itertools.combinations(each.inductors, 2):
             pair = frozenset({numbers[first.casefold()], numbers[second.casefold()]})
@@ -982,11 +1222,14 @@ def _coupled(
             if pair in pairs:
                 message = f"`{first}` and `{second}` are coupled twice"
                 raise each.statement.fail(message)
-            pairs[pair] = each.coefficient
+            pairs[pair] = (each.coefficient, each.coefficient_symbolic)
     couplings: list[JsonValue] = []
-    for pair, coefficient in pairs.items():
+    coupling_expressions: list[tuple[int, Expression | None]] = []
+    for index, (pair, (coefficient, symbolic)) in enumerate(pairs.items()):
         numbered: list[JsonValue] = [*sorted(pair)]
         couplings.append({"windings": numbered, "coefficient": coefficient})
+        if symbolic is not None:
+            coupling_expressions.append((index, symbolic))
     first_coupling = group[0]
     first_statement = first_coupling.statement
     owns = [
@@ -1027,7 +1270,7 @@ def _coupled(
             file=first_statement.file, line=first_statement.line
         ),
     )
-    return first_coupling.order, instance
+    return first_coupling.order, instance, coupling_expressions
 
 
 def _identifier(name: str, taken: set[str]) -> str:

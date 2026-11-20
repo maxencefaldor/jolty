@@ -131,7 +131,7 @@ fn value_into(tape: &[Instruction], variables: &[f64], values: &mut [f64]) -> f6
             Instruction::Table(x, points) => points.interpolate(values[*x]).0,
         };
     }
-    values[tape.len() - 1]
+    values.last().copied().unwrap_or(f64::NAN)
 }
 
 /// Evaluates `tape` at `variables` without step limiting or reverse-mode derivatives,
@@ -144,6 +144,17 @@ pub(crate) fn value(tape: &[Instruction], variables: &[f64]) -> f64 {
         let mut heap = vec![0.0; tape.len()];
         value_into(tape, variables, &mut heap)
     }
+}
+
+/// Evaluates `tape` at `variables` using reusable scratch storage `values` without
+/// computing gradients or step limiting, returning the root scalar value.
+pub(crate) fn evaluate_value(
+    tape: &[Instruction],
+    variables: &[f64],
+    values: &mut Vec<f64>,
+) -> f64 {
+    values.resize(tape.len(), 0.0);
+    value_into(tape, variables, values)
 }
 
 /// Evaluates `tape` at `variables` in `workspace`, writes the reverse-mode gradient into

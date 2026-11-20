@@ -1313,18 +1313,23 @@ def translate(
     parameters: Mapping[str, float],
     node: Callable[[str], str],
     current: Callable[[str], str],
+    *,
+    symbolic: Mapping[str, str] | None = None,
 ) -> str:
     """Translates `expression` into the jolty expression language.
 
-    Substitutes numeric values for parameters, maps non-ground nodes through `node`,
-    and maps voltage-source currents through `current`. Emits parentheses only where
-    operator precedence or associativity requires them.
+    Substitutes numeric values for parameters, emits ``p(<name>)`` for names present in
+    `symbolic`, maps non-ground nodes through `node`, and maps voltage-source currents
+    through `current`. Emits parentheses only where operator precedence or associativity
+    requires them.
 
     Args:
         expression: SPICE expression tree to format.
         parameters: Case-folded parameter values substituted as numeric literals.
         node: Mapper converting non-ground SPICE node names to jolty net names.
         current: Mapper converting SPICE voltage-source names to jolty instance names.
+        symbolic: Optional mapping from case-folded names to jolty parameter identifiers
+            emitted as ``p(<identifier>)`` instead of numeric literals.
 
     Returns:
         Expression formatted in the jolty expression language.
@@ -1336,7 +1341,7 @@ def translate(
 
     def leaf(part: Expression) -> tuple[str, int] | None:
         if isinstance(part, Number | Name | Voltage | Current):
-            leaf_text = _leaf(part, parameters, node, current)
+            leaf_text = _leaf(part, parameters, node, current, symbolic)
             _check_translated_length(len(leaf_text))
             return leaf_text, _ATOM_PRECEDENCE
         return None
@@ -1438,6 +1443,7 @@ def _leaf(
     parameters: Mapping[str, float],
     node: Callable[[str], str],
     current: Callable[[str], str],
+    symbolic: Mapping[str, str] | None = None,
 ) -> str:
     """Formats a leaf expression node in the jolty expression language.
 
@@ -1447,6 +1453,8 @@ def _leaf(
     match leaf:
         case Number(value):
             return _number(value)
+        case Name(name) if symbolic is not None and name in symbolic:
+            return f"p({symbolic[name]})"
         case Name(name) if name in parameters:
             return _number(parameters[name])
         case Name(name) if name in _CONSTANTS:

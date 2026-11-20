@@ -7,6 +7,7 @@
 //! Deriving `#[derive(Lift)]` on any parameter struct generic over a scalar type walks its
 //! fields directly without round-tripping through JSON.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::{Gradient, Hyper, ParameterError, Real};
@@ -43,7 +44,7 @@ pub enum ParameterPath<'a> {
         /// Enclosing container path.
         within: &'a ParameterPath<'a>,
         /// Field key name.
-        key: &'static str,
+        key: &'a str,
     },
     /// Sequence element at `index` nested inside `within`.
     Index {
@@ -57,7 +58,7 @@ pub enum ParameterPath<'a> {
 impl ParameterPath<'_> {
     /// Returns a child path addressing object field `key` under `self`.
     #[must_use]
-    pub const fn key(&self, key: &'static str) -> ParameterPath<'_> {
+    pub const fn key<'a>(&'a self, key: &'a str) -> ParameterPath<'a> {
         ParameterPath::Key { within: self, key }
     }
 
@@ -171,6 +172,21 @@ impl<R, T: Lift<R>> Lift<R> for Vec<T> {
             .iter()
             .enumerate()
             .map(|(index, plain)| T::lift(plain, &path.index(index), number))
+            .collect()
+    }
+}
+
+impl<R, T: Lift<R>> Lift<R> for BTreeMap<String, T> {
+    type Plain = BTreeMap<String, T::Plain>;
+
+    fn lift<Lifting: FnMut(&ParameterPath<'_>, f64) -> R>(
+        plain: &Self::Plain,
+        path: &ParameterPath<'_>,
+        number: &mut Lifting,
+    ) -> Self {
+        plain
+            .iter()
+            .map(|(key, value)| (key.clone(), T::lift(value, &path.key(key), number)))
             .collect()
     }
 }
@@ -342,6 +358,16 @@ mod tests {
         assert_eq!(lifted.width, Gradient::new(8.0, [0.0, 2.0]));
         assert_eq!(lifted.points[1].1, Gradient::constant(3.0));
         assert_eq!(lifted.period, Some(Gradient::constant(9.0)));
+
+        let plain = BTreeMap::from([("gain".to_owned(), 2.0), ("offset".to_owned(), -0.5)]);
+        let mapped: BTreeMap<String, Gradient<2>> = lift(
+            &plain,
+            &[("gain", [1.0, 0.0]), ("offset", [0.0, 3.0])],
+            Gradient::new,
+        )
+        .expect("map entries");
+        assert_eq!(mapped["gain"], Gradient::new(2.0, [1.0, 0.0]));
+        assert_eq!(mapped["offset"], Gradient::new(-0.5, [0.0, 3.0]));
     }
 
     #[test]

@@ -81,10 +81,13 @@ Under HSPICE compatibility (such as SKY130) or `wnflag`, transistor width divide
 `temper` evaluates to the library load temperature in kelvins (default 27 °C), used by SG13G2 bipolar transit times.
 Parsed kit libraries cache under [`cache`](../reference/configuration.md), keyed by section, compatibility mode, and included file digests.
 Changing `library.temperature` preserves cached builds for subcircuits that do not read `temper`.
-Statistical functions (`agauss`, `gauss`, `aunif`, `unif`, `limit`) default to nominal values unless drawn via `library.drawn(name, Sample(seed, index), path)`.
-Each drawn placement evaluates statistical calls from deterministic engine variates keyed by seed, sample index, placement path, and call order.
-Deterministic keying guarantees identical mismatch bits across arbitrary shard splits while drawing independent mismatch per placement.
-`library.random_variables(name, path)` exposes the same placement's statistical calls (including nested placements) for first-order [mismatch analysis](simulation.md#mismatch) via `Mismatch(outputs, random_variables=...)`.
+Statistical functions (`agauss`, `gauss`, `aunif`, `unif`, `limit`) evaluate to nominal values during normal runs.
+`library.component(name)` compiles active statistical expressions into a parameter graph stored on the component.
+`MonteCarlo` batches evaluate those graphs inside the parallel Rust engine over one shared elaborated circuit.
+Library-level calls share one draw per sample for process variation, while subcircuit calls draw independently per placement path for mismatch.
+`library.drawn(name, Sample(seed, index), path)` evaluates one standalone sample with the exact same deterministic variate keys.
+Deterministic keying guarantees bit-identical samples across arbitrary thread counts and shard splits.
+`library.random_variables(name, path)` exposes per-placement statistical calls, including nested and behavioral devices, for first-order [mismatch analysis](simulation.md#mismatch) via `Mismatch(outputs, random_variables=...)`.
 Each random variable pairs its nominal mean with its analytical standard deviation.
 Standard deviations are `a / s` for `agauss(x, a, s)`, `|x| r / s` for `gauss(x, r, s)`, `|a| / √3` for `aunif(x, a)`, `|x r| / √3` for `unif(x, r)`, and `|a|` for `limit(x, a)`.
 Parameter derivatives use `ε^(1/3) σ` central differences, which are exact to floating-point rounding for the quadratic or linear parameter expressions used in open PDKs.

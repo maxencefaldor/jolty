@@ -269,11 +269,65 @@ class Instance(FrozenModel):
     source_location: SourceLocation | None = None
 
 
+type StatisticalFunction = Literal["agauss", "gauss", "aunif", "unif", "limit"]
+"""SPICE statistical distribution function evaluated per Monte Carlo sample."""
+
+
+class StatisticalDraw(FrozenModel):
+    """Draw step sampling one SPICE statistical distribution function."""
+
+    kind: Literal["draw"] = "draw"
+    name: str
+    shared: bool = Field(default=False, exclude_if=lambda value: not value)
+    scope: str = Field(default="", exclude_if=lambda scope: not scope)
+    call: str
+    function: StatisticalFunction
+    nominal: str
+    spread: str
+    sigma: str | None = Field(default=None, exclude_if=lambda sigma: sigma is None)
+
+
+class StatisticalValue(FrozenModel):
+    """Intermediate expression step evaluated over earlier statistical variables."""
+
+    kind: Literal["value"] = "value"
+    name: str
+    expression: str
+
+
+type StatisticalStep = Annotated[
+    StatisticalDraw | StatisticalValue, Field(discriminator="kind")
+]
+"""One named variable definition inside a component's statistical evaluation graph."""
+
+
+class StatisticalTarget(FrozenModel):
+    """Device parameter computed from a component's statistical step variables."""
+
+    instance: str
+    parameter: str
+    expression: str
+
+
+class Statistical(FrozenModel):
+    """Statistical draw graph computing per-sample device parameters for Monte Carlo."""
+
+    steps: tuple[StatisticalStep, ...] = Field(
+        default=(), exclude_if=lambda steps: not steps
+    )
+    targets: tuple[StatisticalTarget, ...] = Field(
+        default=(), exclude_if=lambda targets: not targets
+    )
+
+
 class Component(FrozenModel):
-    """Component definition holding external ports and placed child instances."""
+    """Component definition holding external ports, instances, and statistical model."""
 
     ports: tuple[Port, ...] = ()
     instances: tuple[Instance, ...] = ()
+    statistical: Statistical | None = Field(
+        default=None, exclude_if=lambda statistical: statistical is None
+    )
 
     def instance(self, name: str) -> Instance | None:
         """Returns the placed instance named `name`, or ``None`` if absent.
