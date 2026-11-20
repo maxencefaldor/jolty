@@ -8,7 +8,7 @@ The inventory was read from `main` at `5f69050` and pending branches: `coverage`
 Uncommitted work on `chgtol` and `regions` added no public names referenced by the glossary.
 Written 15 November 2026.
 
-Status (18 November 2026): every owner-approved rename landed on `main` (`8a4d80a` to `bc35702`, `quality.md` 12), so "today" below refers to 15 November; only `measure::Signal` awaits an owner decision.
+Status (18 November 2026): every owner-approved rename landed on `main` (`8a4d80a` to `bc35702`, `quality.md` 12), so "today" below refers to 15 November; on 20 November the owner kept `measure::Signal`, the last open name.
 
 ## The owner's decisions, 15 November
 

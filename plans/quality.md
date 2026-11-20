@@ -3,7 +3,7 @@
 Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 18 November.
 Full background research remains archived in `research/quality.md`.
 
-Plan: ✅ 21 done · 🚧 1 in progress · 📋 3 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 22 done · 📋 3 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -23,7 +23,7 @@ The Python test suite also runs under free-threaded Python in `scripts/check`, m
 - **One fact in several places:** a single model parameter currently lives in six places across four files (`models.md` 4).
 - **Guards that enumerate the library:** allocation, Jacobian, physical-law, and SPICE round-trip checks all enumerate `Library::standard()` (item 4).
 - **Numbers with their source:** all named constants across `jolty-engine`, `jolty-numerics`, and `jolty-checks` and all Python test tolerances cite origins and are enforced by `tests/test_tolerances.py` (items 10 and 11, done).
-- **Names:** naming is unified across the library (`8a4d80a` to `bc35702`, item 12; only `measure::Signal` awaits owner review) and across benchmark suites (`092e86f`, item 13, done: `fixture` everywhere, one `benchmarks/simulators.py`).
+- **Names:** naming is unified across the library (`8a4d80a` to `bc35702`, item 12, done; the owner kept `measure::Signal` on 20 November) and across benchmark suites (`092e86f`, item 13, done: `fixture` everywhere, one `benchmarks/simulators.py`).
 
 **One way to differentiate and one way to stamp (since 17 November):** every kernel composes dual numbers at the natural width of each physical law (item 6) and stamps matrix entries through summed derivatives (item 5).
 
@@ -41,7 +41,6 @@ Guide sentences remain long, with a median of 27 words measured on 15 November (
 ## 3. Gaps
 
 - Duplicated model metadata: each model's facts remain spread across several files, while benchmark helpers are now unified (item 13).
-- Remaining naming inconsistency: `measure::Signal` still awaits an owner decision (item 12).
 - Late unit checking on options, overrides, variants, axes, and sweeps (item 7); plan/spec name resolution, multi-error validation, and constant/tolerance citations are complete (items 8 to 11).
 - Missing how-to pages and long guide sentences; executable guide blocks and output verification are complete (item 14).
 
@@ -142,14 +141,14 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     In `tests/test_spice.py`, tiny sub-pA and sub-pF `pytest.approx` assertions also lacked explicit `abs=0` and were tightened.
 - **Source:** row 16.
 
-### 🚧 12. One name for each concept
+### ✅ 12. One name for each concept
 
 - **What:** follow the owner's naming rule (`AGENTS.md`, "Names") by writing a glossary of every concept, its canonical name, definition, and existing aliases for owner review, then applying all renames atomically.
     The scope includes distinct names for analyses and results, a dedicated `PeriodicSteadyState` analysis, and `batch(plan)`.
 - **Done when:** the glossary covers every concept once, the owner approves the glossary, all renames land on `main`, and reference docs list each class once.
 - **State:** every owner-approved rename landed on `main` (`8a4d80a` to `bc35702`, 712 renames applied via a temporary migration table and script).
     Periodic steady state is now a dedicated analysis (choice 6, `agentic.md` 22), `Parallelism` uses the owner's names (`speed.md` 4), and `elaborate::Composite` became `SummedTerminal` (16 November).
-    **Not done:** `measure::Signal` (an output and gain denominator) still awaits an owner decision.
+    **Kept** (the owner, 20 November): `measure::Signal` names both an output and a gain's denominator, so the glossary's `Output` does not fit, and the measures' `signal` parameter already matches it.
 - **Source:** row 13; superseded design brief (not retained).
 
 ### ✅ 13. The benchmarks' code made one
@@ -307,6 +306,7 @@ Guard tables count occurrences across `crates/jolty-models/src/testing/cases.rs`
 - 15 Nov, the owner: `mkdocstrings-python` stays as the Zensical API plugin; ported kernels retain reference local names inside each kernel, with functions citing upstream source lines.
 - `jolty.cli.CommandLine` and `jolty.cli.run` remain public so the jolty CLI and repository scripts share one configuration.
 - Guide claims unsupported by code were corrected (`7edbffa`), and the VBIC section links the generated models reference rather than repeating a manual table.
+- 20 November (owner): `jolty_engine::measure::Signal` keeps its name, matching the measures' `signal` parameter (item 12).
 - 15 Nov, the owner: adding any tool or dependency requires owner approval; ty is the sole type checker, Zensical with mkdocstrings is the sole docs tool, and mypy was removed (`5ba0fb2`).
 - 15 Nov, the owner: each concept has one uniform, consistent, symmetric, formal, and principled name (`AGENTS.md`, "Names").
 

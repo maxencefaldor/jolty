@@ -68,17 +68,15 @@ As of 18 November 2026, `main` includes the following completed capabilities:
 
 ## Open decisions
 
-Each open decision awaits owner approval:
+Each open decision awaits owner approval.
+On 20 November the owner decided four: Newton omits both early cuts (`accuracy.md` 6), `measure::Signal` keeps its name (`quality.md` 12), `Mismatch` and `random_variables` keep their names (`models.md` 17), and derivative chunks stay at most 8 wide (`device-derivatives.md` 2.3).
 
-- **Device derivatives** (`device-derivatives.md`): three items await decision.
+- **Device derivatives** (`device-derivatives.md`): two items await decision.
     First, whether exact-by-construction Gummel-Poon and JFET derivatives justify 2 to 8% more instructions per evaluation (step 1.3).
-    Second, whether the largest chunk stays at 8 (recommended) or grows to 16, which runs 5 to 24% faster than two 8-wide twins while building `jolty-models` 23% slower (step 2.3).
-    Third, whether to run the held BSIM4 evaluation measurement against ngspice.
-- **Two names** (`models.md` 17): the `Mismatch` analysis (kind `mismatch`, compared with Spectre and HSPICE `dcmatch` and `acmatch`) and `random_variables` have landed on `main` pending owner sign-off.
-- **Newton's two cuts** (`accuracy.md` 6): measurements showed misjudgment because 91% of the buck iterations that would have been cut still converged within ten iterations.
-    The recommendation is to omit both cuts.
+    Second, whether to run the held BSIM4 evaluation measurement against ngspice.
 - **`ln1p` and `expm1` in jolty's Verilog-A:** both extensions sit outside the Verilog-AMS standard and remain reversible.
 - **Generated kernel parameters:** whether generated kernels may declare parameters via a table rather than derived serialization.
     A table cuts a third of PSP's 1.54 MB footprint and 122 s release build time, while giving generated and hand-written kernels two different forms.
 - **CMC QA files:** R3_CMC 1.1.2 QA tests are distributed only through an Si2 form requiring the owner's name and email, blocking the compiler QA harness (`models.md` 12, 15).
+    The owner agreed on 20 November to download them; the harness starts once the files arrive.
 - **Item 8 paid run** (`agentic.md` 14): deferred pending owner go-ahead.

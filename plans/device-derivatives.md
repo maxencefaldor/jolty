@@ -186,7 +186,7 @@ Instruction counts are deterministic and independent of machine load.
 
 A 16-wide twin beats two 8-wide twins on all three devices, marginally on BSIM4 and diode (with overlapping intervals) and by 24% on the resistor.
 Supporting width 16 lengthens `jolty-models` release builds from 172.4 s to 211.3 s (+23%) while benefiting only devices seeded along more than eight directions in one derivative (above PDK mismatch counts).
-Width 8 remains the recommended maximum pending owner sign-off.
+Width 8 stays the maximum (the owner, 20 November).
 Criterion runs above use a single build on a different host from §2.6 alternating builds, so comparisons stay strictly within each table.
 
 ### 2.4 The JVP without chunks

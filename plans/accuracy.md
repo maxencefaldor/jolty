@@ -3,7 +3,7 @@
 Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and audited on 18 November 2026.
 The archival research report lives in `research/accuracy.md`, kept whole.
 
-Plan: ✅ 8 done · 🚧 3 in progress · 📋 8 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 9 done · 🚧 2 in progress · 📋 8 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -48,7 +48,7 @@ Item 1 measured ngspice's iteration limit; items 6 and 7 address the root cause.
 ## 3. Gaps
 
 - `charge_tolerance` now follows SPICE's `reltol·max(|q|, chgtol)` definition (item 4, done), while `chgtol` still acts as a fixed floor on small nets until error is judged in the unknowns (item 5).
-- Newton iteration stops at a fixed count, and the junction limiter jumps at 2vt in both engines (items 6 and 7).
+- The junction limiter jumps at 2vt in both engines (item 7); Newton's contraction test landed with a cap of 10 (item 6, done).
 - Cold start still requires gmin stepping on circuits where SPICE3's initialization succeeds directly (item 8).
 - Integrated solver charge leak is now reported per node on every transient (item 12, done), and lossless oscillations are distinguished from numerical trapezoidal ringing (item 16, done).
 - Waveform bits still differ between macOS and Linux (item 13).
@@ -106,14 +106,14 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Lead:** filtered, local, and unknown-space error control combined, which no reference implements.
     **Source:** row 3.
 
-### 🚧 6. Newton's iteration stopped by observed contraction
+### ✅ 6. Newton's iteration stopped by observed contraction
 
 - **What:** replace a fixed per-step iteration count (SPICE's 10) by measuring the contraction rate `θ = ‖δₖ‖/‖δₖ₋₁‖`.
     Newton continues while `θ < 1` and predicted iterations fit, stops immediately when `θ ≥ 1`, and accepts when the remaining-error bound `θ/(1-θ)·‖δ‖` lies within tolerance.
 - **Why:** removes arbitrary limits so hopeless iterations stop immediately while slowly converging gate-edge iterations continue.
 - **State** (`f673b49`): inside a time step, iteration continued past `transient_iterations` (later renamed `max_transient_iterations` in `be0de7d`) while steps shrank, whereas operating points kept a fixed count.
     Once contraction exceeded a factor of two, acceptance required `θ/(1-θ)` times the step to lie within tolerance.
-    On the inverter chain, that rule trades accuracy for work (0.085 ns mean edge error at 2,705 steps without contraction vs 0.23 ns at 2,448 steps with contraction), listed in `README.md` open decisions.
+    On the inverter chain, that rule trades accuracy for work (0.085 ns mean edge error at 2,705 steps without contraction vs 0.23 ns at 2,448 steps with contraction).
 - **Owner design** (15 November), simple and orthogonal: `max_transient_iterations` acts as a hard cap, and contraction tests form the always-on convergence criterion within that cap.
     Newton accepts when `θ/(1-θ)·‖δ‖` falls within tolerance and cuts the step when `θ ≥ 1` or when remaining iterations at rate `θ` cannot reach tolerance (Hairer and Wanner IV.8, as in RADAU5).
     The cap default is chosen by measurement: SPICE's 10 if every suite passes, otherwise the lowest measured value documented explicitly.
@@ -123,9 +123,10 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Contraction rate `θ` is measured only across unlimited steps, while first, limited, or non-contracting steps use SPICE's step test, and the final iterate is judged in DC as well.
     Every suite passes at cap 10: all Rust tests, all 765 precision suite runs to the same digits, and all 40 hard-circuit corpus runs.
     The 500-inverter chain takes 16% fewer iterations and 13% less time (mean edge error 0.228 to 0.229 ns), while the buck takes +4.8% time with output error improving from 21.5 to 15.2 mV.
-    **Omitted pending owner approval:** the two early cuts at `θ ≥ 1` and when remaining iterations cannot reach tolerance.
+    **Omitted** (the owner, 20 November): the two early cuts at `θ ≥ 1` and when remaining iterations cannot reach tolerance.
     Measured without acting at cap 10, 91% of the buck's 9,135 candidate cut iterations and 92% of the chain's 521 converged within 10 iterations anyway.
     When enabled, those cuts expanded the chain from 2,448 to 6,103 steps and stopped the buck at 41 µs.
+    The owner accepted the measured design on 20 November: the cap of 10 plus the contraction acceptance test, without either cut, closes the item.
     Hairer and Wanner's tests assume simplified Newton's constant convergence rate, whereas jolty's full Newton accelerates near the solution.
 - **Done when:** the buck and transient-protocol examples run at equal accuracy for no extra work across transient and DC iterations, with any method constant approved by the owner.
 - **Lead** among SPICE-class engines.
@@ -300,6 +301,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Update the guide's methods table to specify each change and its source.
 - Old roadmap item 7 was measured and set aside because bounding repeated rejections at a single time point saves too little.
     A damped formula for the boost converter's stiff mode would affect only 36% of steps, so item 14 evaluates TR-BDF2 there first.
+- 20 November (owner): Newton omits both early cuts (item 6), because 91% of the buck's candidate cut iterations converged within ten iterations anyway.
 - `max_transient_iterations` (formerly `transient_iterations`) keeps SPICE's `ITL4` of 10, although ngspice 47 raises lower limits to 100 (documented as a departure).
     Raising the constant for a single fixture would be arbitrary; item 6 provides the principled fix.
 

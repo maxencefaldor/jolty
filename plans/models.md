@@ -267,7 +267,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ### ✅ 17. Mismatch from sensitivities
 
-- **The owner** (16 November): implement alongside Monte Carlo.
+- **The owner** (16 November): implement alongside Monte Carlo; on 20 November the owner signed off the names `Mismatch` (kind `mismatch`) and `random_variables`.
 - **What:** `dcmatch` and `acmatch` analyses computing first-order mismatch offsets from kit parameters via the adjoint method alongside Monte Carlo.
 - **Needs:** item 10.
     **Done when:** adjoint mismatch offsets match Monte Carlo within statistical uncertainty.
