@@ -34,13 +34,19 @@ pub(crate) const STEPS_PER_RUN: f64 = 50.0;
 /// Source: ngspice 47 (`src/spicelib/analysis/dctran.c`, lines 507 to 508:
 /// `MIN(ckt->CKTdelta, .1 * MIN(ckt->CKTsaveDelta, ckt->CKTbreaks[1] - ckt->CKTbreaks[0]))`).
 const RESTART_FRACTION: f64 = 0.1;
-/// Minimum allowed step size as a fraction of `max_step`, corresponding to SPICE's `delmin`
-/// (source: ngspice 47 `traninit.c`, line 36).
+/// Minimum distinguishable time step in IEEE-754 binary64 machine epsilons (`16 ε ≈ 3.55e-15`),
+/// scaled by `max(|time|, scale)` via [`minimum_step`].
 ///
-/// Fast internal switch RC corners (such as 10 mΩ into 1 nF, `τ = 10 ps` in the buck
-/// benchmark) require sub-picosecond steps (`~2e-14 s`) at `1e-5` relative tolerance, below
-/// `1e-9` of the benchmark's `max_step`.
-const MIN_STEP_FRACTION: f64 = 1e-11;
+/// Derivation: advancing from `time` requires `time + step > time` (more than 1 ULP, i.e.
+/// `f64::EPSILON * |time|`), and divided-difference denominators in truncation-error estimation
+/// lose precision as `step` approaches rounding. Four guard bits (`2⁴ = 16`) above 1 ULP
+/// guarantee distinct IEEE-754 timestamps while retaining at least 48 bits of precision in
+/// step differences.
+///
+/// Source: floating-point step-size floor proportional to `ε * |t|` in Shampine and Reichelt
+/// (*SIAM Journal on Scientific Computing* 18(1), 1997, §2) and Hairer, Nørsett, and Wanner
+/// (*Solving Ordinary Differential Equations I*, 2nd ed., 1993, §II.4).
+const MIN_STEP_ULPS: f64 = 16.0;
 /// Factor reducing the step size after a Newton convergence failure (`1 / 8 = 0.125`, exact
 /// in binary floating point).
 ///
@@ -475,21 +481,29 @@ impl History {
     }
 }
 
+/// Returns the smallest distinguishable time step at `time` given initial time scale `scale`.
+///
+/// Scales [`MIN_STEP_ULPS`] machine epsilons by `max(|time|, scale)` so `time + step > time`
+/// holds with four guard bits at every timestamp while remaining strictly positive at time zero.
+fn minimum_step(time: f64, scale: f64) -> f64 {
+    MIN_STEP_ULPS * f64::EPSILON * time.abs().max(scale)
+}
+
 /// Ordered queue of upcoming simulation breakpoints ending at the transient stop time.
 struct Breakpoints {
     /// Non-negative breakpoint times encoded as IEEE-754 bits for `O(log n)` neighbor lookup
     /// and ordering, with `stop` always last.
     times: BTreeSet<u64>,
-    /// Minimum separation below which newly inserted breakpoints are merged.
-    minimum: f64,
+    /// Initial time scale anchoring [`minimum_step`] for merging near-duplicate breakpoints.
+    scale: f64,
 }
 
 impl Breakpoints {
-    /// Constructs a breakpoint set from sorted `times` with minimum separation `minimum`.
-    fn new(times: &[f64], minimum: f64) -> Self {
+    /// Constructs a breakpoint set from sorted `times` with initial time scale `scale`.
+    fn new(times: &[f64], scale: f64) -> Self {
         Self {
             times: times.iter().map(|&time| Self::key(time)).collect(),
-            minimum,
+            scale,
         }
     }
 
@@ -505,8 +519,8 @@ impl Breakpoints {
             .map_or(f64::INFINITY, |&key| f64::from_bits(key))
     }
 
-    /// Inserts `time` unless it exceeds the stop time or falls within `minimum` of an existing
-    /// breakpoint.
+    /// Inserts `time` unless it exceeds the stop time or falls within
+    /// `minimum_step(time, self.scale)` of an existing breakpoint.
     fn insert(&mut self, time: f64) {
         let stop = self
             .times
@@ -516,8 +530,9 @@ impl Breakpoints {
             return;
         }
         let key = Self::key(time);
+        let minimum = minimum_step(time, self.scale);
         let near = |other: Option<&u64>| {
-            other.is_some_and(|&other| (f64::from_bits(other) - time).abs() < self.minimum)
+            other.is_some_and(|&other| (f64::from_bits(other) - time).abs() < minimum)
         };
         if !near(self.times.range(..key).next_back()) && !near(self.times.range(key..).next()) {
             self.times.insert(key);
@@ -644,11 +659,11 @@ struct Judgement {
     longest: f64,
 }
 
-/// Initial step-size bounds for a transient stepper.
+/// Initial step-size bounds and time scale for a transient stepper.
 #[derive(Clone, Copy)]
 struct StepLimits {
     longest: f64,
-    shortest: f64,
+    scale: f64,
     first: f64,
 }
 
@@ -684,8 +699,8 @@ struct Stepper {
     method: Method,
     /// Maximum allowed step duration.
     longest: f64,
-    /// Minimum allowed step duration.
-    shortest: f64,
+    /// Initial time scale anchoring [`minimum_step`] at time zero.
+    scale: f64,
     /// Timestamp of the last accepted point.
     time: f64,
     /// Solution vector at the last accepted point.
@@ -728,7 +743,7 @@ impl Stepper {
         Self {
             method,
             longest: limits.longest,
-            shortest: limits.shortest,
+            scale: limits.scale,
             time: 0.0,
             resume: None,
             before: None,
@@ -790,17 +805,27 @@ impl Stepper {
         (method, formula)
     }
 
+    /// Returns the smallest distinguishable time step at `time`.
+    fn minimum_step_at(&self, time: f64) -> f64 {
+        minimum_step(time, self.scale)
+    }
+
+    /// Returns the smallest distinguishable time step at the current simulation time.
+    fn shortest(&self) -> f64 {
+        self.minimum_step_at(self.time)
+    }
+
     /// Checks whether an event at `time` falls early enough inside `(self.time, end)` to
     /// warrant shortening the step to land on it accurately.
     fn lands_before(&self, time: f64, end: f64, options: &Options) -> bool {
         let tolerance = self
-            .shortest
+            .minimum_step_at(end)
             .max(options.relative_tolerance * (end - self.time));
-        time < end - tolerance && time - self.time >= self.shortest
+        time < end - tolerance && time - self.time >= self.shortest()
     }
 
     /// Records a step rejection with reason `why` and updates `self.next` to `next`, returning
-    /// [`SimulationError::StepTooSmall`] if `next` drops below `self.shortest`.
+    /// [`SimulationError::StepTooSmall`] if `next` drops below [`Self::shortest`].
     fn reject(
         &mut self,
         next: f64,
@@ -808,10 +833,11 @@ impl Stepper {
     ) -> Result<Step, SimulationError> {
         self.statistics.rejected += 1;
         self.next = next;
-        if next < self.shortest {
+        let shortest = self.shortest();
+        if next < shortest {
             return Err(SimulationError::StepTooSmall {
                 time: self.time,
-                minimum: self.shortest,
+                minimum: shortest,
                 rejection: why(),
             });
         }
@@ -983,7 +1009,6 @@ impl Simulator {
         let reading = self.read_meter(options.profile);
         self.prepare(options)?;
         let longest = self.longest_step(transient)?;
-        let shortest = longest * MIN_STEP_FRACTION;
         let width = self.point_width();
         options.hold_points(transient.stop / longest * width, 0.0, longest)?;
         let mut held = width;
@@ -998,17 +1023,15 @@ impl Simulator {
         self.state
             .events
             .start(&self.elaborated.logic, transient.stop);
-        let mut breakpoints = Breakpoints::new(
-            &self.breakpoints(transient.stop, shortest, &delays),
-            shortest,
-        );
+        let (breakpoint_times, scale) = self.breakpoints(transient.stop, longest, &delays);
+        let mut breakpoints = Breakpoints::new(&breakpoint_times, scale);
         let first = RESTART_FRACTION * longest.min(breakpoints.first());
         let charge = self.state.workspace.contributions.charge.clone();
         let mut stepper = Stepper::starting(
             transient.method,
             StepLimits {
                 longest,
-                shortest,
+                scale,
                 first,
             },
             initial,
@@ -1023,7 +1046,8 @@ impl Simulator {
                 breakpoints.insert(change);
             }
             let breakpoint = breakpoints.after(stepper.time);
-            let passed = requested.partition_point(|&time| time < stepper.time + shortest);
+            let next_requested = stepper.time + stepper.shortest();
+            let passed = requested.partition_point(|&time| time < next_requested);
             let requested_time = requested.get(passed).copied().unwrap_or(f64::INFINITY);
             match self.step_toward(&mut stepper, breakpoint, requested_time, options)? {
                 Step::Accepted(points, settles) => {
@@ -1123,7 +1147,7 @@ impl Simulator {
         let remaining = target - stepper.time;
         // Clamp next step length to `stepper.longest` regardless of target landing.
         let reach = stepper.next.min(stepper.longest);
-        let landing = reach >= remaining - stepper.shortest;
+        let landing = reach >= remaining - stepper.minimum_step_at(target);
         let length = if landing { remaining } else { reach };
         let end = if landing {
             target
@@ -1214,7 +1238,7 @@ impl Simulator {
             } else {
                 breakpoint.time - end
             };
-            RESTART_FRACTION * reach.min(gap)
+            (RESTART_FRACTION * reach.min(gap)).max(stepper.minimum_step_at(end))
         });
         let transition = StepTransition {
             next,
@@ -1540,9 +1564,9 @@ impl Simulator {
             return Err(time);
         }
         let commands = self.advance_logic(stepper, end, options)?;
-        // A jump within `stepper.shortest` of `stepper.time` belongs to the corner landed on
+        // A jump within `stepper.shortest()` of `stepper.time` belongs to the corner landed on
         // by the prior step, where integration already restarted.
-        let jumped = jump.is_some_and(|time| time - stepper.time >= stepper.shortest);
+        let jumped = jump.is_some_and(|time| time - stepper.time >= stepper.shortest());
         Ok((commands, jumped))
     }
 
@@ -1630,20 +1654,23 @@ impl Simulator {
     }
 
     /// Collects sorted, deduplicated device breakpoints and initial delay-line arrival times
-    /// in `(0, stop]`, always ending at `stop` and metered under [`Activity::Preparing`].
-    fn breakpoints(&mut self, stop: f64, minimum: f64, delays: &[f64]) -> Vec<f64> {
+    /// in `(0, stop]`, always ending at `stop`, returning them alongside the initial time
+    /// scale `min(longest, first_breakpoint)` metered under [`Activity::Preparing`].
+    fn breakpoints(&mut self, stop: f64, longest: f64, delays: &[f64]) -> (Vec<f64>, f64) {
         let previous = self.state.workspace.meter.enter(Activity::Preparing);
         let mut times = vec![stop];
         self.state.runs.breakpoints((0.0, stop), &mut times);
         times.extend(delays.iter().filter(|&&delay| delay < stop));
-        times.retain(|&time| time > minimum);
+        times.retain(|&time| time > 0.0);
         times.sort_by(f64::total_cmp);
-        times.dedup_by(|later, earlier| *later - *earlier < minimum);
+        let scale = longest.min(times.first().copied().unwrap_or(stop));
+        times.retain(|&time| time > minimum_step(0.0, scale));
+        times.dedup_by(|later, earlier| *later - *earlier < minimum_step(*earlier, scale));
         if let Some(last) = times.last_mut() {
             *last = stop;
         }
         self.state.workspace.meter.leave(previous);
-        times
+        (times, scale)
     }
 
     /// Evaluates the local truncation error of `span` under `method` using filtered charge
@@ -1887,7 +1914,10 @@ mod tests {
     use rayon::ThreadPoolBuilder;
     use serde_json::json;
 
-    use super::{Breakpoints, LeakAccumulator, NextBreakpoint, StepFormula, neumaier_add};
+    use super::{
+        Breakpoints, LeakAccumulator, MIN_STEP_ULPS, NextBreakpoint, StepFormula, minimum_step,
+        neumaier_add,
+    };
     use crate::options::{NUMBERS_PER_GIB, UnknownGrain};
     use crate::test_helpers::{grounded_simulator, source_resistor_simulator};
     use crate::{Options, SimulationError, Transient};
@@ -1903,13 +1933,52 @@ mod tests {
     }
 
     #[test]
+    fn minimum_step_scales_with_time_and_always_advances_the_clock() {
+        for scale in [1e-9, 0.8] {
+            let at_zero = minimum_step(0.0, scale);
+            assert_eq!(
+                at_zero.to_bits(),
+                (MIN_STEP_ULPS * f64::EPSILON * scale).to_bits()
+            );
+            assert!(at_zero > 0.0);
+            let mut previous = at_zero;
+            for time in [0.0, 1e-12, 1e-9, 1e-3, 1.0, 40.0, 1e6] {
+                let step = minimum_step(time, scale);
+                assert!(step >= previous, "minimum_step shrank at {time:e}");
+                assert!(
+                    time + step > time,
+                    "step {step:e} failed to advance clock at {time:e}"
+                );
+                if time <= scale {
+                    assert_eq!(step.to_bits(), at_zero.to_bits());
+                } else {
+                    assert_eq!(
+                        step.to_bits(),
+                        (MIN_STEP_ULPS * f64::EPSILON * time).to_bits()
+                    );
+                }
+                previous = step;
+            }
+        }
+    }
+
+    #[test]
     fn breakpoints_come_in_order_without_near_twins_and_keep_the_stop() {
-        let mut breakpoints = Breakpoints::new(&[1.0, 3.0, 10.0], 0.1);
+        let scale = 0.1;
+        let mut breakpoints = Breakpoints::new(&[1.0, 3.0, 10.0], scale);
         breakpoints.insert(2.0);
-        // Drop entries within `minimum` of 2 or 3, and entries beyond `stop`.
-        breakpoints.insert(2.05);
-        breakpoints.insert(2.95);
+        // Drop entries within `minimum_step(time, scale)` of 2 or 3, and entries beyond `stop`.
+        breakpoints.insert(2.0 + 0.5 * minimum_step(2.0, scale));
+        breakpoints.insert(3.0 - 0.5 * minimum_step(3.0, scale));
         breakpoints.insert(11.0);
+        // Keep entries separated by more than `minimum_step(time, scale)`, including at small
+        // times anchored to `scale` where spacing is finer than at later times.
+        let early = 2.0 * minimum_step(0.0, scale);
+        breakpoints.insert(early);
+        assert_eq!(
+            bits(breakpoints.after(0.0)),
+            (early.to_bits(), (1.0 - early).to_bits())
+        );
         assert_eq!(
             bits(breakpoints.after(0.5)),
             (1.0_f64.to_bits(), 1.0_f64.to_bits())

@@ -564,8 +564,8 @@ fn a_femtofarad_nets_error_shrinks_with_the_relative_tolerance() {
     }
 }
 
-/// Verifies that picosecond charge settling near a corner resolves within tolerance without
-/// violating the SPICE minimum step floor (1e-11 of max step).
+/// Verifies that picosecond charge settling near a corner resolves within tolerance under the
+/// floating-point derived minimum step floor.
 ///
 /// A 46 mA current rising in 1 ps at 1 ms into a parallel 1 nF / 10 mΩ load mimics gate
 /// displacement current into the internal source node of the buck benchmark's lower switch.
@@ -614,6 +614,86 @@ fn a_charge_settling_in_picoseconds_is_resolved_to_its_tolerance() {
         }
     }
     assert!(checked > 10, "{checked} points within the settling");
+}
+
+/// Computes the closed-form RC voltage response to a unit ramp starting at `t = 0` over
+/// duration `rise`, evaluated without overflow or cancellation for any `rise / tau` ratio.
+fn unit_ramp_rc_response(time: f64, rise: f64, tau: f64) -> f64 {
+    if time <= 0.0 {
+        return 0.0;
+    }
+    if time <= rise {
+        let scaled = time / tau;
+        if scaled < 1e-4 {
+            return time * scaled * (0.5 - scaled / 6.0) / rise;
+        }
+        return (time + tau * (-scaled).exp_m1()) / rise;
+    }
+    if rise / tau <= 1.0 {
+        1.0 - (tau / rise) * (-time / tau).exp() * (rise / tau).exp_m1()
+    } else {
+        1.0 - (tau / rise) * ((-(time - rise) / tau).exp() - (-time / tau).exp())
+    }
+}
+
+/// Verifies that a wide-time-scale stiff circuit resolves sub-picosecond initial steps over
+/// a 40 s transient without hitting the floating-point minimum step floor.
+///
+/// Mirrors the precision suite's `ladder_1000` regime: a 1 ns rising step drives both a
+/// 10 ps RC branch (`10 Ω`, `1 pF`) and an 8 s RC branch (`10 MΩ`, `0.8 µF`) over 40 s
+/// (`max_step = 0.8 s`). At `reltol = 1e-7`, the initial corner needs steps near 15 fs,
+/// far below ngspice's fixed `1e-11 * max_step = 8 ps` floor.
+#[test]
+fn a_wide_time_scale_stiff_circuit_resolves_sub_picosecond_initial_steps() {
+    let (rise, stop) = (1e-9, 40.0);
+    let (fast_resistance, fast_capacitance) = (10.0, 1e-12);
+    let (slow_resistance, slow_capacitance) = (1e7, 0.8e-6);
+    let fast_tau = fast_resistance * fast_capacitance;
+    let slow_tau = slow_resistance * slow_capacitance;
+    let circuit = circuit([
+        voltage_source("V1", "in", "0", piecewise(&[[0.0, 0.0], [rise, 1.0]])),
+        resistor("R1", fast_resistance, "in", "fast"),
+        capacitor("C1", fast_capacitance, "fast", "0"),
+        resistor("R2", slow_resistance, "in", "slow"),
+        capacitor("C2", slow_capacitance, "slow", "0"),
+    ]);
+    let mut simulator = simulator(&circuit);
+    let options = Options {
+        relative_tolerance: 1e-7,
+        ..Options::default()
+    };
+    let waveforms = simulator
+        .transient(&trapezoidal(stop, None), &options)
+        .expect("wide-time-scale transient resolves sub-picosecond steps");
+    assert!(
+        waveforms.times.windows(2).all(|pair| pair[1] > pair[0]),
+        "times must increase strictly"
+    );
+    assert!(waveforms.times.contains(&rise));
+    assert_eq!(waveforms.times.last(), Some(&stop));
+    let smallest_step = waveforms
+        .times
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        smallest_step < 1e-12,
+        "expected a sub-picosecond initial step, got {smallest_step:e} s"
+    );
+    let fast = index(&simulator, "fast");
+    let slow = index(&simulator, "slow");
+    let mut fast_error = 0.0_f64;
+    let mut slow_error = 0.0_f64;
+    for (&time, values) in waveforms.times.iter().zip(&waveforms.values) {
+        fast_error =
+            fast_error.max((values[fast] - unit_ramp_rc_response(time, rise, fast_tau)).abs());
+        slow_error =
+            slow_error.max((values[slow] - unit_ramp_rc_response(time, rise, slow_tau)).abs());
+    }
+    // At reltol = 1e-7, SPICE TRTOL * (p + 1)! = 42 scales per-step error to ~4.2e-6 V;
+    // accumulated over ~50 steps at default max_step = 0.8 s, global error stays below 5e-4 V.
+    assert!(fast_error < 1e-4, "fast branch peak error {fast_error:e} V");
+    assert!(slow_error < 5e-4, "slow branch peak error {slow_error:e} V");
 }
 
 /// Verifies that no transient step exceeds `max_step`, even when error permits growth and a

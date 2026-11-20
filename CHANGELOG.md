@@ -291,6 +291,7 @@ The first release, 0.1.0.
 
 ### Changed
 
+- Derived the transient minimum step floor from IEEE-754 floating-point resolution (`16 ε · max(|t|, scale)` with `scale = min(max_step, first_breakpoint)`) instead of a fixed `1e-11 · max_step` fraction, allowing wide-time-scale stiff circuits such as `ladder_1000` to solve cleanly at every tolerance down to `1e-8` (sub-femtosecond initial steps) without altering deterministic baselines.
 - Required physical `Quantity` values across user-facing options, conditions, overrides, variants, axes, parameter sweeps, and tolerance sampling (`Options.{voltage_tolerance, current_tolerance, charge_tolerance, gmin}`, `Conditions.temperature`, `Simulation(..., overrides=...)`, `Variant.overrides`, `Axis`, `DcSweep`, `Toleranced.nominal`, and `variation.{sample, moved, extreme}`), validating device-parameter dimensions upfront against engine metadata via `devices.parameter_dimension` while keeping `Function`, `jvp`, `vjp`, and `jolty.jax.function` in SI floats and arrays.
   Added `fC`, `nS`, `pS`, and dimension-checked ordering (`<`, `<=`, `>`, `>=`) on `Quantity`, plus `ParameterMetadata` on `FoundryMosfet` and `ThresholdDetector`.
 - Replaced recursive descent in `crates/jolty-expressions/src/parser.rs` with an iterative type-state shunting-yard stack, boxed `Points` in `Node::Table` (64 to 24 bytes), converted `tape::compile`, `Node`/`Term` `Drop`, and `jolty-python::term_to_json_string` to iterative traversals, and made `Expression::tree()` `O(N)` via `Option::take`.

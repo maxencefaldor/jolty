@@ -47,8 +47,9 @@ use crate::{
 
 /// Maximum shooting periods and oscillator settling stretches before aborting.
 ///
-/// Derivation: doubling stretches reach `2³⁹` (`~5.5e11`) times the initial period, past the
-/// `10¹¹` dynamic range (`MIN_STEP_FRACTION`) of a single transient.
+/// Derivation: 40 doubling stretches span `2³⁹` (`~5.5e11`) times the initial period,
+/// covering more than 11 decades of oscillator startup while staying below the IEEE-754
+/// binary64 single-transient time resolution (`1 / (16 ε) ≈ 2.8e14`, `MIN_STEP_ULPS`).
 const MAX_PERIODS: usize = 40;
 
 /// Peak count of dense `n × n` (or `(n + 1) × (n + 1)`) matrices live simultaneously during

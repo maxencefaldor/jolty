@@ -1,9 +1,9 @@
 # Accuracy and reliability
 
-Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and audited on 18 November 2026.
+Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 20 November 2026.
 The archival research report lives in `research/accuracy.md`, kept whole.
 
-Plan: ✅ 9 done · 🚧 2 in progress · 📋 8 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 10 done · 🚧 1 in progress · 📋 8 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -261,11 +261,19 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     On `ac_wide`, backward error ω was already 0.71 ε at the median and 2.3 ε at worst, so 13% of solves refined.
 - **Source:** first run of the precision suite.
 
-### 🚧 18. Shortest time step derived rather than chosen
+### ✅ 18. Shortest time step derived rather than chosen
 
 - **What:** jolty's shortest step was 10⁻⁹ of the longest step and ngspice's is 10⁻¹¹, neither derived; the 1,000-node ladder fails from a scaled tolerance of 5.6e-7 because the initial step needed is below 8 ps.
-- **State** (`f673b49`): aligned with ngspice at 10⁻¹¹ of the longest step, removing a departure and letting the buck resolve its 10 ps settling, though still chosen rather than derived.
 - **Done when:** the lower bound is derived from floating-point resolution and the ladder solves at every tolerance.
+- **Result** (20 November): replaced `MIN_STEP_FRACTION = 1e-11` in `crates/jolty-engine/src/transient.rs` with `MIN_STEP_ULPS = 16.0` (four guard bits above one ULP: `16 ε · max(|t|, scale)` where `scale = min(max_step, first_breakpoint)`, citing Shampine and Reichelt 1997 §2 and Hairer, Nørsett, and Wanner 1993 §II.4).
+    Updated `Breakpoints`, `Stepper`, `docs/guide/simulation.md`, and `docs/guide/departures.md`, plus a wide-time-scale stiff regression test (`analytic.rs`).
+    **Precision sweep (`ladder_1000` on machine D, AMD EPYC 9B14):** now solves at every tolerance down to `1e-8` in both `reltol` and `scaled` sweeps:
+    - `scaled 1e-6`: `min_dt = 9.51e-15 s`, `4.07` digits (`1,535` accepted, `12` rejected).
+    - `scaled 5.62e-7`: `min_dt = 5.35e-15 s`, `4.23` digits (`1,909` accepted, `14` rejected).
+    - `scaled 1e-7`: `min_dt = 9.51e-16 s`, `4.71` digits (`3,662` accepted, `14` rejected).
+    - `scaled 1e-8`: `min_dt = 9.51e-17 s`, `5.36` digits (`8,648` accepted, `16` rejected).
+    **§5 transient protocol on machine D:** `ring` (`4,015` acc / `0` rej), `relaxation` (`4,106` / `89`), `555` (`11,948` / `45` / `262` landed), `astable` (`8,897` / `407`), `colpitts` (`10,017` / `7`), `speed_buck` (`90,543` / `26,370`), and `inverter_chain_500` (`2,312` / `838`) stay bit-identical to baseline; `buck` drops `43,564 -> 43,562` accepted (`57,219 -> 57,217` iterations, `98,112 -> 98,108` refactorizations, same `416` rejected) and `boost` drops `75,524 -> 75,523` accepted (`111,625 -> 111,624` iterations, same `3,414` rejected).
+    `benchmarks/deterministic/bench.py` passes exact on all 19 fixtures.
 - **Source:** first run of the precision suite; departures guide.
 
 ### 🚧 19. Departures from ngspice and Xyce found on 15 November added to the guide

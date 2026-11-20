@@ -150,7 +150,7 @@ def _jolty(simulation: Simulation, step: float, times: Real) -> Waveforms:
     )
     waveforms = simulation.run(plan, TIGHT)
     taken = nearest(waveforms.times, times)
-    # Breakpoint tolerance: 100 * MIN_STEP_FRACTION (1e-11) of max_step.
+    # Breakpoint landing tolerance covering IEEE-754 minimum-step merging (`16 * eps`).
     assert np.allclose(waveforms.times[taken], times, rtol=0, atol=1e-9 * step)
     return {
         unknown.name: waveforms.values[taken, column]

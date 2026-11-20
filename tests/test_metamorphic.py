@@ -75,7 +75,7 @@ def _transient(
     )
     waveforms = simulation.run(plan, options)
     taken = nearest(waveforms.times, TIMES)
-    # Breakpoint landing tolerance: 100 * MIN_STEP_FRACTION (1e-11 * step).
+    # Breakpoint landing tolerance covering IEEE-754 minimum-step merging (`16 * eps`).
     assert np.allclose(waveforms.times[taken], TIMES, rtol=0, atol=1e-9 * step)
     return {
         unknown.name: waveforms.values[taken, column]
