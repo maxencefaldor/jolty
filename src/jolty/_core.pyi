@@ -13,6 +13,7 @@ BOLTZMANN: float
 ELEMENTARY_CHARGE: float
 REFERENCE_TEMPERATURE: float
 REGION: str
+LOOP_GAIN: str
 SAMPLES_PER_PERIOD: int
 
 class ElaborationError(Exception):

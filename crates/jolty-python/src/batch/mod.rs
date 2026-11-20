@@ -102,6 +102,7 @@ impl Points {
             Differentiated::OperatingPoint => Self::Point,
             Differentiated::DcSweep(sweep) => Self::Swept(sweep.values.len()),
             Differentiated::Ac(response) => Self::Frequencies(response.frequencies.len()),
+            Differentiated::Stability(stability) => Self::Frequencies(stability.frequencies.len()),
             Differentiated::Transient(transient) => Self::Times(transient.breakpoints.clone()),
             Differentiated::PeriodicSteadyState(steady) => Self::Times(steady.breakpoints.clone()),
         }
@@ -465,6 +466,20 @@ pub(crate) fn trace_result(
                 fill_trace(buffer, &columns, frequency, |column| {
                     values.get(column).copied()
                 });
+            }
+        }
+        (
+            AnalysisResult::Stability(loop_gain),
+            Points::Frequencies(_),
+            TracedValues::Complex(buffer),
+        ) => {
+            let width = traces.unknowns.len();
+            for (frequency, &gain) in loop_gain.gains.iter().enumerate() {
+                for (place, &output) in traces.unknowns.iter().enumerate() {
+                    if output == 0 {
+                        buffer[frequency * width + place] = gain;
+                    }
+                }
             }
         }
         (

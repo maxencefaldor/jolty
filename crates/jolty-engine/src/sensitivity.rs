@@ -1,5 +1,5 @@
-//! Exact parameter sensitivities across operating-point, DC-sweep, AC, transient, and
-//! periodic steady-state analyses.
+//! Exact parameter sensitivities across operating-point, DC-sweep, AC, stability,
+//! transient, and periodic steady-state analyses.
 //!
 //! A sensitivity table is the analysis Jacobian (outputs across points with respect to every
 //! numeric parameter). Forward mode ([`Simulator::jvp`]) builds columns one parameter at a
@@ -7,7 +7,8 @@
 //! (plus one row for an oscillator's period). The driver picks whichever direction requires
 //! fewer linear solves for the circuit and output set.
 //!
-//! For DC and AC analyses, points decouple, so reverse mode wins whenever `outputs <= parameters`.
+//! For DC, AC, and stability analyses, points decouple, so reverse mode wins whenever
+//! `outputs <= parameters`.
 //! For transients over `N + 1` points, reverse mode requires `k (N + 1)(N + 2) / 2` transposed
 //! solves versus `P (N + 1)` forward solves; periodic steady-state reverse mode adds a second
 //! backward pass from the period end. Transients run forward immediately when the minimum
@@ -27,18 +28,20 @@ use crate::derivative::{
 use crate::elaborated::{Origin, Origins};
 use crate::options::float_count;
 use crate::periodic::DENSE_MATRICES;
+use crate::stability::LOOP_GAIN;
 use crate::twins::Twins;
 use crate::{
     Ac, AnalysisResult, DcSweep, OperatingPointResult, Options, PeriodicSteadyState,
-    SimulationError, Simulator, Transient,
+    SimulationError, Simulator, Stability, Transient,
 };
 
-/// A sensitivity analysis: how the unknowns `outputs` move with every device parameter
+/// A sensitivity analysis: how the outputs in `outputs` move with every device parameter
 /// along the analysis `of`.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sensitivity {
-    /// The unknowns, by name, such as `out` or `V1:current`.
+    /// Output names, such as `out`, `V1:current`, or [`LOOP_GAIN`] for
+    /// [`Differentiated::Stability`].
     pub outputs: Vec<String>,
     /// The analysis differentiated: the operating point by default.
     #[serde(default)]
@@ -60,6 +63,8 @@ pub enum Differentiated {
     DcSweep(DcSweep),
     /// A small-signal frequency response.
     Ac(Ac),
+    /// A Middlebrook loop-gain stability analysis.
+    Stability(Stability),
     /// A transient analysis.
     Transient(Transient),
     /// One period of a periodic steady state.
@@ -84,7 +89,7 @@ pub struct Parameter {
 pub enum Derivatives {
     /// Real derivatives for operating-point, DC-sweep, transient, or periodic analyses.
     Real(Vec<Vec<Vec<f64>>>),
-    /// Complex phasor derivatives for AC frequency responses.
+    /// Complex phasor derivatives for AC and stability analyses.
     Complex(Vec<Vec<Vec<Complex64>>>),
 }
 
@@ -161,14 +166,27 @@ impl Simulator {
         twins: Twins,
         options: &Options,
     ) -> Result<Differentiation, SimulationError> {
-        let kept = outputs
-            .iter()
-            .map(|name| {
-                self.unknown(name)
-                    .map(jolty_models::UnknownIndex::index)
-                    .ok_or_else(|| SimulationError::UnknownOutput(name.clone()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let kept = if matches!(of, Differentiated::Stability(_)) {
+            outputs
+                .iter()
+                .map(|name| {
+                    if name == LOOP_GAIN {
+                        Ok(0)
+                    } else {
+                        Err(SimulationError::UnknownOutput(name.clone()))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            outputs
+                .iter()
+                .map(|name| {
+                    self.unknown(name)
+                        .map(jolty_models::UnknownIndex::index)
+                        .ok_or_else(|| SimulationError::UnknownOutput(name.clone()))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
         let parameters = twins.len();
         let backward = match of {
             Differentiated::Transient(transient) => {
@@ -297,6 +315,17 @@ impl Simulator {
             let one = Complex64::new(1.0, 0.0);
             let cotangents = unit_rows(kept, points, unknowns, one);
             let pulled = self.pull_frequencies(&mut twins, response, &cotangents, options)?;
+            return Ok(Differentiation {
+                twins,
+                derivatives: Derivatives::Complex(by_point(pulled, points, kept.len())),
+                period_derivatives: None,
+                result,
+            });
+        }
+        if let AnalysisResult::Stability(loop_gain) = &result {
+            let one = Complex64::new(1.0, 0.0);
+            let cotangents = unit_rows(kept, points, 1, one);
+            let pulled = self.pull_stability(&mut twins, loop_gain, &cotangents, options)?;
             return Ok(Differentiation {
                 twins,
                 derivatives: Derivatives::Complex(by_point(pulled, points, kept.len())),

@@ -12,11 +12,11 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from jolty import function, jvp, vjp
-from jolty.errors import ElaborationError
-from jolty.plan import Ac, DcSweep, OperatingPoint, Transient
+from jolty import Builder, Role, component, devices, function, jvp, vjp
+from jolty.errors import ElaborationError, SimulationError
+from jolty.plan import LOOP_GAIN, Ac, DcSweep, OperatingPoint, Stability, Transient
 from jolty.simulate import Differentiable, Outputs, Parameters
-from jolty.units import MHz, V, kHz, ns, us
+from jolty.units import MHz, V, kHz, kohm, nF, ns, ohm, us
 from sample_circuits import CROSSBAR_WEIGHTS, crossbar
 
 TRANSPOSED = 1e-11
@@ -202,3 +202,115 @@ def test_a_batch_pullback_takes_the_outputs_and_the_runs_its_batch_has() -> None
         pullback({"nothing": np.ones((3, 1))})
     with pytest.raises(ValueError, match="not one at 3"):
         pullback({}, [3])
+
+
+@component
+def _feedback_loop(c: Builder) -> None:
+    """Builds an inverting feedback loop broken by floating probe ``VP``."""
+    ground = c.port("ground", Role.GROUND)
+    amplifier = c.place(devices.voltage_controlled_voltage_source(-1000.0), name="E1")
+    output_resistor = c.place(devices.resistor(100 * ohm), name="RO")
+    probe = c.place(devices.voltage_source(0 * V), name="VP")
+    upper = c.place(devices.resistor(9 * kohm), name="R1")
+    lower = c.place(devices.resistor(1 * kohm), name="R2")
+    capacitor = c.place(devices.capacitor(1 * nF), name="C1")
+    c.connect(amplifier.positive, output_resistor.a, name="e")
+    c.connect(output_resistor.b, probe.negative, name="y")
+    c.connect(probe.positive, upper.a, name="x")
+    c.connect(upper.b, lower.a, capacitor.a, amplifier.control_positive, name="in")
+    c.connect(
+        amplifier.negative,
+        amplifier.control_negative,
+        lower.b,
+        capacitor.b,
+        ground,
+    )
+
+
+def test_stability_function_jvp_vjp_and_batched_pullback() -> None:
+    analysis = Stability("VP", [1 * kHz, 100 * kHz, 1 * MHz])
+    target = function(_feedback_loop(), analysis)
+    assert target.outputs == (LOOP_GAIN,)
+    assert target.points == 3
+
+    point: dict[str, dict[str, float]] = {
+        "RO": {"resistance": 100.0},
+        "R1": {"resistance": 9000.0},
+        "R2": {"resistance": 1000.0},
+        "C1": {"capacitance": 1e-9},
+    }
+    tangents: dict[str, dict[str, float]] = {
+        "RO": {"resistance": 15.0},
+        "R1": {"resistance": -700.0},
+        "R2": {"resistance": 120.0},
+        "C1": {"capacitance": 2e-10},
+    }
+    outputs, pushed = jvp(target, point, tangents)
+    same, pull = vjp(target, point)
+    assert list(outputs) == [LOOP_GAIN]
+    np.testing.assert_array_equal(outputs[LOOP_GAIN], same[LOOP_GAIN])
+    cotangent = {
+        LOOP_GAIN: np.array([1.2 - 0.7j, -0.5 + 1.4j, 0.8 + 0.3j], dtype=np.complex128)
+    }
+    forward, magnitude = inner(cotangent, pushed)
+    pulled = pull(cotangent)
+    backward = sum(
+        complex(pulled[path][name]) * tangents[path][name]
+        for path, named in point.items()
+        for name in named
+    )
+    terms = sum(
+        abs(complex(pulled[path][name]) * tangents[path][name])
+        for path, named in point.items()
+        for name in named
+    )
+    assert abs(forward - backward) <= TRANSPOSED * max(magnitude, terms)
+
+    # Verify batch and batch_vjp match single-point calls bit for bit.
+    names = [
+        ("RO", "resistance"),
+        ("R1", "resistance"),
+        ("R2", "resistance"),
+        ("C1", "capacitance"),
+    ]
+    batch_rows = np.array(
+        [
+            [100.0, 9000.0, 1000.0, 1e-9],
+            [120.0, 8000.0, 1200.0, 1.5e-9],
+            [80.0, 10000.0, 900.0, 0.8e-9],
+        ]
+    )
+    batched = target.batch(names, batch_rows)
+    batch_outputs, batch_pull = target.batch_vjp(names, batch_rows)
+    np.testing.assert_array_equal(batched[LOOP_GAIN], batch_outputs[LOOP_GAIN])
+    for row_index, values in enumerate(batch_rows):
+        scalar_point = {
+            path: {name: float(value)}
+            for (path, name), value in zip(names, values.tolist(), strict=True)
+        }
+        np.testing.assert_array_equal(
+            np.asarray(batched[LOOP_GAIN])[row_index], target(scalar_point)[LOOP_GAIN]
+        )
+
+    runs = [2, 0, 2]
+    batch_cotangent = {
+        LOOP_GAIN: np.stack(
+            [cotangent[LOOP_GAIN] * (row + 1) for row in range(len(runs))]
+        )
+    }
+    pulled_batch = batch_pull(batch_cotangent, runs)
+    for row_index, run_index in enumerate(runs):
+        scalar_point = {
+            path: {name: float(value)}
+            for (path, name), value in zip(
+                names, batch_rows[run_index].tolist(), strict=True
+            )
+        }
+        _, single_pull = vjp(target, scalar_point)
+        alone = single_pull({LOOP_GAIN: batch_cotangent[LOOP_GAIN][row_index]})
+        np.testing.assert_array_equal(
+            pulled_batch[row_index], [alone[path][name] for path, name in names]
+        )
+
+    with pytest.raises(SimulationError, match="not a floating voltage source"):
+        function(_feedback_loop(), Stability("R1", [1 * kHz]))(point)

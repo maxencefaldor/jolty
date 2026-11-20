@@ -45,6 +45,7 @@ from jolty.builder import Component, circuit
 from jolty.devices import Device, ParameterValue
 from jolty.errors import ElaborationError, PlanError, SimulationError
 from jolty.plan import (
+    LOOP_GAIN,
     Ac,
     Analysis,
     Conditions,
@@ -91,6 +92,7 @@ from jolty.specs import Specs, validate_specs
 from jolty.units import TEMPERATURE, Quantity
 
 __all__ = [
+    "LOOP_GAIN",
     "PERIOD",
     "BatchPullback",
     "Differentiable",

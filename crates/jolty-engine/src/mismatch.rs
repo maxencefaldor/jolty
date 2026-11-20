@@ -20,12 +20,13 @@ use crate::sensitivity::Parameter;
 use crate::variants::Toleranced;
 use crate::{AnalysisResult, Derivatives, Differentiated, Options, SimulationError, Simulator};
 
-/// A mismatch analysis: how far each unknown of `outputs` spreads, to first order, at each
+/// A mismatch analysis: how far each output of `outputs` spreads, to first order, at each
 /// point of the analysis `of`, with the circuit's tolerances and the random variables given.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Mismatch {
-    /// The unknowns, by name, such as `out` or `V1:current`.
+    /// Output names, such as `out`, `V1:current`, or [`LOOP_GAIN`](crate::LOOP_GAIN) for
+    /// [`Differentiated::Stability`].
     pub outputs: Vec<String>,
     /// The analysis differentiated: the operating point by default.
     #[serde(default)]

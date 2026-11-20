@@ -1229,23 +1229,12 @@ class _Loader:
 
 def _differentiated(
     found: results.AnalysisResult, name: str
-) -> (
-    results.OperatingPointResult
-    | results.DcSweepResult
-    | results.AcResult
-    | results.TransientResult
-):
-    if isinstance(
-        found,
-        results.OperatingPointResult
-        | results.DcSweepResult
-        | results.AcResult
-        | results.TransientResult,
-    ):
+) -> results.DifferentiatedResult:
+    if isinstance(found, results.DIFFERENTIATED_TYPES):
         return found
     message = (
         f"the analysis {name} differentiates neither an operating point, a sweep, a "
-        "response nor a transient"
+        "response, a stability analysis nor a transient"
     )
     raise JoltyError(message)
 

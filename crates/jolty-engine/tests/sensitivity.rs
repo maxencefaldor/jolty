@@ -18,15 +18,17 @@ mod sine;
 mod transient;
 
 use std::collections::BTreeMap;
+use std::f64::consts::TAU;
 
 use capacitor::capacitor;
-use common::{circuit, device, resistor, two_terminal};
+use common::{circuit, device, resistor, two_terminal, voltage_source};
 use dc::voltage_dc;
 use derivatives::{moved, rectifier, tight_options};
 use inductor::inductor;
 use jolty_engine::{
-    Ac, Cotangent, Cotangents, DcSweep, Derivatives, Differentiated, Method, Options, Parallelism,
-    ParameterCotangents, PeriodicSteadyState, Sensitivity, SimulationError, Simulator, Transient,
+    Ac, Cotangent, Cotangents, DcSweep, Derivatives, Differentiated, LOOP_GAIN, Method, Mismatch,
+    Options, Parallelism, ParameterCotangents, PeriodicSteadyState, RandomVariable, Sensitivity,
+    SimulationError, Simulator, Stability, Transient,
 };
 use jolty_ir::{Circuit, Instance};
 use jolty_numerics::Complex64;
@@ -96,6 +98,15 @@ fn options(of: &Differentiated) -> Options {
 
 /// Evaluates every output in `outputs` at each point of analysis `of` on `simulator`.
 fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> Vec<Vec<Complex64>> {
+    if let Differentiated::Stability(stability) = of {
+        return simulator
+            .stability(stability, &tight_options(false))
+            .expect("loop gain")
+            .gains
+            .into_iter()
+            .map(|gain| vec![gain; outputs.len()])
+            .collect();
+    }
     let columns: Vec<usize> = outputs
         .iter()
         .map(|output| simulator.unknown(output).expect("an unknown").index())
@@ -123,6 +134,7 @@ fn values(simulator: &mut Simulator, of: &Differentiated, outputs: &[&str]) -> V
             .iter()
             .map(|row| columns.iter().map(|&column| row[column]).collect())
             .collect(),
+        Differentiated::Stability(_) => Vec::new(),
         Differentiated::Transient(transient) => pick(
             simulator
                 .transient(transient, &options(of))
@@ -176,7 +188,11 @@ fn assert_matches(
         .expect("sensitivities");
     let found = complex(&sensitivities.derivatives);
     for (index, parameter) in sensitivities.parameters.iter().enumerate() {
-        let step = 1e-4 * parameter.value;
+        let step = if parameter.value == 0.0 {
+            1e-4
+        } else {
+            1e-4 * parameter.value
+        };
         let (device, name) = (&parameter.instance, &parameter.name);
         let above = values(
             &mut moved(circuit, device, name, parameter.value + step),
@@ -417,7 +433,14 @@ fn transposes_with(
         .parameters
         .iter()
         .enumerate()
-        .map(|(index, parameter)| picked(index) * parameter.value)
+        .map(|(index, parameter)| {
+            let scale = if parameter.value == 0.0 {
+                1.0
+            } else {
+                parameter.value
+            };
+            picked(index) * scale
+        })
         .collect();
     let along = simulator
         .jvp(of, &names, std::slice::from_ref(&tangent), options)
@@ -425,10 +448,14 @@ fn transposes_with(
     let pullback = simulator.vjp(of, &names, options).expect("a VJP");
     let jacobian = complex(&columns.tangents);
     let pushed = complex(&along.tangents);
-    let unknowns = simulator.unknowns().len();
+    let outputs = if matches!(of, Differentiated::Stability(_)) {
+        1
+    } else {
+        simulator.unknowns().len()
+    };
     let real = matches!(columns.tangents, Derivatives::Real(_));
     let period = columns.period.as_ref().map(|_| picked(0));
-    let cotangents = picked_cotangent((jacobian.len(), unknowns), real, period);
+    let cotangents = picked_cotangent((jacobian.len(), outputs), real, period);
     let pulled = simulator
         .pull_back(&pullback, &cotangents, options)
         .expect("a pullback");
@@ -1187,4 +1214,467 @@ fn pull_back_rejects_non_finite_period_when_points_are_empty() {
             "expected InvalidAnalysis for period={bad_period}, got {error:?}"
         );
     }
+}
+
+/// Builds a linear inverting feedback loop (VCVS gain -1000, output resistance 100 Ω,
+/// capacitive feedback divider 9 kΩ / 1 kΩ || 1 nF) broken by floating probe `VP`.
+fn linear_feedback_loop() -> Circuit {
+    circuit([
+        device(
+            "E1",
+            "voltage_controlled_voltage_source",
+            json!({"gain": -1e3}),
+            &[
+                ("positive", "e"),
+                ("negative", "0"),
+                ("control_positive", "in"),
+                ("control_negative", "0"),
+            ],
+        ),
+        resistor("RO", 100.0, "e", "y"),
+        voltage_source("VP", "x", "y", json!({"dc": 0.0})),
+        resistor("R1", 9e3, "x", "in"),
+        resistor("R2", 1e3, "in", "0"),
+        capacitor("C1", 1e-9, "in", "0"),
+    ])
+}
+
+/// Builds a nonlinear common-source MOSFET shunt-shunt feedback amplifier with a nonlinear
+/// voltage-dependent capacitor on `drain` and floating probe `VP` in series with feedback.
+fn mosfet_feedback_amplifier() -> Circuit {
+    circuit([
+        voltage_dc("VDD", "vdd", 3.3),
+        resistor("RD", 5e3, "vdd", "drain"),
+        device(
+            "M1",
+            "mosfet",
+            json!({
+                "width": 20e-6,
+                "length": 1e-6,
+                "threshold_voltage": 0.7,
+                "transconductance_parameter": 1e-4,
+                "channel_length_modulation": 0.02,
+            }),
+            &[
+                ("drain", "drain"),
+                ("gate", "gate"),
+                ("source", "0"),
+                ("bulk", "0"),
+            ],
+        ),
+        voltage_source("VP", "fb", "drain", json!({"dc": 0.0})),
+        resistor("RF", 20e3, "fb", "gate"),
+        resistor("RG", 20e3, "gate", "0"),
+        capacitor("CL", 2e-12, "drain", "0"),
+        capacitor("CF", 5e-13, "fb", "gate"),
+        device(
+            "BC1",
+            "behavioral_capacitor",
+            json!({"expression": "1e-12 * (v(x) + 0.3 * (v(x) ^ 2))"}),
+            &[("positive", "drain"), ("negative", "0"), ("x", "drain")],
+        ),
+    ])
+}
+
+#[test]
+fn stability_sensitivities_match_closed_form_and_finite_differences_on_linear_loop() {
+    let loop_circuit = linear_feedback_loop();
+    let frequencies = vec![0.0, 1e3, 1e5, 1e6, 1e8];
+    let stability = Differentiated::Stability(Stability {
+        probe: "VP".to_owned(),
+        frequencies: frequencies.clone(),
+    });
+    assert_matches(&loop_circuit, &[LOOP_GAIN], &stability, 1e-5);
+    assert_transposes(
+        &loop_circuit,
+        &[
+            ("E1", "gain"),
+            ("RO", "resistance"),
+            ("R1", "resistance"),
+            ("R2", "resistance"),
+            ("C1", "capacitance"),
+            ("VP", "waveform.dc"),
+        ],
+        &stability,
+    );
+    let mut simulator = simulator(&loop_circuit);
+    let found = simulator
+        .sensitivity(
+            &Sensitivity {
+                outputs: vec![LOOP_GAIN.to_owned()],
+                of: stability,
+            },
+            &tight_options(false),
+        )
+        .expect("stability sensitivity");
+    let Derivatives::Complex(points) = found.derivatives else {
+        panic!("expected complex stability derivatives");
+    };
+    let column_of = |instance: &str, name: &str| {
+        found
+            .parameters
+            .iter()
+            .position(|parameter| parameter.instance == instance && parameter.name == name)
+            .expect("parameter column")
+    };
+    // Exact closed-form partial derivatives of T = A / (1 + (RO + R1) * (1/R2 + j*omega*C1))
+    // with A = -E1.gain = 1e3; agreement holds within solver rounding (1e-9 relative).
+    let (gain, output, upper, lower) = (1e3_f64, 100.0_f64, 9e3_f64, 1e3_f64);
+    let capacitance = 1e-9_f64;
+    for (point, &frequency) in frequencies.iter().enumerate() {
+        let omega = TAU * frequency;
+        let admittance = Complex64::new(1.0 / lower, omega * capacitance);
+        let denominator = 1.0 + (output + upper) * admittance;
+        let squared = denominator * denominator;
+        let series_derivative = -gain * admittance / squared;
+        let lower_derivative = Complex64::new(gain * (output + upper) / (lower * lower), 0.0);
+        let cap_derivative = Complex64::new(0.0, -gain * (output + upper) * omega);
+        let expected = [
+            ("E1", "gain", Complex64::new(-1.0, 0.0) / denominator),
+            ("RO", "resistance", series_derivative),
+            ("R1", "resistance", series_derivative),
+            ("R2", "resistance", lower_derivative / squared),
+            ("C1", "capacitance", cap_derivative / squared),
+            ("VP", "waveform.dc", Complex64::default()),
+        ];
+        for (instance, name, wanted) in expected {
+            let exact = points[point][0][column_of(instance, name)];
+            assert!(
+                (exact - wanted).norm() <= 1e-9 * wanted.norm().max(1e-12),
+                "dT/d{instance}.{name} at {frequency} Hz: got {exact}, wanted {wanted}"
+            );
+        }
+    }
+}
+
+#[test]
+fn stability_sensitivities_match_finite_differences_and_transpose_on_nonlinear_amplifier() {
+    let amplifier = mosfet_feedback_amplifier();
+    let stability = Differentiated::Stability(Stability {
+        probe: "VP".to_owned(),
+        frequencies: vec![0.0, 1e5, 1e7, 1e8],
+    });
+    assert_matches(&amplifier, &[LOOP_GAIN], &stability, 1e-5);
+    let parameters = [
+        ("VDD", "waveform.dc"),
+        ("RD", "resistance"),
+        ("M1", "width"),
+        ("M1", "length"),
+        ("M1", "threshold_voltage"),
+        ("M1", "transconductance_parameter"),
+        ("M1", "channel_length_modulation"),
+        ("VP", "waveform.dc"),
+        ("RF", "resistance"),
+        ("RG", "resistance"),
+        ("CL", "capacitance"),
+        ("CF", "capacitance"),
+    ];
+    let worst = assert_transposes(&amplifier, &parameters, &stability);
+    assert!(worst <= TRANSPOSED, "worst {worst:e}");
+    // Confirm probe DC offset shifts nonlinear operating point and therefore loop gain.
+    let mut simulator = simulator(&amplifier);
+    let found = simulator
+        .sensitivity(
+            &Sensitivity {
+                outputs: vec![LOOP_GAIN.to_owned()],
+                of: stability,
+            },
+            &tight_options(false),
+        )
+        .expect("nonlinear stability sensitivity");
+    let Derivatives::Complex(points) = found.derivatives else {
+        panic!("expected complex derivatives");
+    };
+    let probe_column = found
+        .parameters
+        .iter()
+        .position(|parameter| parameter.instance == "VP" && parameter.name == "waveform.dc")
+        .expect("VP.waveform.dc");
+    assert!(
+        points[0][0][probe_column].norm() > 0.1,
+        "expected nonzero bias-coupled dT/d(VP.waveform.dc), got {}",
+        points[0][0][probe_column]
+    );
+}
+
+#[test]
+fn stability_mismatch_combines_loop_gain_sensitivities_by_chain_rule() {
+    let amplifier = mosfet_feedback_amplifier();
+    let stability = Differentiated::Stability(Stability {
+        probe: "VP".to_owned(),
+        frequencies: vec![1e3, 1e7, 1e8],
+    });
+    let options = tight_options(false);
+    let mut simulator = simulator(&amplifier);
+    let sensitivity = simulator
+        .sensitivity(
+            &Sensitivity {
+                outputs: vec![LOOP_GAIN.to_owned()],
+                of: stability.clone(),
+            },
+            &options,
+        )
+        .expect("stability sensitivity");
+    let variable = RandomVariable {
+        instance: None,
+        lot: Some("feedback_match".to_owned()),
+        name: "delta".to_owned(),
+        mean: 0.0,
+        standard_deviation: 0.01,
+        derivatives: BTreeMap::from([
+            (
+                "RF".to_owned(),
+                BTreeMap::from([("resistance".to_owned(), 2e3)]),
+            ),
+            (
+                "RG".to_owned(),
+                BTreeMap::from([("resistance".to_owned(), -1.5e3)]),
+            ),
+            (
+                "M1".to_owned(),
+                BTreeMap::from([("threshold_voltage".to_owned(), 0.02)]),
+            ),
+        ]),
+    };
+    let mismatch = simulator
+        .mismatch(
+            &Mismatch {
+                outputs: vec![LOOP_GAIN.to_owned()],
+                of: stability,
+                toleranced: Vec::new(),
+                random_variables: vec![variable],
+            },
+            &options,
+        )
+        .expect("stability mismatch");
+    let (Derivatives::Complex(sensitivity_points), Derivatives::Complex(mismatch_points)) =
+        (&sensitivity.derivatives, &mismatch.derivatives)
+    else {
+        panic!("expected complex derivatives");
+    };
+    let column_of = |instance: &str, name: &str| {
+        sensitivity
+            .parameters
+            .iter()
+            .position(|parameter| parameter.instance == instance && parameter.name == name)
+            .expect("parameter column")
+    };
+    let feedback_column = column_of("RF", "resistance");
+    let ground_column = column_of("RG", "resistance");
+    let threshold_column = column_of("M1", "threshold_voltage");
+    let pairs = sensitivity_points.iter().zip(mismatch_points).enumerate();
+    for (point, (sensitivity_row, mismatch_row)) in pairs {
+        let wanted = sensitivity_row[0][feedback_column] * 2e3
+            - sensitivity_row[0][ground_column] * 1.5e3
+            + sensitivity_row[0][threshold_column] * 0.02;
+        let got = mismatch_row[0][0];
+        // Chain rule combines identical adjoint sensitivities, so disagreement is rounding
+        // only (within TRANSPOSED = 1e-11 relative).
+        assert!(
+            (got - wanted).norm() <= TRANSPOSED * wanted.norm().max(1e-12),
+            "point {point}: got {got}, wanted {wanted}"
+        );
+    }
+}
+
+#[test]
+fn stability_derivatives_are_deterministic_across_thread_counts() {
+    let amplifier = mosfet_feedback_amplifier();
+    let stability = Differentiated::Stability(Stability {
+        probe: "VP".to_owned(),
+        frequencies: vec![1e2, 1e4, 1e6, 1e7, 1e8, 1e9],
+    });
+    let names: Vec<(String, String)> = [
+        ("VDD", "waveform.dc"),
+        ("RD", "resistance"),
+        ("M1", "width"),
+        ("M1", "threshold_voltage"),
+        ("VP", "waveform.dc"),
+        ("RF", "resistance"),
+        ("RG", "resistance"),
+        ("CL", "capacitance"),
+        ("CF", "capacitance"),
+    ]
+    .into_iter()
+    .map(|(device, name)| (device.to_owned(), name.to_owned()))
+    .collect();
+    let tangent: Vec<f64> = (0..names.len()).map(picked).collect();
+    let run = |threads: usize| -> (Vec<u64>, Vec<u64>) {
+        let pool = ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .expect("pool");
+        pool.install(|| {
+            let options = Options {
+                parallelism: Parallelism {
+                    max_threads: Some(threads),
+                    min_solves_per_task: Some(1),
+                    ..Parallelism::default()
+                },
+                ..tight_options(false)
+            };
+            let mut simulator = simulator(&amplifier);
+            let jvp = simulator
+                .jvp(&stability, &names, std::slice::from_ref(&tangent), &options)
+                .expect("jvp");
+            let Derivatives::Complex(points) = jvp.tangents else {
+                panic!("complex tangents");
+            };
+            let forward_bits: Vec<u64> = points
+                .iter()
+                .flat_map(|rows| rows.iter().flat_map(|row| row.iter()))
+                .flat_map(|value| [value.re.to_bits(), value.im.to_bits()])
+                .collect();
+            let cotangents = picked_cotangent((6, 1), false, None);
+            let pullback = simulator.vjp(&stability, &names, &options).expect("vjp");
+            let ParameterCotangents::Complex(rows) = simulator
+                .pull_back(&pullback, &cotangents, &options)
+                .expect("pullback")
+            else {
+                panic!("complex cotangents");
+            };
+            let backward_bits: Vec<u64> = rows[0]
+                .iter()
+                .flat_map(|value| [value.re.to_bits(), value.im.to_bits()])
+                .collect();
+            (forward_bits, backward_bits)
+        })
+    };
+    let baseline = run(1);
+    for threads in [2, 4] {
+        assert_eq!(run(threads), baseline, "threads={threads}");
+    }
+}
+
+#[test]
+fn stability_differentiation_validates_outputs_probes_and_cotangents() {
+    let loop_circuit = linear_feedback_loop();
+    let stability = Differentiated::Stability(Stability {
+        probe: "VP".to_owned(),
+        frequencies: vec![1e3, 1e6],
+    });
+    let options = tight_options(false);
+    let mut loop_simulator = simulator(&loop_circuit);
+    // Empty outputs retain one empty entry per frequency.
+    let empty = loop_simulator
+        .sensitivity(
+            &Sensitivity {
+                outputs: Vec::new(),
+                of: stability.clone(),
+            },
+            &options,
+        )
+        .expect("empty-output stability sensitivity");
+    let Derivatives::Complex(empty_points) = empty.derivatives else {
+        panic!("expected complex derivatives");
+    };
+    assert_eq!(empty_points.len(), 2);
+    assert!(empty_points.iter().all(Vec::is_empty));
+    // Unrecognized output is rejected.
+    assert_eq!(
+        loop_simulator.sensitivity(
+            &Sensitivity {
+                outputs: vec!["in".to_owned()],
+                of: stability.clone(),
+            },
+            &options,
+        ),
+        Err(SimulationError::UnknownOutput("in".to_owned()))
+    );
+    // Invalid probes propagate through jvp and vjp.
+    let bad_probe = Differentiated::Stability(Stability {
+        probe: "R1".to_owned(),
+        frequencies: vec![1e3],
+    });
+    let names = vec![("R1".to_owned(), "resistance".to_owned())];
+    assert_eq!(
+        loop_simulator.jvp(&bad_probe, &names, &[vec![1.0]], &options),
+        Err(SimulationError::NotAProbe("R1".to_owned()))
+    );
+    assert_eq!(
+        loop_simulator.vjp(&bad_probe, &names, &options),
+        Err(SimulationError::NotAProbe("R1".to_owned()))
+    );
+    // Pullback validates empty, domain-mismatched, and wrong-width cotangents.
+    let pullback = loop_simulator
+        .vjp(&stability, &names, &options)
+        .expect("vjp");
+    assert_eq!(
+        loop_simulator
+            .pull_back(&pullback, &Cotangents::Complex(Vec::new()), &options)
+            .expect("empty pullback"),
+        ParameterCotangents::Complex(Vec::new())
+    );
+    let wrong_domain = Cotangents::Real(vec![Cotangent {
+        points: BTreeMap::from([(0, vec![1.0])]),
+        period: 0.0,
+    }]);
+    assert!(matches!(
+        loop_simulator.pull_back(&pullback, &wrong_domain, &options),
+        Err(SimulationError::InvalidAnalysis(_))
+    ));
+    let wrong_width = Cotangents::Complex(vec![Cotangent {
+        points: BTreeMap::from([(0, vec![Complex64::new(1.0, 0.0); 2])]),
+        period: 0.0,
+    }]);
+    assert!(matches!(
+        loop_simulator.pull_back(&pullback, &wrong_width, &options),
+        Err(SimulationError::InvalidAnalysis(_))
+    ));
+}
+
+#[test]
+fn stability_differentiation_refuses_delay_lines() {
+    let delayed_circuit = circuit([
+        device(
+            "E1",
+            "voltage_controlled_voltage_source",
+            json!({"gain": -1e2}),
+            &[
+                ("positive", "e"),
+                ("negative", "0"),
+                ("control_positive", "in"),
+                ("control_negative", "0"),
+            ],
+        ),
+        resistor("RO", 50.0, "e", "y"),
+        voltage_source("VP", "x", "y", json!({"dc": 0.0})),
+        device(
+            "T1",
+            "transmission_line",
+            json!({"characteristic_impedance": 50.0, "delay": 1e-9}),
+            &[
+                ("positive1", "x"),
+                ("negative1", "0"),
+                ("positive2", "in"),
+                ("negative2", "0"),
+            ],
+        ),
+        resistor("R2", 50.0, "in", "0"),
+    ]);
+    let stability = Differentiated::Stability(Stability {
+        probe: "VP".to_owned(),
+        frequencies: vec![1e3, 1e6],
+    });
+    let options = tight_options(false);
+    let mut delayed_simulator = simulator(&delayed_circuit);
+    let names = vec![("RO".to_owned(), "resistance".to_owned())];
+    assert!(matches!(
+        delayed_simulator.jvp(&stability, &names, &[vec![1.0]], &options),
+        Err(SimulationError::Delayed { .. })
+    ));
+    assert!(matches!(
+        delayed_simulator.vjp(&stability, &names, &options),
+        Err(SimulationError::Delayed { .. })
+    ));
+    assert!(matches!(
+        delayed_simulator.sensitivity(
+            &Sensitivity {
+                outputs: vec![LOOP_GAIN.to_owned()],
+                of: stability,
+            },
+            &options,
+        ),
+        Err(SimulationError::Delayed { .. })
+    ));
 }

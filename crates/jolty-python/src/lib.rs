@@ -541,7 +541,7 @@ impl Simulator {
     ///
     /// Each parameter is `(instance_path, parameter_name)` and each tangent vector supplies
     /// one value per parameter. Returns a dictionary with `result`, `tangents` (indexed by
-    /// point, unknown, and tangent), and optional oscillator `period` derivatives.
+    /// point, output, and tangent), and optional oscillator `period` derivatives.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "PyO3 extracts owned Vec arguments from Python sequences"
@@ -594,7 +594,7 @@ impl Simulator {
         Ok((result, Pullback { inner }))
     }
 
-    /// Pulls output cotangents `values` (indexed by point and unknown, real or complex) and
+    /// Pulls output cotangents `values` (indexed by point and output, real or complex) and
     /// oscillator `period` cotangent back to parameters via `pullback` under JSON `options`.
     fn pull_back<'py>(
         &self,
@@ -1029,6 +1029,7 @@ fn extension(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("ELEMENTARY_CHARGE", jolty_models::ELEMENTARY_CHARGE)?;
     module.add("REFERENCE_TEMPERATURE", jolty_models::REFERENCE_TEMPERATURE)?;
     module.add("REGION", jolty_models::REGION)?;
+    module.add("LOOP_GAIN", jolty_engine::LOOP_GAIN)?;
     module.add("ElaborationError", py.get_type::<ElaborationError>())?;
     module.add("SimulationError", py.get_type::<SimulationError>())?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;

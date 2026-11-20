@@ -63,19 +63,26 @@ pub(crate) fn vjp<'py>(
         unknowns: request.unknowns,
         points: Points::from_differentiated(&differentiated),
     };
-    let names: Vec<String> = elaborated
-        .unknowns()
-        .iter()
-        .map(|unknown| unknown.name.clone())
-        .collect();
+    let is_stability = matches!(differentiated, Differentiated::Stability(_));
+    let names: Vec<String> = if is_stability {
+        vec![jolty_engine::LOOP_GAIN.to_owned()]
+    } else {
+        elaborated
+            .unknowns()
+            .iter()
+            .map(|unknown| unknown.name.clone())
+            .collect()
+    };
     if let Some(unknown) = traced
         .unknowns
         .iter()
         .find(|&&unknown| unknown >= names.len())
     {
         return Err(PyValueError::new_err(format!(
-            "the circuit has {} unknowns, not one at {unknown}",
-            names.len()
+            "the {} has {} {}, not one at {unknown}",
+            if is_stability { "analysis" } else { "circuit" },
+            names.len(),
+            if is_stability { "output" } else { "unknowns" },
         )));
     }
     let based = variants.based(base);
@@ -301,7 +308,11 @@ impl BatchPullback {
                             let Ok(Ok(pullback)) = &derived.found else {
                                 return Err(format!("batch run {} has no pullback", runs[row]));
                             };
-                            let width = simulator.unknowns().len();
+                            let width = if matches!(pullback.result, AnalysisResult::Stability(_)) {
+                                1
+                            } else {
+                                simulator.unknowns().len()
+                            };
                             let cotangent =
                                 self.cotangent(derived, pullback, &rows[row], periods[row], width)?;
                             let pulled = simulator
@@ -344,11 +355,16 @@ impl BatchPullback {
                 if value == T::default() && !value.is_nan() {
                     continue;
                 }
-                let Some(column) = derived.column(unknown) else {
-                    return Err(format!(
-                        "the run has no unknown `{}`, which a cotangent moves",
-                        self.names[unknown]
-                    ));
+                let column = if matches!(pullback.result, AnalysisResult::Stability(_)) {
+                    unknown
+                } else {
+                    let Some(column) = derived.column(unknown) else {
+                        return Err(format!(
+                            "the run has no unknown `{}`, which a cotangent moves",
+                            self.names[unknown]
+                        ));
+                    };
+                    column
                 };
                 match (&self.traced.points, times) {
                     (Points::Times(traced), Some(times)) => match located(times, traced[point]) {

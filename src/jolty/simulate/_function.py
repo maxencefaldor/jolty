@@ -15,11 +15,13 @@ from jolty.builder import Component, circuit
 from jolty.devices import Device, ParameterValue
 from jolty.errors import ElaborationError, SimulationError
 from jolty.plan import (
+    LOOP_GAIN,
     Ac,
     DcSweep,
     OperatingPoint,
     Options,
     PeriodicSteadyState,
+    Stability,
     Transient,
     differentiated,
 )
@@ -37,9 +39,11 @@ type Parameters = Mapping[str, Mapping[str, float]]
 """Device parameter mapping keyed by instance path and parameter path in SI units."""
 
 type Outputs = dict[str, npt.NDArray[np.float64] | npt.NDArray[np.complex128] | float]
-"""Analysis output mapping from unknown name to values, plus `PERIOD` if autonomous."""
+"""Analysis output mapping from output name to values, plus `PERIOD` if autonomous."""
 
-type Differentiable = OperatingPoint | DcSweep | Ac | Transient | PeriodicSteadyState
+type Differentiable = (
+    OperatingPoint | DcSweep | Ac | Stability | Transient | PeriodicSteadyState
+)
 """Analysis types supported by [`Function`][jolty.simulate.Function]."""
 
 type Gradient = dict[str, dict[str, float | complex]]
@@ -227,12 +231,13 @@ class Function:
             TypeError: When `analysis` is not a differentiable analysis type.
         """
         if not isinstance(
-            analysis, OperatingPoint | DcSweep | Ac | Transient | PeriodicSteadyState
+            analysis,
+            OperatingPoint | DcSweep | Ac | Stability | Transient | PeriodicSteadyState,
         ):
             message = (
                 "a function runs an operating point, a DC sweep, a small-signal "
-                f"response, a transient or a periodic steady state, not "
-                f"{type(analysis).__name__}"
+                "response, a stability analysis, a transient or a periodic steady "
+                f"state, not {type(analysis).__name__}"
             )
             raise TypeError(message)
         self.elaborated = Elaborated(circuit_or_top)
@@ -268,15 +273,27 @@ class Function:
         """Encodes solver options as JSON for the engine."""
         return json.dumps(self.options.to_json(), allow_nan=False)
 
+    def _output_names(self, core: _core.Simulator) -> tuple[str, ...]:
+        """Returns output names for a specific simulator `core` in column order."""
+        if isinstance(self.analysis, Stability):
+            return (LOOP_GAIN,)
+        return tuple(name for name, _ in core.unknowns)
+
     def _outputs(self, core: _core.Simulator, outcome: _core.AnalysisResult) -> Outputs:
-        """Extracts unknown arrays and optional oscillator period from `outcome`."""
+        """Extracts output arrays and optional oscillator period from `outcome`."""
         rows, period = _values(outcome)
         found: Outputs = {
-            name: rows[:, column] for column, (name, _) in enumerate(core.unknowns)
+            name: rows[:, column]
+            for column, name in enumerate(self._output_names(core))
         }
         if period is not None and self.oscillates:
             found[PERIOD] = float(period)
         return found
+
+    @property
+    def _is_complex(self) -> bool:
+        """True when the analysis produces complex frequency-domain outputs."""
+        return isinstance(self.analysis, Ac | Stability)
 
     @property
     def oscillates(self) -> bool:
@@ -325,7 +342,8 @@ class Function:
         outputs = self._outputs(core, found["result"])
         moved = found["tangents"][:, :, 0]
         pushed: Outputs = {
-            name: moved[:, column] for column, (name, _) in enumerate(core.unknowns)
+            name: moved[:, column]
+            for column, name in enumerate(self._output_names(core))
         }
         if (period := found["period"]) is not None and self.oscillates:
             pushed[PERIOD] = float(period[0])
@@ -348,9 +366,9 @@ class Function:
             ),
         )
         outputs = self._outputs(core, outcome)
-        columns = {name: column for column, (name, _) in enumerate(core.unknowns)}
+        columns = {name: column for column, name in enumerate(self._output_names(core))}
         points = _values(outcome)[0].shape[0]
-        phasors = isinstance(self.analysis, Ac)
+        phasors = self._is_complex
         settings = self._settings()
 
         def pull(cotangent: Mapping[str, npt.ArrayLike]) -> Gradient:
@@ -381,6 +399,13 @@ class Function:
         return tuple(name for name, _ in self.elaborated.simulator().unknowns)
 
     @property
+    def outputs(self) -> tuple[str, ...]:
+        """Output array names returned by this function in engine column order."""
+        if isinstance(self.analysis, Stability):
+            return (LOOP_GAIN,)
+        return self.unknowns
+
+    @property
     def points(self) -> int:
         """Number of points per run in a batched evaluation."""
         return points_of(self.analysis)
@@ -394,7 +419,7 @@ class Function:
                 `(runs, len(names))`.
 
         Returns:
-            Batched unknown `Outputs` indexed by run and analysis point.
+            Batched output `Outputs` indexed by run and analysis point.
         """
         outputs, _ = self._batched(names, values, [])
         return outputs
@@ -415,9 +440,9 @@ class Function:
         outputs, core = self._batched(names, values, list(names))
         pullback = BatchPullback(
             core,
-            self.unknowns,
+            self.outputs,
             self.points,
-            phasors=isinstance(self.analysis, Ac),
+            phasors=self._is_complex,
             oscillates=self.oscillates,
             settings=self._settings(),
         )
@@ -442,7 +467,8 @@ class Function:
             runs.append(run)
         variants = self.elaborated.variants(runs)
         base = self.elaborated.simulator()
-        columns = list(range(len(base.unknowns)))
+        output_names = self.outputs
+        columns = list(range(len(output_names)))
         try:
             found, pullback = base.batch_vjp(
                 self._encoded(),
@@ -464,7 +490,7 @@ class Function:
             raise SimulationError(message)
         traces = found["traces"]
         outputs: Outputs = {
-            name: traces[:, :, column] for column, name in enumerate(self.unknowns)
+            name: traces[:, :, column] for column, name in enumerate(output_names)
         }
         if self.oscillates:
             outputs[PERIOD] = found["periods"]
@@ -553,6 +579,8 @@ def _values(
             return np.atleast_2d(outcome["values"]), outcome["period"]
         case "operating_point" | "dc_sweep" | "ac" | "transient":
             return np.atleast_2d(outcome["values"]), None
+        case "stability":
+            return outcome["gains"][:, np.newaxis], None
         case other:
             message = f"a function runs no {other} analysis"
             raise SimulationError(message)

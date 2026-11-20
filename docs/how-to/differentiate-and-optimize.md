@@ -48,7 +48,7 @@ for _ in range(15):
 round(float(evaluate(parameters)["out"][0]), 3)  # 3.0
 ```
 
-`jolty.function`, `jolty.jvp`, and `jolty.vjp` work across operating point, DC sweep, AC, transient, and periodic steady-state analyses.
+`jolty.function`, `jolty.jvp`, and `jolty.vjp` work across operating point, DC sweep, AC, stability, transient, and periodic steady-state analyses.
 
 ## 3. Differentiate and batch inside JAX
 

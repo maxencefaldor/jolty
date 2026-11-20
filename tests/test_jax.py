@@ -2,7 +2,7 @@
 """Tests for the JAX bridge (`jolty.jax.function`).
 
 Verifies bit-for-bit parity with `jolty.vjp` and central finite-difference agreement
-across all five differentiable analyses. Covers `jax.jit`, `jax.grad`,
+across all six differentiable analyses. Covers `jax.jit`, `jax.grad`,
 `jax.value_and_grad`, `jax.vjp`, `jax.jacrev`, `jax.remat`, and batched `jax.vmap`
 matching scalar loops bit for bit. Exercises empty batches, nested `vmap`, mixed
 `in_axes`, pullbacks retained from forward passes, and structural unknown changes.
@@ -42,7 +42,7 @@ from jolty import (
 from jolty import function as jolty_function
 from jolty import vjp as jolty_vjp
 from jolty.errors import ElaborationError, SimulationError
-from jolty.jax import PERIOD, JaxOutputs
+from jolty.jax import LOOP_GAIN, PERIOD, JaxOutputs
 from jolty.jax import function as jax_function
 from jolty.plan import (
     Ac,
@@ -55,9 +55,10 @@ from jolty.plan import (
     Stability,
     TransferFunction,
     Transient,
+    decade,
 )
 from jolty.simulate import BatchPullback, Elaborated, Function, Outputs
-from jolty.units import F, H, MHz, V, kHz, kohm, ns, ohm, pF, us
+from jolty.units import F, H, MHz, V, kHz, kohm, mA, ns, ohm, pF, uA, um, us
 from jolty.waveforms import Pulse, Sine
 from sample_circuits import CROSSBAR_WEIGHTS as WEIGHTS
 from sample_circuits import crossbar
@@ -164,7 +165,7 @@ def _central_difference(
     for instance, inner in parameters.items():
         gradients[instance] = {}
         for name, value in inner.items():
-            step = value * relative_step
+            step = relative_step if value == 0.0 else value * relative_step
             plus = {**parameters, instance: {**inner, name: value + step}}
             minus = {**parameters, instance: {**inner, name: value - step}}
             gradients[instance][name] = (
@@ -1098,7 +1099,6 @@ def test_construction_time_analysis_refusals() -> None:
     for unsupported in (
         OperatingPoints(),
         Noise("out0", [1 * kHz]),
-        Stability("V0", [1 * kHz]),
         PoleZero(source="V0", output="out0"),
         TransferFunction(source="V0", output="out0"),
     ):
@@ -1322,3 +1322,307 @@ def test_concurrent_first_call_builds_runner_once(
     first = np.asarray(results_list[0]["out0"])
     for output in results_list[1:]:
         np.testing.assert_array_equal(np.asarray(output["out0"]), first)
+
+
+THREE_STAGE_POLES: Final = (
+    (90 * kohm, 1e3),
+    (10 * kohm, 120e3),
+    (1 * kohm, 7e6),
+)
+"""Three-stage amplifier loads and pole frequencies placing crossings off grid nodes."""
+
+
+@component
+def three_stage_feedback(c: Builder) -> None:
+    """Builds a three-stage unity-feedback amplifier broken by floating probe ``VP``."""
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(1 * V), name="VIN")
+    c.connect(source.negative, ground)
+    stages = [
+        c.place(devices.voltage_controlled_current_source(1 * mA / V), name=f"G{index}")
+        for index in range(1, len(THREE_STAGE_POLES) + 1)
+    ]
+    driving = source.positive
+    for index, (stage, (load, pole)) in enumerate(
+        zip(stages, THREE_STAGE_POLES, strict=True), 1
+    ):
+        resistor = c.place(devices.resistor(load), name=f"R{index}")
+        capacitance = 1 / (2 * math.pi * pole * load.value) * F
+        capacitor = c.place(devices.capacitor(capacitance), name=f"C{index}")
+        c.connect(stage.control_positive, driving)
+        c.connect(stage.positive, resistor.b, capacitor.b, ground)
+        c.connect(stage.negative, resistor.a, capacitor.a, name=f"n{index}")
+        driving = stage.negative
+    for stage in stages[1:]:
+        c.connect(stage.control_negative, ground)
+    buffer = c.place(devices.voltage_controlled_voltage_source(1.0), name="E1")
+    c.connect(buffer.control_positive, driving)
+    c.connect(buffer.control_negative, buffer.negative, ground)
+    probe = c.place(devices.voltage_source(0 * V), name="VP")
+    c.connect(buffer.positive, probe.negative, name="out")
+    c.connect(probe.positive, stages[0].control_negative, name="fb")
+
+
+@component
+def mosfet_feedback_amplifier(c: Builder) -> None:
+    """Builds a nonlinear MOSFET shunt-shunt feedback amplifier with probe ``VP``."""
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(3.3 * V), name="VDD")
+    drain_load = c.place(devices.resistor(5 * kohm), name="RD")
+    transistor = c.place(
+        devices.mosfet(
+            width=20 * um,
+            length=1 * um,
+            threshold_voltage=0.7 * V,
+            transconductance_parameter=100 * uA / V**2,
+            channel_length_modulation=0.02 / V,
+        ),
+        name="M1",
+    )
+    probe = c.place(devices.voltage_source(0 * V), name="VP")
+    feedback = c.place(devices.resistor(20 * kohm), name="RF")
+    bias = c.place(devices.resistor(20 * kohm), name="RG")
+    load_cap = c.place(devices.capacitor(2 * pF), name="CL")
+    feedback_cap = c.place(devices.capacitor(0.5 * pF), name="CF")
+    nonlinear_cap = c.place(
+        devices.behavioral_capacitor("1e-12 * (v(x) + 0.3 * (v(x) ^ 2))"),
+        name="BC1",
+    )
+    c.connect(supply.positive, drain_load.a, name="vdd")
+    c.connect(
+        drain_load.b,
+        transistor.drain,
+        probe.negative,
+        load_cap.a,
+        nonlinear_cap.positive,
+        nonlinear_cap.x,
+        name="drain",
+    )
+    c.connect(probe.positive, feedback.a, feedback_cap.a, name="fb")
+    c.connect(feedback.b, feedback_cap.b, bias.a, transistor.gate, name="gate")
+    c.connect(
+        supply.negative,
+        transistor.source,
+        transistor.bulk,
+        bias.b,
+        load_cap.b,
+        nonlinear_cap.negative,
+        ground,
+    )
+
+
+def _unwrapped_phase_degrees(gains: jax.Array) -> jax.Array:
+    """Computes smooth unwrapped phase in degrees along a monotonic frequency grid."""
+    steps = jnp.angle(gains[1:] / gains[:-1])
+    return jnp.rad2deg(jnp.cumsum(jnp.concatenate([jnp.angle(gains[:1]), steps])))
+
+
+def _differentiable_phase_margin(gains: jax.Array) -> jax.Array:
+    """Linearly interpolates phase margin in degrees at the 0 dB crossing."""
+    log_magnitude = jnp.log10(jnp.abs(gains))
+    phase_degrees = _unwrapped_phase_degrees(gains)
+    crossing = jax.lax.stop_gradient(
+        jnp.argmax((log_magnitude[:-1] >= 0.0) & (log_magnitude[1:] < 0.0))
+    )
+    fraction = log_magnitude[crossing] / (
+        log_magnitude[crossing] - log_magnitude[crossing + 1]
+    )
+    return (
+        180.0
+        + phase_degrees[crossing]
+        + fraction * (phase_degrees[crossing + 1] - phase_degrees[crossing])
+    )
+
+
+def _differentiable_gain_margin(gains: jax.Array) -> jax.Array:
+    """Linearly interpolates gain margin in dB at the -180 degree phase crossing."""
+    log_magnitude = jnp.log10(jnp.abs(gains))
+    phase_degrees = _unwrapped_phase_degrees(gains)
+    crossing = jax.lax.stop_gradient(
+        jnp.argmax((phase_degrees[:-1] >= -180.0) & (phase_degrees[1:] < -180.0))
+    )
+    fraction = (phase_degrees[crossing] + 180.0) / (
+        phase_degrees[crossing] - phase_degrees[crossing + 1]
+    )
+    return -20.0 * (
+        log_magnitude[crossing]
+        + fraction * (log_magnitude[crossing + 1] - log_magnitude[crossing])
+    )
+
+
+def test_stability_jax_grad_of_loop_gain_phase_margin_and_gain_margin() -> None:
+    frequencies = decade(10 * kHz, 10 * MHz, 15)
+    analysis = Stability("VP", frequencies)
+    wrapped = jax_function(three_stage_feedback(), analysis)
+    target = jolty_function(three_stage_feedback(), analysis)
+
+    load_first, pole_first = THREE_STAGE_POLES[0]
+    load_second, pole_second = THREE_STAGE_POLES[1]
+    point: dict[str, dict[str, float]] = {
+        "R1": {"resistance": load_first.value},
+        "C1": {"capacitance": 1 / (2 * math.pi * pole_first * load_first.value)},
+        "C2": {"capacitance": 1 / (2 * math.pi * pole_second * load_second.value)},
+    }
+
+    with jax.enable_x64():
+        jax_point = _as_jax_parameters(point, dtype=jnp.float64)
+
+        def asymmetric_loss(parameters: dict[str, dict[str, jax.Array]]) -> jax.Array:
+            gains = wrapped(parameters)[LOOP_GAIN]
+            return jnp.sum(gains.real + 2.0 * gains.imag)
+
+        def phase_margin_objective(
+            parameters: dict[str, dict[str, jax.Array]],
+        ) -> jax.Array:
+            return _differentiable_phase_margin(wrapped(parameters)[LOOP_GAIN])
+
+        def gain_margin_objective(
+            parameters: dict[str, dict[str, jax.Array]],
+        ) -> jax.Array:
+            return _differentiable_gain_margin(wrapped(parameters)[LOOP_GAIN])
+
+        # Exact Wirtinger pullback matches jolty.vjp bit for bit.
+        asymmetric_gradient = jax.jit(jax.grad(asymmetric_loss))(jax_point)
+        _, pullback = jolty_vjp(target, point)
+        cotangent = np.full(len(frequencies), 1.0 - 2.0j, dtype=np.complex128)
+        expected_asymmetric = pullback({LOOP_GAIN: cotangent})
+        for instance, inner in point.items():
+            for name in inner:
+                np.testing.assert_array_equal(
+                    float(asymmetric_gradient[instance][name]),
+                    float(np.real(expected_asymmetric[instance][name])),
+                )
+
+        # Phase margin and gain margin gradients match central finite differences.
+        pm_value, pm_gradient = jax.jit(jax.value_and_grad(phase_margin_objective))(
+            jax_point
+        )
+        gm_value, gm_gradient = jax.jit(jax.value_and_grad(gain_margin_objective))(
+            jax_point
+        )
+        assert 10.0 < float(pm_value) < 35.0
+        assert 10.0 < float(gm_value) < 30.0
+        # Increasing dominant-pole compensation capacitor C1 improves phase margin.
+        assert float(pm_gradient["C1"]["capacitance"]) > 0.0
+
+        pm_finite = _central_difference(
+            lambda moved: float(
+                phase_margin_objective(_as_jax_parameters(moved, dtype=jnp.float64))
+            ),
+            point,
+        )
+        gm_finite = _central_difference(
+            lambda moved: float(
+                gain_margin_objective(_as_jax_parameters(moved, dtype=jnp.float64))
+            ),
+            point,
+        )
+        for instance, inner in point.items():
+            for name in inner:
+                np.testing.assert_allclose(
+                    float(pm_gradient[instance][name]),
+                    pm_finite[instance][name],
+                    rtol=CENTRAL_DIFF_RTOL,
+                )
+                np.testing.assert_allclose(
+                    float(gm_gradient[instance][name]),
+                    gm_finite[instance][name],
+                    rtol=CENTRAL_DIFF_RTOL,
+                )
+
+
+def test_stability_jax_vmap_jacrev_nonlinear_bias_and_probe_errors() -> None:
+    frequencies = [1 * kHz, 1 * MHz, 100 * MHz]
+    analysis = Stability("VP", frequencies)
+    wrapped = jax_function(mosfet_feedback_amplifier(), analysis)
+
+    with jax.enable_x64():
+        # Nonlinear bias-coupled gradients (including VP.waveform.dc) vs finite diffs.
+        nonlinear_point: dict[str, dict[str, float]] = {
+            "VDD": {"waveform.dc": 3.3},
+            "VP": {"waveform.dc": 0.0},
+            "M1": {"width": 20e-6},
+            "RF": {"resistance": 20e3},
+        }
+
+        def magnitude_loss(parameters: dict[str, dict[str, jax.Array]]) -> jax.Array:
+            gains = wrapped(parameters)[LOOP_GAIN]
+            return jnp.sum(gains.real**2 + gains.imag**2)
+
+        gradient = jax.jit(jax.grad(magnitude_loss))(
+            _as_jax_parameters(nonlinear_point, dtype=jnp.float64)
+        )
+        assert abs(float(gradient["VP"]["waveform.dc"])) > 0.1
+        finite = _central_difference(
+            lambda moved: float(
+                magnitude_loss(_as_jax_parameters(moved, dtype=jnp.float64))
+            ),
+            nonlinear_point,
+        )
+        for instance, inner in nonlinear_point.items():
+            for name in inner:
+                np.testing.assert_allclose(
+                    float(gradient[instance][name]),
+                    finite[instance][name],
+                    rtol=CENTRAL_DIFF_RTOL,
+                )
+
+        # vmap forward and grad match scalar calls bit for bit.
+        widths = jnp.array([15e-6, 20e-6, 30e-6], dtype=jnp.float64)
+        batched = {"M1": {"width": widths}}
+        vmapped_outputs = jax.jit(jax.vmap(wrapped))(batched)[LOOP_GAIN]
+        assert vmapped_outputs.shape == (3, len(frequencies))
+        assert vmapped_outputs.dtype == jnp.complex128
+        vmapped_gradient = jax.jit(
+            jax.grad(
+                lambda current: jnp.sum(
+                    jnp.abs(jax.vmap(wrapped)(current)[LOOP_GAIN]) ** 2
+                )
+            )
+        )(batched)
+        for index in range(len(widths)):
+            single_input = {"M1": {"width": widths[index]}}
+            np.testing.assert_array_equal(
+                np.asarray(vmapped_outputs[index]),
+                np.asarray(wrapped(single_input)[LOOP_GAIN]),
+            )
+            single_gradient = jax.grad(
+                lambda current: jnp.sum(jnp.abs(wrapped(current)[LOOP_GAIN]) ** 2)
+            )(single_input)
+            np.testing.assert_array_equal(
+                float(vmapped_gradient["M1"]["width"][index]),
+                float(single_gradient["M1"]["width"]),
+            )
+
+        # Empty batch preserves complex128 output shape and gradient shape.
+        for shape in ((0,), (0, 2)):
+            empty = jnp.empty(shape, dtype=jnp.float64)
+            mapper = (
+                jax.vmap(wrapped) if len(shape) == 1 else jax.vmap(jax.vmap(wrapped))
+            )
+            empty_inputs = {"M1": {"width": empty}}
+            empty_out = mapper(empty_inputs)[LOOP_GAIN]
+            assert empty_out.shape == (*shape, len(frequencies))
+            assert empty_out.dtype == jnp.complex128
+            empty_grad = jax.grad(
+                lambda current, m=mapper: jnp.sum(m(current)[LOOP_GAIN].real)
+            )(empty_inputs)
+            assert empty_grad["M1"]["width"].shape == shape
+
+        # jacrev differentiates real and imaginary parts of loop gain.
+        jacobian = jax.jacrev(
+            lambda current: jnp.concatenate(
+                [wrapped(current)[LOOP_GAIN].real, wrapped(current)[LOOP_GAIN].imag]
+            )
+        )({"M1": {"width": jnp.asarray(20e-6, dtype=jnp.float64)}})
+        assert jacobian["M1"]["width"].shape == (2 * len(frequencies),)
+
+        # Invalid probe raises SimulationError through JAX callback.
+        bad_probe = jax_function(
+            mosfet_feedback_amplifier(), Stability("RF", [1 * kHz])
+        )
+        with pytest.raises(
+            (SimulationError, jax.errors.JaxRuntimeError),
+            match="not a floating voltage source",
+        ):
+            bad_probe({"M1": {"width": jnp.asarray(20e-6, dtype=jnp.float64)}})

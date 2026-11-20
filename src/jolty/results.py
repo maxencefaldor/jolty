@@ -1084,8 +1084,25 @@ class PeriodicSteadyStateResult(TransientResult):
     """Total shooting periods simulated to converge, with the final period returned."""
 
 
+@dataclass(frozen=True, slots=True)
+class StabilityResult(_Watched):
+    """Loop gain measured through a stability probe across frequencies.
+
+    Negative feedback yields positive loop gain at low frequencies. Stability measures
+    `phase_margin`, `gain_margin`, and `crossover` evaluate proximity to -1.
+    """
+
+    unknowns: tuple[Unknown, ...]
+    probe: str
+    """Instance path of the stability probe breaking the loop, such as ``VP``."""
+    frequencies: Real
+    gains: Complex
+    """Complex loop gain at each frequency in `frequencies`."""
+    operating_point: OperatingPointResult
+
+
 type DifferentiatedResult = (
-    OperatingPointResult | DcSweepResult | AcResult | TransientResult
+    OperatingPointResult | DcSweepResult | AcResult | StabilityResult | TransientResult
 )
 """Analysis result types supported by sensitivity and mismatch analyses."""
 
@@ -1093,6 +1110,7 @@ DIFFERENTIATED_TYPES: Final = (
     OperatingPointResult,
     DcSweepResult,
     AcResult,
+    StabilityResult,
     TransientResult,
 )
 """Runtime tuple of types matching `DifferentiatedResult`."""
@@ -1299,7 +1317,7 @@ class MismatchResult(_Watched):
             [variable.standard_deviation for variable in self.random_variables]
         )
         terms = self.derivatives[..., self._row(output), :] * deviations
-        if not isinstance(self.result, AcResult):
+        if not isinstance(self.result, AcResult | StabilityResult):
             if part is not None:
                 message = f"a mismatch of real values spreads no {part}"
                 raise ValueError(message)
@@ -1307,7 +1325,11 @@ class MismatchResult(_Watched):
         if part is None:
             message = "a response's mismatch spreads its magnitude or its phase"
             raise ValueError(message)
-        phasors = self.result.values[:, column(self.unknowns, output)]
+        phasors = (
+            self.result.gains
+            if isinstance(self.result, StabilityResult)
+            else self.result.values[:, column(self.unknowns, output)]
+        )
         along = np.conj(phasors)[:, None] * terms
         magnitudes = np.abs(phasors)[:, None]
         if part == "magnitude":
@@ -1381,23 +1403,6 @@ class MismatchResult(_Watched):
 
     def _row(self, output: str) -> int:
         return _find(list(self.outputs), output, "the analysis has no output")
-
-
-@dataclass(frozen=True, slots=True)
-class StabilityResult(_Watched):
-    """Loop gain measured through a stability probe across frequencies.
-
-    Negative feedback yields positive loop gain at low frequencies. Stability measures
-    `phase_margin`, `gain_margin`, and `crossover` evaluate proximity to -1.
-    """
-
-    unknowns: tuple[Unknown, ...]
-    probe: str
-    """Instance path of the stability probe breaking the loop, such as ``VP``."""
-    frequencies: Real
-    gains: Complex
-    """Complex loop gain at each frequency in `frequencies`."""
-    operating_point: OperatingPointResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -1779,11 +1784,14 @@ def result_kind(result: AnalysisResult) -> str:
     return RESULT_KINDS.get(type(result), type(result).__name__)
 
 
-def axis_of(result: DcSweepResult | AcResult | TransientResult) -> Real:
+def axis_of(
+    result: DcSweepResult | AcResult | StabilityResult | TransientResult,
+) -> Real:
     """Returns the sweep values, frequencies, or time axis array of `result`.
 
     Args:
-        result: Multi-point `DcSweepResult`, `AcResult`, or `TransientResult`.
+        result: Multi-point `DcSweepResult`, `AcResult`, `StabilityResult`, or
+            `TransientResult`.
 
     Returns:
         One-dimensional coordinate array (`swept`, `frequencies`, or `times`).
@@ -1791,7 +1799,7 @@ def axis_of(result: DcSweepResult | AcResult | TransientResult) -> Real:
     match result:
         case DcSweepResult():
             return result.swept
-        case AcResult():
+        case AcResult() | StabilityResult():
             return result.frequencies
         case TransientResult():
             return result.times

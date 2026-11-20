@@ -13,8 +13,11 @@
 //! swept value as fixed. Frequency-domain AC solves `(G + jωC) x = b`, differentiating both
 //! direct matrix terms and indirect bias shifts through nonlinear device twins. Reverse mode
 //! accumulates `g = ∂/∂x Σ_k λ_kᵀ (G + jω_k C) x_k` and performs a single transposed DC
-//! solve `Gᵀ μ = g`. Phasor pullbacks are bilinear (`vᵀ dx/dp`), so real losses over
-//! `x = a + jb` take the real part with `v = ∂L/∂a - j ∂L/∂b`.
+//! solve `Gᵀ μ = g`. Stability analysis differentiates Middlebrook's double-injection loop
+//! gain `T = -u / (1 + u)` (`dT/du = -1 / (1 + u)²`, `u = x_s[entered] - x_i[carried]`) from
+//! the same factored `G + jωC` matrix, propagating both injections through the shared
+//! operating-point bias path. Phasor pullbacks are bilinear (`vᵀ dx/dp`), so real losses
+//! over `x = a + jb` take the real part with `v = ∂L/∂a - j ∂L/∂b`.
 //!
 //! Transient steps solve `f(x) + α q(x) + h = 0`. JVP runs the forward direct method
 //! (Hocevar, Yang, Trick, and Epler, *IEEE Trans. CAD* 4(4), 1985), solving
@@ -43,11 +46,12 @@ use crate::options::{Parallelism, float_count};
 use crate::periodic::{DENSE_MATRICES, ShootingSystem};
 use crate::sensitivity::{Derivatives, Differentiated, Parameter};
 use crate::solver::Factors;
+use crate::stability::Probe;
 use crate::transient::{Carried, StepFormula, StepPoint, Tangent, TangentLinear};
 use crate::twins::{Part, Twins};
 use crate::{
     AcResult, AnalysisResult, DcSweep, DcSweepResult, Options, PeriodicSteadyStateResult,
-    SimulationError, Simulator, Transient, TransientResult,
+    SimulationError, Simulator, StabilityResult, Transient, TransientResult,
 };
 
 /// Analysis label for frequency-domain differentiation in delay-line refusals.
@@ -65,16 +69,16 @@ pub(crate) const PERIODIC_SENSITIVITY: &str = "periodic steady state sensitivity
 
 /// Error text for cotangent domain mismatches in [`Simulator::pull_back`].
 const KINDS: &str =
-    "cotangents on a response's phasors are complex, and on any other analysis's values real";
+    "cotangents on an AC or stability analysis are complex, and on any other analysis real";
 
 /// Result of [`Simulator::jvp`], pairing the primal analysis result with directional
-/// derivatives across every unknown and analysis point.
+/// derivatives across every output and analysis point.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JvpResult {
     /// Differentiated parameters in tangent order along with their current values.
     pub parameters: Vec<Parameter>,
-    /// Directional derivatives indexed by `[point][unknown][tangent]` (real values or AC
-    /// phasors).
+    /// Directional derivatives indexed by `[point][output][tangent]` (real values or complex
+    /// AC and stability phasors).
     pub tangents: Derivatives,
     /// Period derivatives along each tangent for an autonomous periodic steady state.
     pub period: Option<Vec<f64>>,
@@ -82,11 +86,11 @@ pub struct JvpResult {
     pub result: AnalysisResult,
 }
 
-/// Linear functional (cotangent) over all unknowns at selected points of an analysis, such as
+/// Linear functional (cotangent) over all outputs at selected points of an analysis, such as
 /// the gradient of a scalar loss with respect to simulation outputs.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Cotangent<T> {
-    /// Nonzero per-unknown cotangent vectors keyed by analysis point index.
+    /// Nonzero per-output cotangent vectors keyed by analysis point index.
     pub points: BTreeMap<usize, Vec<T>>,
     /// Cotangent weight on an autonomous oscillator's period; zero for other analyses.
     pub period: f64,
@@ -97,7 +101,7 @@ pub struct Cotangent<T> {
 pub enum Cotangents {
     /// Cotangents for real-valued analyses (DC, sweep, transient, or periodic steady state).
     Real(Vec<Cotangent<f64>>),
-    /// Cotangents for complex AC frequency responses.
+    /// Cotangents for complex AC and stability analyses.
     Complex(Vec<Cotangent<Complex64>>),
 }
 
@@ -107,7 +111,7 @@ pub enum Cotangents {
 pub enum ParameterCotangents {
     /// Pullback results for real-valued analyses.
     Real(Vec<Vec<f64>>),
-    /// Pullback results for complex AC analyses.
+    /// Pullback results for complex AC and stability analyses.
     Complex(Vec<Vec<Complex64>>),
 }
 
@@ -126,7 +130,7 @@ pub struct Pullback {
 /// Auxiliary analysis state saved alongside primal outputs for [`Simulator::pull_back`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Saved {
-    /// No auxiliary state (operating point or AC analysis).
+    /// No auxiliary state (operating point, AC, or stability analysis).
     Nothing,
     /// DC sweep configuration needed to replay held sweep values.
     DcSweep(DcSweep),
@@ -415,6 +419,145 @@ struct NonlinearTwins<'a> {
     slots: &'a [usize],
 }
 
+/// Nonlinear operating-point Jacobian shift `(slot, ∂G/∂x · s, ∂C/∂x · s)`.
+type EntryShift = (usize, f64, f64);
+
+/// Shared sparse-matrix and twin views used to assemble `-(dG + jω dC) x` at one frequency.
+#[derive(Clone, Copy)]
+struct FrequencyTangentContext<'a> {
+    twins: &'a Twins,
+    positions: &'a [(usize, usize)],
+    dimension: usize,
+    omega: f64,
+}
+
+impl FrequencyTangentContext<'_> {
+    /// Assembles `-(dG + jω dC) x` along `direction` with nonlinear operating-point shifts
+    /// `entries`.
+    fn right_hand_side(
+        self,
+        direction: &[f64],
+        entries: &[EntryShift],
+        phasors: &[Complex64],
+    ) -> Vec<Complex64> {
+        let mut moved = vec![Complex64::default(); self.dimension];
+        for (column, &along) in direction.iter().enumerate() {
+            if along != 0.0 {
+                self.twins.add_product(
+                    column,
+                    self.positions,
+                    along,
+                    self.omega,
+                    phasors,
+                    &mut moved,
+                );
+            }
+        }
+        for &(slot, conductance_rate, capacitance_rate) in entries {
+            let (row, column) = self.positions[slot];
+            let entry = Complex64::new(conductance_rate, self.omega * capacitance_rate);
+            moved[row] += entry * phasors[column];
+        }
+        for value in &mut moved {
+            *value = -*value;
+        }
+        moved
+    }
+}
+
+/// Per-frequency pullback terms accumulated across active cotangents in
+/// [`Simulator::pull_stability`].
+struct StabilityFrequencyPull {
+    omega: f64,
+    weighted: Vec<(usize, Complex64)>,
+    by_twin: Vec<Complex64>,
+    slot_products: Vec<Complex64>,
+}
+
+/// Shared views used to pull back active loop-gain cotangents at a single frequency.
+#[derive(Clone, Copy)]
+struct StabilityPullContext<'a> {
+    probe: Probe,
+    level: &'a [f64],
+    twins: &'a Twins,
+    positions: &'a [(usize, usize)],
+    nonlinear_slots: &'a [usize],
+    cotangents: &'a [Cotangent<Complex64>],
+}
+
+impl StabilityPullContext<'_> {
+    /// Solves the double-injection primal and unit transposed systems at `index` and
+    /// `frequency` when at least one cotangent is active there.
+    fn at_frequency(
+        self,
+        factors: &mut Factors<'_, Complex64>,
+        index: usize,
+        frequency: f64,
+    ) -> Result<Option<StabilityFrequencyPull>, SimulationError> {
+        let active: Vec<(usize, Complex64)> = self
+            .cotangents
+            .iter()
+            .enumerate()
+            .filter_map(|(cotangent, given)| {
+                let &value = given.points.get(&index)?.first()?;
+                (value != Complex64::default()).then_some((cotangent, value))
+            })
+            .collect();
+        if active.is_empty() {
+            return Ok(None);
+        }
+        let injection = self.probe.inject(factors, self.level)?;
+        let denominator = 1.0 + injection.ratio;
+        let gain_rate = Complex64::new(-1.0, 0.0) / (denominator * denominator);
+        let dimension = self.level.len();
+        let mut adjoint_series = vec![Complex64::default(); dimension];
+        adjoint_series[self.probe.entered.index()] = Complex64::new(1.0, 0.0);
+        factors.solve_transpose(&mut adjoint_series)?;
+        let mut adjoint_shunt = vec![Complex64::default(); dimension];
+        adjoint_shunt[self.probe.carried.index()] = Complex64::new(1.0, 0.0);
+        factors.solve_transpose(&mut adjoint_shunt)?;
+        let omega = std::f64::consts::TAU * frequency;
+        let by_twin: Vec<Complex64> = (0..self.twins.len())
+            .map(|column| {
+                let shunt = self.twins.product(
+                    column,
+                    self.positions,
+                    &adjoint_shunt,
+                    omega,
+                    &injection.shunt,
+                );
+                let series = self.twins.product(
+                    column,
+                    self.positions,
+                    &adjoint_series,
+                    omega,
+                    &injection.series,
+                );
+                shunt - series
+            })
+            .collect();
+        let slot_products: Vec<Complex64> = self
+            .nonlinear_slots
+            .iter()
+            .map(|&slot| {
+                let (row, column) = self.positions[slot];
+                adjoint_series[row] * injection.series[column]
+                    - adjoint_shunt[row] * injection.shunt[column]
+            })
+            .collect();
+        let weighted = active
+            .into_iter()
+            .map(|(cotangent, value)| (cotangent, value * gain_rate))
+            .collect();
+        Ok(Some(StabilityFrequencyPull {
+            omega,
+            weighted,
+            by_twin,
+            slot_products,
+        }))
+    }
+}
+
 impl Adjoint {
     /// Propagates adjoint state backward across `step` using `vectors` and `charge`, updating
     /// period-stretch terms when `stretch` is set and returning `μ - α λ`.
@@ -499,7 +642,11 @@ impl Simulator {
             let (twins, directions) = self
                 .tangent_twins(named, tangents)
                 .map_err(|unread| SimulationError::UnknownParameters(named_of(&unread)))?;
-            let kept: Vec<usize> = (0..self.elaborated.unknowns.len()).collect();
+            let kept: Vec<usize> = if matches!(analysis, Differentiated::Stability(_)) {
+                vec![0]
+            } else {
+                (0..self.elaborated.unknowns.len()).collect()
+            };
             let pushed = self.push_forward(analysis, twins, directions, &kept, options)?;
             Ok(JvpResult {
                 parameters: pushed.twins.parameters,
@@ -562,6 +709,11 @@ impl Simulator {
                 (_, AnalysisResult::Ac(response), Cotangents::Complex(cotangents)) => {
                     Ok(ParameterCotangents::Complex(self.pull_frequencies(
                         &mut twins, response, cotangents, options,
+                    )?))
+                }
+                (_, AnalysisResult::Stability(loop_gain), Cotangents::Complex(cotangents)) => {
+                    Ok(ParameterCotangents::Complex(self.pull_stability(
+                        &mut twins, loop_gain, cotangents, options,
                     )?))
                 }
                 (saved, result, Cotangents::Real(cotangents)) => {
@@ -636,7 +788,7 @@ impl Simulator {
         }
     }
 
-    /// Validates that `cotangents` have finite entries matching the point and unknown counts
+    /// Validates that `cotangents` have finite entries matching the point and output counts
     /// of `result`.
     fn checked(
         &self,
@@ -644,16 +796,20 @@ impl Simulator {
         cotangents: &Cotangents,
     ) -> Result<(), SimulationError> {
         let points = points(result);
-        let unknowns = self.elaborated.unknowns.len();
+        let (outputs, label) = if matches!(result, AnalysisResult::Stability(_)) {
+            (1, "output")
+        } else {
+            (self.elaborated.unknowns.len(), "unknowns")
+        };
         let fit = match cotangents {
-            Cotangents::Real(each) => cotangents_fit(each, points, unknowns),
-            Cotangents::Complex(each) => cotangents_fit(each, points, unknowns),
+            Cotangents::Real(each) => cotangents_fit(each, points, outputs),
+            Cotangents::Complex(each) => cotangents_fit(each, points, outputs),
         };
         if fit {
             Ok(())
         } else {
             Err(SimulationError::InvalidAnalysis(format!(
-                "a cotangent is finite, at points from 0 to {} of {unknowns} unknowns each",
+                "a cotangent is finite, at points from 0 to {} of {outputs} {label} each",
                 points.saturating_sub(1)
             )))
         }
@@ -699,6 +855,16 @@ impl Simulator {
                 let found =
                     self.frequency_tangents(&mut twins, &response, &directions, kept, options)?;
                 (Derivatives::Complex(found), AnalysisResult::Ac(response))
+            }
+            Differentiated::Stability(stability) => {
+                self.undelayed(OVER_FREQUENCY, LEFT_OUT_OVER_FREQUENCY)?;
+                let loop_gain = self.stability(stability, options)?;
+                let found =
+                    self.stability_tangents(&mut twins, &loop_gain, &directions, kept, options)?;
+                (
+                    Derivatives::Complex(found),
+                    AnalysisResult::Stability(loop_gain),
+                )
             }
             Differentiated::Transient(transient) => {
                 self.undelayed(OVER_TIME, LEFT_OUT_OVER_TIME)?;
@@ -773,6 +939,13 @@ impl Simulator {
             Differentiated::Ac(ac) => {
                 self.undelayed(OVER_FREQUENCY, LEFT_OUT_OVER_FREQUENCY)?;
                 (AnalysisResult::Ac(self.ac(ac, options)?), Saved::Nothing)
+            }
+            Differentiated::Stability(stability) => {
+                self.undelayed(OVER_FREQUENCY, LEFT_OUT_OVER_FREQUENCY)?;
+                (
+                    AnalysisResult::Stability(self.stability(stability, options)?),
+                    Saved::Nothing,
+                )
             }
             Differentiated::Transient(transient) => {
                 self.replayable()?;
@@ -1024,6 +1197,32 @@ impl Simulator {
         ran.map(|()| found)
     }
 
+    /// Prepares device and twin evaluations at `operating` and returns per-direction nonlinear
+    /// Jacobian shifts `(slot, ∂G/∂x · s, ∂C/∂x · s)` along `directions`.
+    fn frequency_biases(
+        &mut self,
+        twins: &mut Twins,
+        operating: &[f64],
+        directions: &[Vec<f64>],
+        options: &Options,
+    ) -> Result<Vec<Vec<EntryShift>>, SimulationError> {
+        let nonlinear = self.nonlinear_devices();
+        if nonlinear.is_empty() {
+            self.evaluate(operating, None, 1.0, options.gmin, false);
+            twins.evaluate(operating, None, options.gmin, &options.parallelism);
+            Ok(vec![Vec::new(); directions.len()])
+        } else {
+            let shifts = self.dc_shifts(twins, operating, directions, &[], options)?;
+            Ok(self.entries_along(
+                &nonlinear,
+                operating,
+                &shifts,
+                options.gmin,
+                &options.parallelism,
+            ))
+        }
+    }
+
     /// Computes forward directional AC phasor sensitivities for `kept` unknowns along
     /// `directions`, indexed by `[frequency][kept_output][direction]`.
     fn frequency_tangents(
@@ -1035,21 +1234,7 @@ impl Simulator {
         options: &Options,
     ) -> Result<Vec<Vec<Vec<Complex64>>>, SimulationError> {
         let operating = &response.operating_point.values;
-        let nonlinear = self.nonlinear_devices();
-        let biases = if nonlinear.is_empty() {
-            self.evaluate(operating, None, 1.0, options.gmin, false);
-            twins.evaluate(operating, None, options.gmin, &options.parallelism);
-            vec![Vec::new(); directions.len()]
-        } else {
-            let shifts = self.dc_shifts(twins, operating, directions, &[], options)?;
-            self.entries_along(
-                &nonlinear,
-                operating,
-                &shifts,
-                options.gmin,
-                &options.parallelism,
-            )
-        };
+        let biases = self.frequency_biases(twins, operating, directions, options)?;
         let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
         let twins = &*twins;
         let dimension = self.elaborated.unknowns.len();
@@ -1060,28 +1245,71 @@ impl Simulator {
             &options.parallelism,
             &|factors, index, frequency| {
                 let phasors = &response.values[index];
-                let omega = std::f64::consts::TAU * frequency;
+                let context = FrequencyTangentContext {
+                    twins,
+                    positions: &positions,
+                    dimension,
+                    omega: std::f64::consts::TAU * frequency,
+                };
                 let mut at = Vec::with_capacity(directions.len());
                 for (direction, entries) in directions.iter().zip(&biases) {
-                    let mut moved = vec![Complex64::default(); dimension];
-                    for (column, &along) in direction.iter().enumerate() {
-                        if along != 0.0 {
-                            twins
-                                .add_product(column, &positions, along, omega, phasors, &mut moved);
-                        }
-                    }
-                    for &(slot, conductance_rate, capacitance_rate) in entries {
-                        let (row, column) = positions[slot];
-                        moved[row] += Complex64::new(conductance_rate, omega * capacitance_rate)
-                            * phasors[column];
-                    }
-                    for value in &mut moved {
-                        *value = -*value;
-                    }
+                    let mut moved = context.right_hand_side(direction, entries, phasors);
                     factors.solve(&mut moved)?;
                     at.push(kept.iter().map(|&unknown| moved[unknown]).collect());
                 }
                 Ok(transposed(at, kept.len()))
+            },
+        )
+    }
+
+    /// Computes forward directional loop-gain sensitivities along `directions` for `kept`
+    /// outputs, indexed by `[frequency][kept_output][direction]`.
+    fn stability_tangents(
+        &mut self,
+        twins: &mut Twins,
+        loop_gain: &StabilityResult,
+        directions: &[Vec<f64>],
+        kept: &[usize],
+        options: &Options,
+    ) -> Result<Vec<Vec<Vec<Complex64>>>, SimulationError> {
+        if kept.is_empty() || directions.is_empty() {
+            return Ok(vec![
+                vec![Vec::new(); kept.len()];
+                loop_gain.frequencies.len()
+            ]);
+        }
+        let probe = self.probe(&loop_gain.probe)?;
+        let level = self.source_excitation(probe.device);
+        let operating = &loop_gain.operating_point.values;
+        let biases = self.frequency_biases(twins, operating, directions, options)?;
+        let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
+        let twins = &*twins;
+        let dimension = self.elaborated.unknowns.len();
+        over_frequencies(
+            self.linearization(),
+            &self.state.workspace.contributions,
+            &loop_gain.frequencies,
+            &options.parallelism,
+            &|factors, _, frequency| {
+                let injection = probe.inject(factors, &level)?;
+                let denominator = 1.0 + injection.ratio;
+                let gain_rate = Complex64::new(-1.0, 0.0) / (denominator * denominator);
+                let context = FrequencyTangentContext {
+                    twins,
+                    positions: &positions,
+                    dimension,
+                    omega: std::f64::consts::TAU * frequency,
+                };
+                let mut at = Vec::with_capacity(directions.len());
+                for (direction, entries) in directions.iter().zip(&biases) {
+                    let mut series = context.right_hand_side(direction, entries, &injection.series);
+                    factors.solve(&mut series)?;
+                    let mut shunt = context.right_hand_side(direction, entries, &injection.shunt);
+                    factors.solve(&mut shunt)?;
+                    let ratio_rate = series[probe.entered.index()] - shunt[probe.carried.index()];
+                    at.push(gain_rate * ratio_rate);
+                }
+                Ok(vec![at; kept.len()])
             },
         )
     }
@@ -1185,9 +1413,75 @@ impl Simulator {
         Ok(sums)
     }
 
+    /// Pulls back complex `cotangents` over `loop_gain` to `twins`, accumulating frequency
+    /// contributions in order and folding indirect bias shifts through one transposed DC solve.
+    pub(crate) fn pull_stability(
+        &mut self,
+        twins: &mut Twins,
+        loop_gain: &StabilityResult,
+        cotangents: &[Cotangent<Complex64>],
+        options: &Options,
+    ) -> Result<Vec<Vec<Complex64>>, SimulationError> {
+        if cotangents.is_empty() {
+            return Ok(Vec::new());
+        }
+        if twins.len() == 0 {
+            return Ok(vec![Vec::new(); cotangents.len()]);
+        }
+        let probe = self.probe(&loop_gain.probe)?;
+        let level = self.source_excitation(probe.device);
+        let operating = &loop_gain.operating_point.values;
+        let parallelism = &options.parallelism;
+        self.evaluate(operating, None, 1.0, options.gmin, false);
+        twins.evaluate(operating, None, options.gmin, parallelism);
+        let positions: Vec<(usize, usize)> = self.elaborated.pattern.positions().collect();
+        let nonlinear = self.nonlinear_devices();
+        let (mut unknown_twins, nonlinear_slots) = if nonlinear.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            self.unknown_twins(&nonlinear)
+        };
+        let found = {
+            let context = StabilityPullContext {
+                probe,
+                level: &level,
+                twins,
+                positions: &positions,
+                nonlinear_slots: &nonlinear_slots,
+                cotangents,
+            };
+            over_frequencies(
+                self.linearization(),
+                &self.state.workspace.contributions,
+                &loop_gain.frequencies,
+                parallelism,
+                &|factors, index, frequency| context.at_frequency(factors, index, frequency),
+            )?
+        };
+        let mut sums = vec![vec![Complex64::default(); twins.len()]; cotangents.len()];
+        let mut weights: Vec<Option<(Vec<Complex64>, Vec<Complex64>)>> =
+            vec![None; cotangents.len()];
+        accumulate_stability_pulls(found, nonlinear_slots.len(), &mut sums, &mut weights);
+        if !nonlinear_slots.is_empty() {
+            let mut nonlinear_twins = NonlinearTwins {
+                twins: &mut unknown_twins,
+                slots: &nonlinear_slots,
+            };
+            self.add_operating_point_cotangents(
+                twins,
+                &mut nonlinear_twins,
+                operating,
+                &weights,
+                &mut sums,
+                options,
+            )?;
+        }
+        Ok(sums)
+    }
+
     /// Adds to `sums` the operating-point share `+(J₀⁻ᵀ g)ᵀ ∂F₀/∂p` of each active
     /// cotangent's `weights`, indexed by `nonlinear.slots`, in
-    /// [`Simulator::pull_frequencies`].
+    /// [`Simulator::pull_frequencies`] and [`Simulator::pull_stability`].
     fn add_operating_point_cotangents(
         &mut self,
         twins: &mut Twins,
@@ -1746,14 +2040,47 @@ impl Simulator {
     }
 }
 
+/// Accumulates per-frequency stability pullback terms into parameter cotangent `sums` and
+/// nonlinear operating-point slot `weights`.
+fn accumulate_stability_pulls(
+    found: Vec<Option<StabilityFrequencyPull>>,
+    slot_count: usize,
+    sums: &mut [Vec<Complex64>],
+    weights: &mut [Option<(Vec<Complex64>, Vec<Complex64>)>],
+) {
+    for pull in found.into_iter().flatten() {
+        for (cotangent, weight) in pull.weighted {
+            for (total, &term) in sums[cotangent].iter_mut().zip(&pull.by_twin) {
+                *total += weight * term;
+            }
+            if slot_count == 0 {
+                continue;
+            }
+            let (weight_conductance, weight_capacitance) =
+                weights[cotangent].get_or_insert_with(|| {
+                    (
+                        vec![Complex64::default(); slot_count],
+                        vec![Complex64::default(); slot_count],
+                    )
+                });
+            for (packed, &slot_product) in pull.slot_products.iter().enumerate() {
+                let product = weight * slot_product;
+                weight_conductance[packed] += product;
+                weight_capacitance[packed] +=
+                    Complex64::new(-pull.omega * product.im, pull.omega * product.re);
+            }
+        }
+    }
+}
+
 /// Checks that every cotangent in `cotangents` has a finite period and finite values of length
-/// `unknowns` at valid indices `< points`.
-fn cotangents_fit<T: Scalar>(cotangents: &[Cotangent<T>], points: usize, unknowns: usize) -> bool {
+/// `outputs` at valid indices `< points`.
+fn cotangents_fit<T: Scalar>(cotangents: &[Cotangent<T>], points: usize, outputs: usize) -> bool {
     cotangents.iter().all(|cotangent| {
         cotangent.period.is_finite()
             && cotangent.points.iter().all(|(&at, values)| {
                 at < points
-                    && values.len() == unknowns
+                    && values.len() == outputs
                     && values.iter().copied().all(Scalar::is_finite)
             })
     })
@@ -1797,6 +2124,7 @@ pub(crate) fn points(result: &AnalysisResult) -> usize {
     match result {
         AnalysisResult::DcSweep(sweep) => sweep.values.len(),
         AnalysisResult::Ac(response) => response.values.len(),
+        AnalysisResult::Stability(loop_gain) => loop_gain.gains.len(),
         AnalysisResult::Transient(waveforms) => waveforms.values.len(),
         AnalysisResult::PeriodicSteadyState(found) => found.transient.values.len(),
         _ => 1,

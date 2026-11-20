@@ -10,6 +10,7 @@ from jolty import devices, ir, results
 from jolty.devices import ParameterValue
 from jolty.errors import DimensionError, PlanError, close_names
 from jolty.plan import (
+    LOOP_GAIN,
     Ac,
     Analysis,
     DcSweep,
@@ -687,6 +688,16 @@ def _pole_zero_problems(analysis: PoleZero, catalog: Catalog) -> list[str]:
     return problems
 
 
+def _stability_output_problem(name: str) -> str | None:
+    """Returns a problem string when `name` is not the stability loop-gain output."""
+    if name == LOOP_GAIN:
+        return None
+    close = close_names((LOOP_GAIN,), name)
+    return (
+        f"a stability analysis has only the `{LOOP_GAIN}` output, not `{name}`{close}"
+    )
+
+
 def _differentiated_problems(
     analysis: Sensitivity | Mismatch,
     catalog: Catalog,
@@ -695,11 +706,19 @@ def _differentiated_problems(
     has_logic_nets: bool,
 ) -> tuple[list[str], DimensionError | None]:
     """Checks `Sensitivity` or `Mismatch` outputs, random variables, and nested `of`."""
-    problems = [
-        issue
-        for output in analysis.outputs
-        if (issue := _output_problem(output, catalog, allow_ground=False)) is not None
-    ]
+    if isinstance(analysis.of, Stability):
+        problems = [
+            issue
+            for output in analysis.outputs
+            if (issue := _stability_output_problem(output)) is not None
+        ]
+    else:
+        problems = [
+            issue
+            for output in analysis.outputs
+            if (issue := _output_problem(output, catalog, allow_ground=False))
+            is not None
+        ]
     if isinstance(analysis, Mismatch):
         problems.extend(
             parameter_pair_problems(

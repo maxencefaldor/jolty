@@ -18,12 +18,16 @@
 //! probe terminal may sit on ground. Negative feedback yields positive `T` at low
 //! frequencies and divides enclosed closed-loop responses by `1 + T`.
 
-use jolty_models::Nature;
+use jolty_models::{Nature, UnknownIndex};
 use jolty_numerics::Complex64;
 use serde::Deserialize;
 
 use crate::ac::over_frequencies;
+use crate::solver::Factors;
 use crate::{OperatingPointResult, Options, SimulationError, Simulator};
+
+/// Output name for the loop gain `T` in sensitivity, mismatch, and derivative analyses.
+pub const LOOP_GAIN: &str = "loop_gain";
 
 /// A stability analysis: the loop gain through a probe, at each frequency.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -51,7 +55,76 @@ pub struct StabilityResult {
     pub gains: Vec<Complex64>,
 }
 
+/// Validated loop-breaking voltage-source probe resolved to its device and unknown indices.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Probe {
+    /// Placed device index of the floating voltage source acting as the probe.
+    pub(crate) device: usize,
+    /// Node unknown on the probe's `positive` terminal (driven side of the loop).
+    pub(crate) entered: UnknownIndex,
+    /// Branch current unknown carried by the probe (`<probe>:current`).
+    pub(crate) carried: UnknownIndex,
+}
+
+/// Small-signal double-injection responses at a single frequency.
+pub(crate) struct Injection {
+    /// Solution `x_s` to `(G + jωC) x_s = -b_series` for a unit series voltage.
+    pub(crate) series: Vec<Complex64>,
+    /// Solution `x_i` to `(G + jωC) x_i = e_entered` for a unit shunt current into `entered`.
+    pub(crate) shunt: Vec<Complex64>,
+    /// Middlebrook combined ratio `u = x_s[entered] - x_i[carried]`.
+    pub(crate) ratio: Complex64,
+}
+
+impl Probe {
+    /// Performs both unit injections against a single factorization `factors` of `G + jωC`.
+    pub(crate) fn inject(
+        self,
+        factors: &mut Factors<'_, Complex64>,
+        level: &[f64],
+    ) -> Result<Injection, SimulationError> {
+        let mut series: Vec<Complex64> = level
+            .iter()
+            .map(|&entry| Complex64::new(-entry, 0.0))
+            .collect();
+        factors.solve(&mut series)?;
+        let mut shunt = vec![Complex64::default(); level.len()];
+        shunt[self.entered.index()] = Complex64::new(1.0, 0.0);
+        factors.solve(&mut shunt)?;
+        let ratio = series[self.entered.index()] - shunt[self.carried.index()];
+        Ok(Injection {
+            series,
+            shunt,
+            ratio,
+        })
+    }
+}
+
 impl Simulator {
+    /// Validates `name` as a floating independent voltage source and resolves its probe
+    /// indices.
+    pub(crate) fn probe(&self, name: &str) -> Result<Probe, SimulationError> {
+        let not_a_probe = || SimulationError::NotAProbe(name.to_owned());
+        let device = self.source_index(name).map_err(|error| match error {
+            SimulationError::NotASource(_) => not_a_probe(),
+            other => other,
+        })?;
+        if self.source_nature(device) != Nature::Voltage {
+            return Err(not_a_probe());
+        }
+        let &[Some(entered), Some(_)] = self.elaborated.devices[device].nodes() else {
+            return Err(not_a_probe());
+        };
+        let carried = self
+            .unknown(&format!("{name}:current"))
+            .ok_or_else(not_a_probe)?;
+        Ok(Probe {
+            device,
+            entered,
+            carried,
+        })
+    }
+
     /// Linearizes the circuit at its operating point and finds the loop gain through the
     /// probe at each frequency.
     ///
@@ -68,24 +141,8 @@ impl Simulator {
     ) -> Result<StabilityResult, SimulationError> {
         options.parallelism.confined(|| {
             self.solvable()?;
-            let not_a_probe = || SimulationError::NotAProbe(stability.probe.clone());
-            let index = self
-                .source_index(&stability.probe)
-                .map_err(|error| match error {
-                    SimulationError::NotASource(_) => not_a_probe(),
-                    other => other,
-                })?;
-            if self.source_nature(index) != Nature::Voltage {
-                return Err(not_a_probe());
-            }
-            let &[Some(entered), Some(_)] = self.elaborated.devices[index].nodes() else {
-                return Err(not_a_probe());
-            };
-            let carried = self
-                .unknown(&format!("{}:current", stability.probe))
-                .ok_or_else(not_a_probe)?;
-            let unknowns = self.elaborated.unknowns.len();
-            let level = self.source_excitation(index);
+            let probe = self.probe(&stability.probe)?;
+            let level = self.source_excitation(probe.device);
             let operating_point = self.linearize(&stability.frequencies, options)?;
             let gains = over_frequencies(
                 self.linearization(),
@@ -93,14 +150,8 @@ impl Simulator {
                 &stability.frequencies,
                 &options.parallelism,
                 &|factors, _, _| {
-                    let mut series: Vec<Complex64> =
-                        level.iter().map(|&d| Complex64::new(-d, 0.0)).collect();
-                    factors.solve(&mut series)?;
-                    let mut shunt = vec![Complex64::default(); unknowns];
-                    shunt[entered.index()] = Complex64::new(1.0, 0.0);
-                    factors.solve(&mut shunt)?;
-                    let u = series[entered.index()] - shunt[carried.index()];
-                    Ok(-u / (1.0 + u))
+                    let injection = probe.inject(factors, &level)?;
+                    Ok(-injection.ratio / (1.0 + injection.ratio))
                 },
             )?;
             Ok(StabilityResult {

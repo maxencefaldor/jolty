@@ -73,6 +73,9 @@ Using 40 decimal digits (far beyond 64-bit float's 17 digits) prevents accumulat
 rounding drift over large sweeps so each frequency rounds to the nearest float.
 """
 
+LOOP_GAIN: Final = _core.LOOP_GAIN
+"""Output name for loop gain `T` of a [`Stability`][jolty.plan.Stability] analysis."""
+
 _MAX_SEED_EXCLUSIVE: Final = 2**64
 """Exclusive upper bound of a 64-bit unsigned integer seed."""
 
@@ -753,7 +756,7 @@ _METHOD: Final = BeforeValidator(_check_method)
 _RECORD: Final = BeforeValidator(_check_record)
 _OPTIONAL_POSITIVE_FLOAT: Final = _real(positive=True, optional=True)
 _OPTIONAL_POSITIVE_INT: Final = _integer(minimum=1, optional=True)
-_OUTPUTS: Final = _sequence_of(str, "outputs", "unknown names")
+_OUTPUTS: Final = _sequence_of(str, "outputs", "output names")
 
 
 def voltages(given: Mapping[str, Quantity], what: str) -> dict[str, float]:
@@ -1082,130 +1085,6 @@ class PeriodicSteadyState(Recorded):
         return {"periodic_steady_state": steady}
 
 
-type Differentiated = DcSweep | Ac | Transient | PeriodicSteadyState | None
-"""Analysis type supported for differentiation, or `None` for the operating point."""
-
-_DIFFERENTIATED: Final = _instance(
-    (DcSweep, Ac, Transient, PeriodicSteadyState),
-    "analysis_type",
-    "a differentiated analysis is a DcSweep, Ac, Transient, PeriodicSteadyState "
-    "or None, not {value}",
-    optional=True,
-)
-
-
-def differentiated(of: Differentiated, level: Dimension | None) -> JsonValue:
-    """Serializes the differentiated analysis `of` into the engine's JSON format.
-
-    DC sweep levels are validated against `level`.
-
-    Args:
-        of: Underlying analysis to differentiate, or ``None`` for DC.
-        level: Expected physical dimension when `of` is a `DcSweep`, or ``None`` for
-            a dimensionless swept parameter.
-
-    Returns:
-        Engine JSON payload representing the differentiated target analysis.
-
-    Examples:
-        >>> differentiated(None, VOLTAGE)
-        'operating_point'
-    """
-    match of:
-        case None:
-            return "operating_point"
-        case DcSweep():
-            return of.to_json(level)
-        case Ac() | Transient() | PeriodicSteadyState():
-            return of.to_json()
-
-
-@dataclass(frozen=True, slots=True, config=_CONFIG)
-class Sensitivity:
-    """First-order sensitivity of circuit unknowns with respect to device parameters.
-
-    Each entry in `outputs` names an unknown, such as a node voltage (``out``) or
-    branch current (``V1:current``). Derivatives are evaluated at the operating point
-    when `of` is `None`, or at every point of a DC sweep, AC sweep, transient, or
-    periodic steady state. For periodic steady states, derivatives are taken at fixed
-    period fractions while adjusting the periodic initial state and oscillator period
-    to preserve periodicity. The engine computes the full Jacobian using whichever of
-    [`jvp`][jolty.simulate.jvp] (per parameter) or [`vjp`][jolty.simulate.vjp] (per
-    output) requires fewer linear solves.
-    """
-
-    outputs: Annotated[Sequence[str], _OUTPUTS]
-    of: Annotated[Differentiated, _DIFFERENTIATED] = None
-
-    def to_json(self, level: Dimension | None = VOLTAGE) -> JsonValue:
-        """Serializes the sensitivity analysis into engine JSON.
-
-        When differentiating a DC sweep, sweep levels are validated against `level`.
-
-        Args:
-            level: Expected physical dimension when `self.of` is a `DcSweep`, or
-                ``None`` for a dimensionless swept parameter.
-
-        Returns:
-            Engine JSON mapping ``{'sensitivity': ...}``.
-        """
-        outputs: list[JsonValue] = list(self.outputs)
-        return {
-            "sensitivity": {"outputs": outputs, "of": differentiated(self.of, level)}
-        }
-
-
-@dataclass(frozen=True, slots=True, config=_CONFIG)
-class Mismatch:
-    """First-order statistical spread of circuit unknowns under random variations.
-
-    Each entry in `outputs` names an unknown evaluated at the operating point or across
-    every point of the analysis `of`, matching [`Sensitivity`][jolty.plan.Sensitivity].
-    Variations include per-part and per-lot circuit tolerances (matching Monte Carlo
-    draws) along with explicit [`RandomVariable`][jolty.ir.RandomVariable] inputs in
-    `random_variables`, such as process-kit statistical models from
-    [`Library.random_variables`][jolty.spice.Library.random_variables].
-
-    Each random variable's output derivative sums the sensitivity contributions of its
-    affected parameters. Independent random variables combine in quadrature: first-order
-    output standard deviation equals the root-sum-square of each derivative scaled by
-    its standard deviation, and each squared term gives that variable's variance share.
-    """
-
-    outputs: Annotated[Sequence[str], _OUTPUTS]
-    of: Annotated[Differentiated, _DIFFERENTIATED] = None
-    random_variables: Annotated[
-        Sequence[ir.RandomVariable], BeforeValidator(_check_random_variables)
-    ] = ()
-
-    def to_json(
-        self, level: Dimension | None = VOLTAGE, toleranced: Sequence[JsonValue] = ()
-    ) -> JsonValue:
-        """Serializes the mismatch analysis and `toleranced` entries into engine JSON.
-
-        When differentiating a DC sweep, sweep levels are validated against `level`.
-
-        Args:
-            level: Expected physical dimension when `self.of` is a `DcSweep`.
-            toleranced: Serialized circuit tolerance descriptors from `variation`.
-
-        Returns:
-            Engine JSON mapping ``{'mismatch': ...}``.
-        """
-        outputs: list[JsonValue] = list(self.outputs)
-        provided: list[JsonValue] = [
-            variable.model_dump(mode="json") for variable in self.random_variables
-        ]
-        return {
-            "mismatch": {
-                "outputs": outputs,
-                "of": differentiated(self.of, level),
-                "toleranced": list(toleranced),
-                "random_variables": provided,
-            }
-        }
-
-
 @dataclass(frozen=True, slots=True, config=_CONFIG)
 class Stability:
     """Small-signal loop-gain stability analysis using Middlebrook injection probes.
@@ -1236,6 +1115,146 @@ class Stability:
             frequency.to(FREQUENCY, "a frequency") for frequency in self.frequencies
         ]
         return {"stability": {"probe": self.probe, "frequencies": frequencies}}
+
+
+type Differentiated = DcSweep | Ac | Stability | Transient | PeriodicSteadyState | None
+"""Analysis type supported for differentiation, or `None` for the operating point."""
+
+_DIFFERENTIATED: Final = _instance(
+    (DcSweep, Ac, Stability, Transient, PeriodicSteadyState),
+    "analysis_type",
+    "a differentiated analysis is a DcSweep, Ac, Stability, Transient, "
+    "PeriodicSteadyState or None, not {value}",
+    optional=True,
+)
+
+
+def differentiated(of: Differentiated, level: Dimension | None) -> JsonValue:
+    """Serializes the differentiated analysis `of` into the engine's JSON format.
+
+    DC sweep levels are validated against `level`.
+
+    Args:
+        of: Underlying analysis to differentiate, or ``None`` for DC.
+        level: Expected physical dimension when `of` is a `DcSweep`, or ``None`` for
+            a dimensionless swept parameter.
+
+    Returns:
+        Engine JSON payload representing the differentiated target analysis.
+
+    Examples:
+        >>> differentiated(None, VOLTAGE)
+        'operating_point'
+    """
+    match of:
+        case None:
+            return "operating_point"
+        case DcSweep():
+            return of.to_json(level)
+        case Ac() | Stability() | Transient() | PeriodicSteadyState():
+            return of.to_json()
+
+
+@dataclass(frozen=True, slots=True, config=_CONFIG)
+class Sensitivity:
+    """First-order sensitivity of analysis outputs with respect to device parameters.
+
+    Each entry in `outputs` names a circuit unknown such as a node voltage (``out``) or
+    branch current (``V1:current``), or [`LOOP_GAIN`][jolty.plan.LOOP_GAIN] when
+    differentiating a [`Stability`][jolty.plan.Stability] analysis (the default when
+    `outputs` is omitted for `Stability`). Derivatives are evaluated at the operating
+    point when `of` is `None`, or at every point of a DC sweep, AC sweep, stability
+    analysis, transient, or periodic steady state. For periodic steady states,
+    derivatives are taken at fixed period fractions while adjusting the periodic initial
+    state and oscillator period to preserve periodicity. The engine computes the full
+    Jacobian using whichever of [`jvp`][jolty.simulate.jvp] (per parameter) or
+    [`vjp`][jolty.simulate.vjp] (per output) requires fewer linear solves.
+    """
+
+    outputs: Annotated[Sequence[str], _OUTPUTS] = ()
+    of: Annotated[Differentiated, _DIFFERENTIATED] = None
+
+    @model_validator(mode="after")
+    def _default_stability_output(self) -> Sensitivity:
+        if not self.outputs and isinstance(self.of, Stability):
+            object.__setattr__(self, "outputs", (LOOP_GAIN,))
+        return self
+
+    def to_json(self, level: Dimension | None = VOLTAGE) -> JsonValue:
+        """Serializes the sensitivity analysis into engine JSON.
+
+        When differentiating a DC sweep, sweep levels are validated against `level`.
+
+        Args:
+            level: Expected physical dimension when `self.of` is a `DcSweep`, or
+                ``None`` for a dimensionless swept parameter.
+
+        Returns:
+            Engine JSON mapping ``{'sensitivity': ...}``.
+        """
+        outputs: list[JsonValue] = list(self.outputs)
+        return {
+            "sensitivity": {"outputs": outputs, "of": differentiated(self.of, level)}
+        }
+
+
+@dataclass(frozen=True, slots=True, config=_CONFIG)
+class Mismatch:
+    """First-order statistical spread of analysis outputs under random variations.
+
+    Each entry in `outputs` names an unknown (or [`LOOP_GAIN`][jolty.plan.LOOP_GAIN]
+    when differentiating [`Stability`][jolty.plan.Stability], defaulted when omitted)
+    evaluated at the operating point or across every point of the analysis `of`,
+    matching [`Sensitivity`][jolty.plan.Sensitivity]. Variations include per-part and
+    per-lot circuit tolerances (matching Monte Carlo draws) along with explicit
+    [`RandomVariable`][jolty.ir.RandomVariable] inputs in `random_variables`, such as
+    process-kit statistical models from
+    [`Library.random_variables`][jolty.spice.Library.random_variables].
+
+    Each random variable's output derivative sums the sensitivity contributions of its
+    affected parameters. Independent random variables combine in quadrature: first-order
+    output standard deviation equals the root-sum-square of each derivative scaled by
+    its standard deviation, and each squared term gives that variable's variance share.
+    """
+
+    outputs: Annotated[Sequence[str], _OUTPUTS] = ()
+    of: Annotated[Differentiated, _DIFFERENTIATED] = None
+    random_variables: Annotated[
+        Sequence[ir.RandomVariable], BeforeValidator(_check_random_variables)
+    ] = ()
+
+    @model_validator(mode="after")
+    def _default_stability_output(self) -> Mismatch:
+        if not self.outputs and isinstance(self.of, Stability):
+            object.__setattr__(self, "outputs", (LOOP_GAIN,))
+        return self
+
+    def to_json(
+        self, level: Dimension | None = VOLTAGE, toleranced: Sequence[JsonValue] = ()
+    ) -> JsonValue:
+        """Serializes the mismatch analysis and `toleranced` entries into engine JSON.
+
+        When differentiating a DC sweep, sweep levels are validated against `level`.
+
+        Args:
+            level: Expected physical dimension when `self.of` is a `DcSweep`.
+            toleranced: Serialized circuit tolerance descriptors from `variation`.
+
+        Returns:
+            Engine JSON mapping ``{'mismatch': ...}``.
+        """
+        outputs: list[JsonValue] = list(self.outputs)
+        provided: list[JsonValue] = [
+            variable.model_dump(mode="json") for variable in self.random_variables
+        ]
+        return {
+            "mismatch": {
+                "outputs": outputs,
+                "of": differentiated(self.of, level),
+                "toleranced": list(toleranced),
+                "random_variables": provided,
+            }
+        }
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)

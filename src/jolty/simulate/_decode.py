@@ -376,7 +376,7 @@ def points_of(analysis: Analysis) -> int:
     match analysis:
         case DcSweep(values=values):
             return len(values)
-        case Ac(frequencies=frequencies):
+        case Ac(frequencies=frequencies) | Stability(frequencies=frequencies):
             return len(frequencies)
         case Transient(breakpoints=times) | PeriodicSteadyState(breakpoints=times):
             return len(times)
@@ -787,12 +787,19 @@ def _linear_shape(
                 if isinstance(analysis, Sensitivity)
                 else results.MismatchResult
             )
+            inner: results.DifferentiatedResult = (
+                results.StabilityResult(
+                    unknowns, analysis.of.probe, np.empty(0), roots, point
+                )
+                if isinstance(analysis.of, Stability)
+                else point
+            )
             return result_class(
                 unknowns,
                 tuple(analysis.outputs),
                 (),
                 np.empty((0, len(unknowns))),
-                point,
+                inner,
             )
         case Stability():
             return results.StabilityResult(

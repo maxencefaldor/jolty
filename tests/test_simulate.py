@@ -20,6 +20,7 @@ from jolty import (
     DimensionError,
     ElaborationError,
     JoltyError,
+    Mismatch,
     Noise,
     OperatingPoint,
     OperatingPoints,
@@ -37,10 +38,13 @@ from jolty import (
     _core,
     component,
     devices,
+    files,
+    ir,
+    report,
     results,
     simulate,
 )
-from jolty.plan import Explicit, Variant, decade, linear
+from jolty.plan import LOOP_GAIN, Explicit, Variant, decade, linear
 from jolty.simulate import Joined, Logged
 from jolty.specs import crossover, gain_margin, phase_margin
 from jolty.units import (
@@ -244,6 +248,99 @@ def test_a_probe_is_a_voltage_source_off_the_ground() -> None:
             SimulationError, match=f"`{probe}` is not a floating voltage source"
         ):
             simulation.run(Stability(probe, [1 * kHz]))
+
+
+def test_stability_sensitivity_mismatch_report_and_archive(tmp_path: Path) -> None:
+    simulation = Simulation(follower())
+    frequencies = [100 * Hz, 10 * kHz, 1 * MHz]
+    stability = Stability("VP", frequencies)
+    sensitivity = simulation.run(Sensitivity(of=stability))
+    assert sensitivity.outputs == (LOOP_GAIN,)
+    assert isinstance(sensitivity.result, results.StabilityResult)
+    explicit = simulation.run(Sensitivity([LOOP_GAIN], of=stability))
+    np.testing.assert_array_equal(sensitivity.derivatives, explicit.derivatives)
+
+    # Closed form for stage 1 of follower():
+    # T = prod_i (g_i R_i / (1 + j 2 pi f R_i C_i)).
+    load_first, pole_first = STAGES[0]
+    capacitance_first = 1 / (2 * math.pi * pole_first * load_first.value)
+    got_r1 = sensitivity.derivative(LOOP_GAIN, "R1", "resistance")
+    got_c1 = sensitivity.derivative(LOOP_GAIN, "C1", "capacitance")
+    expected_r1 = np.array(
+        [
+            open_loop(frequency)
+            / (load_first.value * (1 + 1j * frequency / pole_first))
+            for frequency in sensitivity.result.frequencies
+        ]
+    )
+    expected_c1 = np.array(
+        [
+            open_loop(frequency)
+            * (-1j * 2 * math.pi * frequency * load_first.value)
+            / (1 + 1j * frequency / pole_first)
+            for frequency in sensitivity.result.frequencies
+        ]
+    )
+    # Exact linear Middlebrook adjoint sensitivities; rtol=1e-9 covers LU rounding.
+    np.testing.assert_allclose(got_r1, expected_r1, rtol=1e-9)
+    np.testing.assert_allclose(got_c1, expected_c1, rtol=1e-9)
+
+    # Mismatch over Stability combines magnitude and phase spreads cleanly.
+    variable_r1 = ir.RandomVariable(
+        instance="R1",
+        name="resistance",
+        mean=0.0,
+        standard_deviation=0.01,
+        derivatives={"R1": {"resistance": load_first.value}},
+    )
+    variable_c1 = ir.RandomVariable(
+        instance="C1",
+        name="capacitance",
+        mean=0.0,
+        standard_deviation=0.02,
+        derivatives={"C1": {"capacitance": capacitance_first}},
+    )
+    mismatch = simulation.run(
+        Mismatch(of=stability, random_variables=(variable_r1, variable_c1))
+    )
+    assert mismatch.outputs == (LOOP_GAIN,)
+    assert isinstance(mismatch.result, results.StabilityResult)
+    with pytest.raises(ValueError, match="magnitude or its phase"):
+        mismatch.standard_deviation(LOOP_GAIN)
+    magnitude_sigma = mismatch.standard_deviation(LOOP_GAIN, "magnitude")
+    phase_sigma = mismatch.standard_deviation(LOOP_GAIN, "phase")
+    assert isinstance(magnitude_sigma, np.ndarray)
+    assert isinstance(phase_sigma, np.ndarray)
+    assert np.all(magnitude_sigma > 0)
+    assert np.all(phase_sigma > 0)
+    # Two-variable variance shares sum to 1 algebraically; rtol=1e-12 covers float sum.
+    np.testing.assert_allclose(
+        np.sum(mismatch.shares(LOOP_GAIN, "magnitude"), axis=-1),
+        1.0,
+        rtol=1e-12,
+    )
+
+    # Reports and .npz archive round-trip both Stability sensitivity and mismatch.
+    sensitivity_report = report.report("sens", sensitivity, 10)
+    mismatch_report = report.report("mis", mismatch, 10)
+    assert "over a loop gain at 3 frequencies" in sensitivity_report.describe()
+    assert "loop_gain's magnitude" in mismatch_report.describe()
+    assert "loop_gain's phase" in mismatch_report.describe()
+
+    archive = tmp_path / "stability_diff.npz"
+    files.save_results(archive, {"sens": sensitivity, "mis": mismatch})
+    loaded = files.load_results(archive)
+    loaded_sensitivity = loaded["sens"]
+    loaded_mismatch = loaded["mis"]
+    assert isinstance(loaded_sensitivity, results.SensitivityResult)
+    assert isinstance(loaded_mismatch, results.MismatchResult)
+    np.testing.assert_array_equal(
+        loaded_sensitivity.derivatives, sensitivity.derivatives
+    )
+    np.testing.assert_array_equal(loaded_mismatch.derivatives, mismatch.derivatives)
+
+    with pytest.raises(SimulationError, match="not a floating voltage source"):
+        simulation.run(Sensitivity(of=Stability("R1", [1 * kHz])))
 
 
 FOUR_KT = 4 * _core.BOLTZMANN * _core.REFERENCE_TEMPERATURE

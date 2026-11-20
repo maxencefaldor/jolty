@@ -122,7 +122,7 @@ pub use pole_zero::{Mode, PoleZero, PoleZeroResult};
 pub use profile::{Profile, Work};
 pub use record::{RecordedSeries, RecordedValues, RecordedView, Recording};
 pub use sensitivity::{Derivatives, Differentiated, Parameter, Sensitivity, SensitivityResult};
-pub use stability::{Stability, StabilityResult};
+pub use stability::{LOOP_GAIN, Stability, StabilityResult};
 pub use sweep::{DcSweep, DcSweepResult};
 pub use transfer::{TransferFunction, TransferFunctionResult};
 pub use transient::{ChargeLeak, Statistics, Transient, TransientResult};

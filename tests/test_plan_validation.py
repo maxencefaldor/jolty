@@ -667,6 +667,27 @@ def test_sensitivity_and_mismatch_checks_including_random_variables() -> None:
         count=4,
     )
 
+    # Stability defaults omitted outputs to ("loop_gain",) and rejects other names.
+    default_sens = Sensitivity(of=Stability("VP", [1 * kHz]))
+    assert default_sens.outputs == ("loop_gain",)
+    default_mismatch = Mismatch(of=Stability("VP", [1 * kHz]))
+    assert default_mismatch.outputs == ("loop_gain",)
+    simulation.validate_plan(Plan({"sens": default_sens, "mis": default_mismatch}))
+    _expect_plan_error(
+        lambda: simulation.run(
+            Sensitivity(["loop_gan"], of=Stability("V1", [1 * kHz]))
+        ),
+        "only the `loop_gain` output, not `loop_gan`; close names: loop_gain",
+        "`V1` is not a floating voltage source; probes: VP",
+        count=2,
+    )
+    _expect_plan_error(
+        lambda: simulation.run(Mismatch(["out"], of=Stability("VQ", [1 * kHz]))),
+        "only the `loop_gain` output, not `out`",
+        "there is no instance at `VQ`; close names: VP; probes: VP",
+        count=2,
+    )
+
 
 def test_variants_and_traces_checked_upfront_with_close_names() -> None:
     simulation = _build_simulation()

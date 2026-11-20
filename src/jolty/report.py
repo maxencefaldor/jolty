@@ -29,12 +29,13 @@ from jolty.units import format_si
 from jolty.unknowns import LogicLevel
 
 
-def _shown(value: float, nature: unknowns.Nature) -> str:
+def _shown(value: float, nature: unknowns.Nature | None) -> str:
     """Formats an unknown `value` of `nature` with an SI unit prefix.
 
-    Device state unknowns are dimensionless and are formatted as plain numbers.
+    Device state unknowns and dimensionless outputs (such as stability loop gain)
+    are formatted as plain numbers.
     """
-    if nature == "state":
+    if nature is None or nature == "state":
         return f"{value:.4g}"
     return format_si(value, unknowns.SYMBOLS[nature])
 
@@ -742,10 +743,10 @@ class Derivative(ir.FrozenModel):
 
 
 class OutputSensitivity(ir.FrozenModel):
-    """Summary of parameter derivatives for a single output unknown."""
+    """Summary of parameter derivatives for a single differentiated output."""
 
     output: str
-    nature: unknowns.Nature
+    nature: unknowns.Nature | None = None
     value: float | None = Field(
         default=None,
         description="Nominal output value at the operating point in SI base units, "
@@ -758,13 +759,19 @@ class OutputSensitivity(ir.FrozenModel):
 
 
 type Differentiated = Literal[
-    "operating_point", "dc_sweep", "ac", "transient", "periodic_steady_state"
+    "operating_point",
+    "dc_sweep",
+    "ac",
+    "stability",
+    "transient",
+    "periodic_steady_state",
 ]
 """Analysis kind differentiated by a sensitivity or mismatch analysis."""
 
 _ALONG: Final[dict[Differentiated, str]] = {
     "dc_sweep": "along a DC sweep at {points} values",
     "ac": "over a response at {points} frequencies",
+    "stability": "over a loop gain at {points} frequencies",
     "transient": "over a transient at {points} times",
     "periodic_steady_state": "over a periodic steady state's period at {points} times",
 }
@@ -905,11 +912,11 @@ class OutputMismatch(ir.FrozenModel):
     """First-order statistical spread summary for one output or phasor component."""
 
     output: str
-    nature: unknowns.Nature
+    nature: unknowns.Nature | None = None
     part: results.PhasorPart | None = Field(
         default=None,
-        description="Phasor component analyzed for AC responses (magnitude or phase), "
-        "or null for real-valued analyses.",
+        description="Phasor component analyzed for AC and stability analyses "
+        "(magnitude or phase), or null for real-valued analyses.",
     )
     value: float | None = Field(
         default=None,
@@ -1619,6 +1626,8 @@ def _differentiated(
             return "dc_sweep", len(result.swept), unit, None
         case results.AcResult():
             return "ac", len(result.frequencies), "Hz", result.operating_point
+        case results.StabilityResult():
+            return "stability", len(result.frequencies), "Hz", result.operating_point
         case results.PeriodicSteadyStateResult():
             return "periodic_steady_state", len(result.times), "s", None
         case results.TransientResult():
@@ -1672,19 +1681,25 @@ def _output(
 ) -> OutputSensitivity:
     """Builds sensitivity data for `output` over the first `max_unknowns` parameters."""
     gradient = result.gradient(output)
-    column = results.column(result.unknowns, output)
-    nature = result.unknowns[column].nature
     match result.result:
         case results.OperatingPointResult() as point:
-            value = float(point.values[column])
+            column = results.column(result.unknowns, output)
+            nature: results.Nature | None = result.unknowns[column].nature
+            value: float | None = float(point.values[column])
             found = [
                 (float(derivative.real), None) for derivative in gradient[:max_unknowns]
             ]
         case (
             results.DcSweepResult()
             | results.AcResult()
+            | results.StabilityResult()
             | results.TransientResult() as along
         ):
+            nature = (
+                None
+                if isinstance(along, results.StabilityResult)
+                else result.unknowns[results.column(result.unknowns, output)].nature
+            )
             value = None
             axis = results.axis_of(along)
             found = []
@@ -1716,7 +1731,7 @@ def _mismatch(
     """Builds a mismatch report for analysis `name`."""
     of, points, unit, point = _differentiated(result.result)
     parts: tuple[results.PhasorPart | None, ...] = (
-        ("magnitude", "phase") if of == "ac" else (None,)
+        ("magnitude", "phase") if of in {"ac", "stability"} else (None,)
     )
     listed = min(max_unknowns, len(result.random_variables))
     period, period_deviation = None, None
@@ -1751,8 +1766,6 @@ def _output_mismatch(
     listed: int,
 ) -> OutputMismatch:
     """Builds first-order mismatch summary for `output` and optional phasor `part`."""
-    column = results.column(result.unknowns, output)
-    nature = result.unknowns[column].nature
     contributions = np.atleast_2d(result.contributions(output, part))
     deviations = np.sqrt(np.sum(contributions**2, axis=-1))
     largest = int(np.argmax(deviations))
@@ -1761,15 +1774,24 @@ def _output_mismatch(
         deviations = np.degrees(deviations)
     shares = np.atleast_2d(result.shares(output, part))[largest]
     order = np.argsort(-shares, kind="stable")[:listed]
-    value, at = None, None
+    value: float | None = None
+    at: float | None = None
     match result.result:
         case results.OperatingPointResult() as found:
+            column = results.column(result.unknowns, output)
+            nature: results.Nature | None = result.unknowns[column].nature
             value = float(found.values[column])
         case (
             results.DcSweepResult()
             | results.AcResult()
+            | results.StabilityResult()
             | results.TransientResult() as along
         ):
+            nature = (
+                None
+                if isinstance(along, results.StabilityResult)
+                else result.unknowns[results.column(result.unknowns, output)].nature
+            )
             at = float(results.axis_of(along)[largest])
     return OutputMismatch(
         output=output,
