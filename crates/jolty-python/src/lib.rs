@@ -647,12 +647,12 @@ impl Simulator {
         pool: &Pool,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let options: Options = parse_json!(options)?;
-        let unknowns = self.lock().unknowns().len();
+        let width = self.lock().output_width(&pullback.inner.result);
         let count = cotangents.len();
         let parameter_count = pullback.inner.parameters.len();
         let built: Vec<Cotangent<f64>> = cotangents
             .into_iter()
-            .map(|(entries, period)| sparse_cotangent(&entries, period, unknowns))
+            .map(|(entries, period)| sparse_cotangent(&entries, period, width))
             .collect::<PyResult<_>>()?;
         let wrapped = Cotangents::Real(built);
         let found = self.simulate(
@@ -683,7 +683,7 @@ impl Simulator {
         pool: &Pool,
     ) -> PyResult<Bound<'py, PyArray2<Complex64>>> {
         let options: Options = parse_json!(options)?;
-        let unknowns = self.lock().unknowns().len();
+        let width = self.lock().output_width(&pullback.inner.result);
         let count = cotangents.len();
         let parameter_count = pullback.inner.parameters.len();
         let built: Vec<Cotangent<Complex64>> = cotangents
@@ -695,7 +695,7 @@ impl Simulator {
                         (point, unknown, Complex64::new(real, imaginary))
                     })
                     .collect();
-                sparse_cotangent(&complex_entries, 0.0, unknowns)
+                sparse_cotangent(&complex_entries, 0.0, width)
             })
             .collect::<PyResult<_>>()?;
         let wrapped = Cotangents::Complex(built);

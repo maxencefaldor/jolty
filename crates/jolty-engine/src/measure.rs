@@ -593,12 +593,14 @@ pub enum MeasureCotangent {
         /// Nonzero `(point, weight)` entries in ascending `point` order.
         entries: Vec<(usize, Complex64)>,
     },
-    /// Cotangent on a noise analysis's power densities and optional input-referred gains.
+    /// Cotangent on a noise analysis's output and input-referred power spectral densities.
     Noise {
-        /// Nonzero `(point, weight)` entries with respect to output power densities.
+        /// Nonzero `(point, weight)` entries with respect to output power densities
+        /// (`NOISE_DENSITY`, output column `0`).
         densities: Vec<(usize, f64)>,
-        /// Nonzero `(point, weight)` bilinear complex entries with respect to input gains.
-        gains: Vec<(usize, Complex64)>,
+        /// Nonzero `(point, weight)` entries with respect to input-referred power densities
+        /// (`REFERRED_NOISE`, output column `1`).
+        referred: Vec<(usize, f64)>,
     },
     /// Bilinear complex cotangent on a pole-zero analysis's poles vector.
     Poles {
@@ -625,7 +627,7 @@ impl MeasureCotangent {
                 },
                 Self::Noise { .. } => Self::Noise {
                     densities: Vec::new(),
-                    gains: Vec::new(),
+                    referred: Vec::new(),
                 },
                 Self::Poles { .. } => Self::Poles {
                     entries: Vec::new(),
@@ -652,12 +654,15 @@ impl MeasureCotangent {
                     .map(|&(point, weight)| (point, weight * factor))
                     .collect(),
             },
-            Self::Noise { densities, gains } => Self::Noise {
+            Self::Noise {
+                densities,
+                referred,
+            } => Self::Noise {
                 densities: densities
                     .iter()
                     .map(|&(point, weight)| (point, weight * factor))
                     .collect(),
-                gains: gains
+                referred: referred
                     .iter()
                     .map(|&(point, weight)| (point, weight * factor))
                     .collect(),
@@ -671,47 +676,81 @@ impl MeasureCotangent {
         }
     }
 
-    /// Expands a [`Self::Real`] cotangent into an engine real [`Cotangent`] with rows of
-    /// length `unknowns`, returning `None` for other variants.
+    /// Expands a [`Self::Real`] or [`Self::Noise`] cotangent into an engine real [`Cotangent`]
+    /// with rows of length `width`, returning `None` for other variants.
     #[must_use]
-    pub fn to_real_cotangent(&self, unknowns: usize) -> Option<Cotangent<f64>> {
-        let Self::Real { entries, period } = self else {
-            return None;
-        };
+    pub fn to_real_cotangent(&self, width: usize) -> Option<Cotangent<f64>> {
         let mut points: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
-        for &(point, unknown, weight) in entries {
-            if weight == 0.0 {
-                continue;
+        let period = match self {
+            Self::Real { entries, period } => {
+                for &(point, unknown, weight) in entries {
+                    if weight == 0.0 {
+                        continue;
+                    }
+                    let row = points.entry(point).or_insert_with(|| vec![0.0; width]);
+                    if let Some(slot) = row.get_mut(unknown) {
+                        *slot += weight;
+                    }
+                }
+                *period
             }
-            let row = points.entry(point).or_insert_with(|| vec![0.0; unknowns]);
-            if let Some(slot) = row.get_mut(unknown) {
-                *slot += weight;
+            Self::Noise {
+                densities,
+                referred,
+            } => {
+                if width == 0 || (!referred.is_empty() && width < 2) {
+                    return None;
+                }
+                for &(point, weight) in densities {
+                    if weight != 0.0 {
+                        let row = points.entry(point).or_insert_with(|| vec![0.0; width]);
+                        row[0] += weight;
+                    }
+                }
+                for &(point, weight) in referred {
+                    if weight != 0.0 {
+                        let row = points.entry(point).or_insert_with(|| vec![0.0; width]);
+                        row[1] += weight;
+                    }
+                }
+                0.0
             }
-        }
+            Self::Complex { .. } | Self::Loop { .. } | Self::Poles { .. } => return None,
+        };
         points.retain(|_, row| row.iter().any(|&value| value != 0.0));
-        Some(Cotangent {
-            points,
-            period: *period,
-        })
+        Some(Cotangent { points, period })
     }
 
-    /// Expands a [`Self::Complex`] cotangent into an engine complex [`Cotangent`] with rows
-    /// of length `unknowns`, returning `None` for other variants.
+    /// Expands a [`Self::Complex`] or [`Self::Loop`] cotangent into an engine complex
+    /// [`Cotangent`] with rows of length `width`, returning `None` for other variants.
     #[must_use]
-    pub fn to_complex_cotangent(&self, unknowns: usize) -> Option<Cotangent<Complex64>> {
-        let Self::Complex { entries } = self else {
-            return None;
-        };
+    pub fn to_complex_cotangent(&self, width: usize) -> Option<Cotangent<Complex64>> {
         let zero = Complex64::default();
         let mut points: BTreeMap<usize, Vec<Complex64>> = BTreeMap::new();
-        for &(point, unknown, weight) in entries {
-            if weight == zero {
-                continue;
+        match self {
+            Self::Complex { entries } => {
+                for &(point, unknown, weight) in entries {
+                    if weight == zero {
+                        continue;
+                    }
+                    let row = points.entry(point).or_insert_with(|| vec![zero; width]);
+                    if let Some(slot) = row.get_mut(unknown) {
+                        *slot += weight;
+                    }
+                }
             }
-            let row = points.entry(point).or_insert_with(|| vec![zero; unknowns]);
-            if let Some(slot) = row.get_mut(unknown) {
-                *slot += weight;
+            Self::Loop { entries } => {
+                if width == 0 {
+                    return None;
+                }
+                for &(point, weight) in entries {
+                    if weight != zero {
+                        let row = points.entry(point).or_insert_with(|| vec![zero; width]);
+                        row[0] += weight;
+                    }
+                }
             }
+            Self::Real { .. } | Self::Noise { .. } | Self::Poles { .. } => return None,
         }
         points.retain(|_, row| row.iter().any(|&value| value != zero));
         Some(Cotangent {
@@ -720,19 +759,20 @@ impl MeasureCotangent {
         })
     }
 
-    /// Expands a [`Self::Real`] or [`Self::Complex`] cotangent into single-entry
-    /// [`Cotangents`] suitable for [`Simulator::pull_back`](crate::Simulator::pull_back),
-    /// returning `None` for variants without an unknown-table VJP.
+    /// Expands a differentiable cotangent (`Real`, `Complex`, `Loop`, or `Noise`) into
+    /// single-entry [`Cotangents`] suitable for
+    /// [`Simulator::pull_back`](crate::Simulator::pull_back), returning `None` for variants
+    /// without a reverse-mode VJP (`Poles`).
     #[must_use]
-    pub fn to_cotangents(&self, unknowns: usize) -> Option<Cotangents> {
+    pub fn to_cotangents(&self, width: usize) -> Option<Cotangents> {
         match self {
-            Self::Real { .. } => self
-                .to_real_cotangent(unknowns)
+            Self::Real { .. } | Self::Noise { .. } => self
+                .to_real_cotangent(width)
                 .map(|cotangent| Cotangents::Real(vec![cotangent])),
-            Self::Complex { .. } => self
-                .to_complex_cotangent(unknowns)
+            Self::Complex { .. } | Self::Loop { .. } => self
+                .to_complex_cotangent(width)
                 .map(|cotangent| Cotangents::Complex(vec![cotangent])),
-            Self::Loop { .. } | Self::Noise { .. } | Self::Poles { .. } => None,
+            Self::Poles { .. } => None,
         }
     }
 }

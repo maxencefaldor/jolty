@@ -1208,10 +1208,10 @@ impl OrderedNoise {
         })
     }
 
-    /// Pulls sorted effective-density cotangents back to output densities and input gains.
+    /// Pulls sorted effective-density cotangents back to output or input-referred densities.
     fn pull_back(&self, effective_weights: &[f64]) -> Result<MeasureCotangent, MeasureError> {
         let mut density_map: BTreeMap<usize, f64> = BTreeMap::new();
-        let mut gain_map: BTreeMap<usize, Complex64> = BTreeMap::new();
+        let mut referred_map: BTreeMap<usize, f64> = BTreeMap::new();
         for (index, &weight) in effective_weights.iter().enumerate() {
             if weight == 0.0 {
                 continue;
@@ -1225,30 +1225,20 @@ impl OrderedNoise {
                     *density_map.entry(original).or_default() += weight;
                 }
                 Some(gains) => {
-                    let gain = gains[index];
-                    let magnitude = arithmetic::magnitude(gain);
+                    let magnitude = arithmetic::magnitude(gains[index]);
                     if magnitude == 0.0 || !magnitude.is_finite() {
                         return Err(MeasureError::NotDifferentiable);
                     }
-                    let density_weight = weight / (magnitude * magnitude);
-                    let gain_weight = arithmetic::divide(
-                        Complex64::new(-2.0 * weight * self.effective_densities[index], 0.0),
-                        gain,
-                    );
-                    if !density_weight.is_finite()
-                        || !gain_weight.re.is_finite()
-                        || !gain_weight.im.is_finite()
-                    {
-                        return Err(MeasureError::NotDifferentiable);
-                    }
-                    *density_map.entry(original).or_default() += density_weight;
-                    *gain_map.entry(original).or_default() += gain_weight;
+                    *referred_map.entry(original).or_default() += weight;
                 }
             }
         }
         let densities = collect_point_real(density_map)?;
-        let gains = collect_point_complex(gain_map)?;
-        Ok(MeasureCotangent::Noise { densities, gains })
+        let referred = collect_point_real(referred_map)?;
+        Ok(MeasureCotangent::Noise {
+            densities,
+            referred,
+        })
     }
 }
 
@@ -2183,13 +2173,35 @@ mod tests {
             assert_eq!(value.to_bits(), measure.measure(&result).unwrap().to_bits());
             let MeasureCotangent::Noise {
                 densities: density_entries,
-                gains: gain_entries,
+                referred: referred_entries,
             } = cotangent
             else {
                 panic!("{label}: expected noise cotangent");
             };
             let density_lookup: BTreeMap<usize, f64> = density_entries.into_iter().collect();
-            let density_scale = density_lookup
+            let referred_lookup: BTreeMap<usize, f64> = referred_entries.into_iter().collect();
+            let expected_densities: BTreeMap<usize, f64> = (0..densities.len())
+                .map(|index| {
+                    let magnitude = arithmetic::magnitude(gains[index]);
+                    let from_density = density_lookup.get(&index).copied().unwrap_or(0.0);
+                    let from_referred = referred_lookup.get(&index).copied().unwrap_or(0.0)
+                        / (magnitude * magnitude);
+                    (index, from_density + from_referred)
+                })
+                .collect();
+            let expected_gains: Vec<(usize, Complex64)> = referred_lookup
+                .iter()
+                .map(|(&index, &weight)| {
+                    let magnitude = arithmetic::magnitude(gains[index]);
+                    let referred_value = densities[index] / (magnitude * magnitude);
+                    let gain_weight = arithmetic::divide(
+                        Complex64::new(-2.0 * weight * referred_value, 0.0),
+                        gains[index],
+                    );
+                    (index, gain_weight)
+                })
+                .collect();
+            let density_scale = expected_densities
                 .values()
                 .fold(0.0_f64, |largest, &weight| largest.max(weight.abs()));
             for index in 0..densities.len() {
@@ -2212,12 +2224,12 @@ mod tests {
                     })
                     .unwrap();
                 densities[index] = original;
-                let exact = density_lookup.get(&index).copied().unwrap_or(0.0);
+                let exact = expected_densities.get(&index).copied().unwrap_or(0.0);
                 assert_close(exact, (above - below) / (2.0 * step), density_scale, label);
             }
             verify_complex_vector(
                 &gains,
-                &gain_entries,
+                &expected_gains,
                 |perturbed| {
                     measure
                         .measure(&AnalysisResult::Noise {

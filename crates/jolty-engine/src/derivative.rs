@@ -844,7 +844,8 @@ impl Simulator {
 
     /// Returns the number of output entries per point for `result` (`1` for stability, `1` or
     /// `2` for noise, or the circuit unknown count for all other analyses).
-    pub(crate) fn output_width(&self, result: &AnalysisResult) -> usize {
+    #[must_use]
+    pub fn output_width(&self, result: &AnalysisResult) -> usize {
         match result {
             AnalysisResult::Stability(_) => 1,
             AnalysisResult::Noise(spectrum) => 1 + usize::from(spectrum.input.is_some()),

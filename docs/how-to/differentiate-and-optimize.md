@@ -167,9 +167,7 @@ all(
 )  # True
 ```
 
-See [Sensitivities](../guide/simulation.md#sensitivities) for AC complex cotangents, transient adjoints, and oscillator period derivatives.
-
-## 4. Differentiate SPICE and PDK subcircuits
+## 5. Differentiate SPICE and PDK subcircuits
 
 SPICE and PDK subcircuits evaluate parameter expressions and geometry formulas before building primitive devices.
 Bind each placed subcircuit with `Library.placement` and pass `subcircuits={path: placement}` to `jolty.function` or `jolty.jax.function`.
@@ -209,3 +207,5 @@ round(float(gradient["X1"]["l"]), 1)  # -500000.0
 ```
 
 For binned BSIM3 or BSIM4 transistors, call `sized_eval.bins(parameters)` or `library.derivatives(...)` to inspect each device's active `(min_length, max_length, min_width, max_width)` rectangle.
+
+See [Sensitivities](../guide/simulation.md#sensitivities) for AC and stability complex cotangents, noise pullbacks, transient adjoints, and oscillator period derivatives.

@@ -220,26 +220,23 @@ class LoopCotangent:
 
 @dataclass(frozen=True, slots=True)
 class NoiseCotangent:
-    """Sparse derivative on a noise analysis's densities and input-referred gains.
+    """Sparse derivative on a noise analysis's output and input-referred densities.
 
     `densities` stores ``(point, weight)`` entries with respect to output power
-    spectral densities, and `gains` stores ``(point, real, imaginary)`` bilinear
-    complex entries with respect to input-referred transfer gains.
+    spectral densities (`NOISE_DENSITY`), and `referred` stores ``(point, weight)``
+    entries with respect to input-referred power spectral densities (`REFERRED_NOISE`).
     """
 
     densities: tuple[tuple[int, float], ...]
-    gains: tuple[tuple[int, float, float], ...]
+    referred: tuple[tuple[int, float], ...]
 
     def scale(self, factor: float) -> NoiseCotangent:
-        """Returns a copy with every density and gain entry scaled by `factor`."""
+        """Returns a copy with every density and referred entry scaled by `factor`."""
         if factor == 0.0:
             return NoiseCotangent((), ())
         return NoiseCotangent(
             tuple((point, weight * factor) for point, weight in self.densities),
-            tuple(
-                (point, real * factor, imaginary * factor)
-                for point, real, imaginary in self.gains
-            ),
+            tuple((point, weight * factor) for point, weight in self.referred),
         )
 
 
@@ -448,10 +445,10 @@ def _engine_cotangent(
             return value, LoopCotangent(tuple(loop_entries))
         case results.NoiseResult():
             gains = None if result.input is None else _complex(result.input.gains)
-            value, densities, gain_entries = measure.cotangent_noise(
+            value, densities, referred = measure.cotangent_noise(
                 _real(result.frequencies), _real(result.densities), gains
             )
-            return value, NoiseCotangent(tuple(densities), tuple(gain_entries))
+            return value, NoiseCotangent(tuple(densities), tuple(referred))
         case results.PoleZeroResult():
             value, pole_entries = measure.cotangent_pole_zero(_complex(result.poles))
             return value, PolesCotangent(tuple(pole_entries))

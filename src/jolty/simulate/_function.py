@@ -57,7 +57,11 @@ type Gradient = dict[str, dict[str, float | complex]]
 """Parameter gradient mapping keyed by instance path and parameter name."""
 
 type CotangentInput = (
-    Mapping[str, npt.ArrayLike] | specs.RealCotangent | specs.ComplexCotangent
+    Mapping[str, npt.ArrayLike]
+    | specs.RealCotangent
+    | specs.ComplexCotangent
+    | specs.LoopCotangent
+    | specs.NoiseCotangent
 )
 """Dense output cotangent mapping or sparse measure cotangent passed to `Pullback`."""
 
@@ -391,6 +395,122 @@ def _contract_subcircuit(
             for argument, slope in slopes.items():
                 pulled[argument] = pulled[argument] + cotangent * slope
     return pulled
+
+
+def contract_real_gradient(
+    parameters: Parameters,
+    evaluated: Mapping[str, SubcircuitDerivatives],
+    primitive_gradients: Mapping[str, Mapping[str, float]],
+) -> dict[str, dict[str, float]]:
+    """Maps real primitive parameter gradients back to top-level `parameters`."""
+    if not evaluated:
+        return {
+            path: {
+                name: float(primitive_gradients.get(path, {}).get(name, 0.0))
+                for name in named
+            }
+            for path, named in parameters.items()
+        }
+    pulled: dict[str, dict[str, float]] = {}
+    for path, named in parameters.items():
+        subcircuit = evaluated.get(path)
+        if subcircuit is None:
+            pulled[path] = {
+                name: float(primitive_gradients.get(path, {}).get(name, 0.0))
+                for name in named
+            }
+        else:
+            contracted = _contract_subcircuit(
+                subcircuit, primitive_gradients, phasors=False
+            )
+            pulled[path] = {
+                name: float(np.real(value)) for name, value in contracted.items()
+            }
+    return pulled
+
+
+def noise_cotangent_entries(
+    cotangent: specs.NoiseCotangent,
+) -> list[tuple[int, int, float]]:
+    """Converts a `NoiseCotangent` into sparse `(point, column, weight)` entries."""
+    return [
+        *((point, 0, weight) for point, weight in cotangent.densities),
+        *((point, 1, weight) for point, weight in cotangent.referred),
+    ]
+
+
+def loop_cotangent_entries(
+    cotangent: specs.LoopCotangent,
+) -> list[tuple[int, int, float, float]]:
+    """Converts a `LoopCotangent` into sparse `(point, 0, real, imag)` entries."""
+    return [(point, 0, real, imag) for point, real, imag in cotangent.entries]
+
+
+def _check_sparse_domain(
+    analysis: Differentiable,
+    cotangent: specs.RealCotangent
+    | specs.ComplexCotangent
+    | specs.LoopCotangent
+    | specs.NoiseCotangent,
+) -> None:
+    """Validates that a sparse `cotangent` matches `analysis`'s domain."""
+    if isinstance(cotangent, specs.RealCotangent):
+        if isinstance(analysis, Ac | Stability | Noise):
+            message = (
+                f"a {type(analysis).__name__} pullback does not take RealCotangent"
+            )
+            raise ValueError(message)
+        return
+    if isinstance(cotangent, specs.ComplexCotangent):
+        if not isinstance(analysis, Ac):
+            message = (
+                f"a {type(analysis).__name__} pullback does not take ComplexCotangent"
+            )
+            raise ValueError(message)
+        return
+    if isinstance(cotangent, specs.LoopCotangent):
+        if not isinstance(analysis, Stability):
+            message = (
+                f"a {type(analysis).__name__} pullback does not take LoopCotangent"
+            )
+            raise ValueError(message)
+        return
+    if not isinstance(analysis, Noise):
+        message = f"a {type(analysis).__name__} pullback does not take NoiseCotangent"
+        raise ValueError(message)
+
+
+def _pull_sparse(
+    analysis: Differentiable,
+    core: _core.Simulator,
+    pullback: _core.Pullback,
+    cotangent: specs.RealCotangent
+    | specs.ComplexCotangent
+    | specs.LoopCotangent
+    | specs.NoiseCotangent,
+    settings: str,
+) -> npt.NDArray[np.float64]:
+    """Pulls one sparse measure cotangent back through `core` into a real vector."""
+    _check_sparse_domain(analysis, cotangent)
+    pool = engine_pool()
+    try:
+        if isinstance(cotangent, specs.RealCotangent):
+            return core.pull_back_real(
+                pullback, [(list(cotangent.entries), cotangent.period)], settings, pool
+            )[0]
+        if isinstance(cotangent, specs.ComplexCotangent):
+            return core.pull_back_complex(
+                pullback, [list(cotangent.entries)], settings, pool
+            )[0].real
+        if isinstance(cotangent, specs.LoopCotangent):
+            return core.pull_back_complex(
+                pullback, [loop_cotangent_entries(cotangent)], settings, pool
+            )[0].real
+        return core.pull_back_real(
+            pullback, [(noise_cotangent_entries(cotangent), 0.0)], settings, pool
+        )[0]
+    except _core.SimulationError as error:
+        raise SimulationError(str(error)) from None
 
 
 def _collect_row_entries(
@@ -926,16 +1046,27 @@ class Function:
             }
             points = _values(outcome)[0].shape[0]
 
-            def zero_pull(cotangent: Mapping[str, npt.ArrayLike]) -> Gradient:
-                _cotangents(
+            def zero_pull(cotangent: CotangentInput) -> Gradient:
+                sparse = isinstance(
                     cotangent,
-                    columns,
-                    (points, len(columns)),
-                    phasors=phasors,
-                    oscillates=self.oscillates,
+                    specs.RealCotangent
+                    | specs.ComplexCotangent
+                    | specs.LoopCotangent
+                    | specs.NoiseCotangent,
                 )
+                if sparse:
+                    _check_sparse_domain(self.analysis, cotangent)
+                else:
+                    _cotangents(
+                        cotangent,
+                        columns,
+                        (points, len(columns)),
+                        phasors=phasors,
+                        oscillates=self.oscillates,
+                    )
+                zero: float | complex = 0j if phasors and not sparse else 0.0
                 return {
-                    path: dict.fromkeys(named, 0j if phasors else 0.0)
+                    path: dict.fromkeys(named, zero)
                     for path, named in parameters.items()
                 }
 
@@ -953,40 +1084,17 @@ class Function:
 
         def pull(cotangent: CotangentInput) -> Gradient:
             """Evaluates parameter gradients for `cotangent`, keyed by instance."""
-            if isinstance(cotangent, specs.RealCotangent):
-                if phasors:
-                    message = (
-                        "a small-signal response pullback takes complex cotangents, "
-                        "not RealCotangent"
-                    )
-                    raise ValueError(message)
-                try:
-                    found: npt.NDArray[np.float64] | npt.NDArray[np.complex128] = (
-                        core.pull_back_real(
-                            pullback,
-                            [(list(cotangent.entries), cotangent.period)],
-                            settings,
-                            engine_pool(),
-                        )[0]
-                    )
-                except _core.SimulationError as error:
-                    raise SimulationError(str(error)) from None
-            elif isinstance(cotangent, specs.ComplexCotangent):
-                if not phasors:
-                    message = (
-                        "a real analysis pullback takes real cotangents, "
-                        "not ComplexCotangent"
-                    )
-                    raise ValueError(message)
-                try:
-                    found = core.pull_back_complex(
-                        pullback,
-                        [list(cotangent.entries)],
-                        settings,
-                        engine_pool(),
-                    )[0].real
-                except _core.SimulationError as error:
-                    raise SimulationError(str(error)) from None
+            sparse = isinstance(
+                cotangent,
+                specs.RealCotangent
+                | specs.ComplexCotangent
+                | specs.LoopCotangent
+                | specs.NoiseCotangent,
+            )
+            if sparse:
+                found: npt.NDArray[np.float64] | npt.NDArray[np.complex128] = (
+                    _pull_sparse(self.analysis, core, pullback, cotangent, settings)
+                )
             else:
                 values, period = _cotangents(
                     cotangent,
@@ -1008,9 +1116,7 @@ class Function:
                 primitive_gradients.setdefault(path, {})[name] = value
             if not evaluated:
                 return primitive_gradients
-            complex_result = phasors and not isinstance(
-                cotangent, specs.ComplexCotangent
-            )
+            complex_result = phasors and not sparse
             pulled: Gradient = {}
             for path, named in parameters.items():
                 subcircuit = evaluated.get(path)
@@ -1025,6 +1131,17 @@ class Function:
             return pulled
 
         return outputs, pull
+
+    def pull_setup(
+        self, parameters: Parameters
+    ) -> tuple[
+        _core.Simulator, list[tuple[str, str]], dict[str, SubcircuitDerivatives]
+    ]:
+        """Builds simulator, primitive target names, and subcircuit derivatives."""
+        expanded, evaluated = self._expand_point(parameters, differentiate=True)
+        primitive_names = self._pull_names(parameters, evaluated)
+        core = self.elaborated._simulator_si(expanded)  # noqa: SLF001 - same-module SI fast path for Function
+        return core, primitive_names, evaluated
 
     def _pull_names(
         self,

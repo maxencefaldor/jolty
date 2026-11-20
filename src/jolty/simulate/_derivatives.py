@@ -25,10 +25,12 @@ from jolty.plan import (
     Ac,
     Analysis,
     DcSweep,
+    Noise,
     OperatingPoint,
     Options,
     PeriodicSteadyState,
     Plan,
+    Stability,
     Transient,
     differentiated,
 )
@@ -38,7 +40,15 @@ from jolty.simulate._decode import (
     engine_pool,
     swept_dimension,
 )
-from jolty.simulate._function import Differentiable, Elaborated, Function, Parameters
+from jolty.simulate._function import (
+    Differentiable,
+    Elaborated,
+    Function,
+    Parameters,
+    contract_real_gradient,
+    loop_cotangent_entries,
+    noise_cotangent_entries,
+)
 from jolty.units import DIMENSIONLESS, VOLTAGE, Quantity
 
 type RealGradient = dict[str, dict[str, float]]
@@ -48,6 +58,8 @@ _DIFFERENTIABLE_TYPES = (
     OperatingPoint,
     DcSweep,
     Ac,
+    Stability,
+    Noise,
     Transient,
     PeriodicSteadyState,
 )
@@ -185,6 +197,36 @@ def _unpack_gradients(
     return tuple(gradients)
 
 
+def _pull_complex_batch(
+    context: _PullbackContext,
+    pullback: _core.Pullback,
+    payload: list[list[tuple[int, int, float, float]]],
+) -> tuple[RealGradient, ...]:
+    """Pulls sparse complex cotangents back in one batched backward pass."""
+    try:
+        matrix = context.core.pull_back_complex(
+            pullback, payload, _settings_json(context.options), engine_pool()
+        )
+    except _core.SimulationError as error:
+        raise SimulationError(str(error)) from None
+    return _unpack_gradients(context.names, np.asarray(matrix.real, dtype=np.float64))
+
+
+def _pull_real_batch(
+    context: _PullbackContext,
+    pullback: _core.Pullback,
+    payload: list[tuple[list[tuple[int, int, float]], float]],
+) -> tuple[RealGradient, ...]:
+    """Pulls sparse real cotangents back in one batched backward pass."""
+    try:
+        matrix = context.core.pull_back_real(
+            pullback, payload, _settings_json(context.options), engine_pool()
+        )
+    except _core.SimulationError as error:
+        raise SimulationError(str(error)) from None
+    return _unpack_gradients(context.names, np.asarray(matrix, dtype=np.float64))
+
+
 def _pull_batch(
     context: _PullbackContext,
     pullback: _core.Pullback,
@@ -195,8 +237,6 @@ def _pull_batch(
         return ()
     if not context.names:
         return tuple({} for _ in cotangents)
-    settings = _settings_json(context.options)
-    pool = engine_pool()
     if isinstance(context.analysis, Ac):
         complex_payload: list[list[tuple[int, int, float, float]]] = []
         for cotangent in cotangents:
@@ -207,15 +247,29 @@ def _pull_batch(
                 )
                 raise specs.MeasureError(message)
             complex_payload.append(list(cotangent.entries))
-        try:
-            matrix = context.core.pull_back_complex(
-                pullback, complex_payload, settings, pool
-            )
-        except _core.SimulationError as error:
-            raise SimulationError(str(error)) from None
-        return _unpack_gradients(
-            context.names, np.asarray(matrix.real, dtype=np.float64)
-        )
+        return _pull_complex_batch(context, pullback, complex_payload)
+    if isinstance(context.analysis, Stability):
+        loop_payload: list[list[tuple[int, int, float, float]]] = []
+        for cotangent in cotangents:
+            if not isinstance(cotangent, specs.LoopCotangent):
+                message = (
+                    "a stability pullback takes LoopCotangent, "
+                    f"not {type(cotangent).__name__}"
+                )
+                raise specs.MeasureError(message)
+            loop_payload.append(loop_cotangent_entries(cotangent))
+        return _pull_complex_batch(context, pullback, loop_payload)
+    if isinstance(context.analysis, Noise):
+        noise_payload: list[tuple[list[tuple[int, int, float]], float]] = []
+        for cotangent in cotangents:
+            if not isinstance(cotangent, specs.NoiseCotangent):
+                message = (
+                    "a noise pullback takes NoiseCotangent, "
+                    f"not {type(cotangent).__name__}"
+                )
+                raise specs.MeasureError(message)
+            noise_payload.append((noise_cotangent_entries(cotangent), 0.0))
+        return _pull_real_batch(context, pullback, noise_payload)
     real_payload: list[tuple[list[tuple[int, int, float]], float]] = []
     for cotangent in cotangents:
         if not isinstance(cotangent, specs.RealCotangent):
@@ -225,11 +279,7 @@ def _pull_batch(
             )
             raise specs.MeasureError(message)
         real_payload.append((list(cotangent.entries), cotangent.period))
-    try:
-        matrix = context.core.pull_back_real(pullback, real_payload, settings, pool)
-    except _core.SimulationError as error:
-        raise SimulationError(str(error)) from None
-    return _unpack_gradients(context.names, np.asarray(matrix, dtype=np.float64))
+    return _pull_real_batch(context, pullback, real_payload)
 
 
 def _verdict_from_reading(
@@ -263,19 +313,6 @@ def _unmeasured_verdict(
         reason=reason,
         source_location=requirement.source_location,
     )
-
-
-def _named_parameters(parameters: Parameters) -> list[tuple[str, str]]:
-    """Flattens nested `parameters` into ordered `(instance, parameter)` pairs."""
-    return [(path, name) for path, named in parameters.items() for name in named]
-
-
-def _simulator_for_function(
-    function: Function, parameters: Parameters
-) -> _core.Simulator:
-    """Builds an engine simulator for `function` at SI-unit `parameters`."""
-    wrapped = devices.wrap_overrides(function.elaborated.circuit, parameters)
-    return function.elaborated.simulator(wrapped)
 
 
 def _pull_measures(
@@ -353,12 +390,13 @@ def measure_derivatives(
 
     Solves `function.analysis` once at `parameters`, evaluates each measure's sparse
     cotangent against the solved result, and pulls all cotangents back together in a
-    single engine backward pass.
+    single engine backward pass. Supports both primitive device parameters and bound
+    SPICE subcircuit parameters.
 
     Args:
         function: Differentiable circuit analysis function.
-        parameters: Parameter overrides in SI base units selecting both the evaluation
-            point and the differentiated parameters.
+        parameters: Parameter overrides in SI base units (or subcircuit arguments)
+            selecting both the evaluation point and the differentiated parameters.
         measures: Built-in measures evaluated and differentiated on `function`.
 
     Returns:
@@ -369,14 +407,26 @@ def measure_derivatives(
         SimulationError: When the analysis or backward pullback fails.
         MeasureError: When any measure cannot be evaluated or is not differentiable.
     """
+    core, primitive_names, evaluated = function.pull_setup(parameters)
     context = _PullbackContext(
-        core=_simulator_for_function(function, parameters),
+        core=core,
         built=function.elaborated.circuit,
         analysis=function.analysis,
         options=function.options,
-        names=_named_parameters(parameters),
+        names=primitive_names,
     )
-    return _pull_measures(context, measures)
+    pulled = _pull_measures(context, measures)
+    if not evaluated:
+        return pulled
+    return tuple(
+        replace(
+            item,
+            derivatives=contract_real_gradient(
+                parameters, evaluated, item.derivatives
+            ),
+        )
+        for item in pulled
+    )
 
 
 def slack_derivatives(
@@ -388,12 +438,13 @@ def slack_derivatives(
 
     Solves `function.analysis` once at `parameters`, computes each requirement's
     verdict and sparse signed-slack cotangent, and pulls all differentiable slack
-    cotangents back together in a single engine backward pass.
+    cotangents back together in a single engine backward pass. Supports both primitive
+    device parameters and bound SPICE subcircuit parameters.
 
     Args:
         function: Differentiable circuit analysis function.
-        parameters: Parameter overrides in SI base units selecting both the evaluation
-            point and the differentiated parameters.
+        parameters: Parameter overrides in SI base units (or subcircuit arguments)
+            selecting both the evaluation point and the differentiated parameters.
         requirements: Specification requirements evaluated on `function`.
 
     Returns:
@@ -403,14 +454,28 @@ def slack_derivatives(
         ElaborationError: When `parameters` names an unknown or out-of-range parameter.
         SimulationError: When the analysis or backward pullback fails.
     """
+    core, primitive_names, evaluated = function.pull_setup(parameters)
     context = _PullbackContext(
-        core=_simulator_for_function(function, parameters),
+        core=core,
         built=function.elaborated.circuit,
         analysis=function.analysis,
         options=function.options,
-        names=_named_parameters(parameters),
+        names=primitive_names,
     )
-    return _pull_slacks(context, requirements)
+    pulled = _pull_slacks(context, requirements)
+    if not evaluated:
+        return pulled
+    return tuple(
+        replace(
+            item,
+            derivatives=contract_real_gradient(
+                parameters, evaluated, item.derivatives
+            ),
+        )
+        if item.reason is None
+        else item
+        for item in pulled
+    )
 
 
 def _build_circuit(circuit_or_top: ir.Circuit | Component) -> ir.Circuit:

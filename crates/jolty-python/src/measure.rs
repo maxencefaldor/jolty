@@ -45,8 +45,8 @@ type PyComplexCotangent = (f64, Vec<(usize, usize, f64, f64)>);
 type PyPointComplexCotangent = (f64, Vec<(usize, f64, f64)>);
 
 /// Sparse noise cotangent returned to Python:
-/// `(value, [(point, density_weight)], [(point, gain_real, gain_imag)])`.
-type PyNoiseCotangent = (f64, Vec<(usize, f64)>, Vec<(usize, f64, f64)>);
+/// `(value, [(point, density_weight)], [(point, referred_weight)])`.
+type PyNoiseCotangent = (f64, Vec<(usize, f64)>, Vec<(usize, f64)>);
 
 /// Scalar measurement evaluated directly on engine analysis results.
 #[pyclass(module = "jolty._core", frozen)]
@@ -513,14 +513,10 @@ fn unpack_point_complex(
 
 fn unpack_noise((value, cotangent): (f64, MeasureCotangent)) -> PyResult<PyNoiseCotangent> {
     match cotangent {
-        MeasureCotangent::Noise { densities, gains } => Ok((
-            value,
+        MeasureCotangent::Noise {
             densities,
-            gains
-                .into_iter()
-                .map(|(point, weight)| (point, weight.re, weight.im))
-                .collect(),
-        )),
+            referred,
+        } => Ok((value, densities, referred)),
         _ => Err(failure(Failure::Kind)),
     }
 }

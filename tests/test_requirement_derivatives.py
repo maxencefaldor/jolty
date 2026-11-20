@@ -21,6 +21,7 @@ from jolty import (
     Builder,
     Corner,
     DcSweep,
+    Noise,
     OperatingPoint,
     OperatingPoints,
     Options,
@@ -29,6 +30,7 @@ from jolty import (
     Role,
     Simulation,
     Specs,
+    Stability,
     Transient,
     component,
     devices,
@@ -51,6 +53,7 @@ from jolty.simulate import (
     requirement_derivatives,
     slack_derivatives,
 )
+from jolty.spice import Library
 from jolty.units import (
     VOLTAGE,
     A,
@@ -69,7 +72,9 @@ from jolty.units import (
     ns,
     ohm,
     pF,
+    uA,
     uF,
+    um,
     us,
 )
 
@@ -830,3 +835,292 @@ def test_non_differentiable_and_custom_measures_raise_clear_errors() -> None:
     _, ac_pullback = vjp(ac_function, {"R1": {"resistance": 1e3}})
     with pytest.raises(ValueError, match="RealCotangent"):
         ac_pullback(specs.RealCotangent(((0, 0, 1.0),), 0.0))
+    with pytest.raises(ValueError, match="LoopCotangent"):
+        ac_pullback(specs.LoopCotangent(((0, 1.0, 0.0),)))
+    with pytest.raises(ValueError, match="NoiseCotangent"):
+        op_pullback(specs.NoiseCotangent(((0, 1.0),), ()))
+
+
+@component
+def _three_pole_feedback_loop(c: Builder) -> None:
+    """Three-stage unity-feedback amplifier broken by floating probe `VP`."""
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(1 * V), name="VIN")
+    c.connect(source.negative, ground)
+    stages = [
+        c.place(devices.voltage_controlled_current_source(1 * mA / V), name=f"G{i}")
+        for i in range(1, 4)
+    ]
+    poles = ((90 * kohm, 1e3), (10 * kohm, 120e3), (1 * kohm, 7e6))
+    driving = source.positive
+    for index, (stage, (load, pole)) in enumerate(zip(stages, poles, strict=True), 1):
+        resistor = c.place(devices.resistor(load), name=f"R{index}")
+        capacitance = 1 / (2 * math.pi * pole * load.value) * F
+        capacitor = c.place(devices.capacitor(capacitance), name=f"C{index}")
+        c.connect(stage.control_positive, driving)
+        c.connect(stage.positive, resistor.b, capacitor.b, ground)
+        c.connect(stage.negative, resistor.a, capacitor.a, name=f"n{index}")
+        driving = stage.negative
+    for stage in stages[1:]:
+        c.connect(stage.control_negative, ground)
+    buffer = c.place(devices.voltage_controlled_voltage_source(1.0), name="E1")
+    c.connect(buffer.control_positive, driving)
+    c.connect(buffer.control_negative, buffer.negative, ground)
+    probe = c.place(devices.voltage_source(0 * V), name="VP")
+    c.connect(buffer.positive, probe.negative, name="out")
+    c.connect(probe.positive, stages[0].control_negative, name="fb")
+
+
+@component
+def _noisy_common_source(c: Builder) -> None:
+    """Noisy MOSFET common-source amplifier with thermal and flicker noise."""
+    ground = c.port("ground", Role.GROUND)
+    supply = c.place(devices.voltage_source(3.3 * V), name="VDD")
+    gate = c.place(devices.voltage_source(1.2 * V), name="VG")
+    source_resistor = c.place(devices.resistor(2 * kohm), name="RG")
+    load = c.place(devices.resistor(10 * kohm), name="RD")
+    load_cap = c.place(devices.capacitor(5 * pF), name="CL")
+    transistor = c.place(
+        devices.mosfet(
+            width=2 * um,
+            length=1 * um,
+            threshold_voltage=0.7 * V,
+            transconductance_parameter=200 * uA / V**2,
+            channel_length_modulation=0.02 / V,
+            flicker_coefficient=1e-24,
+            flicker_exponent=1.2,
+        ),
+        name="M1",
+    )
+    c.connect(supply.positive, load.a, name="vdd")
+    c.connect(load.b, load_cap.a, transistor.drain, name="out")
+    c.connect(gate.positive, source_resistor.a, name="vg")
+    c.connect(source_resistor.b, transistor.gate, name="gate")
+    c.connect(
+        supply.negative,
+        gate.negative,
+        load_cap.b,
+        transistor.source,
+        transistor.bulk,
+        ground,
+    )
+
+
+def test_stability_measure_derivatives_match_central_differences() -> None:
+    analysis = Stability("VP", decade(100 * Hz, 10 * MHz, 12))
+    tight = _tight_options()
+    evaluated = function(_three_pole_feedback_loop(), analysis, tight)
+    parameters: Parameters = {
+        "R1": {"resistance": 90e3},
+        "C1": {"capacitance": 1 / (2 * math.pi * 1e3 * 90e3)},
+        "C2": {"capacitance": 1 / (2 * math.pi * 120e3 * 10e3)},
+    }
+    measures = (
+        specs.gain("stb", at=10 * kHz),
+        specs.phase("stb", at=10 * kHz),
+        specs.bandwidth("stb"),
+        specs.crossover("stb"),
+        specs.phase_margin("stb"),
+        specs.gain_margin("stb"),
+    )
+    _assert_measure_derivatives_match_central_differences(
+        evaluated, parameters, measures, SMOOTH_FINITE_DIFFERENCE
+    )
+
+    # Sparse LoopCotangent passed directly to `vjp` pullback matches bit-for-bit.
+    solved = Simulation(_three_pole_feedback_loop()).run(analysis, tight)
+    _, cotangent = specs.phase_margin("stb").cotangent(solved)
+    assert isinstance(cotangent, specs.LoopCotangent)
+    _, pullback = vjp(evaluated, parameters)
+    direct = pullback(cotangent)
+    (batched,) = measure_derivatives(
+        evaluated, parameters, (specs.phase_margin("stb"),)
+    )
+    for instance, named in parameters.items():
+        for name in named:
+            assert direct[instance][name] == pytest.approx(
+                batched.derivatives[instance][name], rel=1e-13, abs=1e-15
+            )
+
+
+def test_noise_measure_derivatives_match_central_differences() -> None:
+    analysis = Noise("out", decade(10 * Hz, 10 * MHz, 6), source="VG")
+    tight = _tight_options()
+    evaluated = function(_noisy_common_source(), analysis, tight)
+    parameters: Parameters = {
+        "RG": {"resistance": 2e3},
+        "RD": {"resistance": 10e3},
+        "CL": {"capacitance": 5e-12},
+        "M1": {"width": 2e-6, "flicker_coefficient": 1e-24},
+    }
+    measures = (
+        specs.noise_density("noise", at=1 * kHz),
+        specs.noise_density("noise", at=1 * kHz, referred=True),
+        specs.integrated_noise("noise", start=100 * Hz, stop=1 * MHz),
+        specs.integrated_noise("noise", start=100 * Hz, stop=1 * MHz, referred=True),
+    )
+    _assert_measure_derivatives_match_central_differences(
+        evaluated, parameters, measures, SMOOTH_FINITE_DIFFERENCE
+    )
+
+    # Sparse NoiseCotangent passed directly to `vjp` pullback matches bit-for-bit.
+    solved = Simulation(_noisy_common_source()).run(analysis, tight)
+    _, cotangent = specs.integrated_noise(
+        "noise", start=100 * Hz, stop=1 * MHz, referred=True
+    ).cotangent(solved)
+    assert isinstance(cotangent, specs.NoiseCotangent)
+    _, pullback = vjp(evaluated, parameters)
+    direct = pullback(cotangent)
+    (batched,) = measure_derivatives(
+        evaluated,
+        parameters,
+        (specs.integrated_noise("noise", start=100 * Hz, stop=1 * MHz, referred=True),),
+    )
+    for instance, named in parameters.items():
+        for name in named:
+            assert direct[instance][name] == pytest.approx(
+                batched.derivatives[instance][name], rel=1e-13, abs=1e-15
+            )
+
+
+def test_stability_and_noise_requirement_derivatives_and_linear_worst_case() -> None:
+    @component
+    def toleranced_loop(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V), name="VIN")
+        c.connect(source.negative, ground)
+        stages = [
+            c.place(devices.voltage_controlled_current_source(1 * mA / V), name=f"G{i}")
+            for i in range(1, 4)
+        ]
+        poles = ((90 * kohm, 1e3), (10 * kohm, 120e3), (1 * kohm, 7e6))
+        driving = source.positive
+        for index, (stage, (load, pole)) in enumerate(
+            zip(stages, poles, strict=True), 1
+        ):
+            resistor = c.place(
+                devices.resistor(load, tolerance=ir.Tolerance(relative=0.02)),
+                name=f"R{index}",
+            )
+            capacitance = 1 / (2 * math.pi * pole * load.value) * F
+            capacitor = c.place(
+                devices.capacitor(capacitance, tolerance=ir.Tolerance(relative=0.02)),
+                name=f"C{index}",
+            )
+            c.connect(stage.control_positive, driving)
+            c.connect(stage.positive, resistor.b, capacitor.b, ground)
+            c.connect(stage.negative, resistor.a, capacitor.a, name=f"n{index}")
+            driving = stage.negative
+        for stage in stages[1:]:
+            c.connect(stage.control_negative, ground)
+        buffer = c.place(devices.voltage_controlled_voltage_source(1.0), name="E1")
+        c.connect(buffer.control_positive, driving)
+        c.connect(buffer.control_negative, buffer.negative, ground)
+        probe = c.place(devices.voltage_source(0 * V), name="VP")
+        c.connect(buffer.positive, probe.negative, name="out")
+        c.connect(probe.positive, stages[0].control_negative, name="fb")
+
+    plan = Plan(
+        analyses={
+            "stb": Stability("VP", decade(100 * Hz, 10 * MHz, 12)),
+            "noise": Noise("out", decade(100 * Hz, 10 * MHz, 8), source="VIN"),
+        },
+        options=_tight_options(),
+    )
+    requirements = Specs(
+        [
+            specs.phase_margin("stb") >= 30,
+            specs.gain_margin("stb") >= 5,
+            specs.integrated_noise("noise", start=1 * kHz, stop=1 * MHz) <= 1e-3 * V,
+        ]
+    )
+    derived = requirement_derivatives(
+        toleranced_loop(),
+        plan,
+        requirements,
+        [("R1", "resistance"), ("C1", "capacitance"), ("C2", "capacitance")],
+    )
+    assert len(derived) == 3
+    for item in derived:
+        assert item.reason is None
+        assert item.derivatives["R1"]["resistance"] != 0.0
+
+    worst = linear_worst_case(toleranced_loop(), plan, requirements)
+    assert len(worst) == 3
+    for estimate in worst:
+        assert estimate.estimated_slack < estimate.nominal_slack
+        assert estimate.overrides
+
+
+def test_subcircuit_measure_and_slack_derivatives_match_central_differences() -> None:
+    library = Library()
+    library.read(
+        ".model rsheet r rsh=1000\n"
+        ".subckt sized_res a b w=1u l=2u\n"
+        "R1 a b rsheet w={w} l={l}\n"
+        ".ends\n",
+        "sized_measure.lib",
+    )
+    upper = library.placement("sized_res", w=1e-6, l=2e-6)
+
+    @component
+    def sized_filter(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        resistor = c.place(upper.component(), name="X1")
+        capacitor = c.place(devices.capacitor(10 * nF), name="C1")
+        c.connect(source.positive, resistor.a, name="in")
+        c.connect(resistor.b, capacitor.a, name="out")
+        c.connect(capacitor.b, source.negative, ground)
+
+    analysis = Ac("V1", decade(100 * Hz, 100 * kHz, 12))
+    tight = _tight_options()
+    evaluated = function(sized_filter(), analysis, tight, subcircuits={"X1": upper})
+    parameters: Parameters = {
+        "X1": {"w": 1.2e-6, "l": 2.5e-6},
+        "C1": {"capacitance": 12e-9},
+    }
+    measures = (specs.gain("ac", "out", at=5 * kHz), specs.bandwidth("ac", "out"))
+    derived = measure_derivatives(evaluated, parameters, measures)
+    assert len(derived) == 2
+
+    def read_at(point: Parameters) -> list[float]:
+        built_x1 = library.component("sized_res", **point["X1"])
+
+        @component
+        def rebuilt(c: Builder) -> None:
+            ground = c.port("ground", Role.GROUND)
+            source = c.place(devices.voltage_source(1 * V), name="V1")
+            resistor = c.place(built_x1, name="X1")
+            capacitor = c.place(
+                devices.capacitor(point["C1"]["capacitance"] * F), name="C1"
+            )
+            c.connect(source.positive, resistor.a, name="in")
+            c.connect(resistor.b, capacitor.a, name="out")
+            c.connect(capacitor.b, source.negative, ground)
+
+        solved = Simulation(rebuilt()).run(analysis, tight)
+        return [measure.read(solved).value for measure in measures]
+
+    for instance, named in parameters.items():
+        for name, value in named.items():
+            step = RELATIVE_STEP * abs(value)
+            high = read_at(_perturbed(parameters, instance, name, value + step))
+            low = read_at(_perturbed(parameters, instance, name, value - step))
+            for item, above, below in zip(derived, high, low, strict=True):
+                exact = item.derivatives[instance][name]
+                finite = (above - below) / (2.0 * step)
+                assert exact == pytest.approx(
+                    finite, rel=SMOOTH_FINITE_DIFFERENCE, abs=1e-12
+                )
+
+    (slack_item,) = slack_derivatives(
+        evaluated, parameters, (specs.bandwidth("ac", "out") >= 5 * kHz,)
+    )
+    assert slack_item.reason is None
+    assert slack_item.derivatives["X1"]["w"] == pytest.approx(
+        derived[1].derivatives["X1"]["w"], rel=1e-13, abs=1e-15
+    )
+    assert slack_item.derivatives["X1"]["l"] == pytest.approx(
+        derived[1].derivatives["X1"]["l"], rel=1e-13, abs=1e-15
+    )
