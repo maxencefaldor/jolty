@@ -290,6 +290,8 @@ The first release, 0.1.0.
 
 ### Changed
 
+- Required physical `Quantity` values across user-facing options, conditions, overrides, variants, axes, parameter sweeps, and tolerance sampling (`Options.{voltage_tolerance, current_tolerance, charge_tolerance, gmin}`, `Conditions.temperature`, `Simulation(..., overrides=...)`, `Variant.overrides`, `Axis`, `DcSweep`, `Toleranced.nominal`, and `variation.{sample, moved, extreme}`), validating device-parameter dimensions upfront against engine metadata via `devices.parameter_dimension` while keeping `Function`, `jvp`, `vjp`, and `jolty.jax.function` in SI floats and arrays.
+  Added `fC`, `nS`, `pS`, and dimension-checked ordering (`<`, `<=`, `>`, `>=`) on `Quantity`, plus `ParameterMetadata` on `FoundryMosfet` and `ThresholdDetector`.
 - Replaced recursive descent in `crates/jolty-expressions/src/parser.rs` with an iterative type-state shunting-yard stack, boxed `Points` in `Node::Table` (64 to 24 bytes), converted `tape::compile`, `Node`/`Term` `Drop`, and `jolty-python::term_to_json_string` to iterative traversals, and made `Expression::tree()` `O(N)` via `Option::take`.
   Iterative traversals eliminated `SIGABRT` stack overflows on 2 MiB debug stacks at `MAX_DEPTH = 256` and on 5,000-term variable binary chains.
 - Appended the AMD EPYC 9B14 `--view matched` (`430c75d`, 5,069 s) comparison table to `benchmarks/speed/README.md`.

@@ -13,7 +13,7 @@ from typing import Final
 import numpy as np
 from pydantic import Field, JsonValue
 
-from jolty import _core, checks, ir, results, variation
+from jolty import _core, checks, devices, ir, results, variation
 from jolty.devices import Device
 from jolty.errors import ElaborationError, JoltyError, SimulationError
 from jolty.plan import (
@@ -34,7 +34,6 @@ from jolty.plan import (
 from jolty.settings import Settings
 from jolty.units import (
     CURRENT,
-    DIMENSIONLESS,
     TEMPERATURE,
     VOLTAGE,
     Dimension,
@@ -230,7 +229,7 @@ def source_dimension(built: ir.Circuit, path: str) -> Dimension | None:
     return None
 
 
-def swept_dimension(built: ir.Circuit, sweep: DcSweep) -> Dimension:
+def swept_dimension(built: ir.Circuit, sweep: DcSweep) -> Dimension | None:
     """Returns the physical dimension of the quantity swept by `sweep` in `built`.
 
     Args:
@@ -238,16 +237,27 @@ def swept_dimension(built: ir.Circuit, sweep: DcSweep) -> Dimension:
         sweep: DC sweep analysis specification.
 
     Returns:
-        Physical dimension expected for each value along `sweep`.
+        Physical dimension expected for each value along `sweep`, or ``None`` for a
+        dimensionless device parameter.
     """
     if sweep.parameter is not None:
-        return sweep.values[0].dimension if sweep.values else DIMENSIONLESS
+        instance = built.find(sweep.source)
+        if instance is not None and isinstance(instance.of, ir.DeviceOf):
+            try:
+                return devices.parameter_dimension(
+                    instance.of, sweep.parameter, instance.parameters
+                )
+            except KeyError:
+                pass
+        first = sweep.values[0] if sweep.values else None
+        return first.dimension if isinstance(first, Quantity) else None
     if (dimension := source_dimension(built, sweep.source)) is not None:
         return dimension
     if not sweep.values:
         return VOLTAGE
     # Not an independent source: the engine reports it regardless of values.
-    return sweep.values[0].dimension
+    first = sweep.values[0]
+    return first.dimension if isinstance(first, Quantity) else None
 
 
 def sweep_nature(built: ir.Circuit, sweep: DcSweep) -> results.Nature | None:

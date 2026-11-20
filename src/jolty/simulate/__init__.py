@@ -31,9 +31,9 @@ from typing import overload
 
 from pydantic import JsonValue
 
-from jolty import _core, checks, foundry, ir, results, specs
+from jolty import _core, checks, devices, foundry, ir, results, specs
 from jolty.builder import Component, circuit
-from jolty.devices import Device
+from jolty.devices import Device, ParameterValue
 from jolty.errors import ElaborationError, PlanError, SimulationError
 from jolty.plan import (
     Ac,
@@ -146,7 +146,7 @@ class Simulation:
         self,
         circuit_or_top: ir.Circuit | Component,
         temperature: Quantity | None = None,
-        overrides: Mapping[str, Mapping[str, float]] | None = None,
+        overrides: Mapping[str, Mapping[str, ParameterValue]] | None = None,
         substitutes: Mapping[str, Device] | None = None,
         *,
         process: str | None = None,
@@ -157,7 +157,8 @@ class Simulation:
         Raises:
             ElaborationError: Lists every problem reported by the engine, naming the
                 instance and build-script line.
-            DimensionError: When `temperature` does not carry temperature dimensions.
+            DimensionError: When `temperature` does not carry temperature dimensions or
+                a parameter override has the wrong dimension or kind.
             ValueError: When a process corner is supplied for a circuit containing no
                 foundry devices.
         """
@@ -166,11 +167,12 @@ class Simulation:
             if isinstance(circuit_or_top, ir.Circuit)
             else circuit(circuit_or_top)
         )
+        converted = devices.convert_overrides(built, overrides)
         with _decode.elaborating():
             core = _core.Simulator(
                 built.model_dump_json(),
                 kelvins(temperature),
-                json.dumps(overrides or {}, allow_nan=False),
+                json.dumps(converted, allow_nan=False),
                 _decode.substitutes_json(substitutes),
             )
         self._start(
@@ -186,7 +188,9 @@ class Simulation:
         built: ir.Circuit,
         core: _core.Simulator,
         replaced: tuple[
-            Quantity | None, Mapping[str, Mapping[str, float]] | None, frozenset[str]
+            Quantity | None,
+            Mapping[str, Mapping[str, ParameterValue]] | None,
+            frozenset[str],
         ],
         foundry_conditions: tuple[str | None, int | None],
     ) -> Simulation:
@@ -199,7 +203,7 @@ class Simulation:
     def from_elaborated(
         cls,
         elaborated: Elaborated,
-        overrides: Mapping[str, Mapping[str, float]] | None = None,
+        overrides: Mapping[str, Mapping[str, ParameterValue]] | None = None,
         *,
         process: str | None = None,
         mismatch: int | None = None,
@@ -208,8 +212,8 @@ class Simulation:
 
         Args:
             elaborated: Previously elaborated circuit topology and temperature.
-            overrides: Nested mapping of instance paths to parameter overrides in SI
-                base units.
+            overrides: Nested mapping of instance paths to parameter overrides validated
+                against each device's declared parameter dimensions.
             process: Optional foundry process corner name.
             mismatch: Optional foundry statistical mismatch seed.
 
@@ -217,6 +221,8 @@ class Simulation:
             Simulation configured with `overrides`, `process`, and `mismatch`.
 
         Raises:
+            DimensionError: When an override for a known parameter has the wrong
+                physical dimension or kind.
             ElaborationError: Lists unknown parameters in `overrides` or devices whose
                 overridden parameters fall out of range.
             ValueError: When a process corner is supplied for a circuit containing no
@@ -231,7 +237,9 @@ class Simulation:
         built: ir.Circuit,
         core: _core.Simulator,
         replaced: tuple[
-            Quantity | None, Mapping[str, Mapping[str, float]] | None, frozenset[str]
+            Quantity | None,
+            Mapping[str, Mapping[str, ParameterValue]] | None,
+            frozenset[str],
         ],
         foundry_conditions: tuple[str | None, int | None],
     ) -> None:
@@ -256,7 +264,7 @@ class Simulation:
             )
             raise ValueError(message)
         self.conditions = Conditions(
-            kelvins(temperature),
+            Quantity(kelvins(temperature), TEMPERATURE),
             process,
             {path: dict(values) for path, values in (overrides or {}).items()},
             mismatch_seed,
@@ -343,14 +351,13 @@ class Simulation:
         )
         if plan.record is not None:
             problems.extend(self._record_problems(plan.record))
-        problems.extend(
-            _validate.analyses_problems(
-                plan.analyses,
-                catalog,
-                self._record_problems,
-                has_logic_nets=bool(self.nets),
-            )
+        analysis_found, analysis_dimension_error = _validate.analyses_problems(
+            plan.analyses,
+            catalog,
+            self._record_problems,
+            has_logic_nets=bool(self.nets),
         )
+        problems.extend(analysis_found)
         shapes = {
             name: _decode.analysis_shape(self.circuit, self.unknowns, analysis)
             for name, analysis in plan.analyses.items()
@@ -361,12 +368,12 @@ class Simulation:
             if isinstance(analysis, Noise)
             and _validate.noise_unit_unknown(analysis, catalog)
         }
+        variant_dimension_error = None
         if plan.variants is not None:
-            problems.extend(
-                _validate.parameter_pair_problems(
-                    _validate.variant_pairs(plan.variants), catalog
-                )
+            variant_found, variant_dimension_error = _validate.variant_problems(
+                plan.variants, catalog
             )
+            problems.extend(variant_found)
         if specs is not None:
             problems.extend(
                 validate_specs(
@@ -380,6 +387,9 @@ class Simulation:
             problems.extend(
                 _validate.trace_problems(traces, (*catalog.unknown_names, *self.nets))
             )
+        sole_dimension_error = analysis_dimension_error or variant_dimension_error
+        if sole_dimension_error is not None and len(problems) == 1:
+            raise sole_dimension_error
         if problems:
             raise PlanError(problems)
 
@@ -576,14 +586,15 @@ class Simulation:
         """
         chosen = Options() if options is None else options
         problems = _validate.nodeset_problems(chosen.nodesets, "nodeset", self._catalog)
-        problems.extend(
-            _validate.analyses_problems(
-                analyses,
-                self._catalog,
-                self._record_problems,
-                has_logic_nets=bool(self.nets),
-            )
+        analysis_found, sole_dimension_error = _validate.analyses_problems(
+            analyses,
+            self._catalog,
+            self._record_problems,
+            has_logic_nets=bool(self.nets),
         )
+        problems.extend(analysis_found)
+        if sole_dimension_error is not None and len(problems) == 1:
+            raise sole_dimension_error
         if problems:
             raise PlanError(problems)
         planned = _batch.Planned.from_host(
@@ -742,9 +753,11 @@ class Simulation:
 
     def _variants(self, variants: Variants) -> _core.Variants:
         """Compiles `variants` into the engine representation for this circuit."""
-        problems = _validate.parameter_pair_problems(
-            _validate.variant_pairs(variants), self._catalog
+        problems, sole_dimension_error = _validate.variant_problems(
+            variants, self._catalog
         )
+        if sole_dimension_error is not None:
+            raise sole_dimension_error
         if problems:
             raise ElaborationError(problems)
         elaborated = self._core.elaborated
@@ -772,7 +785,12 @@ class Simulation:
                 case Explicit(variants=listed):
                     runs = [
                         (
-                            json.dumps(variant.overrides, allow_nan=False),
+                            json.dumps(
+                                devices.convert_overrides(
+                                    self.circuit, variant.overrides
+                                ),
+                                allow_nan=False,
+                            ),
                             None
                             if variant.temperature is None
                             else kelvins(variant.temperature),
@@ -787,6 +805,9 @@ class Simulation:
 
     def _view(self, core: _core.Simulator) -> Simulation:
         """Wraps an engine `core` view of the same circuit in a `Simulation`."""
-        temperature = Quantity(self.conditions.temperature, TEMPERATURE)
-        replaced = (temperature, self.conditions.overrides, self._substituted)
+        replaced = (
+            self.conditions.temperature,
+            self.conditions.overrides,
+            self._substituted,
+        )
         return Simulation._from_core(self.circuit, core, replaced, (None, None))

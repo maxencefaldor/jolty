@@ -343,6 +343,10 @@ def test_circuit_cycle_and_missing_component_regression_bugs() -> None:
     with pytest.raises(ValueError, match="contains itself: stage -> stage"):
         _core.toleranced(self_cycle_json)
     with pytest.raises(ValueError, match="contains itself: stage -> stage"):
+        list(self_cycle.walk())
+    with pytest.raises(ValueError, match="contains itself: stage -> stage"):
+        list(self_cycle.walk(breadth_first=True))
+    with pytest.raises(ValueError, match="contains itself: stage -> stage"):
         variation.toleranced(self_cycle)
     with pytest.raises(JoltyError, match="contains itself: stage -> stage"):
         export.flatten(self_cycle)
@@ -357,6 +361,10 @@ def test_circuit_cycle_and_missing_component_regression_bugs() -> None:
     )
     mutual = ir.Circuit.model_validate_json(json.dumps(mutual_document))
     with pytest.raises(ValueError, match="contains itself: top -> stage -> top"):
+        list(mutual.walk())
+    with pytest.raises(ValueError, match="contains itself: top -> stage -> top"):
+        list(mutual.walk(breadth_first=True))
+    with pytest.raises(ValueError, match="contains itself: top -> stage -> top"):
         variation.toleranced(mutual)
     with pytest.raises(JoltyError, match="contains itself: top -> stage -> top"):
         export.flatten(mutual)
@@ -364,6 +372,8 @@ def test_circuit_cycle_and_missing_component_regression_bugs() -> None:
     missing_top_document = _base_circuit_document()
     missing_top_document["top"] = "missing"
     missing_top = ir.Circuit.model_validate_json(json.dumps(missing_top_document))
+    assert list(missing_top.walk()) == []
+    assert list(missing_top.walk(breadth_first=True)) == []
     assert variation.toleranced(missing_top) == ()
     with pytest.raises(JoltyError, match="no component `missing`"):
         export.flatten(missing_top)

@@ -228,6 +228,22 @@ class Quantity:
         """Returns the negated quantity."""
         return Quantity(-self.value, self.dimension)
 
+    def __lt__(self, other: Quantity) -> bool:
+        """Returns whether this quantity is strictly less than `other`."""
+        return self.value < self._same(other, "compare")
+
+    def __le__(self, other: Quantity) -> bool:
+        """Returns whether this quantity is less than or equal to `other`."""
+        return self.value <= self._same(other, "compare")
+
+    def __gt__(self, other: Quantity) -> bool:
+        """Returns whether this quantity is strictly greater than `other`."""
+        return self.value > self._same(other, "compare")
+
+    def __ge__(self, other: Quantity) -> bool:
+        """Returns whether this quantity is greater than or equal to `other`."""
+        return self.value >= self._same(other, "compare")
+
     def _same(self, other: Quantity, verb: str) -> float:
         if not isinstance(other, Quantity) or other.dimension != self.dimension:
             message = f"cannot {verb} {self} and {other}"
@@ -348,12 +364,15 @@ mC: Final = Quantity(1e-3, CHARGE)
 uC: Final = Quantity(1e-6, CHARGE)
 nC: Final = Quantity(1e-9, CHARGE)
 pC: Final = Quantity(1e-12, CHARGE)
+fC: Final = Quantity(1e-15, CHARGE)
 ohm: Final = Quantity(1.0, RESISTANCE)
 kohm: Final = Quantity(1e3, RESISTANCE)
 Mohm: Final = Quantity(1e6, RESISTANCE)
 S: Final = Quantity(1.0, CONDUCTANCE)
 mS: Final = Quantity(1e-3, CONDUCTANCE)
 uS: Final = Quantity(1e-6, CONDUCTANCE)
+nS: Final = Quantity(1e-9, CONDUCTANCE)
+pS: Final = Quantity(1e-12, CONDUCTANCE)
 F: Final = Quantity(1.0, CAPACITANCE)
 mF: Final = Quantity(1e-3, CAPACITANCE)
 uF: Final = Quantity(1e-6, CAPACITANCE)

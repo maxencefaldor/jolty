@@ -4767,3 +4767,32 @@ def test_xyce_run_rejects_empty_analysis_and_parses_complex_csv_with_blank_lines
     stub("\n\n")
     with pytest.raises(JoltyError, match="printed no values"):
         xyce.run(["* title", "R1 out 0 1k"], ".op")
+
+
+def test_memristor_transient_export_emits_numeric_state_capacitance() -> None:
+    @component
+    def memristor_bench(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        source = c.place(devices.voltage_source(1 * V), name="V1")
+        memristor = c.place(
+            devices.voltage_controlled_memristor(
+                on_resistance=100 * ohm,
+                off_resistance=10 * kohm,
+                on_voltage=-0.5 * V,
+                off_voltage=0.5 * V,
+                on_rate=10 / s,
+                off_rate=10 / s,
+            ),
+            name="M1",
+        )
+        c.connect(source.positive, memristor.positive, name="in")
+        c.connect(memristor.negative, source.negative, ground)
+
+    lines = export.netlist(circuit(memristor_bench()), transient=True)
+    rendered = "\n".join(lines)
+    assert "Quantity" not in rendered
+    assert any(
+        line.startswith("CM1_state _M1_state 0 ")
+        and float(line.split()[-1]) == export.STATE_CAPACITANCE
+        for line in lines
+    )

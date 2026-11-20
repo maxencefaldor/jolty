@@ -14,7 +14,7 @@ name, so sample `i` is invariant to total sample count or unrelated added parts.
 
 Examples:
     >>> from jolty import Builder, Role, circuit, component, devices
-    >>> from jolty.units import V, kohm
+    >>> from jolty.units import V, kohm, ohm
     >>> @component
     ... def divider(c: Builder) -> None:
     ...     ground = c.port("ground", Role.GROUND)
@@ -23,10 +23,10 @@ Examples:
     ...     c.connect(source.positive, upper.a)
     ...     c.connect(upper.b, source.negative, ground)
     >>> (parameter,) = toleranced(circuit(divider()))
-    >>> (parameter.instance, parameter.parameter, parameter.nominal)
-    ('R1', 'resistance', 1000.0)
+    >>> (parameter.instance, parameter.parameter, parameter.nominal == 1 * kohm)
+    ('R1', 'resistance', True)
     >>> drawn = sample((parameter,), seed=0, index=0)["R1"]["resistance"]
-    >>> 990 <= drawn <= 1010
+    >>> 990 * ohm <= drawn <= 1010 * ohm
     True
 """
 
@@ -37,7 +37,9 @@ from dataclasses import dataclass
 
 from pydantic import JsonValue
 
-from jolty import _core, ir
+from jolty import _core, devices, ir
+from jolty.devices import ParameterValue
+from jolty.units import Quantity
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +50,7 @@ class Toleranced:
     """Hierarchical path of the device instance, such as ``X1/R1``."""
     parameter: str
     """Dotted parameter path, such as ``resistance`` or ``waveform.dc``."""
-    nominal: float
+    nominal: ParameterValue
     tolerance: ir.Tolerance
 
 
@@ -56,7 +58,8 @@ def toleranced(circuit: ir.Circuit) -> tuple[Toleranced, ...]:
     """Collects every toleranced device parameter in `circuit` in hierarchy order.
 
     Entries appear in hierarchy order with each instance's parameters sorted by path,
-    matching the engine listing.
+    matching the engine listing. Dimensioned parameters store their `nominal` as a
+    [`Quantity`][jolty.units.Quantity] in SI base units.
 
     Args:
         circuit: Circuit IR inspected for device parameter tolerances.
@@ -68,13 +71,21 @@ def toleranced(circuit: ir.Circuit) -> tuple[Toleranced, ...]:
         ValueError: When a toleranced parameter is non-numeric or when component
             placements form a cycle.
     """
+    raw = _core.toleranced(circuit.model_dump_json())
+    if not raw:
+        return ()
     return tuple(
         Toleranced(
-            path, parameter, nominal, ir.Tolerance.model_validate_json(tolerance)
+            path,
+            parameter,
+            (
+                devices.wrap_parameter(target, parameter, nominal)
+                if (target := circuit.find(path)) is not None
+                else nominal
+            ),
+            ir.Tolerance.model_validate_json(tolerance),
         )
-        for path, parameter, nominal, tolerance in _core.toleranced(
-            circuit.model_dump_json()
-        )
+        for path, parameter, nominal, tolerance in raw
     )
 
 
@@ -91,7 +102,11 @@ def payload(toleranced: Iterable[Toleranced]) -> list[JsonValue]:
         {
             "instance": parameter.instance,
             "parameter": parameter.parameter,
-            "nominal": parameter.nominal,
+            "nominal": (
+                parameter.nominal.value
+                if isinstance(parameter.nominal, Quantity)
+                else parameter.nominal
+            ),
             "tolerance": parameter.tolerance.model_dump(mode="json"),
         }
         for parameter in toleranced
@@ -100,12 +115,13 @@ def payload(toleranced: Iterable[Toleranced]) -> list[JsonValue]:
 
 def sample(
     toleranced: Iterable[Toleranced], seed: int, index: int
-) -> dict[str, dict[str, float]]:
+) -> dict[str, dict[str, ParameterValue]]:
     """Draws Monte Carlo sample `index` of `toleranced` using `seed` in the engine.
 
     The returned nested mapping stores parameter values keyed by instance path and
-    parameter path. Each value multiplies nominal by an independent instance factor
-    plus any shared lot factor, seeded by `seed`, `index`, and the parameter key.
+    parameter path, preserving [`Quantity`][jolty.units.Quantity] dimensions from each
+    `Toleranced.nominal`. Each value multiplies nominal by an independent instance
+    factor plus any shared lot factor, seeded by `seed`, `index`, and the parameter key.
 
     Args:
         toleranced: Toleranced parameter descriptors to sample.
@@ -113,18 +129,24 @@ def sample(
         index: Zero-based Monte Carlo sample index.
 
     Returns:
-        Nested dictionary `{instance: {parameter: value}}` in SI base units.
+        Nested dictionary `{instance: {parameter: value}}` matching each parameter's
+        dimension or dimensionless scalar type.
 
     Raises:
         OverflowError: When `seed` or `index` is negative or at least ``2**64``.
     """
     chosen = tuple(toleranced)
     encoded = json.dumps(payload(chosen), allow_nan=False)
-    drawn: dict[str, dict[str, float]] = {}
+    drawn: dict[str, dict[str, ParameterValue]] = {}
     for parameter, value in zip(
         chosen, _core.sample(encoded, seed, index), strict=True
     ):
-        drawn.setdefault(parameter.instance, {})[parameter.parameter] = value
+        wrapped: ParameterValue = (
+            Quantity(value, parameter.nominal.dimension)
+            if isinstance(parameter.nominal, Quantity)
+            else value
+        )
+        drawn.setdefault(parameter.instance, {})[parameter.parameter] = wrapped
     return drawn
 
 
@@ -147,7 +169,7 @@ def lot(toleranced: Toleranced) -> LotMember | None:
 
 def moved(
     toleranced: Sequence[Toleranced], index: int, fraction: float
-) -> dict[str, dict[str, float]]:
+) -> dict[str, dict[str, ParameterValue]]:
     """Builds an override moving `toleranced[index]` by `fraction` of its tolerance.
 
     All other circuit parameters remain at their nominal values.
@@ -158,7 +180,8 @@ def moved(
         fraction: Signed fraction of tolerance range (`-1` to `1`).
 
     Returns:
-        Single-entry override `{instance: {parameter: value}}` in SI base units.
+        Single-entry override `{instance: {parameter: value}}` preserving parameter
+        dimensions.
     """
     parameter = toleranced[index]
     value = parameter.nominal * edge(parameter.tolerance, fraction)
@@ -169,13 +192,13 @@ def extreme(
     toleranced: Iterable[Toleranced],
     directions: Sequence[float],
     lots: Mapping[LotMember, float],
-) -> dict[str, dict[str, float]]:
+) -> dict[str, dict[str, ParameterValue]]:
     """Computes parameter overrides placing every entry of `toleranced` at an extreme.
 
     Each entry in `directions` uses ``1`` for upper, ``-1`` for lower, or ``0`` for
     nominal. Parts belonging to a lot also multiply by the lot extreme looked up in
     `lots` (defaulting to ``0``). Results are nested by instance path and parameter
-    path.
+    path, preserving parameter dimensions.
 
     Args:
         toleranced: Toleranced parameters paired elementwise with `directions`.
@@ -185,7 +208,7 @@ def extreme(
     Returns:
         Nested parameter override dictionary `{instance: {parameter: value}}`.
     """
-    found: dict[str, dict[str, float]] = {}
+    found: dict[str, dict[str, ParameterValue]] = {}
     for parameter, direction in zip(toleranced, directions, strict=True):
         factor = edge(parameter.tolerance, direction)
         if (shared := parameter.tolerance.lot) is not None:

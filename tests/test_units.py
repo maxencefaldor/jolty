@@ -9,6 +9,8 @@ from hypothesis import strategies as st
 from jolty import DimensionError
 from jolty.units import (
     CAPACITANCE,
+    CHARGE,
+    CONDUCTANCE,
     CURRENT,
     DIMENSIONLESS,
     FREQUENCY,
@@ -18,11 +20,16 @@ from jolty.units import (
     Dimension,
     Quantity,
     V,
+    fC,
     format_si,
     kohm,
     mA,
     ms,
+    mV,
     nF,
+    nS,
+    pS,
+    uA,
     uF,
 )
 
@@ -51,6 +58,24 @@ def test_quantities_carry_their_dimension_through_arithmetic() -> None:
     assert (1 / (1 * ms)).to(FREQUENCY, "a frequency") == pytest.approx(1e3)
     assert (2 * mA - 1 * mA).to(CURRENT, "a current") == pytest.approx(1e-3)
     assert str(-(4.7 * nF)) == "-4.7 nF"
+    assert (10 * fC).to(CHARGE, "a charge") == pytest.approx(1e-14)
+    assert (1 * nS).to(CONDUCTANCE, "a conductance") == pytest.approx(1e-9)
+    assert (1 * pS).to(CONDUCTANCE, "a conductance") == pytest.approx(1e-12)
+
+
+def test_quantities_order_within_the_same_dimension() -> None:
+    one_volt = 1 * V
+    two_volts = 2 * V
+    one_milliamp = 1 * mA
+    two_milliamps = 2 * mA
+    assert one_milliamp < two_milliamps
+    assert one_milliamp <= 1000 * uA
+    assert two_volts > one_volt
+    assert two_volts >= 2000 * mV
+    with pytest.raises(DimensionError, match=r"cannot compare 1 V and 1 mA"):
+        _ = one_volt < one_milliamp
+    with pytest.raises(DimensionError, match=r"cannot compare 1 V and 1\.0"):
+        _ = one_volt <= 1.0  # ty: ignore[unsupported-operator] - mismatched type tested
 
 
 def test_a_quantity_of_the_wrong_dimension_names_what_it_was_for() -> None:

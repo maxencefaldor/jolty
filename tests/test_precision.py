@@ -295,9 +295,7 @@ def test_jolty_s_sweep_is_scored_at_its_levels() -> None:
     ran = suite.run_jolty(
         prepared, suite.Setting("defaults", suite.DEFAULTS["relative_tolerance"]), 1
     )
-    np.testing.assert_array_equal(
-        ran.found.points, [each.value for each in sweep.values]
-    )
+    np.testing.assert_array_equal(ran.found.points, sweep.numbers())
 
 
 def test_a_stopped_run_says_each_kind_of_trouble_once_and_how_far_it_came() -> None:

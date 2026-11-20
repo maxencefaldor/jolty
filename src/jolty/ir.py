@@ -13,7 +13,7 @@ parameter derivatives produced by tolerances or foundry statistical functions.
 """
 
 from collections import deque
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import Annotated, Final, Literal, Self, override
 
@@ -361,6 +361,9 @@ class Circuit(FrozenModel):
 
         Returns:
             Iterator of `(path, instance)` pairs across the traversed hierarchy.
+
+        Raises:
+            ValueError: When component placements form a cycle.
         """
         root = self.top if component is None else component
         if breadth_first:
@@ -374,14 +377,22 @@ class Circuit(FrozenModel):
         prefix: str,
         descend: Callable[[Instance], bool] | None,
     ) -> Iterator[tuple[str, Instance]]:
-        pending: deque[tuple[str, str]] = deque([(prefix, root)])
+        if root not in self.components:
+            return
+        pending: deque[tuple[str, str, tuple[str, ...]]] = deque(
+            [(prefix, root, (root,))]
+        )
         while pending:
-            current_prefix, name = pending.popleft()
+            current_prefix, name, ancestors = pending.popleft()
             for instance in self.components[name].instances:
                 path = f"{current_prefix}{instance.name}"
                 yield path, instance
                 if (inner := _descend_into(instance, descend)) is not None:
-                    pending.append((f"{path}{SEPARATOR}", inner))
+                    _check_cycle(ancestors, inner)
+                    if inner in self.components:
+                        pending.append(
+                            (f"{path}{SEPARATOR}", inner, (*ancestors, inner))
+                        )
 
     def _walk_depth_first(
         self,
@@ -389,19 +400,42 @@ class Circuit(FrozenModel):
         prefix: str,
         descend: Callable[[Instance], bool] | None,
     ) -> Iterator[tuple[str, Instance]]:
-        stack: deque[tuple[str, Instance]] = deque(
-            (f"{prefix}{instance.name}", instance)
-            for instance in reversed(self.components[root].instances)
-        )
-        while stack:
-            path, instance = stack.pop()
+        root_component = self.components.get(root)
+        if root_component is None:
+            return
+        active: list[str] = [root]
+        active_set: set[str] = {root}
+        frames: list[tuple[str, Iterator[Instance]]] = [
+            (prefix, iter(root_component.instances))
+        ]
+        while frames:
+            current_prefix, iterator = frames[-1]
+            instance = next(iterator, None)
+            if instance is None:
+                frames.pop()
+                active_set.remove(active.pop())
+                continue
+            path = f"{current_prefix}{instance.name}"
             yield path, instance
             if (inner := _descend_into(instance, descend)) is not None:
-                children = self.components[inner].instances
-                stack.extend(
-                    (f"{path}{SEPARATOR}{child.name}", child)
-                    for child in reversed(children)
-                )
+                if inner in active_set:
+                    _check_cycle(active, inner)
+                child_component = self.components.get(inner)
+                if child_component is not None:
+                    active.append(inner)
+                    active_set.add(inner)
+                    frames.append(
+                        (f"{path}{SEPARATOR}", iter(child_component.instances))
+                    )
+
+
+def _check_cycle(ancestors: Sequence[str], child: str) -> None:
+    """Raises `ValueError` when `child` already appears in `ancestors`."""
+    if child not in ancestors:
+        return
+    cycle = (*ancestors[ancestors.index(child) :], child)
+    message = f"component `{child}` contains itself: {' -> '.join(cycle)}"
+    raise ValueError(message)
 
 
 def _descend_into(

@@ -29,7 +29,7 @@ from typing import Final
 import numpy as np
 from pydantic import JsonValue
 
-from jolty import ir, results, unknowns
+from jolty import devices, ir, results, unknowns
 from jolty.errors import JoltyError, SimulationError
 from jolty.plan import (
     Ac,
@@ -43,7 +43,7 @@ from jolty.plan import (
     voltages,
 )
 from jolty.spice import export, ngspice, sky130
-from jolty.units import FREQUENCY, TIME, Quantity
+from jolty.units import FREQUENCY, TEMPERATURE, TIME, Quantity
 
 STRATEGY: Final = "ngspice"
 """Operating-point strategy name recorded for ngspice solutions."""
@@ -137,12 +137,14 @@ class _Deck:
         kit = sky130.running(
             conditions.process, mismatched=conditions.mismatch is not None
         )
-        flat, paths = _flattened(circuit, conditions.overrides)
+        flat, paths = _flattened(
+            circuit, devices.convert_overrides(circuit, conditions.overrides)
+        )
         excited = _excited(flat, analysis)
         running: ngspice.Running = {
             **kit,
             "options": _options(options, analysis),
-            "temperature": conditions.temperature,
+            "temperature": conditions.temperature.to(TEMPERATURE, "a temperature"),
             "seed": conditions.mismatch,
         }
         transient = isinstance(analysis, Transient)
@@ -458,10 +460,11 @@ def _readable(
 
 def _options(options: Options, analysis: Analysis) -> str:
     """Builds the ngspice ``.options`` line from `options` and any transient method."""
+    serialized = options.to_json()
     given = [
-        f"{SPICE_OPTIONS[name]}={value!r}"
-        for name, value in ((name, getattr(options, name)) for name in SPICE_OPTIONS)
-        if value is not None
+        f"{SPICE_OPTIONS[name]}={serialized[name]!r}"
+        for name in SPICE_OPTIONS
+        if name in serialized
     ]
     if isinstance(analysis, Transient):
         given.append(_METHODS[analysis.method])
@@ -506,7 +509,7 @@ def _sweep(
     """
     found, nature = _source(flat, sweep.source)
     dimension = unknowns.DIMENSIONS[nature]
-    given = [level.to(dimension, "a sweep level") for level in sweep.values]
+    given = sweep.numbers(dimension)
     levels = np.array(given)
     if len(levels) < 2:  # noqa: PLR2004 - minimum two sweep endpoints
         message = "ngspice sweeps a source through two levels or more"

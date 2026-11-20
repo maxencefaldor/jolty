@@ -7,8 +7,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::dimension::LENGTH;
 use crate::{
-    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, ParameterError, Real, Stamp,
+    Branch, BranchKind, Interface, Kernel, Layout, Lift, Local, ParameterError, ParameterKind,
+    ParameterMetadata, Real, Stamp,
 };
 
 /// A transistor of a foundry's process, between `drain`, `gate`, `source` and `bulk`.
@@ -16,7 +18,7 @@ use crate::{
 pub struct FoundryMosfet;
 
 /// The parameters of a [`FoundryMosfet`].
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift)]
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, Lift, ParameterMetadata)]
 #[serde(deny_unknown_fields)]
 #[schemars(bound = "R: Serialize + JsonSchema")]
 pub struct FoundryMosfetParameters<R: Real = f64> {
@@ -25,8 +27,10 @@ pub struct FoundryMosfetParameters<R: Real = f64> {
     /// The kit's model of the transistor, such as `sky130_fd_pr__nfet_01v8`.
     pub model: String,
     /// The channel's width, all its fingers together, in meters; positive.
+    #[dimension(LENGTH)]
     pub width: R,
     /// The channel's length, in meters; positive.
+    #[dimension(LENGTH)]
     pub length: R,
     /// The fingers the width is split into; 1 unless given.
     #[serde(default = "one")]
@@ -47,6 +51,10 @@ impl Kernel for FoundryMosfet {
     type Shape = ();
     type Prepared<R: Real> = ();
     type Memory = ();
+
+    fn parameter_kinds() -> &'static [(&'static str, ParameterKind)] {
+        FoundryMosfetParameters::<f64>::PARAMETER_KINDS
+    }
 
     fn interface<R: Real>(_: &FoundryMosfetParameters<R>) -> Interface {
         Interface::new(

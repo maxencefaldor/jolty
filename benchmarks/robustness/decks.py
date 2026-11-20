@@ -45,7 +45,7 @@ from jolty.simulate import Simulation
 from jolty.spice import Library, fetch
 from jolty.spice.expressions import number
 from jolty.spice.netlist import Statement, statements, tokens
-from jolty.units import V
+from jolty.units import A, C, Quantity, S, V
 
 MANIFEST: Final = ROBUSTNESS / "external.json"
 """The third-party decks: each one's address, commit, digest and licence."""
@@ -349,6 +349,10 @@ class Deck:
             word = given.get(name)
             return None if word is None else number(word)
 
+        def quantity(name: str, unit: Quantity) -> Quantity | None:
+            found = read(name)
+            return None if found is None else found * unit
+
         iterations = {
             key: int(value)
             for key, value in (("itl1", read("itl1")), ("itl4", read("itl4")))
@@ -356,10 +360,10 @@ class Deck:
         }
         return Options(
             relative_tolerance=read("reltol"),
-            voltage_tolerance=read("vntol"),
-            current_tolerance=read("abstol"),
-            charge_tolerance=read("chgtol"),
-            gmin=read("gmin"),
+            voltage_tolerance=quantity("vntol", V),
+            current_tolerance=quantity("abstol", A),
+            charge_tolerance=quantity("chgtol", C),
+            gmin=quantity("gmin", S),
             max_dc_iterations=iterations.get("itl1"),
             max_transient_iterations=iterations.get("itl4"),
             truncation_tolerance=read("trtol"),

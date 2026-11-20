@@ -127,7 +127,7 @@ def test_sensitivities_carry_through_the_heat() -> None:
     def rise(resistance: float) -> float:
         warmed = _warmed(devices.voltage_source(10 * V))
         return (
-            Simulation(warmed, overrides={"R1": {"resistance": resistance}})
+            Simulation(warmed, overrides={"R1": {"resistance": resistance * ohm}})
             .run(OperatingPoint())
             .rise("junction")
         )
@@ -249,7 +249,7 @@ def test_a_part_at_a_temperature_of_its_own_is_held_to_its_rating_there() -> Non
     # Per-instance temperature overrides, as in Monte Carlo samples, apply as well.
     simulation = Simulation(
         clamp(parts.d1n4148().held_at(celsius(180))),
-        overrides={"D1": {"temperature": celsius(20).value}},
+        overrides={"D1": {"temperature": celsius(20)}},
     )
     point = simulation.run(OperatingPoint())
     assert [

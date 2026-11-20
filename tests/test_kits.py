@@ -1018,7 +1018,7 @@ def lagged(part: Component) -> tuple[str, ...]:
 DRIVE: Final = 0.5
 """Bias voltage applied to pin 0 of each native device (other pins grounded)."""
 
-FLOOR: Final = 2 * ngspice.CURRENT_TOLERANCE
+FLOOR: Final = 2 * ngspice.CURRENT_TOLERANCE.value
 """Absolute current agreement floor equal to twice ngspice `abstol`.
 
 Each engine's Newton iteration stops within one absolute current tolerance, so

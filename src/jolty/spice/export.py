@@ -1132,7 +1132,7 @@ def _photocell(
     return conductance, lines
 
 
-STATE_CAPACITANCE: Final = CURRENT_TOLERANCE / VOLTAGE_TOLERANCE
+STATE_CAPACITANCE: Final = CURRENT_TOLERANCE.value / VOLTAGE_TOLERANCE.value
 """Capacitance in farads of the auxiliary node holding a memristor state voltage.
 
 Equals the ratio of ngspice current tolerance to voltage tolerance so the current

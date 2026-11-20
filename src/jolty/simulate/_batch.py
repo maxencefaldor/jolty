@@ -13,7 +13,7 @@ import numpy as np
 import numpy.typing as npt
 from pydantic import JsonValue
 
-from jolty import _core, checks, foundry, ir, results, specs
+from jolty import _core, checks, devices, foundry, ir, results, specs
 from jolty.errors import JoltyError, close_names
 from jolty.plan import (
     Ac,
@@ -33,7 +33,7 @@ from jolty.simulate._decode import (
     sweep_nature,
     swept_dimension,
 )
-from jolty.units import FREQUENCY, TIME, Dimension
+from jolty.units import FREQUENCY, TEMPERATURE, TIME, Dimension, Quantity
 
 _RAISED: Final[dict[str, type[Exception]]] = {
     "overflow": OverflowError,
@@ -400,13 +400,17 @@ class Planned:
     ) -> tuple[results.Run, list[_core.Problem] | None, list[float]]:
         """Runs ngspice on variant `index` of `ran` and returns the sampled values."""
         replaced, temperature = ran.overrides(index)
-        own = self.host.conditions.overrides
+        own = devices.convert_overrides(
+            self.host.circuit, self.host.conditions.overrides
+        )
         overrides: dict[str, dict[str, float]] = {
             path: {**own.get(path, {}), **replaced.get(path, {})}
             for path in {*own, *replaced}
         }
         kelvin = (
-            self.host.conditions.temperature if temperature is None else temperature
+            self.host.conditions.temperature.to(TEMPERATURE, "a temperature")
+            if temperature is None
+            else temperature
         )
         numbers: list[float] = [
             kelvin
@@ -424,9 +428,9 @@ class Planned:
             return results.Run(index, {}, {}, problems), found, numbers
         sample = ran.sample(index)
         conditions = Conditions(
-            kelvin,
+            Quantity(kelvin, TEMPERATURE),
             self.host.conditions.process,
-            overrides,
+            devices.wrap_overrides(self.host.circuit, overrides),
             None if sample is None else mismatch(*sample),
         )
         solved: dict[str, results.AnalysisResult] = {}
@@ -623,9 +627,7 @@ def _axis(analysis: Analysis, built: ir.Circuit) -> results.Real:
     match analysis:
         case DcSweep():
             dimension = swept_dimension(built, analysis)
-            return np.array(
-                [value.to(dimension, "a sweep level") for value in analysis.values]
-            )
+            return np.array(analysis.numbers(dimension))
         case Ac(frequencies=frequencies):
             return np.array([each.to(FREQUENCY, "a frequency") for each in frequencies])
         case Transient(breakpoints=times) | PeriodicSteadyState(breakpoints=times):

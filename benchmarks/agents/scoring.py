@@ -39,6 +39,7 @@ from jolty import (
     spice,
     variation,
 )
+from jolty.devices import ParameterValue
 from jolty.errors import (
     BuildError,
     DimensionError,
@@ -50,7 +51,7 @@ from jolty.errors import (
 )
 from jolty.report import FailureReport
 from jolty.settings import Settings
-from jolty.units import celsius
+from jolty.units import V, celsius
 
 
 def missing(reason: str) -> Shortfall:
@@ -287,7 +288,7 @@ class Board:
     value. An empty `parts` mapping represents the exact nominal design.
     """
 
-    parts: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    parts: Mapping[str, Mapping[str, ParameterValue]] = field(default_factory=dict)
     corner: Corner = NOMINAL
 
     def simulation(self, built: ir.Circuit, supplies: Iterable[str]) -> Simulation:
@@ -300,7 +301,7 @@ class Board:
             KeyError: When an identifier in `supplies` is not a top-level DC source.
         """
         top = built.components[built.top]
-        levels: dict[str, Mapping[str, float]] = {}
+        levels: dict[str, Mapping[str, ParameterValue]] = {}
         for name in supplies:
             instance = top.instance(name)
             match (
@@ -309,7 +310,7 @@ class Board:
                 else ir.parameter(instance.parameters, "waveform.dc")
             ):
                 case float() | int() as level:
-                    levels[name] = {"waveform.dc": level * self.corner.supply}
+                    levels[name] = {"waveform.dc": level * self.corner.supply * V}
                 case _:
                     message = f"{name} is no DC source at the top of the bench"
                     raise KeyError(message)

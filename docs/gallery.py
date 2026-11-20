@@ -264,8 +264,8 @@ def _commands(
     match analysis:
         case OperatingPoint():
             return ["op"], None, ""
-        case DcSweep(source=source, values=levels):
-            values = [level.value for level in levels]
+        case DcSweep(source=source):
+            values = analysis.numbers()
             step = values[1] - values[0] if len(values) > 1 else 1.0
             element = ngspice_element(export.flatten(circuit), source)
             return [dc_command(element, values[0], values[-1], step)], None, ""

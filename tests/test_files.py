@@ -473,7 +473,7 @@ def test_plan_digest_is_insensitive_to_mapping_insertion_order() -> None:
             "b/*": Characterized(3.3 * V),
         },
         variants=Explicit(
-            [Variant({"R1": {"resistance": 1e3}, "R2": {"resistance": 2e3}})]
+            [Variant({"R1": {"resistance": 1 * kohm}, "R2": {"resistance": 2 * kohm}})]
         ),
     )
     second = Plan(
@@ -491,7 +491,7 @@ def test_plan_digest_is_insensitive_to_mapping_insertion_order() -> None:
             "a/*": Characterized(1.8 * V),
         },
         variants=Explicit(
-            [Variant({"R2": {"resistance": 2e3}, "R1": {"resistance": 1e3}})]
+            [Variant({"R2": {"resistance": 2 * kohm}, "R1": {"resistance": 1 * kohm}})]
         ),
     )
     altered = Plan(
@@ -509,7 +509,7 @@ def test_plan_digest_is_insensitive_to_mapping_insertion_order() -> None:
             "b/*": Characterized(3.3 * V),
         },
         variants=Explicit(
-            [Variant({"R1": {"resistance": 1e3}, "R2": {"resistance": 2e3}})]
+            [Variant({"R1": {"resistance": 1 * kohm}, "R2": {"resistance": 2 * kohm}})]
         ),
     )
     assert plan_digest(first) == plan_digest(second)
@@ -561,7 +561,8 @@ def test_batch_files_hold_every_column_of_a_batch(tmp_path: Path) -> None:
     found = Simulation(filtered()).batch(
         analyses,
         Product(
-            Explicit([Variant(), Variant({"R2": {"resistance": -1.0}})]), MonteCarlo(3)
+            Explicit([Variant(), Variant({"R2": {"resistance": -1 * ohm}})]),
+            MonteCarlo(3),
         ),
         measures=measures,
         traces=["out"],

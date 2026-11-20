@@ -86,8 +86,13 @@ TOLERANCES: Final = (
 )
 """The tolerances the scaled sweep scales together."""
 
-DEFAULTS: Final = {name: plan.DEFAULTS[name] for name in TOLERANCES}
-"""The tolerances' defaults, the engine's, SPICE's own, which ngspice's are too."""
+DEFAULTS: Final[dict[str, float]] = {
+    "relative_tolerance": plan.DEFAULTS["relative_tolerance"],
+    "voltage_tolerance": plan.DEFAULTS["voltage_tolerance"].value,
+    "current_tolerance": plan.DEFAULTS["current_tolerance"].value,
+    "charge_tolerance": plan.DEFAULTS["charge_tolerance"].value,
+}
+"""The tolerances' defaults in SI base units, matching the engine and ngspice."""
 
 SPICE_NAMES: Final = {name: foundry.SPICE_OPTIONS[name] for name in TOLERANCES}
 """ngspice's name of each tolerance."""
@@ -127,12 +132,16 @@ class Setting:
 
     def options(self) -> Options:
         """Returns jolty `Options` configured for this tolerance setting."""
-        given = self.tolerances()
+        if self.sweep == "defaults":
+            return Options()
+        if self.sweep == Sweep.RELTOL:
+            return Options(relative_tolerance=self.relative_tolerance)
+        factor = self.relative_tolerance / plan.DEFAULTS["relative_tolerance"]
         return Options(
-            relative_tolerance=given.get("relative_tolerance"),
-            voltage_tolerance=given.get("voltage_tolerance"),
-            current_tolerance=given.get("current_tolerance"),
-            charge_tolerance=given.get("charge_tolerance"),
+            relative_tolerance=self.relative_tolerance,
+            voltage_tolerance=plan.DEFAULTS["voltage_tolerance"] * factor,
+            current_tolerance=plan.DEFAULTS["current_tolerance"] * factor,
+            charge_tolerance=plan.DEFAULTS["charge_tolerance"] * factor,
         )
 
     def xyce_options(self) -> tuple[str, ...]:
@@ -400,8 +409,8 @@ def _xyce_found(
     directly; delegates other analyses to `_spice_found`.
     """
     match analysis:
-        case plan.DcSweep(values=levels):
-            points = np.array([level.to(VOLTAGE, "a level") for level in levels])
+        case plan.DcSweep():
+            points = np.array(analysis.numbers(VOLTAGE))
             return Found(
                 points, {read: found.real(name) for read, name in vectors.items()}
             )

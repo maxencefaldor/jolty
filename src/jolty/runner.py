@@ -49,6 +49,7 @@ from pydantic import Field, JsonValue, TypeAdapter
 
 from jolty import checks, fidelity, files, ir, report, shards, unknowns, variation
 from jolty.builder import Component, circuit
+from jolty.devices import ParameterValue
 from jolty.errors import (
     ElaborationError,
     JoltyError,
@@ -1016,7 +1017,7 @@ def _extremes(
 
 
 def _keyed(
-    overrides: dict[str, dict[str, float]],
+    overrides: dict[str, dict[str, ParameterValue]],
     at: tuple[fidelity.Fidelity, Quantity],
     keyed: dict[str, int],
     extremes: list[Variant],
@@ -1026,7 +1027,14 @@ def _keyed(
     Unmodeled parameter overrides are combined with the condition temperature in `at`
     so identical extreme combinations within one condition run once.
     """
-    key = json.dumps(overrides, sort_keys=True)
+    normalized = {
+        path: {
+            parameter: value.value if isinstance(value, Quantity) else value
+            for parameter, value in named.items()
+        }
+        for path, named in overrides.items()
+    }
+    key = json.dumps(normalized, sort_keys=True)
     if key not in keyed:
         chosen, temperature = at
         keyed[key] = len(extremes)
@@ -1069,7 +1077,7 @@ def _bounds(requirement: Requirement) -> list[float]:
 
 def _extreme(
     varied: Sequence[variation.Toleranced], directions: Sequence[float]
-) -> dict[str, dict[str, float]]:
+) -> dict[str, dict[str, ParameterValue]]:
     """Computes extreme overrides for `varied` and lot spreads along `directions`.
 
     Each lot's overall direction is determined by summing the directions of its member

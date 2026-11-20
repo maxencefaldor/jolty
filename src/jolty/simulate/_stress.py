@@ -9,9 +9,9 @@ from typing import Final
 import numpy as np
 from pydantic import JsonValue
 
-from jolty import checks, ir, results, specs
+from jolty import checks, devices, ir, results, specs
 from jolty.plan import Conditions
-from jolty.units import ZERO_CELSIUS
+from jolty.units import TEMPERATURE, ZERO_CELSIUS
 
 _UNITS: Final[dict[ir.Stress, str]] = {
     "voltage": "V",
@@ -275,8 +275,8 @@ def check_results(
         }
         terminals = _Terminals(
             cached_joined,
-            conditions.temperature,
-            conditions.overrides,
+            conditions.temperature.to(TEMPERATURE, "a temperature"),
+            devices.convert_overrides(circuit, conditions.overrides),
             columns,
             values,
             currents,

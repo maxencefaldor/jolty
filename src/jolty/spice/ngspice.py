@@ -24,6 +24,7 @@ import numpy.typing as npt
 from jolty import _core
 from jolty.errors import JoltyError
 from jolty.spice import _process
+from jolty.units import fA, nV
 
 EXECUTABLE: Final = shutil.which("ngspice")
 """The ngspice executable on the path, or None when it is not installed."""
@@ -31,15 +32,15 @@ EXECUTABLE: Final = shutil.which("ngspice")
 RELATIVE_TOLERANCE: Final = 1e-6
 """The relative tolerance ngspice runs with."""
 
-VOLTAGE_TOLERANCE: Final = 1e-9
-"""The absolute tolerance on voltages ngspice runs with, in volts."""
+VOLTAGE_TOLERANCE: Final = 1 * nV
+"""The absolute tolerance on voltages ngspice runs with."""
 
-CURRENT_TOLERANCE: Final = 1e-14
-"""The absolute tolerance on currents ngspice runs with, in amperes."""
+CURRENT_TOLERANCE: Final = 10 * fA
+"""The absolute tolerance on currents ngspice runs with."""
 
 OPTIONS: Final = (
-    f".options reltol={RELATIVE_TOLERANCE!r} vntol={VOLTAGE_TOLERANCE!r}"
-    f" abstol={CURRENT_TOLERANCE!r}"
+    f".options reltol={RELATIVE_TOLERANCE!r} vntol={VOLTAGE_TOLERANCE.value!r}"
+    f" abstol={CURRENT_TOLERANCE.value!r}"
 )
 """ngspice's options, as tight as jolty's tightest, the charge tolerance both engines'
 default."""

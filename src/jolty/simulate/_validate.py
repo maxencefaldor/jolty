@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Final
 
-from jolty import ir, results
+from jolty import devices, ir, results
+from jolty.devices import ParameterValue
 from jolty.errors import DimensionError, PlanError, close_names
 from jolty.plan import (
     Ac,
@@ -56,7 +57,7 @@ class Catalog:
     ground: str | None
     voltage_nets: tuple[str, ...]
     has_logic_devices: bool
-    overrides: Mapping[str, Mapping[str, float]]
+    overrides: Mapping[str, Mapping[str, ParameterValue]]
 
     def parameters(self, path: str) -> tuple[str, ...]:
         """Returns every real-valued parameter path defined on the device at `path`.
@@ -81,7 +82,7 @@ def build_catalog(  # noqa: PLR0913 - elaborated circuit topology and metadata
     unknowns: tuple[results.Unknown, ...],
     nets: tuple[str, ...],
     *,
-    overrides: Mapping[str, Mapping[str, float]],
+    overrides: Mapping[str, Mapping[str, ParameterValue]],
     joined: Callable[[str, str], Joined | None],
 ) -> Catalog:
     """Builds the static lookup catalog for an elaborated circuit.
@@ -205,7 +206,7 @@ def process_problems(plan: Plan, *, has_foundry: bool) -> list[str]:
 def plan_condition_problems(
     plan: Plan,
     *,
-    temperature: float,
+    temperature: Quantity,
     has_foundry: bool,
     check_temperature: bool,
 ) -> list[str]:
@@ -213,7 +214,7 @@ def plan_condition_problems(
 
     Args:
         plan: Simulation plan whose operating conditions are checked.
-        temperature: Simulation ambient temperature in kelvins.
+        temperature: Simulation ambient temperature quantity.
         has_foundry: Flag indicating presence of foundry PDK devices in the circuit.
         check_temperature: Flag enforcing equality between `plan.temperature` and
             `temperature`.
@@ -224,10 +225,11 @@ def plan_condition_problems(
     problems: list[str] = []
     if check_temperature and plan.temperature is not None:
         target = plan.temperature.to(TEMPERATURE, "a plan's temperature")
-        if target != temperature:
+        ambient = temperature.to(TEMPERATURE, "a temperature")
+        if target != ambient:
             problems.append(
                 f"the plan's temperature, {plan.temperature}, is not the "
-                f"simulation's, {Quantity(temperature, TEMPERATURE)}"
+                f"simulation's, {temperature}"
             )
     problems.extend(process_problems(plan, has_foundry=has_foundry))
     return problems
@@ -338,23 +340,36 @@ def _differential_problems(
     return problems
 
 
+def _dc_parameter_sweep_problems(
+    analysis: DcSweep, parameter: str, catalog: Catalog
+) -> tuple[list[str], DimensionError | None]:
+    """Checks a parameter-targeted `DcSweep` instance, parameter name, and dimension."""
+    if analysis.source not in catalog.devices:
+        close = close_names(catalog.device_paths, analysis.source)
+        return [f"there is no instance at `{analysis.source}`{close}"], None
+    parameters = catalog.parameters(analysis.source)
+    if parameter not in parameters:
+        close = close_names(parameters, parameter)
+        message = f"`{analysis.source}` writes no number `{parameter}` to sweep{close}"
+        return [message], None
+    if analysis.values:
+        instance = catalog.devices[analysis.source]
+        label = f"{analysis.source} {parameter}"
+        try:
+            devices.convert_parameter(instance, parameter, analysis.values[0], label)
+        except DimensionError as error:
+            return [str(error)], error
+        except KeyError:
+            pass
+    return [], None
+
+
 def _dc_sweep_problems(
     analysis: DcSweep, catalog: Catalog
 ) -> tuple[list[str], DimensionError | None]:
     """Checks `DcSweep` source, optional parameter, and value dimension."""
     if analysis.parameter is not None:
-        if analysis.source not in catalog.devices:
-            close = close_names(catalog.device_paths, analysis.source)
-            return [f"there is no instance at `{analysis.source}`{close}"], None
-        parameters = catalog.parameters(analysis.source)
-        if analysis.parameter not in parameters:
-            close = close_names(parameters, analysis.parameter)
-            message = (
-                f"`{analysis.source}` writes no number `{analysis.parameter}` "
-                f"to sweep{close}"
-            )
-            return [message], None
-        return [], None
+        return _dc_parameter_sweep_problems(analysis, analysis.parameter, catalog)
     source_issue = _source_problem(analysis.source, catalog)
     if source_issue is not None:
         return [source_issue], None
@@ -364,7 +379,10 @@ def _dc_sweep_problems(
         if isinstance(device.of, ir.DeviceOf) and device.of.model == "current_source"
         else VOLTAGE
     )
-    if analysis.values and analysis.values[0].dimension != expected:
+    if analysis.values and (
+        not isinstance(analysis.values[0], Quantity)
+        or analysis.values[0].dimension != expected
+    ):
         message = (
             f"a sweep level takes a quantity in {expected}, not {analysis.values[0]}"
         )
@@ -486,7 +504,7 @@ def parameter_pair_problems(
 
 
 def _override_pairs(
-    overrides: Mapping[str, Mapping[str, float]],
+    overrides: Mapping[str, Mapping[str, object]],
 ) -> list[tuple[str, str | None]]:
     """Extracts `(instance, parameter)` pairs from a nested override mapping."""
     pairs: list[tuple[str, str | None]] = []
@@ -524,6 +542,94 @@ def variant_pairs(variants: Variants) -> list[tuple[str, str | None]]:
             ]
         case Product(first=first, second=second):
             return [*variant_pairs(first), *variant_pairs(second)]
+
+
+def _check_variant_value(
+    path: str,
+    parameter: str,
+    value: ParameterValue,
+    catalog: Catalog,
+) -> DimensionError | None:
+    """Checks `value` against `catalog`'s declared dimension for `(path, parameter)`."""
+    instance = catalog.devices.get(path)
+    if instance is None or parameter not in catalog.parameters(path):
+        return None
+    try:
+        devices.convert_parameter(instance, parameter, value, f"{path} {parameter}")
+    except DimensionError as error:
+        return error
+    except KeyError:
+        return None
+    return None
+
+
+def _explicit_dimension_errors(
+    variants: Explicit, catalog: Catalog
+) -> list[DimensionError]:
+    """Collects deduplicated parameter-dimension errors across an `Explicit` batch."""
+    found: list[DimensionError] = []
+    seen: set[str] = set()
+    for variant in variants.variants:
+        for path, named in variant.overrides.items():
+            for parameter, value in named.items():
+                error = _check_variant_value(path, parameter, value, catalog)
+                if error is not None and str(error) not in seen:
+                    seen.add(str(error))
+                    found.append(error)
+    return found
+
+
+def _variant_dimension_errors(
+    variants: Variants, catalog: Catalog
+) -> list[DimensionError]:
+    """Collects every parameter-dimension error across `variants` against `catalog`."""
+    match variants:
+        case MonteCarlo():
+            return []
+        case Grid(axes=axes):
+            return [
+                error
+                for axis in axes
+                if axis.instance is not None
+                and axis.parameter is not None
+                and axis.values
+                and (
+                    error := _check_variant_value(
+                        axis.instance, axis.parameter, axis.values[0], catalog
+                    )
+                )
+                is not None
+            ]
+        case Explicit():
+            return _explicit_dimension_errors(variants, catalog)
+        case Product(first=first, second=second):
+            return [
+                *_variant_dimension_errors(first, catalog),
+                *_variant_dimension_errors(second, catalog),
+            ]
+
+
+def variant_problems(
+    variants: Variants, catalog: Catalog
+) -> tuple[list[str], DimensionError | None]:
+    """Checks all device names, parameter names, and dimensions in `variants`.
+
+    Args:
+        variants: Parameter variation specification to check against `catalog`.
+        catalog: Static circuit catalog indexing devices and parameter paths.
+
+    Returns:
+        Pair of diagnostic messages and optional sole `DimensionError`.
+    """
+    problems = parameter_pair_problems(variant_pairs(variants), catalog)
+    dimension_errors = _variant_dimension_errors(variants, catalog)
+    problems.extend(str(error) for error in dimension_errors)
+    sole = (
+        dimension_errors[0]
+        if len(problems) == 1 and len(dimension_errors) == 1
+        else None
+    )
+    return problems, sole
 
 
 def _mismatch_variable_pairs(
@@ -682,7 +788,7 @@ def analyses_problems(
     record_checker: Callable[[Sequence[str]], list[str]],
     *,
     has_logic_nets: bool,
-) -> list[str]:
+) -> tuple[list[str], DimensionError | None]:
     """Collects static problems across named `analyses`, prefixed by analysis name.
 
     Args:
@@ -692,15 +798,24 @@ def analyses_problems(
         has_logic_nets: Flag indicating presence of discrete logic nets in the circuit.
 
     Returns:
-        Diagnostic messages prefixed with each offending analysis name.
+        Pair of diagnostic messages prefixed with each offending analysis name and
+        optional sole `DimensionError`.
     """
     problems: list[str] = []
+    dimension_errors: list[DimensionError] = []
     for name, analysis in analyses.items():
-        found, _ = analysis_problems(
+        found, dimension_error = analysis_problems(
             analysis, catalog, record_checker, has_logic_nets=has_logic_nets
         )
         problems.extend(f"analysis `{name}`: {issue}" for issue in found)
-    return problems
+        if dimension_error is not None:
+            dimension_errors.append(dimension_error)
+    sole = (
+        dimension_errors[0]
+        if len(problems) == 1 and len(dimension_errors) == 1
+        else None
+    )
+    return problems, sole
 
 
 def noise_unit_unknown(analysis: Noise, catalog: Catalog) -> bool:

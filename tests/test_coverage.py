@@ -40,6 +40,7 @@ from jolty import circuit, devices, plan
 from jolty.plan import TIGHT, OperatingPoint
 from jolty.settings import Settings
 from jolty.spice import kits, ngspice
+from jolty.units import S
 from jolty.units import m as m_
 
 FIXTURES = {fixture.key: fixture for fixture in fixtures()}
@@ -207,7 +208,7 @@ def test_vbic_agrees_with_exact_closed_form() -> None:
     # 4. At gmin=0 in jolty, the pure physical formula also matches within 1 ULP.
     built = deck_circuit(fixture.spice.deck)
     zero_leakage_point = simulation(built).run(
-        OperatingPoint(), replace(TIGHT, gmin=0.0)
+        OperatingPoint(), replace(TIGHT, gmin=0 * S)
     )
     assert (
         abs(-float(zero_leakage_point.current("VC")) - exact_collector_without_leakage)

@@ -5,17 +5,21 @@ Evaluates notch depth between 45 Hz and 55 Hz and passband flatness at 25 Hz and
 100 Hz across tolerance samples.
 """
 
+from collections.abc import Mapping
+
 import candidates
 import numpy as np
 
 from jolty import Ac, Component, Simulation, circuit, ir, variation
+from jolty.devices import ParameterValue
 from jolty.units import Hz
 
 FREQUENCIES = [25.0, *np.linspace(45.0, 55.0, 401), 100.0]
 
 
 def response(
-    drawn: ir.Circuit, overrides: dict[str, dict[str, float]] | None = None
+    drawn: ir.Circuit,
+    overrides: Mapping[str, Mapping[str, ParameterValue]] | None = None,
 ) -> np.ndarray:
     """Computes AC output gain in decibels at every frequency in `FREQUENCIES`."""
     simulation = Simulation(drawn, overrides=overrides or {})

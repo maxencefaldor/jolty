@@ -231,7 +231,7 @@ def _level(built: Built, source: str) -> Quantity:
 
 
 def _solutions(
-    built: Built, overrides: dict[str, dict[str, float]] | None
+    built: Built, overrides: dict[str, dict[str, Quantity]] | None
 ) -> list[Solution]:
     """Enumerates all DC solutions of `built` via deflation at tight tolerances.
 
@@ -258,8 +258,9 @@ def _reference(fixture: Fixture) -> dict[str, object]:
                 built = fixture.circuit.jolty()
                 if isinstance(fixture.analysis, Sweep):
                     source = fixture.analysis.source
+                    unit = _level(built, source)
                     points = [
-                        _solutions(built, {source: {"waveform.dc": level}})
+                        _solutions(built, {source: {"waveform.dc": level * unit}})
                         for level in fixture.analysis.levels
                     ]
                 else:

@@ -32,7 +32,7 @@ from dataclasses import dataclass as stdlib_dataclass
 from dataclasses import field, fields
 from decimal import Decimal
 from types import MappingProxyType
-from typing import Annotated, Final, Literal, LiteralString
+from typing import Annotated, Final, Literal, LiteralString, ReadOnly, TypedDict
 
 from pydantic import (
     BeforeValidator,
@@ -46,15 +46,20 @@ from pydantic.dataclasses import dataclass, rebuild_dataclass
 from pydantic_core import InitErrorDetails, PydanticCustomError
 
 from jolty import _core, ir
+from jolty.devices import ParameterValue
 from jolty.errors import DimensionError, detail, fail, raise_if_errors
 from jolty.spice import PeriodicSteadyStateCard, ngspice
 from jolty.units import (
+    CHARGE,
+    CONDUCTANCE,
+    CURRENT,
     FREQUENCY,
     TEMPERATURE,
     TIME,
     VOLTAGE,
     Dimension,
     Quantity,
+    finite,
     s,
 )
 
@@ -221,14 +226,19 @@ def _check_method(value: object) -> Method:
 
 
 def _check_quantity(
-    value: object, dimension: Dimension, what: str, *, positive: bool = False
+    value: object,
+    dimension: Dimension,
+    what: str,
+    *,
+    positive: bool = False,
+    non_negative: bool = False,
 ) -> Quantity:
     """Validates `value` is a finite `Quantity` of `dimension`.
 
     Raises:
         DimensionError: When `value` is a `Quantity` with another dimension.
         PydanticCustomError: When `value` is not a `Quantity`, non-finite, or
-            non-positive when `positive` is true.
+            out of range when `positive` or `non_negative` is true.
     """
     if not isinstance(value, Quantity):
         fail("quantity_type", f"{what} is a Quantity, not {value!r}")
@@ -239,6 +249,8 @@ def _check_quantity(
         fail("finite", f"{what} is finite, not {value}")
     if positive and value.value <= 0.0:
         fail("positive", f"{what} is positive, not {value}")
+    if non_negative and value.value < 0.0:
+        fail("non_negative", f"{what} is 0 or more, not {value}")
     return value
 
 
@@ -247,6 +259,7 @@ def _quantity(
     what: str,
     *,
     positive: bool = False,
+    non_negative: bool = False,
     optional: bool = False,
 ) -> BeforeValidator:
     """Builds a `Quantity` field validator enforcing `dimension` and finiteness."""
@@ -255,7 +268,9 @@ def _quantity(
         return (
             None
             if optional and value is None
-            else _check_quantity(value, dimension, what, positive=positive)
+            else _check_quantity(
+                value, dimension, what, positive=positive, non_negative=non_negative
+            )
         )
 
     return BeforeValidator(validate)
@@ -596,13 +611,70 @@ def _check_random_variables(value: object) -> tuple[ir.RandomVariable, ...]:
     return tuple(checked)
 
 
-def _check_overrides(value: object) -> dict[str, dict[str, float]]:
-    """Validates a nested mapping of instance paths to finite float overrides."""
+def _check_parameter_value(value: object, name: str) -> ParameterValue:
+    """Validates `value` is a finite `Quantity` or plain real number (not bool)."""
+    if isinstance(value, Quantity):
+        if not math.isfinite(value.value):
+            fail("finite", f"{name} is finite, not {value}")
+        return value
+    if not isinstance(value, bool) and isinstance(value, int | float):
+        return _check_float(value, name)
+    kind: LiteralString = "parameter_value"
+    template: LiteralString = "{message}"
+    message = f"{name} is a Quantity or real number, not {value!r}"
+    raise PydanticCustomError(kind, template, {"message": message})
 
-    def check_parameter(name: str, number: object) -> float:
-        return _check_float(number, name)
 
-    def check_instance(path: str, named: object) -> dict[str, float]:
+_UNSET: Final = object()
+"""Sentinel distinguishing an uninitialized sequence element kind from ``None``."""
+
+
+def _check_parameter_sequence(
+    value: object,
+    title: str,
+    what: str,
+    *,
+    empty_message: str,
+    expected: Dimension | None = None,
+) -> tuple[ParameterValue, ...]:
+    """Validates a non-empty sequence of uniform finite quantities or plain numbers."""
+    if expected is not None:
+        return _check_quantity_sequence(
+            value, title, what, empty_message=empty_message, expected=expected
+        )
+    items = _as_sequence(
+        value, f"{title} is a sequence of quantities or numbers, not {{value}}"
+    )
+    if not items:
+        fail("empty", empty_message)
+    first_kind: Dimension | object | None = _UNSET
+
+    def check_one(item: object) -> ParameterValue:
+        nonlocal first_kind
+        checked = _check_parameter_value(item, what)
+        if first_kind is _UNSET:
+            first_kind = checked.dimension if isinstance(checked, Quantity) else None
+            return checked
+        if isinstance(first_kind, Dimension):
+            if not isinstance(checked, Quantity):
+                message = f"{what} takes a quantity in {first_kind}, not {checked!r}"
+                raise DimensionError(message)
+            return _check_quantity(checked, first_kind, what)
+        if isinstance(checked, Quantity):
+            message = f"{what} takes a plain number, not {checked}"
+            raise DimensionError(message)
+        return checked
+
+    return _collect_items(items, "values", check_one)
+
+
+def _check_overrides(value: object) -> dict[str, dict[str, ParameterValue]]:
+    """Validates a nested mapping of instance paths to finite parameter values."""
+
+    def check_parameter(name: str, entry: object) -> ParameterValue:
+        return _check_parameter_value(entry, name)
+
+    def check_instance(path: str, named: object) -> dict[str, ParameterValue]:
         return _collect_mapping(
             named, f"overrides for {path!r}", "a parameter name", check_parameter
         )
@@ -610,9 +682,9 @@ def _check_overrides(value: object) -> dict[str, dict[str, float]]:
     return _collect_mapping(value, "overrides", "an instance path", check_instance)
 
 
-def _check_sweep_values(value: object) -> tuple[Quantity, ...]:
-    """Validates a non-empty sequence of finite same-dimension DC sweep levels."""
-    return _check_quantity_sequence(
+def _check_sweep_values(value: object) -> tuple[ParameterValue, ...]:
+    """Validates a non-empty sequence of finite uniform DC sweep levels."""
+    return _check_parameter_sequence(
         value,
         "a DC sweep's values",
         "a sweep level",
@@ -637,7 +709,9 @@ def _validate_axis_parameter(value: object, info: ValidationInfo) -> str | None:
     return checked
 
 
-def _validate_axis_values(value: object, info: ValidationInfo) -> tuple[Quantity, ...]:
+def _validate_axis_values(
+    value: object, info: ValidationInfo
+) -> tuple[ParameterValue, ...]:
     """Validates `Axis.values`, enforcing temperature units for temperature axes."""
     is_temperature = (
         "instance" in info.data
@@ -645,7 +719,7 @@ def _validate_axis_values(value: object, info: ValidationInfo) -> tuple[Quantity
         and info.data["instance"] is None
         and info.data["parameter"] is None
     )
-    return _check_quantity_sequence(
+    return _check_parameter_sequence(
         value,
         "an axis's values",
         "an axis's value",
@@ -780,21 +854,57 @@ class DcSweep(Recorded):
     """
 
     source: Annotated[str, _NON_EMPTY]
-    values: Annotated[Sequence[Quantity], BeforeValidator(_check_sweep_values)]
+    values: Annotated[Sequence[ParameterValue], BeforeValidator(_check_sweep_values)]
     parameter: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
 
-    def to_json(self, dimension: Dimension) -> JsonValue:
+    @model_validator(mode="after")
+    def _validate_source_levels(self) -> DcSweep:
+        if self.parameter is None and any(
+            not isinstance(item, Quantity) for item in self.values
+        ):
+            bad = next(item for item in self.values if not isinstance(item, Quantity))
+            fail("quantity_type", f"a sweep level is a Quantity, not {bad!r}")
+        return self
+
+    def numbers(self, dimension: Dimension | None = None) -> list[float]:
+        """Converts sweep values into SI base-unit floats, checked against `dimension`.
+
+        When `dimension` is a [`Dimension`][jolty.units.Dimension], every level must
+        be a quantity with that dimension. When `dimension` is ``None`` and `parameter`
+        is set, levels must be plain dimensionless numbers; when `parameter` is
+        ``None``, every level is converted in its own dimension.
+
+        Args:
+            dimension: Optional expected SI `Dimension` for each sweep level, or
+                ``None`` for a dimensionless swept parameter.
+
+        Returns:
+            List of scalar sweep levels in SI base units.
+
+        Raises:
+            DimensionError: When a level does not match `dimension`.
+        """
+        if dimension is None and self.parameter is None:
+            first = self.values[0]
+            expected = first.dimension if isinstance(first, Quantity) else None
+        else:
+            expected = dimension
+        return [
+            _convert_sweep_value(value, expected, "a sweep level")
+            for value in self.values
+        ]
+
+    def to_json(self, dimension: Dimension | None) -> JsonValue:
         """Serializes the DC sweep into engine JSON, validating against `dimension`.
 
         Args:
-            dimension: Expected physical dimension of the swept source or parameter.
+            dimension: Expected physical dimension of the swept source or parameter, or
+                ``None`` for a dimensionless device parameter.
 
         Returns:
             Engine JSON mapping ``{'dc_sweep': ...}`` with SI sweep levels.
         """
-        values: list[JsonValue] = [
-            value.to(dimension, "a sweep level") for value in self.values
-        ]
+        values: list[JsonValue] = list(self.numbers(dimension))
         sweep: dict[str, JsonValue] = {"source": self.source, "values": values}
         if self.parameter is not None:
             sweep["parameter"] = self.parameter
@@ -981,14 +1091,15 @@ _DIFFERENTIATED: Final = _instance(
 )
 
 
-def differentiated(of: Differentiated, level: Dimension) -> JsonValue:
+def differentiated(of: Differentiated, level: Dimension | None) -> JsonValue:
     """Serializes the differentiated analysis `of` into the engine's JSON format.
 
     DC sweep levels are validated against `level`.
 
     Args:
         of: Underlying analysis to differentiate, or ``None`` for DC.
-        level: Expected physical dimension when `of` is a `DcSweep`.
+        level: Expected physical dimension when `of` is a `DcSweep`, or ``None`` for
+            a dimensionless swept parameter.
 
     Returns:
         Engine JSON payload representing the differentiated target analysis.
@@ -1023,13 +1134,14 @@ class Sensitivity:
     outputs: Annotated[Sequence[str], _OUTPUTS]
     of: Annotated[Differentiated, _DIFFERENTIATED] = None
 
-    def to_json(self, level: Dimension = VOLTAGE) -> JsonValue:
+    def to_json(self, level: Dimension | None = VOLTAGE) -> JsonValue:
         """Serializes the sensitivity analysis into engine JSON.
 
         When differentiating a DC sweep, sweep levels are validated against `level`.
 
         Args:
-            level: Expected physical dimension when `self.of` is a `DcSweep`.
+            level: Expected physical dimension when `self.of` is a `DcSweep`, or
+                ``None`` for a dimensionless swept parameter.
 
         Returns:
             Engine JSON mapping ``{'sensitivity': ...}``.
@@ -1064,7 +1176,7 @@ class Mismatch:
     ] = ()
 
     def to_json(
-        self, level: Dimension = VOLTAGE, toleranced: Sequence[JsonValue] = ()
+        self, level: Dimension | None = VOLTAGE, toleranced: Sequence[JsonValue] = ()
     ) -> JsonValue:
         """Serializes the mismatch analysis and `toleranced` entries into engine JSON.
 
@@ -1319,22 +1431,74 @@ class Parallelism:
         return {name: value for name, value in values.items() if value is not None}
 
 
-DEFAULTS: Final[Mapping[str, float]] = MappingProxyType(
-    {
-        name: value
-        for name, value in json.loads(_core.default_options()).items()
-        if isinstance(value, int | float) and not isinstance(value, bool)
-    }
-)
+class OptionDefaults(TypedDict):
+    """Read-only engine defaults for numerical `Options` fields."""
+
+    relative_tolerance: ReadOnly[float]
+    voltage_tolerance: ReadOnly[Quantity]
+    current_tolerance: ReadOnly[Quantity]
+    charge_tolerance: ReadOnly[Quantity]
+    gmin: ReadOnly[Quantity]
+    max_dc_iterations: ReadOnly[int]
+    max_transient_iterations: ReadOnly[int]
+    truncation_tolerance: ReadOnly[float]
+    max_memory: ReadOnly[float]
+
+
+_OPTION_DIMENSIONS: Final[Mapping[str, Dimension]] = {
+    "voltage_tolerance": VOLTAGE,
+    "current_tolerance": CURRENT,
+    "charge_tolerance": CHARGE,
+    "gmin": CONDUCTANCE,
+}
+"""Physical SI dimensions of dimensioned [`Options`][jolty.plan.Options] fields."""
+
+
+def _load_defaults() -> OptionDefaults:
+    """Loads engine defaults from `_core`, wrapping dimensioned fields as quantities."""
+    decoded = json.loads(_core.default_options())
+    if not isinstance(decoded, dict):
+        message = f"engine defaults is a mapping, not {decoded!r}"
+        raise TypeError(message)
+
+    def number(name: str) -> float:
+        entry = decoded[name]
+        if isinstance(entry, bool) or not isinstance(entry, int | float):
+            message = f"engine default `{name}` is numeric, not {entry!r}"
+            raise TypeError(message)
+        return float(entry)
+
+    def count(name: str) -> int:
+        entry = decoded[name]
+        if isinstance(entry, bool) or not isinstance(entry, int):
+            message = f"engine default `{name}` is an integer, not {entry!r}"
+            raise TypeError(message)
+        return entry
+
+    return OptionDefaults(
+        relative_tolerance=number("relative_tolerance"),
+        voltage_tolerance=Quantity(number("voltage_tolerance"), VOLTAGE),
+        current_tolerance=Quantity(number("current_tolerance"), CURRENT),
+        charge_tolerance=Quantity(number("charge_tolerance"), CHARGE),
+        gmin=Quantity(number("gmin"), CONDUCTANCE),
+        max_dc_iterations=count("max_dc_iterations"),
+        max_transient_iterations=count("max_transient_iterations"),
+        truncation_tolerance=number("truncation_tolerance"),
+        max_memory=number("max_memory"),
+    )
+
+
+DEFAULTS: Final[OptionDefaults] = _load_defaults()
 """Engine default values for numerical fields of [`Options`][jolty.plan.Options].
 
-Values match SPICE defaults for any omitted option; defaults for
+Dimensioned tolerances and `gmin` are [`Quantity`][jolty.units.Quantity] values, while
+dimensionless options and counts are plain numbers. Defaults for
 [`Parallelism`][jolty.plan.Parallelism] thresholds are listed separately in
 [`BREAK_EVENS`][jolty.plan.BREAK_EVENS].
 
 Examples:
-    >>> DEFAULTS["charge_tolerance"]
-    1e-14
+    >>> str(DEFAULTS["charge_tolerance"])
+    '10 fC'
 """
 
 BREAK_EVENS: Final[Mapping[str, tuple[int | None, ...]]] = MappingProxyType(
@@ -1356,22 +1520,37 @@ Examples:
 class Options:
     """Numerical solver options, defaulting omitted fields to SPICE engine defaults.
 
-    Tolerances use SI base units: volts, amperes, and coulombs. The `parallelism` field
-    configures thread distribution without altering numerical results beyond rounding
-    differences from dissected factorization order.
+    Dimensioned fields (`voltage_tolerance`, `current_tolerance`, `charge_tolerance`,
+    and `gmin`) take [`Quantity`][jolty.units.Quantity] values in volts, amperes,
+    coulombs, and siemens respectively. The `parallelism` field configures thread
+    distribution without altering numerical results beyond rounding differences from
+    dissected factorization order.
 
     Examples:
-        >>> Options(gmin=1e-15).to_json()
+        >>> from jolty.units import pS
+        >>> Options(gmin=1e-3 * pS).to_json()
         {'gmin': 1e-15}
         >>> Options(parallelism=Parallelism(min_solves_per_task=16)).to_json()
         {'parallelism': {'min_solves_per_task': 16}}
     """
 
     relative_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
-    voltage_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
-    current_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
-    charge_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
-    gmin: Annotated[float | None, _real(non_negative=True, optional=True)] = None
+    voltage_tolerance: Annotated[
+        Quantity | None,
+        _quantity(VOLTAGE, "voltage_tolerance", positive=True, optional=True),
+    ] = None
+    current_tolerance: Annotated[
+        Quantity | None,
+        _quantity(CURRENT, "current_tolerance", positive=True, optional=True),
+    ] = None
+    charge_tolerance: Annotated[
+        Quantity | None,
+        _quantity(CHARGE, "charge_tolerance", positive=True, optional=True),
+    ] = None
+    gmin: Annotated[
+        Quantity | None,
+        _quantity(CONDUCTANCE, "gmin", non_negative=True, optional=True),
+    ] = None
     max_dc_iterations: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
     max_transient_iterations: Annotated[int | None, _OPTIONAL_POSITIVE_INT] = None
     truncation_tolerance: Annotated[float | None, _OPTIONAL_POSITIVE_FLOAT] = None
@@ -1397,11 +1576,17 @@ class Options:
         Returns:
             Dictionary of explicitly configured solver options in SI base units.
         """
-        values: dict[str, JsonValue] = {
-            setting.name: getattr(self, setting.name)
-            for setting in fields(self)
-            if setting.name not in {"parallelism", "nodesets"}
-        }
+        values: dict[str, JsonValue] = {}
+        for setting in fields(self):
+            if setting.name in {"parallelism", "nodesets"}:
+                continue
+            entry = getattr(self, setting.name)
+            if entry is None:
+                continue
+            dimension = _OPTION_DIMENSIONS.get(setting.name)
+            values[setting.name] = (
+                entry.to(dimension, setting.name) if dimension is not None else entry
+            )
         spread = self.parallelism.to_json()
         if spread:
             values["parallelism"] = spread
@@ -1409,7 +1594,7 @@ class Options:
             values["nodesets"] = dict[str, JsonValue](
                 voltages(self.nodesets, "a nodeset")
             )
-        return {name: value for name, value in values.items() if value is not None}
+        return values
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)
@@ -1419,12 +1604,16 @@ class Conditions:
     Monte Carlo samples and plan corners each execute with dedicated condition sets.
     """
 
-    temperature: Annotated[float, _real()]
-    """Simulation temperature in kelvins."""
+    temperature: Annotated[
+        Quantity, _quantity(TEMPERATURE, "a condition's temperature")
+    ]
+    """Simulation temperature as a temperature `Quantity`."""
     process: Annotated[str | None, _OPTIONAL_NON_EMPTY] = None
     """Foundry process corner such as ``ss``, defaulting to the kit typical corner."""
-    overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
-    """SI base-unit parameter overrides keyed by instance path and parameter path."""
+    overrides: Annotated[
+        Mapping[str, Mapping[str, ParameterValue]], BeforeValidator(_check_overrides)
+    ] = field(default_factory=dict)
+    """Parameter overrides keyed by instance path and parameter path."""
     mismatch: Annotated[int | None, _seed("mismatch", optional=True)] = None
     """Optional 64-bit seed controlling foundry device mismatch draws."""
 
@@ -1512,17 +1701,20 @@ class Variant:
     """Parameter overrides and optional temperature for a single batch run.
 
     Parameter overrides map instance paths to parameter paths (such as ``waveform.dc``)
-    in SI base units, and `temperature` defaults to the simulation temperature when
-    unset.
+    with [`Quantity`][jolty.units.Quantity] values for dimensioned parameters and plain
+    numbers for dimensionless parameters. When `temperature` is unset, the run uses the
+    simulation temperature.
 
     Examples:
-        >>> from jolty.units import celsius
-        >>> Variant({"R1": {"resistance": 2e3}}, celsius(85)).overrides
-        {'R1': {'resistance': 2000.0}}
+        >>> from jolty.units import celsius, kohm
+        >>> Variant({"R1": {"resistance": 2 * kohm}}, celsius(85)).overrides["R1"][
+        ...     "resistance"
+        ... ] == 2 * kohm
+        True
     """
 
     overrides: Annotated[
-        Mapping[str, Mapping[str, float]], BeforeValidator(_check_overrides)
+        Mapping[str, Mapping[str, ParameterValue]], BeforeValidator(_check_overrides)
     ] = field(default_factory=dict)
     temperature: Annotated[
         Quantity | None,
@@ -1558,8 +1750,8 @@ class Axis:
     """Single sweep axis of a grid defining the swept target and ordered values.
 
     An axis sweeps either a device parameter (identified by `instance` and `parameter`
-    paths, using SI base units of the first value's dimension) or temperature when both
-    `instance` and `parameter` are `None`.
+    paths, validated against the target device's declared parameter dimension before
+    simulation) or temperature when both `instance` and `parameter` are `None`.
 
     Examples:
         >>> from jolty.units import celsius, kohm
@@ -1571,7 +1763,7 @@ class Axis:
 
     instance: Annotated[str | None, _OPTIONAL_NON_EMPTY]
     parameter: Annotated[str | None, BeforeValidator(_validate_axis_parameter)]
-    values: Annotated[Sequence[Quantity], BeforeValidator(_validate_axis_values)]
+    values: Annotated[Sequence[ParameterValue], BeforeValidator(_validate_axis_values)]
 
     @classmethod
     def temperature(cls, values: Sequence[Quantity]) -> Axis:
@@ -1594,8 +1786,30 @@ class Axis:
         Raises:
             DimensionError: When any value does not match the axis dimension.
         """
-        dimension = TEMPERATURE if self.instance is None else self.values[0].dimension
-        return [value.to(dimension, "an axis's value") for value in self.values]
+        if self.instance is None:
+            expected: Dimension | None = TEMPERATURE
+        else:
+            first = self.values[0]
+            expected = first.dimension if isinstance(first, Quantity) else None
+        return [
+            _convert_sweep_value(value, expected, "an axis's value")
+            for value in self.values
+        ]
+
+
+def _convert_sweep_value(
+    value: ParameterValue, dimension: Dimension | None, what: str
+) -> float:
+    """Converts one axis or sweep `value` to SI base units matching `dimension`."""
+    if dimension is not None:
+        if not isinstance(value, Quantity):
+            message = f"{what} takes a quantity in {dimension}, not {value!r}"
+            raise DimensionError(message)
+        return value.to(dimension, what)
+    if isinstance(value, Quantity):
+        message = f"{what} takes a plain number, not {value}"
+        raise DimensionError(message)
+    return finite(value, what)
 
 
 @dataclass(frozen=True, slots=True, config=_CONFIG)

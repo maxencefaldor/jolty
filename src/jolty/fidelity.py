@@ -33,6 +33,7 @@ import numpy as np
 from pydantic import Field, JsonValue
 
 from jolty import devices, ir, results
+from jolty.devices import ParameterValue
 from jolty.errors import CharacterizationError, JoltyError, PlanError, close_names
 from jolty.plan import Ac, Characterized, OperatingPoint, Plan, Transient
 from jolty.results import AnalysisResult, Excursion
@@ -720,8 +721,8 @@ class Fidelity:
         }
 
     def overrides(
-        self, sampled: Mapping[str, Mapping[str, float]]
-    ) -> dict[str, Mapping[str, float]]:
+        self, sampled: Mapping[str, Mapping[str, ParameterValue]]
+    ) -> dict[str, Mapping[str, ParameterValue]]:
         """Returns parameter overrides from `sampled` outside modeled instances.
 
         Args:
@@ -738,7 +739,7 @@ class Fidelity:
 
     def simulation(
         self,
-        overrides: Mapping[str, Mapping[str, float]] | None = None,
+        overrides: Mapping[str, Mapping[str, ParameterValue]] | None = None,
         opened: str | None = None,
         mismatch: int | None = None,
     ) -> Simulation:
@@ -749,7 +750,8 @@ class Fidelity:
         `mismatch` as the random seed.
 
         Args:
-            overrides: Optional nested parameter overrides in SI base units.
+            overrides: Optional nested parameter overrides keyed by instance and
+                parameter path.
             opened: Optional matched instance path restored to transistor level.
             mismatch: Optional 64-bit random seed for foundry mismatch sampling.
 

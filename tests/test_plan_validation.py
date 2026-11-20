@@ -71,7 +71,9 @@ from jolty.specs import (
 )
 from jolty.units import (
     VOLTAGE,
+    A,
     Hz,
+    K,
     V,
     celsius,
     kHz,
@@ -80,6 +82,8 @@ from jolty.units import (
     mH,
     nF,
     ns,
+    ohm,
+    pS,
     ps,
     us,
 )
@@ -675,7 +679,7 @@ def test_variants_and_traces_checked_upfront_with_close_names() -> None:
         ),
         Explicit(
             [
-                Variant({"X9/R1": {"resistance": 1e3}}),
+                Variant({"X9/R1": {"resistance": 1 * kohm}}),
                 Variant({"C9": {}}),
             ]
         ),
@@ -886,10 +890,10 @@ _VALIDATION_CASES: dict[str, tuple[Callable[[], object], int]] = {
     "options": (
         lambda: Options(
             relative_tolerance=-1e-3,
-            voltage_tolerance=0.0,
-            current_tolerance=math.nan,
-            charge_tolerance=True,
-            gmin=-1e-12,
+            voltage_tolerance=0 * V,
+            current_tolerance=math.nan * A,
+            charge_tolerance=True,  # ty: ignore[invalid-argument-type] - wrong type
+            gmin=-1 * pS,
             max_dc_iterations=0,
             max_transient_iterations=False,
             truncation_tolerance=math.inf,
@@ -942,6 +946,7 @@ _VALIDATION_CASES: dict[str, tuple[Callable[[], object], int]] = {
         lambda: DcSweep(source="", values=[math.nan * V, math.inf * V], parameter=""),
         4,
     ),
+    "dc-sweep-source-float": (lambda: DcSweep("V1", [1.0, 2.0]), 1),
     "ac": (lambda: Ac(source="", frequencies=[-1 * Hz, math.nan * Hz]), 3),
     "noise": (lambda: Noise(output="", frequencies=[0 * Hz, -1 * Hz], source=""), 4),
     "stability": (lambda: Stability(probe="", frequencies=[-1 * Hz]), 2),
@@ -970,7 +975,7 @@ _VALIDATION_CASES: dict[str, tuple[Callable[[], object], int]] = {
     "monte-carlo": (lambda: MonteCarlo(samples=0, seed=-1), 2),
     "variant": (
         lambda: Variant(
-            overrides={"R1": {"resistance": math.nan, "b": "x"}},  # ty: ignore[invalid-argument-type] - wrong types
+            overrides={"R1": {"resistance": math.nan * ohm, "b": "x"}},  # ty: ignore[invalid-argument-type] - wrong types
             temperature=math.nan * celsius(0),
         ),
         3,
@@ -991,7 +996,7 @@ _VALIDATION_CASES: dict[str, tuple[Callable[[], object], int]] = {
         6,
     ),
     "conditions": (
-        lambda: Conditions(temperature=math.nan, process="", mismatch=-1),
+        lambda: Conditions(temperature=math.nan * K, process="", mismatch=-1),
         3,
     ),
     "corner": (lambda: Corner(temperature=math.nan * celsius(27), process=""), 2),
@@ -1053,6 +1058,17 @@ _DIMENSION_ERROR_CASES: dict[str, Callable[[], object]] = {
     "corner-temperature": lambda: Corner(temperature=5 * V),
     "plan-temperature": lambda: Plan({"op": OperatingPoint()}, temperature=5 * V),
     "options-nodeset": lambda: Options(nodesets={"out": 1 * mA}),
+    "options-voltage-tolerance": lambda: Options(voltage_tolerance=1 * mA),
+    "options-current-tolerance": lambda: Options(current_tolerance=1 * V),
+    "options-charge-tolerance": lambda: Options(charge_tolerance=1 * V),
+    "options-gmin": lambda: Options(gmin=1 * kohm),
+    "conditions-temperature": lambda: Conditions(temperature=300 * V),
+    "dc-sweep-mixed": lambda: DcSweep("R1", [1 * kohm, 2 * nF], parameter="resistance"),
+    "dc-sweep-mixed-scalar": lambda: DcSweep(
+        "R1", [1 * kohm, 2.0], parameter="resistance"
+    ),
+    "axis-mixed": lambda: Axis("R1", "resistance", [1 * kohm, 2 * nF]),
+    "axis-mixed-scalar": lambda: Axis("R1", "resistance", [1 * kohm, 2.0]),
 }
 
 
@@ -1060,3 +1076,101 @@ _DIMENSION_ERROR_CASES: dict[str, Callable[[], object]] = {
 def test_dimension_errors_still_propagate_directly(name: str) -> None:
     with pytest.raises(DimensionError):
         _DIMENSION_ERROR_CASES[name]()
+
+
+def test_parameter_dimensions_checked_on_overrides_variants_and_sweeps() -> None:
+    """Verifies circuit-bound overrides, variants, axes, and sweeps check units."""
+    built = circuit(bench_circuit())
+    simulation = Simulation(built)
+    elaborated = simulate.Elaborated(built)
+
+    # Dimensioned parameters reject wrong units and bare scalars everywhere.
+    for bad in (1 * nF, 1000.0):
+        with pytest.raises(
+            DimensionError, match=r"R1 resistance takes a quantity in Ω"
+        ):
+            Simulation(built, overrides={"R1": {"resistance": bad}})
+        with pytest.raises(
+            DimensionError, match=r"R1 resistance takes a quantity in Ω"
+        ):
+            Simulation.from_elaborated(elaborated, {"R1": {"resistance": bad}})
+        with pytest.raises(
+            DimensionError, match=r"R1 resistance takes a quantity in Ω"
+        ):
+            simulation.run(DcSweep("R1", [bad], parameter="resistance"))
+        with pytest.raises(
+            DimensionError, match=r"R1 resistance takes a quantity in Ω"
+        ):
+            simulation.validate_plan(
+                Plan({"sweep": DcSweep("R1", [bad], parameter="resistance")})
+            )
+        with pytest.raises(
+            DimensionError, match=r"R1 resistance takes a quantity in Ω"
+        ):
+            simulation.validate_plan(
+                Plan(
+                    {"op": OperatingPoint()},
+                    variants=Grid([Axis("R1", "resistance", [bad])]),
+                )
+            )
+        with pytest.raises(
+            DimensionError, match=r"R1 resistance takes a quantity in Ω"
+        ):
+            simulation.validate_plan(
+                Plan(
+                    {"op": OperatingPoint()},
+                    variants=Explicit([Variant({"R1": {"resistance": bad}})]),
+                )
+            )
+        with pytest.raises(
+            DimensionError, match=r"R1 resistance takes a quantity in Ω"
+        ):
+            simulation.batch(
+                {"op": OperatingPoint()},
+                Explicit([Variant({"R1": {"resistance": bad}})]),
+            )
+
+    # Combined name and dimension failures collect into one PlanError.
+    _expect_plan_error(
+        lambda: simulation.validate_plan(
+            Plan(
+                {"op": OperatingPoint()},
+                variants=Grid(
+                    [
+                        Axis("R9", "resistance", [1 * kohm]),
+                        Axis("R1", "resistance", [1 * nF]),
+                    ]
+                ),
+            )
+        ),
+        "no device at `R9`",
+        "R1 resistance takes a quantity in Ω",
+        count=2,
+    )
+
+    # Dimensionless parameters accept bare floats and reject dimensioned quantities.
+    @component
+    def transistor_stage(c: Builder) -> None:
+        ground = c.port("ground", Role.GROUND)
+        supply = c.place(devices.voltage_source(5 * V), name="VCC")
+        base = c.place(devices.voltage_source(0.7 * V), name="VB")
+        collector = c.place(devices.resistor(1 * kohm), name="RC")
+        transistor = c.place(devices.bipolar_transistor(forward_beta=100), name="Q1")
+        c.connect(supply.positive, collector.a)
+        c.connect(collector.b, transistor.collector, name="out")
+        c.connect(base.positive, transistor.base)
+        c.connect(supply.negative, base.negative, transistor.emitter, ground)
+
+    bjt = circuit(transistor_stage())
+    overridden = Simulation(bjt, overrides={"Q1": {"forward_beta": 150.0}})
+    assert overridden.run(OperatingPoint()).voltage("out") < 5.0
+    swept = Simulation(bjt).run(DcSweep("Q1", [50.0, 150.0], parameter="forward_beta"))
+    assert len(swept.swept) == 2
+    batched = Simulation(bjt).batch(
+        {"op": OperatingPoint()}, Grid([Axis("Q1", "forward_beta", [50.0, 150.0])])
+    )
+    assert batched.runs == 2
+    with pytest.raises(DimensionError, match=r"takes a plain number, not 150 Ω"):
+        Simulation(bjt, overrides={"Q1": {"forward_beta": 150 * ohm}})
+    with pytest.raises(DimensionError, match=r"takes a plain number, not 50 Ω"):
+        Simulation(bjt).run(DcSweep("Q1", [50 * ohm], parameter="forward_beta"))

@@ -626,6 +626,7 @@ mod tests {
                 "current_controlled_switch",
                 "current_controlled_voltage_source",
                 "diode",
+                "foundry_mosfet",
                 "heat_source",
                 "inductor",
                 "jfet",

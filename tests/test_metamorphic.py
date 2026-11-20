@@ -329,7 +329,7 @@ def test_an_ammeter_reads_the_current_into_a_terminal(
     into = point.current(probed.name, terminal)
     scale = max(abs(current) for current in _currents(point)) or 1.0
     # TIGHT Newton convergence (reltol=1e-6) plus current floor across both readings.
-    assert abs(reading - into) <= 1e-6 * scale + 2 * CURRENT_TOLERANCE, (
+    assert abs(reading - into) <= 1e-6 * scale + 2 * CURRENT_TOLERANCE.value, (
         f"the ammeter reads {reading} A, the terminal takes {into} A"
     )
 

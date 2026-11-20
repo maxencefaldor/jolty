@@ -170,7 +170,7 @@ def compare(  # noqa: PLR0913 - compared values, unknown metadata, and explicit 
     and agree too. A current agrees within `allowance` too, when given.
     """
     current = unknown.nature == "current"
-    noise = CURRENT_TOLERANCE if current else VOLTAGE_TOLERANCE
+    noise = CURRENT_TOLERANCE.value if current else VOLTAGE_TOLERANCE.value
     np.testing.assert_allclose(
         jolty,
         spice,
@@ -413,7 +413,7 @@ def differing(
 
 def _noise(nature: str) -> float:
     """Returns the engine absolute tolerance for an unknown of `nature`."""
-    return CURRENT_TOLERANCE if nature == "current" else VOLTAGE_TOLERANCE
+    return CURRENT_TOLERANCE.value if nature == "current" else VOLTAGE_TOLERANCE.value
 
 
 def nearest(times: Real, targets: Real) -> npt.NDArray[np.intp]:

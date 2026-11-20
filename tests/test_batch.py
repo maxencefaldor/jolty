@@ -47,7 +47,20 @@ from jolty.plan import (
 )
 from jolty.simulate import Elaborated
 from jolty.specs import Measure, MeasureError, Reading, gain, maximum, value
-from jolty.units import CURRENT, VOLTAGE, Hz, MHz, V, celsius, kHz, kohm, nF, ohm, us
+from jolty.units import (
+    CURRENT,
+    VOLTAGE,
+    Hz,
+    MHz,
+    Quantity,
+    V,
+    celsius,
+    kHz,
+    kohm,
+    nF,
+    ohm,
+    us,
+)
 from jolty.variation import sample, toleranced
 from jolty.waveforms import Pulse
 from sample_circuits import divider
@@ -113,10 +126,10 @@ def _bits(array: np.ndarray) -> np.ndarray:
 VARIANTS = Explicit(
     [
         Variant(),
-        Variant({"R1": {"resistance": 1500.0}}),
+        Variant({"R1": {"resistance": 1500 * ohm}}),
         Variant(temperature=celsius(85)),
-        Variant({"R2": {"resistance": 900.0}, "C1": {"capacitance": 2e-9}}),
-        Variant({"V1": {"waveform.pulse.pulsed": 1.5}}, celsius(-40)),
+        Variant({"R2": {"resistance": 900 * ohm}, "C1": {"capacitance": 2 * nF}}),
+        Variant({"V1": {"waveform.pulse.pulsed": 1.5 * V}}, celsius(-40)),
     ]
 )
 
@@ -150,7 +163,7 @@ def test_a_batch_finds_what_each_run_alone_finds() -> None:
         )
         temperature = simulation.conditions.temperature
         assert found.values[index, found.parameters.index("temperature")] == (
-            temperature
+            temperature.value
         )
 
 
@@ -207,7 +220,7 @@ def test_ranges_of_a_batch_hold_its_rows_and_join_into_it() -> None:
     simulation = Simulation(clipper())
     variants = Product(
         MonteCarlo(15, seed=5),
-        Explicit([Variant(), Variant({"R1": {"resistance": -1.0}})]),
+        Explicit([Variant(), Variant({"R1": {"resistance": -1 * ohm}})]),
     )
     measures = [
         *MEASUREMENTS,
@@ -282,7 +295,14 @@ def test_a_batch_draws_the_samples_variation_draws() -> None:
     for index in range(40):
         drawn = sample(varied, 9, index)
         assert found.values[index].tolist() == [
-            drawn[parameter.instance][parameter.parameter] for parameter in varied
+            (
+                value.value
+                if isinstance(
+                    value := drawn[parameter.instance][parameter.parameter], Quantity
+                )
+                else value
+            )
+            for parameter in varied
         ]
 
 
@@ -307,7 +327,9 @@ def test_a_grid_steps_its_last_axis_fastest_and_a_product_its_second() -> None:
     assert found.runs == 24
     # Run 9 is the grid's run 2, then the samples' run 1, whose R1 replaces the grid's.
     drawn = sample(toleranced(circuit(clipper())), 0, 1)
-    assert found.parameter("R1 resistance")[9] == drawn["R1"]["resistance"]
+    r1 = drawn["R1"]["resistance"]
+    assert isinstance(r1, Quantity)
+    assert found.parameter("R1 resistance")[9] == r1.value
     # 0 C converted to kelvin (273.15 K); default pytest.approx covers float rounding.
     assert found.parameter("temperature")[9] == pytest.approx(273.15)
 
@@ -316,7 +338,7 @@ def test_a_run_that_fails_is_reported_and_the_batch_goes_on() -> None:
     built = circuit(clipper())
     variants = Explicit(
         [
-            Variant({"R1": {"resistance": -1.0 if index % 3 == 1 else 1e3}})
+            Variant({"R1": {"resistance": -1 * ohm if index % 3 == 1 else 1 * kohm}})
             for index in range(7)
         ]
     )
@@ -340,7 +362,7 @@ def test_a_run_that_fails_is_reported_and_the_batch_goes_on() -> None:
         )
     with pytest.raises(ElaborationError, match="no device at `R9`"):
         Simulation(built).batch(
-            ANALYSES, Explicit([Variant({"R9": {"resistance": 1.0}})])
+            ANALYSES, Explicit([Variant({"R9": {"resistance": 1 * ohm}})])
         )
 
 
@@ -363,7 +385,7 @@ def test_a_run_of_another_structure_measures_its_own_unknowns() -> None:
     built = circuit(shunted())
     variants = Explicit(
         [
-            Variant({"R1": {"resistance": 0.5 if index % 2 else 2.0}})
+            Variant({"R1": {"resistance": (0.5 if index % 2 else 2.0) * ohm}})
             for index in range(6)
         ]
     )

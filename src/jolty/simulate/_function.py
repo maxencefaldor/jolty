@@ -10,9 +10,9 @@ from typing import Final
 import numpy as np
 import numpy.typing as npt
 
-from jolty import _core, checks, ir
+from jolty import _core, checks, devices, ir
 from jolty.builder import Component, circuit
-from jolty.devices import Device
+from jolty.devices import Device, ParameterValue
 from jolty.errors import ElaborationError, SimulationError
 from jolty.plan import (
     Ac,
@@ -78,7 +78,7 @@ class Elaborated:
         ...     c.connect(lower.b, source.negative, ground)
         >>> elaborated = Elaborated(divider())
         >>> sample = Simulation.from_elaborated(
-        ...     elaborated, {"R1": {"resistance": 3000.0}}
+        ...     elaborated, {"R1": {"resistance": 3 * kohm}}
         ... )
         >>> sample.run(OperatingPoint()).voltage("out")
         1.25
@@ -122,22 +122,30 @@ class Elaborated:
         self._structure_lock = threading.Lock()
 
     def simulator(
-        self, overrides: Mapping[str, Mapping[str, float]] | None = None
+        self, overrides: Mapping[str, Mapping[str, ParameterValue]] | None = None
     ) -> _core.Simulator:
         """Builds an engine simulator from this elaborated circuit with `overrides`.
 
         Args:
-            overrides: Optional nested mapping of instance paths to parameter values in
-                SI base units.
+            overrides: Optional nested mapping of instance paths to parameter values
+                validated against each device's declared parameter dimensions.
 
         Returns:
             Engine `Simulator` initialized with `overrides` at the elaborated
             temperature.
 
         Raises:
+            DimensionError: When an override for a known parameter has the wrong
+                physical dimension or kind.
             ElaborationError: Lists unknown parameters in `overrides` or devices whose
                 overridden parameters fall out of range.
         """
+        return self._simulator_si(devices.convert_overrides(self.circuit, overrides))
+
+    def _simulator_si(
+        self, overrides: Mapping[str, Mapping[str, float]] | None = None
+    ) -> _core.Simulator:
+        """Builds an engine simulator from pre-converted SI base-unit `overrides`."""
         with elaborating():
             values = self._core.values(
                 json.dumps(overrides or {}, allow_nan=False), self._kelvins
@@ -284,7 +292,7 @@ class Function:
         self, parameters: Parameters, run: Callable[[_core.Simulator, str, str], T]
     ) -> tuple[_core.Simulator, T]:
         """Creates a simulator at `parameters` and executes `run` against it."""
-        core = self.elaborated.simulator(parameters)
+        core = self.elaborated._simulator_si(parameters)  # noqa: SLF001 - same-module SI fast path for Function
         try:
             return core, run(core, self._encoded(), self._settings())
         except _core.SimulationError as error:

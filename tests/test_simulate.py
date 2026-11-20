@@ -891,7 +891,9 @@ def test_a_transformer_steps_its_voltage_by_its_coupled_inductances() -> None:
 def test_coupled_inductances_take_overrides_and_sensitivities_by_path() -> None:
     frequencies = decade(10 * kHz, 1e3 * kHz, 2)
     nominal = Simulation(stepped(1e-3, 4e-3, 0.95))
-    replaced = {"T1": {"windings.0.inductance": 1.2e-3, "couplings.0.coefficient": 0.9}}
+    replaced = {
+        "T1": {"windings.0.inductance": 1.2 * mH, "couplings.0.coefficient": 0.9}
+    }
     overridden = Simulation(stepped(1e-3, 4e-3, 0.95), overrides=replaced)
     rebuilt = Simulation(stepped(1.2e-3, 4e-3, 0.9))
     # Identical linear AC circuits; rtol=1e-12 (~4500 eps) covers complex LU rounding.
@@ -979,7 +981,7 @@ def test_a_small_signal_response_is_the_slope_of_the_dc_transfer(
         base_resistance_current=halfway,
     )
     simulation = Simulation(common_emitter(transistor))
-    tight = Options(relative_tolerance=1e-11, voltage_tolerance=1e-15)
+    tight = Options(relative_tolerance=1e-11, voltage_tolerance=1e-15 * V)
     # A central difference over 0.1 mV, small relative to the thermal voltage, errs by
     # about 1e-5; omitting base-resistance drop would err by about 1%.
     step = 1e-4
@@ -1096,7 +1098,9 @@ def test_each_analysis_appends_to_the_log_the_settings_name(analysis_log: Path) 
     # An analysis refused before it runs, as a record naming no instance, runs none.
     with pytest.raises(SimulationError, match="no instance named 'R9'"):
         simulation.run(OperatingPoint(record=["R9"]))
-    resistances = [{"R1": {"resistance": value}} for value in (2e3, 3e3, 4e3)]
+    resistances = [
+        {"R1": {"resistance": value}} for value in (2 * kohm, 3 * kohm, 4 * kohm)
+    ]
     variants = Explicit([Variant(overrides) for overrides in resistances])
     analyses = {"op": OperatingPoint(), "step": Transient(1 * us)}
     simulation.batch(analyses, variants)

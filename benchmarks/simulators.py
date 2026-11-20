@@ -322,8 +322,8 @@ def command(analysis: Analysis, flat: ir.Circuit) -> str:
     match analysis:
         case OperatingPoint():
             return "op"
-        case DcSweep(source=source, values=levels):
-            given = [level.to(VOLTAGE, "a level") for level in levels]
+        case DcSweep(source=source):
+            given = analysis.numbers(VOLTAGE)
             step = (given[-1] - given[0]) / (len(given) - 1)
             return dc_command(ngspice_element(flat, source), given[0], given[-1], step)
         case Ac(frequencies=frequencies):

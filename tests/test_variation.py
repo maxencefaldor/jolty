@@ -17,11 +17,16 @@ from jolty import (
     files,
     ir,
 )
+from jolty.devices import ParameterValue
 from jolty.plan import MonteCarlo, OperatingPoint, WorstCase
 from jolty.runner import BATCHES, MONTE_CARLO, Built, Job, run
 from jolty.specs import Specs, value
-from jolty.units import A, V, kohm, nF
+from jolty.units import A, Quantity, V, kohm, nF, ohm
 from jolty.variation import Toleranced, extreme, moved, sample, toleranced
+
+
+def _si(value: ParameterValue) -> float:
+    return value.value if isinstance(value, Quantity) else value
 
 
 @component
@@ -55,7 +60,11 @@ def test_each_placement_of_a_component_varies_apart() -> None:
     assert drawn == sample(varied, 3, 0)
     assert drawn != sample(varied, 3, 1)
     point = Simulation(pair(), overrides=drawn).run(OperatingPoint())
-    expected = 1 / drawn["X1/R1"]["resistance"] + 1 / drawn["X2/R1"]["resistance"]
+    first = drawn["X1/R1"]["resistance"]
+    second = drawn["X2/R1"]["resistance"]
+    assert isinstance(first, Quantity)
+    assert isinstance(second, Quantity)
+    expected = (1 * V / first + 1 * V / second).value
     # Parallel resistor current 1/R1 + 1/R2; default pytest.approx covers LU rounding.
     assert -point.current("V1") == pytest.approx(expected)
 
@@ -67,8 +76,8 @@ def test_values_spread_within_their_tolerance() -> None:
         *toleranced(_alone(device)),
     )
     drawn = [sample(varied, 0, index) for index in range(4000)]
-    uniform = np.array([d["X1/R1"]["resistance"] for d in drawn]) / 1e3 - 1
-    normal = np.array([d["R1"]["resistance"] for d in drawn]) / 1e3 - 1
+    uniform = np.array([_si(d["X1/R1"]["resistance"]) for d in drawn]) / 1e3 - 1
+    normal = np.array([_si(d["R1"]["resistance"]) for d in drawn]) / 1e3 - 1
     # Uniform support is exactly [-0.05, 0.05]; at N=4000 draws, relative std SE is
     # sqrt(0.8/(4*4000)) ~= 0.71% (~7 SE) uniform and 1/sqrt(2*4000) ~= 1.12% (~4.5 SE)
     # for normal, both bounded by rel=0.05.
@@ -99,7 +108,7 @@ def test_a_tolerance_needs_a_number_below_one() -> None:
     with pytest.raises(ElaborationError, match=r"gives `missing` a tolerance of 0\.1"):
         Simulation(broken)
     with pytest.raises(ElaborationError, match="no device at `X9/R1`"):
-        Simulation(pair(), overrides={"X9/R1": {"resistance": 1.0}})
+        Simulation(pair(), overrides={"X9/R1": {"resistance": 1 * ohm}})
 
 
 DIVIDER = """
@@ -207,18 +216,19 @@ def test_a_supply_takes_a_tolerance_by_its_path() -> None:
     assert (varied.instance, varied.parameter, varied.nominal) == (
         "V1",
         "waveform.dc",
-        5,
+        5 * V,
     )
     drawn = sample((varied,), 0, 0)
     level = drawn["V1"]["waveform.dc"]
-    assert 4.75 <= level <= 5.25
+    assert isinstance(level, Quantity)
+    assert 4.75 * V <= level <= 5.25 * V
     point = Simulation(built, overrides=drawn).run(OperatingPoint())
     # Equal-resistor divider ratio level / 2; default pytest.approx covers rounding.
-    assert point.voltage("out") == pytest.approx(level / 2)
+    assert point.voltage("out") == pytest.approx(level.value / 2)
     with pytest.raises(ValueError, match=r"gives waveform\.sine no number"):
         devices.voltage_source(5 * V).toleranced("waveform.sine", 0.05)
     with pytest.raises(ElaborationError, match=r"`waveform\.sine\.offset` has no"):
-        Simulation(built, overrides={"V1": {"waveform.sine.offset": 1.0}})
+        Simulation(built, overrides={"V1": {"waveform.sine.offset": 1 * V}})
 
 
 def test_the_parts_of_a_lot_share_its_factor() -> None:
@@ -240,10 +250,10 @@ def test_the_parts_of_a_lot_share_its_factor() -> None:
     varied = toleranced(circuit(integrated()))
     drawn = [sample(varied, 0, index) for index in range(2000)]
     first, second = (
-        np.array([d[name]["resistance"] for d in drawn]) / 1e3 - 1
+        np.array([_si(d[name]["resistance"]) for d in drawn]) / 1e3 - 1
         for name in ("R1", "R2")
     )
-    capacitance = np.array([d["C1"]["capacitance"] for d in drawn]) / 1e-9 - 1
+    capacitance = np.array([_si(d["C1"]["capacitance"]) for d in drawn]) / 1e-9 - 1
     # Shared lot cancels: max independent +-0.001 ratio error is 1.001/0.999 - 1
     # ~= 0.002002 <= 0.0021; at N=2000, uniform std SE is ~1% (rel=0.05 is 5 SE) and
     # independent correlation SE is 1/sqrt(2000) ~= 0.0224 (< 0.1 is ~4.5 SE).
@@ -277,10 +287,10 @@ def test_an_exponentials_argument_spreads_in_its_logarithm() -> None:
             c.connect(placed.collector, placed.base, placed.emitter, ground)
 
     varied = toleranced(circuit(pair()))
-    nominal = varied[0].nominal
+    nominal = _si(varied[0].nominal)
     drawn = [sample(varied, 0, index) for index in range(2000)]
     first, second = (
-        np.log(np.array([d[name]["saturation_current"] for d in drawn]) / nominal)
+        np.log(np.array([_si(d[name]["saturation_current"]) for d in drawn]) / nominal)
         for name in ("Q1", "Q2")
     )
     # Support is exact log(36) lot + 1 mV/Vt mismatch (+ 1e-12 f64 log rounding);
@@ -347,12 +357,14 @@ def test_each_sample_runs_on_the_same_parts_at_every_corner(
     (spread,) = report.spreads
     assert spread.values is not None
     varied = [
-        Toleranced(path, "resistance", 1e3, ir.Tolerance(relative=0.01))
+        Toleranced(path, "resistance", 1 * kohm, ir.Tolerance(relative=0.01))
         for path in ("R1", "R2")
     ]
     drawn = [sample(varied, 2, index) for index in range(50)]
     low = [
-        4.9 * d["R2"]["resistance"] / (d["R1"]["resistance"] + d["R2"]["resistance"])
+        4.9
+        * _si(d["R2"]["resistance"])
+        / (_si(d["R1"]["resistance"]) + _si(d["R2"]["resistance"]))
         for d in drawn
     ]
     # Linear divider extrema (50 samples); rel=1e-6 covers runner JSON & LU rounding.
@@ -444,23 +456,32 @@ def test_a_worst_case_moves_a_step_of_its_tolerance() -> None:
     with pytest.raises(ValueError, match="above 0 and at most 1, not 0"):
         WorstCase(step=0)
     varied = [
-        Toleranced("R1", "resistance", 1e3, ir.Tolerance(relative=0.1)),
+        Toleranced("R1", "resistance", 1 * kohm, ir.Tolerance(relative=0.1)),
         Toleranced(
             "R2",
             "resistance",
-            1e3,
+            1 * kohm,
             ir.Tolerance(
                 relative=0.01,
                 lot=ir.Lot(name="die", relative=1.0, distribution="log_uniform"),
             ),
         ),
     ]
-    # Shifted/extreme tolerance values; default pytest.approx covers float rounding.
-    assert moved(varied, 0, 0.5) == {"R1": {"resistance": pytest.approx(1050.0)}}
-    assert extreme(varied, [-1.0, 1.0], {("die", "resistance"): -1.0}) == {
-        "R1": {"resistance": pytest.approx(900.0)},
-        "R2": {"resistance": pytest.approx(1e3 * 1.01 / 2)},
-    }
+    # Shifted tolerance value; default pytest.approx covers float rounding.
+    shifted = moved(varied, 0, 0.5)["R1"]["resistance"]
+    assert isinstance(shifted, Quantity)
+    assert shifted.dimension == ohm.dimension
+    assert shifted.value == pytest.approx(1050.0)
+    extremes = extreme(varied, [-1.0, 1.0], {("die", "resistance"): -1.0})
+    r1 = extremes["R1"]["resistance"]
+    r2 = extremes["R2"]["resistance"]
+    # Extreme tolerance values; default pytest.approx covers float rounding.
+    assert isinstance(r1, Quantity)
+    assert r1.dimension == ohm.dimension
+    assert r1.value == pytest.approx(900.0)
+    assert isinstance(r2, Quantity)
+    assert r2.dimension == ohm.dimension
+    assert r2.value == pytest.approx(1e3 * 1.01 / 2)
 
 
 GRIDDED = """

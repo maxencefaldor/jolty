@@ -9,11 +9,11 @@ The result is a `Quantity`: its value in SI base units and its `Dimension`, the 
 
 Arithmetic combines dimensions, so `5 * V / (1 * kohm)` is a current, and `1 * kohm * (1 * uF)` is a time.
 Powers may be fractions, as a noise density's square root of a hertz is: `Hz ** Fraction(1, 2)` is `rtHz`.
-Adding or subtracting quantities of different dimensions raises a `DimensionError`.
+Adding, subtracting, or comparing quantities of different dimensions raises a `DimensionError`.
 
 ## Checked where they are used
 
-Every device checks the dimension of each parameter as it reads it.
+Every device, option, override, variant, axis, and sweep checks parameter dimensions before simulation runs.
 `devices.resistor(1 * uF)` raises a `DimensionError` that says a resistance takes a quantity in Ω, on the line that called it.
 Values must also be finite.
 
@@ -27,9 +27,9 @@ The module `jolty.units` defines the units below; the micro prefix is written `u
 | Frequency | `Hz`, `kHz`, `MHz`, `GHz` |
 | Voltage | `V`, `kV`, `mV`, `uV`, `nV` |
 | Current | `A`, `mA`, `uA`, `nA`, `pA`, `fA` |
-| Charge | `C`, `mC`, `uC`, `nC`, `pC` |
+| Charge | `C`, `mC`, `uC`, `nC`, `pC`, `fC` |
 | Resistance | `ohm`, `kohm`, `Mohm` |
-| Conductance | `S`, `mS`, `uS` |
+| Conductance | `S`, `mS`, `uS`, `nS`, `pS` |
 | Capacitance | `F`, `mF`, `uF`, `nF`, `pF`, `fF` |
 | Inductance | `H`, `mH`, `uH`, `nH` |
 | Power | `W`, `mW`, `uW` |

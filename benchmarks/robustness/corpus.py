@@ -324,7 +324,11 @@ def agrees(found: Solution, reference: Solution, options: Options) -> bool:
         False
     """
     relative = options.relative_tolerance or DEFAULT_RELATIVE_TOLERANCE
-    absolute = options.voltage_tolerance or DEFAULT_VOLTAGE_TOLERANCE
+    absolute = (
+        options.voltage_tolerance.value
+        if options.voltage_tolerance is not None
+        else DEFAULT_VOLTAGE_TOLERANCE
+    )
     scale = max((abs(value) for value in reference.values()), default=0.0) or 1.0
     allowed = relative * scale + 2 * absolute
     return all(

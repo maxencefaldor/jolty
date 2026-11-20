@@ -40,7 +40,7 @@ from jolty import (
 )
 from jolty.plan import TIGHT, decade, linear
 from jolty.spice.ngspice import OPTIONS, VOLTAGE_TOLERANCE, Compatibility
-from jolty.units import Hz, MHz, Quantity, V, celsius, kHz, kohm, ms, us
+from jolty.units import Hz, MHz, Quantity, V, celsius, kHz, kohm, ms, pA, us
 from jolty.waveforms import Sine
 
 pytestmark = SKIP
@@ -234,9 +234,9 @@ BENCHES = {
         _ad22057,
         (0.0, 0.3, 61),
         (3 * ms, 1 * us),
-        options=replace(TIGHT, current_tolerance=1e-12),
+        options=replace(TIGHT, current_tolerance=1 * pA),
         spice_options=(
-            f".options reltol=1e-6 vntol={VOLTAGE_TOLERANCE!r} abstol=1e-12"
+            f".options reltol=1e-6 vntol={VOLTAGE_TOLERANCE.value!r} abstol=1e-12"
         ),
     ),
     # ngspice finds the operating point of this amplifier at default tolerances only.

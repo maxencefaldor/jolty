@@ -3,7 +3,7 @@
 Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 18 November.
 Full background research remains archived in `research/quality.md`.
 
-Plan: ✅ 22 done · 📋 3 planned (§4).
+Plan: ✅ 23 done · 📋 2 planned (§4).
 
 ## 1. Goal and metric
 
@@ -32,7 +32,7 @@ Four ngspice launch paths and three version readers were consolidated into `jolt
 Three copies of ngspice-tight options collapsed into `jolty.plan.TIGHT`, restated precision-suite defaults and colors were removed (`a43aa05`), and 1.65 MB of committed precision results were deleted.
 
 **The Python API:** small, immutable, and precisely typed.
-Upfront validation of plans, analyses, options, and specs resolves every name and reports all errors before simulation starts (items 8 and 9, done), while options, overrides, and variants still accept plain floats in SI units (item 7).
+Upfront validation of plans, analyses, options, and specs resolves every name and checks every parameter dimension before simulation starts (items 7 to 9, done).
 
 **The guide:** technical prose is precise, and all 84 keyword calls counted on 15 November match the API.
 `tests/test_guide.py` executes 38 of 48 Python code blocks (10 marked `not run`) and checks all 18 quoted outputs (item 14, done).
@@ -41,8 +41,7 @@ Guide sentences remain long, with a median of 27 words measured on 15 November (
 ## 3. Gaps
 
 - Duplicated model metadata: each model's facts remain spread across several files, while benchmark helpers are now unified (item 13).
-- Late unit checking on options, overrides, variants, axes, and sweeps (item 7); plan/spec name resolution, multi-error validation, and constant/tolerance citations are complete (items 8 to 11).
-- Missing how-to pages and long guide sentences; executable guide blocks and output verification are complete (item 14).
+- Missing how-to pages and long guide sentences; executable guide blocks, output verification, upfront validation, and unit checking are complete (items 7 to 11, 14).
 
 ## 4. Plan
 
@@ -104,10 +103,14 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     **Not done:** the 1e-5 Jacobian tolerance remains because BSIM3 charge rows cancel; a rounding-level bound requires kernels to report constituent term magnitudes.
 - **Source:** row 4.
 
-### 📋 7. Quantities everywhere
+### ✅ 7. Quantities everywhere
 
 - **What:** options, overrides, variants, axes, and sweeps accept dimensioned quantities validated against model dimensions instead of plain SI floats.
-- **Done when:** `Axis("R1", "resistance", [1 * nF])` fails at construction.
+- **Done when:** every user-facing dimensioned number is a `Quantity` validated before simulation runs, and `Axis("R1", "resistance", [1 * nF])` fails upfront against the circuit's declared model dimension.
+- **Result** (20 November): `Options` tolerances (`voltage_tolerance`, `current_tolerance`, `charge_tolerance`, `gmin`), `Conditions.temperature`, `Simulation` / `Simulation.from_elaborated` / `Variant` overrides, `Axis`, parameter `DcSweep`, `Toleranced.nominal`, and `variation.{sample, moved, extreme}` all carry `Quantity` values for dimensioned parameters and plain floats for dimensionless ones.
+    Context-free dimensions validate at construction while circuit-bound overrides, variants, axes, and parameter sweeps validate upfront via `devices.parameter_dimension` derived from engine metadata (`_core.parameter_dimensions`), preserving circuit-plan separation (`AGENTS.md`, "Circuit and plan").
+    `Function` / `jvp` / `vjp` / `jolty.jax.function` remain SI float/array APIs.
+    Exhaustive tests cover all 33 registered models (`tests/test_devices.py`) and rejection of mismatched dimensions and bare floats (`tests/test_plan_validation.py`).
 - **Source:** row 9.
 
 ### ✅ 8. Everything a plan names resolved before running

@@ -7,15 +7,23 @@ from typing import Literal
 
 import pytest
 
-from jolty import _core, devices
+from jolty import _core, devices, ir
 from jolty.errors import DimensionError
 from jolty.units import (
+    CAPACITANCE,
     LENGTH,
+    TEMPERATURE,
     VOLTAGE,
+    A,
+    Hz,
+    J,
     K,
+    Quantity,
     S,
     V,
+    W,
     fA,
+    fF,
     kohm,
     m,
     mA,
@@ -31,6 +39,7 @@ from jolty.units import (
     uF,
     um,
 )
+from jolty.waveforms import Exponential, Piecewise, Pulse, Sine
 
 ANNOTATED_BUILDERS: tuple[tuple[str, Callable[..., devices.Device], set[str]], ...] = (
     ("resistor", devices.resistor, {"tolerance"}),
@@ -259,3 +268,187 @@ def test_device_builders_reject_wrong_dimension_and_non_finite_values() -> None:
         devices.bipolar_transistor(forward_beta=math.inf)
     with pytest.raises(DimensionError, match="uc"):
         devices.bsim3(mobility_model=3, card={"uc": -4.65e-11 * m / V**2})
+
+
+def _sample_devices() -> list[devices.Device]:
+    """Returns sample instances exercising composite and mode-dependent models."""
+    characterized_cell = devices.device(
+        "logic_cell",
+        {
+            "inputs": ["a"],
+            "outputs": [{"name": "y", "table": "10"}],
+            "timing": {
+                "characterized": {
+                    "slews": [1e-11, 2e-11],
+                    "loads": [1e-15, 5e-15],
+                    "supply": 1.8,
+                    "arcs": [
+                        {
+                            "input": "a",
+                            "before": "0",
+                            "output": "y",
+                            "delay": [[1e-11, 2e-11], [3e-11, 4e-11]],
+                            "transition": [[1e-11, 2e-11], [3e-11, 4e-11]],
+                        }
+                    ],
+                }
+            },
+            "electrical": {"input_capacitances": [2e-15], "threshold": 0.5},
+        },
+    )
+    return [
+        devices.resistor(1 * kohm),
+        devices.capacitor(1 * uF),
+        devices.inductor(1 * mH),
+        devices.transmission_line(50 * ohm, 1 * ns),
+        devices.voltage_controlled_voltage_source(2.0),
+        devices.voltage_controlled_current_source(1e-3 * S),
+        devices.current_controlled_current_source(2.0),
+        devices.current_controlled_voltage_source(1 * kohm),
+        devices.behavioral_voltage_source("1"),
+        devices.behavioral_current_source("1"),
+        devices.behavioral_capacitor("1e-12 * v(positive, negative)"),
+        devices.voltage_controlled_switch(),
+        devices.current_controlled_switch(),
+        devices.photocell(10 * kohm),
+        devices.voltage_controlled_memristor(
+            on_resistance=1 * kohm,
+            off_resistance=100 * kohm,
+            on_voltage=-1 * V,
+            off_voltage=0.5 * V,
+            on_rate=1e6 / s,
+            off_rate=1e5 / s,
+        ),
+        devices.current_controlled_memristor(
+            on_resistance=100 * ohm,
+            off_resistance=16 * kohm,
+            charge=2 * uC,
+        ),
+        devices.diode(),
+        devices.jfet(),
+        devices.bipolar_transistor(),
+        devices.vbic(),
+        devices.mosfet(),
+        devices.vdmos(),
+        devices.bsim3(),
+        devices.bsim4(),
+        devices.thermal_resistance(50 * K / W),
+        devices.thermal_capacitance(2e-3 * J / K),
+        devices.heat_source(1 * W),
+        devices.voltage_source(5 * V),
+        devices.voltage_source(
+            Pulse(0 * V, 5 * V, 1 * ns, 1 * ns, 5 * ns, delay=1 * ns, period=20 * ns)
+        ),
+        devices.voltage_source(Sine(0 * V, 1 * V, 1e3 * Hz, 1 * ns, 10 * Hz, 0.5)),
+        devices.voltage_source(Piecewise([(0 * s, 0 * V), (1 * ns, 5 * V)])),
+        devices.voltage_source(
+            Exponential(0 * V, 5 * V, 1 * ns, 5 * ns, 2 * ns, rise_delay=1 * ns)
+        ),
+        devices.current_source(1 * mA),
+        devices.current_source(Pulse(0 * A, 1 * mA, 1 * ns, 1 * ns, 5 * ns)),
+        devices.coupled_inductors(
+            [devices.inductor(1 * mH), devices.inductor(2 * mH)], {(1, 2): 0.9}
+        ),
+        devices.logic_source(0, [(1 * ns, 1), (2 * ns, 0)], transition=10 * ps),
+        devices.logic_cell(
+            ["a"],
+            {"y": "10"},
+            rise=20 * ps,
+            fall=25 * ps,
+            transition=10 * ps,
+            electrical=True,
+            input_capacitance=2 * fF,
+            threshold=0.4,
+        ),
+        characterized_cell,
+        devices.device(
+            "foundry_mosfet",
+            {
+                "pdk": "sky130",
+                "model": "nfet",
+                "width": 1e-6,
+                "length": 1.5e-7,
+                "fingers": 1,
+                "multiplier": 1,
+            },
+        ),
+        devices.diode(
+            temperature_model=0, breakdown_temperature_coefficient=2e-3 * V / K
+        ),
+        devices.diode(temperature_model=1, breakdown_temperature_coefficient=2e-3 / K),
+        devices.bsim3(mobility_model=1, card={"uc": -4.65e-11 * m / V**2, "k2": -0.02}),
+        devices.bsim3(mobility_model=3, card={"uc": -0.05 / V, "lvth0": 1e-7 * V * m}),
+        devices.bsim4(card={"toxe": 4 * nm, "vth0": 0.5 * V, "wvth0": 1e-7 * V * m}),
+    ]
+
+
+def test_parameter_dimension_covers_every_registered_model() -> None:
+    """Verifies every numeric model parameter resolves and round-trips its dimension."""
+    for model in _core.models():
+        target = ir.DeviceOf(model=model)
+        if model not in {"logic_cell", "logic_source"}:
+            assert devices.parameter_dimension(target, "temperature") == TEMPERATURE
+            assert (
+                devices.parameter_dimension(target, "temperature_offset") == TEMPERATURE
+            )
+        for name, raw in _core.parameter_dimensions(model).items():
+            if raw == "choice":
+                with pytest.raises(KeyError):
+                    devices.parameter_dimension(target, name)
+                continue
+            dimension = devices.parameter_dimension(target, name)
+            if raw is None:
+                assert dimension is None
+            else:
+                assert dimension is not None
+
+    assert _core.parameter_dimensions("foundry_mosfet") == {
+        "pdk": "choice",
+        "model": "choice",
+        "width": (0, 2, 0, 0, 0),
+        "length": (0, 2, 0, 0, 0),
+        "fingers": "choice",
+        "multiplier": "choice",
+    }
+    assert (
+        devices.parameter_dimension(ir.DeviceOf(model="foundry_mosfet"), "width")
+        == LENGTH
+    )
+    assert (
+        devices.parameter_dimension(ir.DeviceOf(model="foundry_mosfet"), "length")
+        == LENGTH
+    )
+
+    samples = _sample_devices()
+    assert {sample.model for sample in samples} == set(_core.models())
+    for sample in samples:
+        instance = ir.Instance(
+            name="X",
+            of=ir.DeviceOf(model=sample.model),
+            parameters=sample.parameters,
+            terminals={},
+        )
+        raw_kinds = _core.parameter_dimensions(sample.model)
+        for path, raw_value in ir.numbers(instance.parameters).items():
+            if raw_kinds.get(path) == "choice":
+                with pytest.raises(KeyError):
+                    devices.parameter_dimension(
+                        ir.DeviceOf(model=sample.model), path, instance.parameters
+                    )
+                assert devices.wrap_parameter(instance, path, raw_value) == raw_value
+                continue
+            dimension = devices.parameter_dimension(
+                ir.DeviceOf(model=sample.model), path, instance.parameters
+            )
+            wrapped = devices.wrap_parameter(instance, path, raw_value)
+            if dimension is None:
+                assert isinstance(wrapped, float)
+            else:
+                assert isinstance(wrapped, Quantity)
+                assert wrapped.dimension == dimension
+            assert devices.convert_parameter(instance, path, wrapped, path) == raw_value
+
+    assert (
+        devices.parameter_dimension(ir.DeviceOf(model="capacitor"), "capacitance")
+        == CAPACITANCE
+    )

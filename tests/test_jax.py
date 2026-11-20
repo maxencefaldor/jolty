@@ -365,7 +365,15 @@ def test_transient_breakpoints_match_public_jolty_vjp_and_finite_differences() -
         jax_weights = _as_jax_parameters(WEIGHTS, dtype=jnp.float64)
         gradient = jax.jit(jax.grad(loss))(jax_weights)
 
-        transient_result = Simulation(crossbar(), overrides=WEIGHTS).run(analysis)
+        weight_overrides = {
+            instance: {
+                parameter: value * ohm for parameter, value in parameters.items()
+            }
+            for instance, parameters in WEIGHTS.items()
+        }
+        transient_result = Simulation(crossbar(), overrides=weight_overrides).run(
+            analysis
+        )
         assert isinstance(transient_result, results.TransientResult)
         times = transient_result.times
         cotangent_series = np.zeros(len(times), dtype=np.float64)

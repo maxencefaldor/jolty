@@ -28,6 +28,7 @@ from jolty.units import (
     CAPACITANCE,
     CURRENT,
     DIMENSIONLESS,
+    FREQUENCY,
     HEAT_CAPACITY,
     LENGTH,
     POWER,
@@ -361,6 +362,9 @@ MOBILITY: Final = LENGTH**2 / (VOLTAGE * TIME)
 VOLTS_PER_KELVIN: Final = VOLTAGE / TEMPERATURE
 """Dimension of a voltage temperature coefficient, V/K."""
 
+type ParameterValue = Quantity | float
+"""User-facing parameter value: a `Quantity` for dimensioned parameters or a float."""
+
 type _ParameterKind = Dimension | str | None
 
 
@@ -404,6 +408,17 @@ def _quantity(value: object, dimension: Dimension, name: str) -> float:
     return value.to(dimension, name)
 
 
+def _check_scalar(value: object, dimension: Dimension | None, name: str) -> float:
+    """Validates `value` against `dimension` (or as a plain number when ``None``)."""
+    if dimension is not None:
+        return _quantity(value, dimension, name)
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return finite(value, name)
+    rendered = str(value) if isinstance(value, Quantity) else repr(value)
+    message = f"{name} takes a plain number, not {rendered}"
+    raise DimensionError(message)
+
+
 def _parameter_value(
     name: str,
     value: object,
@@ -428,12 +443,337 @@ def _parameter_value(
             message = f"{name} has no resolved dimension for condition `{kind}`"
             raise ValueError(message)
         kind = conditional[kind]
-    if isinstance(kind, Dimension):
-        return _quantity(value, kind, name)
+    return _check_scalar(value, kind, name)
+
+
+_WAVEFORM_DIMENSIONS: Final[
+    Mapping[tuple[str, str], Dimension | Literal["level"] | None]
+] = {
+    ("pulse", "initial"): "level",
+    ("pulse", "pulsed"): "level",
+    ("pulse", "delay"): TIME,
+    ("pulse", "rise"): TIME,
+    ("pulse", "fall"): TIME,
+    ("pulse", "width"): TIME,
+    ("pulse", "period"): TIME,
+    ("sine", "offset"): "level",
+    ("sine", "amplitude"): "level",
+    ("sine", "frequency"): FREQUENCY,
+    ("sine", "damping"): FREQUENCY,
+    ("sine", "delay"): TIME,
+    ("sine", "phase"): None,
+    ("exponential", "initial"): "level",
+    ("exponential", "pulsed"): "level",
+    ("exponential", "rise_delay"): TIME,
+    ("exponential", "rise_time_constant"): TIME,
+    ("exponential", "fall_delay"): TIME,
+    ("exponential", "fall_time_constant"): TIME,
+}
+
+
+def _waveform_dimension(level: Dimension, parameter: str) -> Dimension | None:
+    """Resolves the SI dimension of a dotted ``waveform.*`` parameter path."""
+    parts = parameter.split(".")
+    if parts == ["waveform", "dc"]:
+        return level
+    if len(parts) == 3 and parts[0] == "waveform":  # noqa: PLR2004 - waveform.<kind>.<field>
+        key = (parts[1], parts[2])
+        if key in _WAVEFORM_DIMENSIONS:
+            entry = _WAVEFORM_DIMENSIONS[key]
+            return level if entry == "level" else entry
+    if (
+        len(parts) == 5  # noqa: PLR2004 - waveform.piecewise.points.<idx>.<col>
+        and parts[:3] == ["waveform", "piecewise", "points"]
+        and parts[3].isdecimal()
+        and parts[4] in {"0", "1"}
+    ):
+        return TIME if parts[4] == "0" else level
+    raise KeyError(parameter)
+
+
+_LOGIC_FIXED_TIMING: Final = frozenset({"rise", "fall", "transition"})
+
+
+def _logic_cell_dimension(parameter: str) -> Dimension | None:
+    """Resolves the SI dimension of a dotted ``logic_cell`` parameter path."""
+    parts = parameter.split(".")
+    if (
+        len(parts) == 3  # noqa: PLR2004 - timing.fixed.<field>
+        and parts[:2] == ["timing", "fixed"]
+        and parts[2] in _LOGIC_FIXED_TIMING
+    ):
+        return TIME
+    if parts[:2] == ["timing", "characterized"]:
+        return _characterized_timing_dimension(parts[2:], parameter)
+    if parts == ["electrical", "threshold"]:
+        return None
+    if (
+        len(parts) == 3  # noqa: PLR2004 - electrical.input_capacitances.<idx>
+        and parts[:2] == ["electrical", "input_capacitances"]
+        and parts[2].isdecimal()
+    ):
+        return CAPACITANCE
+    raise KeyError(parameter)
+
+
+def _characterized_timing_dimension(tail: list[str], parameter: str) -> Dimension:
+    """Resolves a suffix under ``timing.characterized`` on a `logic_cell`."""
+    match tail:
+        case ["slews", index] if index.isdecimal():
+            return TIME
+        case ["loads", index] if index.isdecimal():
+            return CAPACITANCE
+        case ["supply"]:
+            return VOLTAGE
+        case ["arcs", arc, "delay" | "transition", row, column] if (
+            arc.isdecimal() and row.isdecimal() and column.isdecimal()
+        ):
+            return TIME
+    raise KeyError(parameter)
+
+
+def _coupled_inductor_dimension(parameter: str) -> Dimension | None:
+    """Resolves the SI dimension of a dotted ``coupled_inductors`` parameter path."""
+    parts = parameter.split(".")
+    match parts:
+        case ["windings", index, name] if index.isdecimal():
+            kind = _model_kinds("inductor").get(name, "choice")
+            if isinstance(kind, Dimension) or kind is None:
+                return kind
+        case ["couplings", index, "coefficient"] if index.isdecimal():
+            return None
+        case ["couplings", index, "windings", slot] if index.isdecimal() and slot in {
+            "0",
+            "1",
+        }:
+            return None
+    raise KeyError(parameter)
+
+
+def _bsim_model_dimension(
+    model: str, parameters: Mapping[str, JsonValue], parameter: str
+) -> Dimension | None:
+    """Resolves direct or binned parameter dimensions for BSIM3 and BSIM4 models."""
+    try:
+        if model == "bsim3":
+            raw_mobmod = parameters.get("mobility_model")
+            mobmod = (
+                raw_mobmod
+                if isinstance(raw_mobmod, int) and not isinstance(raw_mobmod, bool)
+                else None
+            )
+            return bsim3_dimension(parameter, mobmod)
+        return bsim4_dimension(parameter)
+    except ValueError:
+        raise KeyError(parameter) from None
+
+
+def _top_dimension(
+    model: str, parameter: str, parameters: Mapping[str, JsonValue]
+) -> Dimension | None:
+    """Resolves a top-level parameter dimension from engine metadata or BSIM cards."""
+    try:
+        kinds = _model_kinds(model)
+    except ValueError:
+        raise KeyError(parameter) from None
+    if parameter in kinds:
+        kind = kinds[parameter]
+        if kind == "diode_tbv":
+            mode = parameters.get("temperature_model")
+            return PER_KELVIN if mode in {1, 2} else VOLTS_PER_KELVIN
+        if isinstance(kind, str) and model == "bsim3":
+            return _bsim_model_dimension(model, parameters, parameter)
+        if isinstance(kind, Dimension) or kind is None:
+            return kind
+        raise KeyError(parameter)
+    if model in {"bsim3", "bsim4"}:
+        return _bsim_model_dimension(model, parameters, parameter)
+    raise KeyError(parameter)
+
+
+def parameter_dimension(
+    target: ir.DeviceOf,
+    parameter: str,
+    parameters: Mapping[str, JsonValue] | None = None,
+) -> Dimension | None:
+    """Returns the declared SI dimension of `parameter` on `target`, or ``None``.
+
+    Plain dimensionless numeric parameters return ``None``. Parameters whose dimension
+    depends on another setting (such as diode breakdown temperature coefficients or
+    BSIM3 ``uc``/``uc1``) read the selector from `parameters`.
+
+    Args:
+        target: Primitive device model descriptor (`ir.DeviceOf`).
+        parameter: Dotted numeric parameter path (such as ``'resistance'`` or
+            ``'waveform.dc'``).
+        parameters: Optional device parameter mapping supplying mode selectors.
+
+    Returns:
+        Expected SI `Dimension`, or ``None`` for dimensionless numeric parameters.
+
+    Raises:
+        KeyError: When `target` defines no numeric parameter at `parameter`.
+    """
+    model = target.model
+    if model not in {"logic_cell", "logic_source"} and parameter in {
+        "temperature",
+        "temperature_offset",
+    }:
+        return TEMPERATURE
+    if model in {"voltage_source", "current_source"}:
+        return _waveform_dimension(
+            VOLTAGE if model == "voltage_source" else CURRENT, parameter
+        )
+    if model == "coupled_inductors":
+        return _coupled_inductor_dimension(parameter)
+    if model == "logic_cell":
+        return _logic_cell_dimension(parameter)
+    if model == "logic_source":
+        parts = parameter.split(".")
+        is_change_time = (
+            len(parts) == 3  # noqa: PLR2004 - changes.<index>.0 time entry
+            and parts[0] == "changes"
+            and parts[1].isdecimal()
+            and parts[2] == "0"
+        )
+        if parameter == "transition" or is_change_time:
+            return TIME
+        raise KeyError(parameter)
+    return _top_dimension(model, parameter, parameters or {})
+
+
+def convert_parameter(
+    instance: ir.Instance,
+    parameter: str,
+    value: ParameterValue,
+    label: str,
+) -> float:
+    """Validates `value` against `instance`'s declared dimension for `parameter`.
+
+    Args:
+        instance: Primitive circuit instance whose model declares `parameter`.
+        parameter: Dotted parameter path on `instance`.
+        value: Physical `Quantity` for dimensioned parameters or finite float for
+            dimensionless parameters.
+        label: Human-readable parameter label included in error messages.
+
+    Returns:
+        Validated finite scalar value in SI base units.
+
+    Raises:
+        DimensionError: When `value` has the wrong kind or physical dimension.
+        KeyError: When `instance` is not a primitive device or defines no numeric
+            parameter at `parameter`.
+        ValueError: When the numeric value is infinite or NaN.
+    """
+    if not isinstance(instance.of, ir.DeviceOf):
+        raise KeyError(parameter)
+    dimension = parameter_dimension(instance.of, parameter, instance.parameters)
+    return _check_scalar(value, dimension, label)
+
+
+def wrap_parameter(
+    instance: ir.Instance, parameter: str, value: float
+) -> ParameterValue:
+    """Wraps SI float `value` as a `Quantity` if `instance`'s `parameter` has a unit.
+
+    Args:
+        instance: Primitive circuit instance whose model declares `parameter`.
+        parameter: Dotted parameter path on `instance`.
+        value: Scalar value in SI base units.
+
+    Returns:
+        `Quantity` in the parameter's SI dimension, or plain `float` when dimensionless
+        or unrecognized.
+    """
+    if not isinstance(instance.of, ir.DeviceOf):
+        return value
+    try:
+        dimension = parameter_dimension(instance.of, parameter, instance.parameters)
+    except KeyError:
+        return value
+    return value if dimension is None else Quantity(value, dimension)
+
+
+def _scalar_value(value: ParameterValue, label: str) -> float:
+    """Extracts a finite SI scalar from `value` without checking device dimensions."""
+    if isinstance(value, Quantity):
+        return finite(value.value, label)
     if isinstance(value, int | float) and not isinstance(value, bool):
-        return finite(value, name)
-    message = f"{name} takes a plain number, not {value!r}"
+        return finite(float(value), label)
+    message = f"{label} takes a quantity or real number, not {value!r}"
     raise DimensionError(message)
+
+
+def convert_overrides(
+    built: ir.Circuit,
+    overrides: Mapping[str, Mapping[str, ParameterValue]] | None,
+) -> dict[str, dict[str, float]]:
+    """Converts nested `overrides` to SI base floats validated against `built`.
+
+    Known device parameters are checked against the engine's declared dimensions via
+    [`convert_parameter`][jolty.devices.convert_parameter]. Unknown instance paths or
+    parameter names pass finite scalars through so circuit elaboration reports the
+    unknown target with close-name suggestions.
+
+    Args:
+        built: Circuit IR providing primitive device models for dimension checks.
+        overrides: Optional nested `{instance_path: {parameter: value}}` overrides.
+
+    Returns:
+        Nested dictionary of SI base-unit floats ready for the engine.
+
+    Raises:
+        DimensionError: When any known parameter override carries the wrong dimension
+            or kind.
+        ValueError: When any override value is infinite or NaN.
+    """
+    if overrides is None or not overrides:
+        return {}
+    converted: dict[str, dict[str, float]] = {}
+    for path, named in overrides.items():
+        target = built.find(path)
+        entries: dict[str, float] = {}
+        for parameter, value in named.items():
+            label = f"{path} {parameter}"
+            if target is not None:
+                try:
+                    entries[parameter] = convert_parameter(
+                        target, parameter, value, label
+                    )
+                    continue
+                except KeyError:
+                    pass
+            entries[parameter] = _scalar_value(value, label)
+        converted[path] = entries
+    return converted
+
+
+def wrap_overrides(
+    built: ir.Circuit,
+    overrides: Mapping[str, Mapping[str, float]],
+) -> dict[str, dict[str, ParameterValue]]:
+    """Wraps SI float `overrides` into `Quantity` or `float` matching `built`.
+
+    Args:
+        built: Circuit IR providing primitive device models for dimension lookup.
+        overrides: Nested `{instance_path: {parameter: float}}` in SI base units.
+
+    Returns:
+        Nested dictionary with dimensioned entries wrapped as `Quantity` values.
+    """
+    if not overrides:
+        return {}
+    wrapped: dict[str, dict[str, ParameterValue]] = {}
+    for path, named in overrides.items():
+        target = built.find(path)
+        wrapped[path] = {
+            parameter: (
+                value if target is None else wrap_parameter(target, parameter, value)
+            )
+            for parameter, value in named.items()
+        }
+    return wrapped
 
 
 def _device(
@@ -2504,20 +2844,7 @@ def _card(
             value.
     """
     for name, value in card.items():
-        dimension = dimension_of(name)
-        match value:
-            case Quantity() if dimension is not None:
-                parameters[name] = value.to(dimension, name)
-            case int() | float() if dimension is None:
-                parameters[name] = finite(value, name)
-            case _:
-                unit = (
-                    "a plain number"
-                    if dimension is None
-                    else f"a quantity in {dimension}"
-                )
-                message = f"{name} takes {unit}, not {value!r}"
-                raise DimensionError(message)
+        parameters[name] = _check_scalar(value, dimension_of(name), name)
 
 
 def bsim4(  # noqa: PLR0913 - instance geometry and BSIM4 model selectors

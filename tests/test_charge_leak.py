@@ -32,7 +32,7 @@ from jolty import (
 )
 from jolty.files import load_results, save_results
 from jolty.plan import Options
-from jolty.units import A, Hz, V, kohm, nF, ns, pF, ps, us
+from jolty.units import A, Hz, V, kohm, mV, nF, ns, pF, ps, uA, us
 from jolty.unknowns import Unknown
 
 MACHINE_EPSILON: Final = float(np.finfo(np.float64).eps)
@@ -335,8 +335,8 @@ def test_pure_logic_transient_has_empty_charge_leak_and_no_report_line() -> None
 def test_report_surfaces_nonzero_charge_leak_on_simulated_transient() -> None:
     loose = Options(
         relative_tolerance=2e-2,
-        voltage_tolerance=5e-3,
-        current_tolerance=1e-6,
+        voltage_tolerance=5 * mV,
+        current_tolerance=1 * uA,
     )
     waveforms_result = Simulation(_closed_nonlinear_island()).run(
         Transient(

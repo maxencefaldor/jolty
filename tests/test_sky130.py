@@ -258,7 +258,7 @@ def test_corners_temperatures_and_overrides_reach_ngspice() -> None:
     hot = current(Simulation(built, celsius(125)))
     # Distinctness guard: 125 C bias current must shift well past default reltol=1e-3.
     assert hot != pytest.approx(typical, rel=1e-3)
-    loaded = current(Simulation(built, overrides={"RL": {"resistance": 20e3}}))
+    loaded = current(Simulation(built, overrides={"RL": {"resistance": 20 * kohm}}))
     assert abs(loaded) < abs(typical)
     with pytest.raises(SimulationError, match="SKY130 has no process corner 'xx'"):
         Simulation(amplifier(), process="xx").run(OperatingPoint())
@@ -343,7 +343,7 @@ def holder(c: Builder) -> None:
 @SKIP
 @pytest.mark.usefixtures("cached")
 def test_a_nested_source_is_swept_and_excited_with_overrides() -> None:
-    simulation = Simulation(holder(), overrides={"X1/RL": {"resistance": 20e3}})
+    simulation = Simulation(holder(), overrides={"X1/RL": {"resistance": 20 * kohm}})
     sweep = simulation.run(DcSweep("X1/VIN", linear(0.6 * V, 0.8 * V, 3)))
     assert sweep.source == "X1/VIN"
     out = sweep.values[:, results.column(sweep.unknowns, "X1/out")]

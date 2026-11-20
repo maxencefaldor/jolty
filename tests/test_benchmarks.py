@@ -38,7 +38,7 @@ from jolty import (
     spice,
 )
 from jolty.plan import TIGHT, linear
-from jolty.units import V, kohm, mA, nF, um, us
+from jolty.units import Quantity, V, kohm, mA, nF, um, us
 from sample_circuits import divider
 
 BENCHMARKS = Path(__file__).parent.parent / "benchmarks" / "agents"
@@ -535,10 +535,12 @@ def test_boards_draw_the_designs_resistors_and_capacitors_alone() -> None:
     assert all(set(board.parts) == {"X1/R1", "X1/C1"} for board in drawn)
     assert all(board.corner == scoring.NOMINAL for board in drawn)
     for path, parameter, nominal, tolerance in (
-        ("X1/R1", "resistance", 1e3, 0.01),
-        ("X1/C1", "capacitance", 1e-9, 0.05),
+        ("X1/R1", "resistance", 1 * kohm, 0.01),
+        ("X1/C1", "capacitance", 1 * nF, 0.05),
     ):
-        strays = [abs(board.parts[path][parameter] / nominal - 1) for board in drawn]
+        strays = [
+            abs((board.parts[path][parameter] / nominal).value - 1) for board in drawn
+        ]
         # Uniform draws on [-tol, tol] with BOARDS=100: P(max <= 0.9*tol) = 0.9^100.
         assert 0.9 * tolerance < max(strays) <= tolerance
     assert scoring.boards(circuit(loaded()), scoring.parts) == drawn
@@ -560,8 +562,12 @@ def test_an_integrated_designs_resistors_stray_together() -> None:
         c.connect(placed.a, placed.b, ground)
 
     drawn = scoring.boards(circuit(die()), scoring.integrated)
-    first = np.array([board.parts["X1/R1"]["resistance"] / 1e3 for board in drawn])
-    second = np.array([board.parts["X1/R2"]["resistance"] / 3e3 for board in drawn])
+    first = np.array(
+        [(board.parts["X1/R1"]["resistance"] / (1 * kohm)).value for board in drawn]
+    )
+    second = np.array(
+        [(board.parts["X1/R2"]["resistance"] / (3 * kohm)).value for board in drawn]
+    )
     assert np.abs(first - 1).max() > 0.15
     # Normal 3*sigma=0.001 cancels shared lot: ratio sigma ~= 4.7e-4 (~5.3 sigma).
     assert np.abs(first / second - 1).max() <= 0.0025
@@ -653,10 +659,10 @@ def _gain_at_10_milliamperes(transistor: devices.Device, sign: float) -> float:
 def test_a_board_sets_its_corner_on_the_bench() -> None:
     bench_divider = circuit(divider(level=2 * V, source_name="VCC"))
     corner = scoring.Corner(temperature=70.0, supply=0.95)
-    board = scoring.Board({"R2": {"resistance": 3e3}}, corner)
+    board = scoring.Board({"R2": {"resistance": 3 * kohm}}, corner)
     simulation = board.simulation(bench_divider, ["VCC"])
     # 70 C converted to kelvin (70 + 273.15 = 343.15 K); default pytest.approx rounding.
-    assert simulation.conditions.temperature == pytest.approx(343.15)
+    assert simulation.conditions.temperature.value == pytest.approx(343.15)
     point = simulation.run(OperatingPoint())
     # Linear divider at 0.95 * 2 V and 3/4; default pytest.approx covers rounding.
     assert point.voltage("out") == pytest.approx(2 * 0.95 * 3 / 4)
@@ -667,7 +673,9 @@ def test_a_board_sets_its_corner_on_the_bench() -> None:
 
 def test_too_few_boards_that_meet_the_task_fall_short() -> None:
     def measure(board: scoring.Board) -> dict[str, float]:
-        return {"resistance": board.parts["X1/R1"]["resistance"]}
+        resistance = board.parts["X1/R1"]["resistance"]
+        assert isinstance(resistance, Quantity)
+        return {"resistance": resistance.value}
 
     def below(most: float) -> Callable[[dict[str, float]], list[Shortfall]]:
         high = [scoring.unmet("resistance", "it is too high")]

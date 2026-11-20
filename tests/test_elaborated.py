@@ -38,7 +38,7 @@ from jolty import (
 from jolty.errors import ElaborationError
 from jolty.plan import TIGHT, decade
 from jolty.simulate import Elaborated
-from jolty.units import GHz, Hz, K, V, ohm, s
+from jolty.units import GHz, H, Hz, K, V, ohm, s
 from strategies import SETTINGS, STEP, STOP, circuits, parasitic, pulsed
 
 type Number = tuple[str, str, float]
@@ -117,9 +117,10 @@ def test_numbers_replaced_simulate_the_same_on_a_shared_circuit(
     numbers = _numbers(loaded)
     chosen = data.draw(st.lists(st.sampled_from(numbers), unique=True))
     factors = data.draw(st.lists(st.floats(0.5, 2), min_size=len(chosen)))
-    overrides: dict[str, dict[str, float]] = {}
+    raw_overrides: dict[str, dict[str, float]] = {}
     for (path, name, value), factor in zip(chosen, factors, strict=False):
-        overrides.setdefault(path, {})[name] = value * factor
+        raw_overrides.setdefault(path, {})[name] = value * factor
+    overrides = devices.wrap_overrides(loaded, raw_overrides)
     temperature = data.draw(st.floats(250, 400)) * K
     problems: list[str] = []
     for elaborate in (
@@ -155,7 +156,7 @@ def test_one_elaboration_serves_each_structure() -> None:
 
     elaborated = Elaborated(divider())
     below = [
-        Simulation.from_elaborated(elaborated, {"R1": {"resistance": r}})
+        Simulation.from_elaborated(elaborated, {"R1": {"resistance": r * ohm}})
         for r in (0.5, 0.25)
     ]
     # A resistance below 1 Ω adds an explicit branch-current unknown, so both runs
@@ -164,12 +165,12 @@ def test_one_elaboration_serves_each_structure() -> None:
         "R1:current" in (unknown.name for unknown in each.unknowns) for each in below
     )
     assert len(elaborated._structures) == 1  # noqa: SLF001 - the structures elaborated
-    above = Simulation.from_elaborated(elaborated, {"R1": {"resistance": 4.0}})
+    above = Simulation.from_elaborated(elaborated, {"R1": {"resistance": 4 * ohm}})
     assert "R1:current" not in (unknown.name for unknown in above.unknowns)
     point = above.run(OperatingPoint())
     # Linear divider ratio 3 / (4 + 3): LU rounding within ~4500 eps (rel=1e-12).
     assert point.voltage("out") == pytest.approx(3 / 7, rel=1e-12)
     with pytest.raises(ElaborationError, match="names no number among the parameters"):
-        Simulation.from_elaborated(elaborated, {"R1": {"inductance": 1.0}})
+        Simulation.from_elaborated(elaborated, {"R1": {"inductance": 1 * H}})
     with pytest.raises(ElaborationError, match="resistance is positive"):
-        Simulation.from_elaborated(elaborated, {"R1": {"resistance": -1.0}})
+        Simulation.from_elaborated(elaborated, {"R1": {"resistance": -1 * ohm}})
