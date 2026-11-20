@@ -17,15 +17,18 @@ reflects the library temperature.
 import math
 import threading
 from collections import OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final
+from typing import Final, Self
 
 from jolty import _core, ir
 from jolty.builder import Component
-from jolty.errors import SpiceError
+from jolty.errors import JoltyError, SpiceError
+from jolty.settings import Settings
 from jolty.spice import models
+from jolty.spice._cache import LibrarySnapshot, cache_key, read_cached, write_cached
 from jolty.spice._elements_active import ACTIVE_ELEMENTS
 from jolty.spice._elements_passive import PASSIVE_ELEMENTS, TRANSMISSION_LINE
 from jolty.spice._initial import (
@@ -51,6 +54,7 @@ from jolty.spice._params import (
     Probe,
     Sample,
     Subcircuit,
+    TrackedScope,
     build_global_plan,
     check_cycle,
     evaluate_stochastic,
@@ -60,10 +64,12 @@ from jolty.spice._params import (
     parse_options,
     parse_pins_and_parameters,
     resolve_into,
+    retarget_global_plan,
     standard_deviation,
 )
 from jolty.spice._preprocess import (
     CONDITIONS,
+    ManifestRecorder,
     expanded,
     expanded_text,
     keyword,
@@ -127,18 +133,29 @@ __all__ = [
 _MAX_CACHED_SCOPES: Final = 8
 """Maximum number of `(sample, temperature)` global scopes cached by a `Library`."""
 
+_MAX_TEMPERATURE_BUILDS: Final = 256
+"""Maximum number of `(name, temperature)` nominal builds cached by a `Library`."""
+
 _ELEMENTS: Final[Mapping[str, ElementTranslator]] = MappingProxyType(
     {**PASSIVE_ELEMENTS, **ACTIVE_ELEMENTS}
 )
 """Mapping from lowercase SPICE element letters to element translator callables."""
 
 type _BuiltState = tuple[
-    float,
     dict[str, Function],
     tuple[tuple[str, float], ...],
     Compatibility | None,
 ]
-"""Snapshot of mutable library state affecting nominal cached component builds."""
+"""Snapshot of temperature-independent library state affecting cached nominal builds."""
+
+
+@dataclass(frozen=True, slots=True)
+class _IndexedBin:
+    """Global binned MOSFET model card paired with optional static literal bounds."""
+
+    card: ModelCard
+    static_bounds: tuple[float, float, float, float] | None
+    dynamic: bool
 
 
 def _devices(placed: Component, prefix: str) -> dict[str, dict[str, float]]:
@@ -186,7 +203,7 @@ class Library:
         """
         self._subcircuits: dict[str, Subcircuit] = {}
         self._models: dict[str, ModelCard] = {}
-        self._bins: dict[str, tuple[ModelCard, ...]] | None = None
+        self._bins: dict[str, tuple[_IndexedBin, ...]] | None = None
         self._parsed_models: dict[Statement, ModelCard] = {}
         self._cache_lock = threading.Lock()
         self._generation = 0
@@ -196,7 +213,11 @@ class Library:
             OrderedDict()
         )
         self._built: dict[str, Built] = {}
+        self._built_by_temperature: OrderedDict[tuple[str, float], Built] = (
+            OrderedDict()
+        )
         self._built_state: _BuiltState | None = None
+        self._has_evaluated_directives = False
         self.temperature = temperature
         self.compatibility = compatibility
         self.options: dict[str, float] = {}
@@ -210,6 +231,47 @@ class Library:
         self.periodic_steady_states: list[PeriodicSteadyStateCard] = []
         """Parsed ``.pss`` periodic steady-state statements in source order."""
         self._uses: list[Use] | None = None
+
+    @classmethod
+    def _from_snapshot(
+        cls,
+        snapshot: LibrarySnapshot,
+        temperature: float,
+        compatibility: Compatibility | None,
+    ) -> Self:
+        """Constructs a fresh `Library` populated from a cached `LibrarySnapshot`."""
+        library = cls(temperature, compatibility)
+        library._subcircuits = {
+            subcircuit.name.casefold(): subcircuit
+            for subcircuit in snapshot.subcircuits
+        }
+        library._models = {card.name.casefold(): card for card in snapshot.models}
+        library._parameters = list(snapshot.parameters)
+        library.options = dict(snapshot.options)
+        library.functions = dict(snapshot.functions)
+        library.initial_conditions = dict(snapshot.initial_conditions)
+        library.nodesets = dict(snapshot.nodesets)
+        library.periodic_steady_states = list(snapshot.periodic_steady_states)
+        library._has_evaluated_directives = snapshot.has_evaluated_directives
+        return library
+
+    def _snapshot(self) -> LibrarySnapshot:
+        """Captures an immutable `LibrarySnapshot` of parsed definitions."""
+        with self._cache_lock:
+            return LibrarySnapshot(
+                subcircuits=tuple(self._subcircuits.values()),
+                models=tuple(self._models.values()),
+                parameters=tuple(self._parameters),
+                options=tuple(self.options.items()),
+                functions=tuple(self.functions.items()),
+                initial_conditions=tuple(self.initial_conditions.items()),
+                nodesets=tuple(self.nodesets.items()),
+                periodic_steady_states=tuple(self.periodic_steady_states),
+                has_evaluated_directives=self._has_evaluated_directives,
+                evaluated_temperature=(
+                    self.temperature if self._has_evaluated_directives else None
+                ),
+            )
 
     @property
     def subcircuits(self) -> tuple[str, ...]:
@@ -258,7 +320,16 @@ class Library:
                 missing, the section is not in the file, or files include one another
                 in a cycle.
         """
-        self._read(expanded(path, section, ()))
+        self._include_recorded(path, section, None)
+
+    def _include_recorded(
+        self,
+        path: Path,
+        section: str | None,
+        recorder: ManifestRecorder | None,
+    ) -> None:
+        """Includes `path` (optionally `section`) while recording read files."""
+        self._read(expanded(path, section, (), recorder=recorder))
 
     def _read(self, found: Sequence[Statement]) -> None:
         """Adds the definitions of the statements `found`.
@@ -292,6 +363,7 @@ class Library:
         """Clears built components, parsed models and bin index under `_cache_lock`."""
         self._generation += 1
         self._built.clear()
+        self._built_by_temperature.clear()
         self._built_state = None
         self._parsed_models.clear()
         self._bins = None
@@ -308,9 +380,8 @@ class Library:
             self._clear_caches_locked()
 
     def _current_built_state_locked(self) -> _BuiltState:
-        """Snapshots mutable library state affecting nominal cached component builds."""
+        """Snapshots temperature-independent state affecting cached nominal builds."""
         return (
-            self.temperature,
             dict(self.functions),
             tuple(sorted(self.options.items())),
             self.compatibility,
@@ -360,11 +431,13 @@ class Library:
                 self.functions[name] = function
                 self._clear_caches_locked()
         elif directive in INITIAL:
+            self._has_evaluated_directives = True
             given = self.initial_conditions if directive == ".ic" else self.nodesets
             with self._cache_lock:
                 functions_snapshot = dict(self.functions)
             given |= parse_voltages(statement, self.values(), functions_snapshot)
         elif directive == PERIODIC_STEADY_STATE:
+            self._has_evaluated_directives = True
             with self._cache_lock:
                 functions_snapshot = dict(self.functions)
             self.periodic_steady_states.append(
@@ -723,15 +796,26 @@ class Library:
         if subcircuit is None:
             message = f"no subcircuit is named `{name}`"
             raise SpiceError(message)
+        plan = self._plan()
         if isinstance(drawing.sample, Probe):
             if drawing.sample.moved is None or drawing.sample.moved[0] == "":
-                scope = self._values(Drawing(drawing.sample, ""))
+                scope: Mapping[str, float] = evaluate_stochastic(
+                    plan, Drawing(drawing.sample, "")
+                )
             else:
-                scope = self._scope(None)
+                scope = plan.nominal
         else:
-            scope = self._scope(drawing.sample)
+            scope = self._scope_for_plan(plan, drawing.sample)
         given = {key.casefold(): value for key, value in parameters.items()}
-        return self._build(subcircuit, scope, given, drawing, uses=uses)
+        return self._build(
+            subcircuit,
+            scope,
+            given,
+            drawing,
+            uses=uses,
+            temperature=plan.temperature,
+            temperature_dependent=plan.temperature_dependent,
+        )
 
     def _define(self, opened: Statement, body: list[Statement]) -> None:
         """Registers a `.subckt` definition and clears built component caches."""
@@ -754,7 +838,7 @@ class Library:
         subcircuit = Subcircuit(
             name,
             tuple(pins),
-            defaults,
+            MappingProxyType(defaults),
             tuple(body),
             opened,
             MappingProxyType(local_functions) if local_functions else NO_FUNCTIONS,
@@ -786,12 +870,13 @@ class Library:
             cached = self._global_plan
             temperature = self.temperature
             functions_snapshot = dict(self.functions)
-            if (
-                cached is not None
-                and cached.temperature == temperature
-                and cached.functions == functions_snapshot
-            ):
-                return cached
+            if cached is not None and cached.functions == functions_snapshot:
+                if cached.temperature == temperature:
+                    return cached
+                retargeted = retarget_global_plan(cached, temperature)
+                if retargeted is not None:
+                    self._global_plan = retargeted
+                    return retargeted
             generation = self._generation
             parameters_snapshot = tuple(self._parameters)
         plan = build_global_plan(parameters_snapshot, temperature, functions_snapshot)
@@ -817,7 +902,12 @@ class Library:
         Deterministic parameters are evaluated once inside `GlobalPlan`; per-sample
         evaluation computes only the stochastic subset and its transitive dependents.
         """
-        plan = self._plan()
+        return self._scope_for_plan(self._plan(), sample)
+
+    def _scope_for_plan(
+        self, plan: GlobalPlan, sample: Sample | None
+    ) -> Mapping[str, float]:
+        """Returns the cached global scope for `(sample, plan.temperature)`."""
         if sample is None or not plan.stochastic:
             return plan.nominal
         key = (sample, plan.temperature)
@@ -843,7 +933,51 @@ class Library:
         """
         return evaluate_stochastic(self._plan(), drawing)
 
-    def _build(  # noqa: PLR0913 - build context and optional survey output list
+    def _resolve_defaults(  # noqa: PLR0913 - subcircuit defaults resolution context
+        self,
+        subcircuit: Subcircuit,
+        local: dict[str, float],
+        given: Mapping[str, float],
+        drawing: Drawing,
+        *,
+        surveying: bool,
+        temperature_dependent: frozenset[str],
+    ) -> bool:
+        """Resolves omitted defaults into `local`; returns whether temperature read."""
+        defaults = {
+            parameter: default
+            for parameter, default in subcircuit.defaults.items()
+            if parameter not in given
+        }
+        if not defaults:
+            return False
+        with self._cache_lock:
+            library_functions = dict(self.functions)
+        scoped_functions = (
+            {**library_functions, **subcircuit.functions}
+            if subcircuit.functions
+            else library_functions
+        )
+        if drawing.sample is None and not surveying and temperature_dependent:
+            tracked = TrackedScope(local, temperature_dependent)
+            resolve_into(
+                defaults,
+                tracked,
+                drawing.draws,
+                scoped_functions,
+                partial=False,
+            )
+            return tracked.read_temperature
+        resolve_into(
+            defaults,
+            local,
+            drawing.draws,
+            scoped_functions,
+            partial=surveying,
+        )
+        return False
+
+    def _build(  # noqa: PLR0913 - build context, temperature snapshot and survey list
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
@@ -852,6 +986,8 @@ class Library:
         instantiating: tuple[str, ...] = (),
         *,
         uses: list[Use] | None = None,
+        temperature: float | None = None,
+        temperature_dependent: frozenset[str] | None = None,
     ) -> Built:
         """Builds `subcircuit` with `given` parameter overrides under `scope`.
 
@@ -860,7 +996,6 @@ class Library:
         [`MULTIPLIED`][jolty.spice.library.MULTIPLIED].
         """
         key = check_cycle(subcircuit, instantiating)
-        surveying = uses is not None
         if uses is not None and drawing.path:
             # A survey states each placement within, and what it gives.
             uses.append(Use(drawing.path, "", placed=(subcircuit.name, dict(given))))
@@ -878,26 +1013,21 @@ class Library:
                 for key_name, value in given.items()
                 if key_name not in unknown
             }
-        defaults = {
-            parameter: default
-            for parameter, default in subcircuit.defaults.items()
-            if parameter not in given
-        }
+        resolved_temperature = self.temperature if temperature is None else temperature
+        resolved_temperature_dependent = (
+            self._plan().temperature_dependent
+            if temperature_dependent is None
+            else temperature_dependent
+        )
         local = dict(scope)
         local.update(given)
-        with self._cache_lock:
-            library_functions = dict(self.functions)
-        scoped_functions = (
-            {**library_functions, **subcircuit.functions}
-            if subcircuit.functions
-            else library_functions
-        )
-        resolve_into(
-            defaults,
+        defaults_used_temperature = self._resolve_defaults(
+            subcircuit,
             local,
-            drawing.draws,
-            scoped_functions,
-            partial=surveying,
+            given,
+            drawing,
+            surveying=uses is not None,
+            temperature_dependent=resolved_temperature_dependent,
         )
         values = {
             parameter: local[parameter]
@@ -919,38 +1049,80 @@ class Library:
             lock=self._cache_lock,
             instantiating=(*instantiating, key),
             uses=uses,
+            temperature=resolved_temperature,
+            temperature_dependent=resolved_temperature_dependent,
         )
         if drawing.sample is not None or uses is not None:
             return Translation(self, subcircuit, (scope, local), options).translate(
                 name
             )
-        return self._translate_cached(subcircuit, scope, local, name, options)
+        body_temperature_keys = resolved_temperature_dependent - values.keys()
+        built = self._translate_cached(
+            subcircuit,
+            scope,
+            local,
+            name,
+            options,
+            body_temperature_keys=body_temperature_keys,
+        )
+        if defaults_used_temperature and not built.temperature_dependent:
+            return Built(
+                built.component,
+                built.nets,
+                built.initial,
+                temperature_dependent=True,
+            )
+        return built
 
-    def _translate_cached(
+    def _translate_cached(  # noqa: PLR0913 - subcircuit build context and tracking keys
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
         local: dict[str, float],
         name: str,
         options: TranslationOptions,
+        *,
+        body_temperature_keys: frozenset[str],
     ) -> Built:
         """Returns the cached nominal build of `subcircuit`, translating on a miss."""
+        temperature_key = (name, options.temperature)
         with self._cache_lock:
             generation = self._generation
             state = self._current_built_state_locked()
             if self._built_state is None or self._built_state != state:
                 self._built.clear()
+                self._built_by_temperature.clear()
                 self._built_state = state
             cached = self._built.get(name)
             if cached is not None:
                 return cached
-        built = Translation(self, subcircuit, (scope, local), options).translate(name)
+            cached = self._built_by_temperature.get(temperature_key)
+            if cached is not None:
+                self._built_by_temperature.move_to_end(temperature_key)
+                return cached
+        body_scope: MutableMapping[str, float] = (
+            TrackedScope(local, body_temperature_keys)
+            if body_temperature_keys
+            else local
+        )
+        built = Translation(self, subcircuit, (scope, body_scope), options).translate(
+            name
+        )
         with self._cache_lock:
             if (
                 self._generation == generation
                 and self._built_state == state
                 and self._current_built_state_locked() == state
             ):
+                if built.temperature_dependent:
+                    existing = self._built_by_temperature.get(temperature_key)
+                    if existing is not None:
+                        self._built_by_temperature.move_to_end(temperature_key)
+                        return existing
+                    self._built_by_temperature[temperature_key] = built
+                    while len(self._built_by_temperature) > _MAX_TEMPERATURE_BUILDS:
+                        self._built_by_temperature.popitem(last=False)
+                    return built
                 return self._built.setdefault(name, built)
         return built
 
@@ -979,19 +1151,22 @@ class Library:
         key = name.casefold()
         return local.get(key) or self._models.get(key)
 
-    def _global_bins(self, base: str) -> tuple[ModelCard, ...]:
-        """Returns cached global bin cards for case-folded base model name `base`."""
+    def _global_bins(self, base: str) -> tuple[_IndexedBin, ...]:
+        """Returns cached indexed global bin cards for folded base model `base`."""
         with self._cache_lock:
             index = self._bins
             if index is not None:
                 return index.get(base, ())
             generation = self._generation
             snapshot = tuple(self._models.items())
-        grouped: dict[str, list[ModelCard]] = {}
+        grouped: dict[str, list[_IndexedBin]] = {}
         for key, card in snapshot:
             card_base = bin_base(key)
             if card_base is not None:
-                grouped.setdefault(card_base, []).append(card)
+                is_static, bounds = models.static_bounds(card)
+                grouped.setdefault(card_base, []).append(
+                    _IndexedBin(card=card, static_bounds=bounds, dynamic=not is_static)
+                )
         built = {model_name: tuple(cards) for model_name, cards in grouped.items()}
         with self._cache_lock:
             if self._generation == generation and self._bins is None:
@@ -1016,7 +1191,7 @@ class Library:
             if bin_base(key) == base:
                 return card
         bins = self._global_bins(base)
-        return bins[0] if bins else None
+        return bins[0].card if bins else None
 
     @property
     def surveying(self) -> bool:
@@ -1073,9 +1248,14 @@ class Library:
                 card, scope, size, functions=functions
             ):
                 return card
-        for card in reversed(self._global_bins(base)):
-            if models.holds(card, scope, size, functions=functions):
-                return card
+        for entry in reversed(self._global_bins(base)):
+            if entry.dynamic:
+                if models.holds(entry.card, scope, size, functions=functions):
+                    return entry.card
+            elif entry.static_bounds is not None and models.bounds_hold(
+                entry.static_bounds, size
+            ):
+                return entry.card
         return None
 
     def fingers(self, instance: Mapping[str, float]) -> float:
@@ -1137,7 +1317,7 @@ class Library:
             subcircuit, scope, given, drawing, instantiating, uses=uses
         ).component
 
-    def place_built(  # noqa: PLR0913 - subcircuit placement state and survey list
+    def place_built(  # noqa: PLR0913 - subcircuit placement state and optional survey list
         self,
         subcircuit: Subcircuit,
         scope: Mapping[str, float],
@@ -1146,6 +1326,8 @@ class Library:
         instantiating: tuple[str, ...] = (),
         *,
         uses: list[Use] | None = None,
+        temperature: float | None = None,
+        temperature_dependent: frozenset[str] | None = None,
     ) -> Built:
         """Builds a child `Built` placement (component, nets, and initial state).
 
@@ -1156,18 +1338,107 @@ class Library:
             drawing: Statistical sampling context and hierarchical placement path.
             instantiating: Active chain of subcircuit names used to detect recursion.
             uses: Optional list collecting survey records rather than raising on errors.
+            temperature: Optional library temperature snapshot in kelvins.
+            temperature_dependent: Optional set of global parameter names depending on
+                library temperature.
 
         Returns:
             Full `Built` record bundling the component, net names, and initial state.
         """
-        return self._build(subcircuit, scope, given, drawing, instantiating, uses=uses)
+        return self._build(
+            subcircuit,
+            scope,
+            given,
+            drawing,
+            instantiating,
+            uses=uses,
+            temperature=temperature,
+            temperature_dependent=temperature_dependent,
+        )
+
+    @classmethod
+    def from_sources(
+        cls,
+        sources: Sequence[tuple[Path, str | None]],
+        *,
+        temperature: float = _core.REFERENCE_TEMPERATURE,
+        compatibility: Compatibility | None = None,
+        cache: Path | None = None,
+    ) -> Self:
+        """Loads ordered `(path, section)` SPICE sources with persistent disk caching.
+
+        Args:
+            sources: Ordered `(path, section)` pairs to include into a new `Library`.
+            temperature: Circuit temperature in kelvins assigned to SPICE ``temper``.
+            compatibility: Optional ngspice compatibility mode applied to the library.
+            cache: Optional root cache directory overriding `Settings.load().cache`.
+
+        Returns:
+            Populated `Library` containing all definitions read from `sources`.
+
+        Raises:
+            SpiceError: When any file is unreadable or contains unsupported syntax.
+        """
+        if not sources:
+            return cls(temperature, compatibility)
+        cache_directory = _resolve_cache_directory(cache)
+        key = cache_key(sources, compatibility) if cache_directory is not None else None
+        if cache_directory is not None and key is not None:
+            snapshot = read_cached(
+                cache_directory,
+                key,
+                compatibility=compatibility,
+                temperature=temperature,
+            )
+            if snapshot is not None:
+                return cls._from_snapshot(snapshot, temperature, compatibility)
+        library = cls(temperature, compatibility)
+        recorder = ManifestRecorder() if cache_directory is not None else None
+        for path, section in sources:
+            library._include_recorded(path, section, recorder)
+        if (
+            cache_directory is not None
+            and key is not None
+            and recorder is not None
+            and recorder.consistent
+        ):
+            write_cached(
+                cache_directory,
+                key,
+                library._snapshot(),
+                recorder.files(),
+                compatibility=compatibility,
+            )
+        return library
 
 
-def load(*paths: Path | str) -> Library:
+def _resolve_cache_directory(cache: Path | None) -> Path | None:
+    """Returns `cache` when provided, or the configured settings cache directory."""
+    if cache is not None:
+        return cache
+    try:
+        return Settings.load().cache
+    except JoltyError:
+        return None
+
+
+def load(
+    *paths: Path | str,
+    temperature: float = _core.REFERENCE_TEMPERATURE,
+    compatibility: Compatibility | None = None,
+    cache: Path | None = None,
+) -> Library:
     """Loads SPICE files at `paths` and their transitive includes into a `Library`.
+
+    Reuses a digest-validated parsed library cache inside `cache` (or the configured
+    settings cache directory when omitted), invalidating automatically whenever any
+    transitively included file changes.
 
     Args:
         *paths: Filesystem paths to SPICE library or netlist files loaded in order.
+        temperature: Circuit temperature in kelvins assigned to SPICE ``temper``.
+        compatibility: Optional ngspice compatibility mode applied to the library.
+        cache: Optional root cache directory overriding `Settings.load().cache`.
 
     Returns:
         Populated `Library` containing all definitions read from `paths`.
@@ -1175,7 +1446,10 @@ def load(*paths: Path | str) -> Library:
     Raises:
         SpiceError: When any file is unreadable or contains unsupported SPICE syntax.
     """
-    library = Library()
-    for path in map(Path, paths):
-        library.include(path)
-    return library
+    sources = tuple((Path(path), None) for path in paths)
+    return Library.from_sources(
+        sources,
+        temperature=temperature,
+        compatibility=compatibility,
+        cache=cache,
+    )

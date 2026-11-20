@@ -79,6 +79,8 @@ The reader supports `.lib` sections, relative `.include` paths, `.option scale`,
 Under HSPICE compatibility (such as SKY130) or `wnflag`, transistor width divides across fingers (`nf`) identically to ngspice `INPgetModBin`.
 
 `temper` evaluates to the library load temperature in kelvins (default 27 °C), used by SG13G2 bipolar transit times.
+Parsed kit libraries cache under [`cache`](../reference/configuration.md), keyed by section, compatibility mode, and included file digests.
+Changing `library.temperature` preserves cached builds for subcircuits that do not read `temper`.
 Statistical functions (`agauss`, `gauss`, `aunif`, `unif`, `limit`) default to nominal values unless drawn via `library.drawn(name, Sample(seed, index), path)`.
 Each drawn placement evaluates statistical calls from deterministic engine variates keyed by seed, sample index, placement path, and call order.
 Deterministic keying guarantees identical mismatch bits across arbitrary shard splits while drawing independent mismatch per placement.

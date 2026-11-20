@@ -196,13 +196,19 @@ def read(
         JoltyError: When ``pdk_root`` lacks a required library or settings are invalid.
         SpiceError: When a model file contains unsupported SPICE syntax.
     """
-    found = root(kit, settings)
-    library = Library(temperature, kit.compatibility)
-    for path in kit.includes:
-        library.include(found / path)
-    for path, section in kit.typical if sections is None else sections:
-        library.include(found / path, section)
-    return library
+    chosen = Settings.load() if settings is None else settings
+    found = root(kit, chosen)
+    selected = kit.typical if sections is None else sections
+    sources = (
+        *((found / path, None) for path in kit.includes),
+        *((found / path, section) for path, section in selected),
+    )
+    return Library.from_sources(
+        sources,
+        temperature=temperature,
+        compatibility=kit.compatibility,
+        cache=chosen.cache,
+    )
 
 
 type Status = Literal["native", "verilog-a", "neither", "unread", "unvalued"]

@@ -6,10 +6,10 @@ import math
 import re
 import sys
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Final
+from typing import Final, override
 
 from jolty import _core, ir
 from jolty.errors import SpiceError
@@ -273,6 +273,48 @@ class Subcircuit:
     functions: Mapping[str, Function] = NO_FUNCTIONS
 
 
+class TrackedScope(MutableMapping[str, float]):
+    """Mutable parameter scope recording reads of temperature-dependent names."""
+
+    __slots__ = ("_temperature_dependent", "_values", "read_temperature")
+
+    def __init__(
+        self,
+        values: dict[str, float],
+        temperature_dependent: frozenset[str],
+    ) -> None:
+        """Initializes a tracking view over `values` for `temperature_dependent`."""
+        self._values = values
+        self._temperature_dependent = temperature_dependent
+        self.read_temperature = False
+
+    @override
+    def __getitem__(self, key: str) -> float:
+        if key in self._temperature_dependent:
+            self.read_temperature = True
+        return self._values[key]
+
+    @override
+    def __setitem__(self, key: str, value: float) -> None:
+        self._values[key] = value
+
+    @override
+    def __delitem__(self, key: str) -> None:
+        del self._values[key]
+
+    @override
+    def __contains__(self, key: object) -> bool:
+        return key in self._values
+
+    @override
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    @override
+    def __len__(self) -> int:
+        return len(self._values)
+
+
 @dataclass(frozen=True, slots=True)
 class GlobalPlan:
     """Partition of global `.param` definitions at one `(temperature, functions)`.
@@ -281,6 +323,9 @@ class GlobalPlan:
     `nominal` holds every parameter at its nominal value (same dict as `fixed` when
     `stochastic` is empty). `stochastic` holds inlined expressions that call a
     statistical function or transitively depend on one, in topological order.
+    `temperature_dependent` names every global parameter (including ``temper`` unless
+    shadowed by a temperature-independent `.param`) whose value depends on library
+    temperature.
     """
 
     temperature: float
@@ -288,6 +333,7 @@ class GlobalPlan:
     fixed: dict[str, float]
     nominal: dict[str, float]
     stochastic: tuple[tuple[str, Expression], ...]
+    temperature_dependent: frozenset[str] = frozenset()
 
 
 def dependency_graph(
@@ -413,6 +459,82 @@ def extract_multiplier(
     return multiplier, {key: value for key, value in given.items() if key != "m"}
 
 
+def temperature_closure(
+    definitions: Mapping[str, Expression],
+    dependents: Mapping[str, list[str]],
+) -> frozenset[str]:
+    """Returns global parameter names whose values depend on library temperature.
+
+    Includes ``temper`` unless a global `.param` shadows it with an expression that
+    does not read ``temper``, along with every parameter referencing a
+    temperature-dependent name directly or transitively.
+
+    Args:
+        definitions: Inlined parameter expressions keyed by case-folded name.
+        dependents: Forward adjacency list mapping each parameter to dependents.
+
+    Returns:
+        Case-folded names of temperature-dependent global parameters.
+    """
+    if "temper" in definitions:
+        if "temper" not in names(definitions["temper"]):
+            return frozenset()
+        roots = ["temper"]
+        dependent: set[str] = {"temper"}
+    else:
+        roots = [
+            name
+            for name, expression in definitions.items()
+            if "temper" in names(expression)
+        ]
+        dependent = {"temper", *roots}
+    stack = list(roots)
+    while stack:
+        current = stack.pop()
+        for follower in dependents.get(current, ()):
+            if follower not in dependent:
+                dependent.add(follower)
+                stack.append(follower)
+    return frozenset(dependent)
+
+
+def retarget_global_plan(plan: GlobalPlan, temperature: float) -> GlobalPlan | None:
+    """Updates `plan` to `temperature` without re-evaluating global `.param` values.
+
+    Succeeds only when no global `.param` depends on ``temper``. Returns `None` when
+    at least one global parameter depends on temperature and full re-evaluation is
+    required.
+
+    Args:
+        plan: Existing compiled global parameter plan at another temperature.
+        temperature: New library temperature in kelvins.
+
+    Returns:
+        Updated `GlobalPlan` at `temperature`, or `None` when rebuild is required.
+    """
+    if plan.temperature_dependent - {"temper"}:
+        return None
+    if "temper" in plan.temperature_dependent:
+        celsius_temperature = temperature - ZERO_CELSIUS
+        fixed = {**plan.fixed, "temper": celsius_temperature}
+        nominal_values = (
+            {**plan.nominal, "temper": celsius_temperature}
+            if plan.stochastic
+            else fixed
+        )
+    else:
+        fixed = plan.fixed
+        nominal_values = plan.nominal
+    return GlobalPlan(
+        temperature=temperature,
+        functions=plan.functions,
+        fixed=fixed,
+        nominal=nominal_values,
+        stochastic=plan.stochastic,
+        temperature_dependent=plan.temperature_dependent,
+    )
+
+
 def build_global_plan(
     parameters: Sequence[tuple[str, Expression]],
     temperature: float,
@@ -436,6 +558,7 @@ def build_global_plan(
     in_degree, dependents = dependency_graph(inlined_definitions)
     ordered, remaining = topological_order(inlined_definitions, in_degree, dependents)
     stochastic_names = stochastic_closure(inlined_definitions, dependents)
+    temperature_names = temperature_closure(inlined_definitions, dependents)
     celsius_temperature = temperature - ZERO_CELSIUS
     fixed: dict[str, float] = {"temper": celsius_temperature}
     nominal_values: dict[str, float] = (
@@ -461,6 +584,7 @@ def build_global_plan(
         fixed=fixed,
         nominal=nominal_values,
         stochastic=tuple(stochastic),
+        temperature_dependent=temperature_names,
     )
 
 
@@ -480,14 +604,14 @@ def evaluate_stochastic(plan: GlobalPlan, drawing: Drawing) -> dict[str, float]:
     return values
 
 
-def resolve_into(
+def resolve_into[Scope: MutableMapping[str, float]](
     definitions: Mapping[str, Expression],
-    values: dict[str, float],
+    values: Scope,
     draws: Callable[[str], Draw],
     functions: Mapping[str, Function],
     *,
     partial: bool = False,
-) -> dict[str, float]:
+) -> Scope:
     """Evaluates each parameter `definitions` defines into `values` in place.
 
     Args:

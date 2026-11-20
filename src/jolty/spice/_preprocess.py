@@ -1,8 +1,9 @@
 # Copyright 2026 Maxence Faldor
 """SPICE preprocessing: ``.include``, ``.lib``, and ``.if`` conditional blocks."""
 
+import hashlib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final
@@ -10,6 +11,48 @@ from typing import Final
 from jolty.errors import SpiceError
 from jolty.spice.expressions import Function, evaluate, inlined, parse
 from jolty.spice.netlist import Statement, statements, tokens
+
+
+@dataclass(frozen=True, slots=True)
+class SourceFile:
+    """Opened path, resolved target, byte size, and SHA-256 digest of a read file."""
+
+    opened: str
+    resolved: str
+    size: int
+    digest: str
+
+
+@dataclass(slots=True)
+class ManifestRecorder:
+    """Records every SPICE file read during transitive include expansion."""
+
+    _records: dict[tuple[str, str], SourceFile] = field(default_factory=dict)
+    consistent: bool = True
+
+    def record(self, opened: str, resolved: str, content: bytes) -> None:
+        """Records `content` read from `opened` whose resolved path is `resolved`.
+
+        Marks `consistent` false if the same `(opened, resolved)` file is read twice
+        during one expansion with different bytes.
+        """
+        key = (opened, resolved)
+        source_file = SourceFile(
+            opened=opened,
+            resolved=resolved,
+            size=len(content),
+            digest=hashlib.sha256(content).hexdigest(),
+        )
+        previous = self._records.get(key)
+        if previous is not None and previous != source_file:
+            self.consistent = False
+            return
+        self._records[key] = source_file
+
+    def files(self) -> tuple[SourceFile, ...]:
+        """Returns recorded source files in deterministic sorted order."""
+        return tuple(self._records[key] for key in sorted(self._records))
+
 
 CONDITIONS: Final = frozenset({".if", ".elseif", ".else", ".endif"})
 """The statements of a subcircuit's ``.if`` blocks."""
@@ -48,7 +91,11 @@ def keyword(statement: Statement) -> str:
 
 
 def expanded(
-    path: Path, section: str | None, within: tuple[tuple[Path, str | None], ...]
+    path: Path,
+    section: str | None,
+    within: tuple[tuple[Path, str | None], ...],
+    *,
+    recorder: ManifestRecorder | None = None,
 ) -> list[Statement]:
     """Reads and expands SPICE statements from `path`, optionally selecting `section`.
 
@@ -62,6 +109,7 @@ def expanded(
         section: Optional ``.lib`` section name to extract, or `None` for top-level
             statements.
         within: Active stack of `(resolved_path, section)` frames for cycle detection.
+        recorder: Optional manifest recorder capturing every transitively read file.
 
     Returns:
         Expanded `Statement` list in source order with nested includes inlined.
@@ -70,17 +118,23 @@ def expanded(
         SpiceError: When `path` cannot be read, `section` is missing, or includes form
             a cycle.
     """
-    reading = (path.resolve(), None if section is None else section.casefold())
+    resolved = path.resolve()
+    reading = (resolved, None if section is None else section.casefold())
     if reading in within:
         message = f"{path} includes itself, through {len(within)} files"
         raise SpiceError(message)
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        if recorder is None:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        else:
+            raw = path.read_bytes()
+            recorder.record(str(path.absolute()), str(resolved), raw)
+            text = raw.decode("utf-8", errors="replace")
     except OSError as error:
         message = f"cannot read {path}: {error.strerror}"
         raise SpiceError(message) from None
     found, seen = expanded_text(
-        text, path.parent, path.name, section, (*within, reading)
+        text, path.parent, path.name, section, (*within, reading), recorder=recorder
     )
     if section is not None and not seen:
         message = f"{path} has no section `{section}`"
@@ -103,12 +157,14 @@ def _update_subcircuit_depth(
     return subcircuit_depth
 
 
-def expanded_text(
+def expanded_text(  # noqa: PLR0913 - text expansion context and optional manifest recorder
     text: str,
     directory: Path,
     label: str,
     section: str | None,
     within: tuple[tuple[Path, str | None], ...],
+    *,
+    recorder: ManifestRecorder | None = None,
 ) -> tuple[list[Statement], bool]:
     """Expands ``.include`` and ``.lib`` directives in `text` relative to `directory`.
 
@@ -123,6 +179,7 @@ def expanded_text(
         label: Source filename recorded on emitted `Statement` objects.
         section: Optional target `.lib` section name, or `None` for unsectioned lines.
         within: Active stack of `(resolved_path, section)` frames for cycle detection.
+        recorder: Optional manifest recorder forwarded to nested includes.
 
     Returns:
         Pair of `(expanded_statements, section_seen)`.
@@ -152,7 +209,7 @@ def expanded_text(
         elif subcircuit_depth == 0 and directive == ".endl":
             opened = None
         elif opened == target:
-            included = _included(statement, words, directory, within)
+            included = _included(statement, words, directory, within, recorder=recorder)
             subcircuit_depth = _update_subcircuit_depth(included, subcircuit_depth)
             found.extend(included)
     return found, seen
@@ -163,6 +220,8 @@ def _included(
     words: Sequence[str],
     directory: Path,
     within: tuple[tuple[Path, str | None], ...],
+    *,
+    recorder: ManifestRecorder | None = None,
 ) -> list[Statement]:
     """Expands `statement` if it is a `.include`/`.lib` directive, else returns it.
 
@@ -173,9 +232,9 @@ def _included(
         return [statement]
     directive = words[0].casefold()
     if directive == ".lib" and len(words) == 3:  # noqa: PLR2004 - a file and a section
-        return expanded(directory / words[1], words[2], within)
+        return expanded(directory / words[1], words[2], within, recorder=recorder)
     if directive in _INCLUDES and len(words) == 2:  # noqa: PLR2004 - and a file
-        return expanded(directory / words[1], None, within)
+        return expanded(directory / words[1], None, within, recorder=recorder)
     if directive in _INCLUDES or directive == ".lib":
         message = "a file is included by its path, a section by the file's and name"
         raise statement.fail(message)

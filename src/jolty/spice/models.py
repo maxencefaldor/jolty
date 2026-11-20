@@ -948,8 +948,11 @@ def geometric_values(
         if name not in table:
             raise unmatched(card, name, target)
         if table[name] != "bv_max":
-            resolved = inlined(expression, functions)
-            evaluated = evaluate(resolved, scope, draws(name))
+            if type(expression) is Number and math.isfinite(expression.value):
+                evaluated = float(expression.value)
+            else:
+                resolved = inlined(expression, functions)
+                evaluated = evaluate(resolved, scope, draws(name))
             raw[name] = evaluated
             values[table[name]] = evaluated
     nominal_temperature(raw, target, allow_tref=card.kind == "r")
@@ -1324,10 +1327,12 @@ def device(  # noqa: PLR0913 - device translation inputs
     Raises:
         SpiceError: When the model type or any parameter is unsupported by jolty.
     """
-    every = {
-        name: evaluate(inlined(expression, functions), scope, draws(name))
-        for name, expression in card.parameters.items()
-    }
+    every: dict[str, float] = {}
+    for name, expression in card.parameters.items():
+        if type(expression) is Number and math.isfinite(expression.value):
+            every[name] = float(expression.value)
+        else:
+            every[name] = evaluate(inlined(expression, functions), scope, draws(name))
     own = own_temperature(every, instance, statement)
     values = {
         name: value for name, value in every.items() if name not in OWN_TEMPERATURES
@@ -1813,6 +1818,64 @@ BINNED_LEVELS: Final = BSIM3_LEVELS | BSIM4_LEVELS | HISIM2_LEVELS | HISIM_HV_LE
 """MOSFET levels supporting bin selection in ngspice ``INPgetModBin``."""
 
 
+def static_bounds(
+    card: ModelCard,
+) -> tuple[bool, tuple[float, float, float, float] | None]:
+    """Returns `(is_static, bounds)` for a binned MOSFET `card` without reading scope.
+
+    When `is_static` is True, `bounds` holds `(lmin, lmax, wmin, wmax)` if `card` is a
+    binned level with all four finite numeric literal bounds, or `None` when `card` can
+    never match as a binned card. When `is_static` is False, at least one of `level`,
+    `lmin`, `lmax`, `wmin`, or `wmax` is a non-literal expression that must be
+    evaluated against scope and user functions.
+
+    Args:
+        card: Candidate binned MOSFET model card.
+
+    Returns:
+        Pair `(is_static, bounds)` describing whether bin bounds are scope-independent.
+    """
+    level = card.parameters.get("level")
+    if level is None:
+        return True, None
+    if type(level) is not Number or not math.isfinite(level.value):
+        return False, None
+    if level.value not in BINNED_LEVELS:
+        return True, None
+    raw_bounds = (
+        card.parameters.get("lmin"),
+        card.parameters.get("lmax"),
+        card.parameters.get("wmin"),
+        card.parameters.get("wmax"),
+    )
+    if any(bound is None for bound in raw_bounds):
+        return True, None
+    values: list[float] = []
+    for bound in raw_bounds:
+        if type(bound) is not Number or not math.isfinite(bound.value):
+            return False, None
+        values.append(float(bound.value))
+    return True, (values[0], values[1], values[2], values[3])
+
+
+def bounds_hold(
+    bounds: tuple[float, float, float, float],
+    size: tuple[float, float],
+) -> bool:
+    """Returns whether `size` `(length, width)` lies within `bounds`.
+
+    Args:
+        bounds: Binned MOSFET bounds `(lmin, lmax, wmin, wmax)` in meters.
+        size: Instance `(length, width)` pair in meters.
+
+    Returns:
+        `True` when both dimensions fall inside `bounds` up to `BIN_TOLERANCE`.
+    """
+    lmin, lmax, wmin, wmax = bounds
+    length, width = size
+    return _within(length, lmin, lmax) and _within(width, wmin, wmax)
+
+
 def holds(
     card: ModelCard,
     scope: Mapping[str, float],
@@ -1839,9 +1902,7 @@ def holds(
     bounds = _bounds(card, scope, functions)
     if bounds is None:
         return False
-    lmin, lmax, wmin, wmax = bounds
-    length, width = size
-    return _within(length, lmin, lmax) and _within(width, wmin, wmax)
+    return bounds_hold(bounds, size)
 
 
 def center(

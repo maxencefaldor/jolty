@@ -844,7 +844,7 @@ def inlined(
 right=Binary(operator='*', left=Number(value=2.0), right=Name(name='y'))), \
 right=Number(value=1.0))
     """
-    if not functions:
+    if not functions or isinstance(expression, Number | Name | Voltage | Current):
         return expression
     frames: list[tuple[Expression, tuple[str, ...], bool]] = [
         (expression, calling, False)

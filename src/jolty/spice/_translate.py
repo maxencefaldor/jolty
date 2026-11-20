@@ -7,14 +7,14 @@ import operator
 import re
 import threading
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final, Protocol
 
 from pydantic import JsonValue
 
-from jolty import ir
+from jolty import _core, ir
 from jolty.builder import Component
 from jolty.devices import device
 from jolty.errors import SpiceError
@@ -35,6 +35,7 @@ from jolty.spice._params import (
     PARAMETERS,
     Drawing,
     Subcircuit,
+    TrackedScope,
     parse_assignments,
     parse_function,
     resolve_into,
@@ -193,6 +194,8 @@ class LibraryHost(Protocol):
         instantiating: tuple[str, ...] = (),
         *,
         uses: list[Use] | None = None,
+        temperature: float | None = None,
+        temperature_dependent: frozenset[str] | None = None,
     ) -> Built:
         """Builds a child subcircuit placement.
 
@@ -203,6 +206,9 @@ class LibraryHost(Protocol):
             drawing: Statistical sampling context and hierarchical placement path.
             instantiating: Active chain of subcircuit names used to detect recursion.
             uses: Optional list collecting survey records rather than raising on errors.
+            temperature: Optional library temperature snapshot in kelvins.
+            temperature_dependent: Optional set of global parameter names depending on
+                library temperature.
 
         Returns:
             Full `Built` record bundling the component, net names, and initial state.
@@ -221,6 +227,8 @@ class TranslationOptions:
     lock: threading.Lock | None = None
     instantiating: tuple[str, ...] = ()
     uses: list[Use] | None = None
+    temperature: float = _core.REFERENCE_TEMPERATURE
+    temperature_dependent: frozenset[str] = frozenset()
 
 
 @dataclass(slots=True)
@@ -252,7 +260,7 @@ class Translation:
         self,
         library: LibraryHost,
         subcircuit: Subcircuit,
-        scopes: tuple[Mapping[str, float], dict[str, float]],
+        scopes: tuple[Mapping[str, float], MutableMapping[str, float]],
         options: TranslationOptions,
     ) -> None:
         """Initializes translation state for `subcircuit` under `scopes`."""
@@ -267,6 +275,9 @@ class Translation:
         self._cache_lock = options.lock
         self.instantiating = options.instantiating
         self.uses = options.uses
+        self._temperature = options.temperature
+        self._global_temperature_dependent = options.temperature_dependent
+        self._temperature_dependent = False
         self.order = 0
         self.draw: Draw = nominal
         """The draws of the statistical functions of the element being translated."""
@@ -299,6 +310,32 @@ class Translation:
                 message = "a pin named `0`, SPICE's global ground"
                 raise subcircuit.statement.fail(message)
             self.net(pin)
+
+    @property
+    def global_temperature_dependent(self) -> frozenset[str]:
+        """Global parameter names whose values depend on library temperature."""
+        return self._global_temperature_dependent
+
+    @property
+    def temperature_value(self) -> float:
+        """Library temperature in kelvins without marking temperature dependence."""
+        return self._temperature
+
+    def read_temperature(self) -> float:
+        """Returns library temperature in kelvins and marks temperature dependence."""
+        self._temperature_dependent = True
+        return self._temperature
+
+    def mark_temperature_dependent(self) -> None:
+        """Marks this translation as depending on library temperature."""
+        self._temperature_dependent = True
+
+    @property
+    def is_temperature_dependent(self) -> bool:
+        """Whether this translation read library temperature or a dependent value."""
+        return self._temperature_dependent or (
+            isinstance(self.scope, TrackedScope) and self.scope.read_temperature
+        )
 
     def translate(self, name: str) -> Built:
         """Translates the subcircuit into a `Built` component named `name`.
@@ -353,7 +390,10 @@ class Translation:
         definition = ir.Component(ports=tuple(ports), instances=instances)
         component = Component(name, definition, tuple(self.children.values()))
         return Built(
-            component, MappingProxyType(dict(self.nets)), self._initial_state()
+            component,
+            MappingProxyType(dict(self.nets)),
+            self._initial_state(),
+            temperature_dependent=self.is_temperature_dependent,
         )
 
     def _initial_state(self) -> InitialState:

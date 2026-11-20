@@ -55,6 +55,7 @@ class Built:
     component: Component
     nets: Mapping[str, str]
     initial: InitialState
+    temperature_dependent: bool = False
 
 
 def check_net_name(node: str, statement: Statement) -> None:

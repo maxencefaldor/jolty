@@ -745,7 +745,11 @@ def _instance(translation: Translation, statement: Statement) -> None:
         translation.drawing.within(name),
         translation.instantiating,
         uses=translation.uses,
+        temperature=translation.temperature_value,
+        temperature_dependent=translation.global_temperature_dependent,
     )
+    if built.temperature_dependent:
+        translation.mark_temperature_dependent()
     child = built.component
     ports = [port.name for port in child.definition.ports]
     terminals = {

@@ -24,6 +24,7 @@ from jolty import (
     Role,
     Simulation,
     _core,
+    circuit,
     component,
     devices,
     ir,
@@ -40,7 +41,16 @@ from jolty.plan import (
     linear,
 )
 from jolty.settings import Settings
-from jolty.spice import gf180mcu, kits, ngspice, sg13g2, sky130
+from jolty.spice import (
+    gf180mcu,
+    kits,
+    ngspice,
+    sg13g2,
+    sky130,
+)
+from jolty.spice import (
+    library as spice_library,
+)
 from jolty.spice.expressions import STATISTICAL
 from jolty.spice.library import Library, Sample
 from jolty.units import GHz, Hz, MHz, V, celsius, fF, kHz, kohm, ns, ps
@@ -1502,3 +1512,67 @@ def test_a_diode_of_every_part_agrees_with_ngspice(hot: bool) -> None:  # noqa: 
 def test_the_tables_name_every_status() -> None:
     """Verifies that `STATUSES` covers every status defined by `kits.Status`."""
     assert set(STATUSES) == set(typing.get_args(kits.Status.__value__))
+
+
+def test_kits_read_uses_disk_cache_and_matches_cold_parse_bit_identically(
+    kept: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifies `kits.read` hits disk cache across temperatures with bit-exact IR."""
+    sg13g2_settings = Settings(
+        cache=tmp_path / "sg13g2_cache",
+        pdk_root=kits.root(sg13g2.KIT, kept),
+    )
+    sky130_settings = Settings(
+        cache=tmp_path / "sky130_cache",
+        pdk_root=kits.root(sky130.KIT, kept),
+    )
+    cold_sg13g2 = kits.read(sg13g2.KIT, settings=sg13g2_settings)
+    cold_sky130 = kits.read(sky130.KIT, settings=sky130_settings)
+    assert len(list((sg13g2_settings.cache / "spice").glob("*.zlib"))) == 1
+    assert len(list((sky130_settings.cache / "spice").glob("*.zlib"))) == 1
+
+    def fail_on_reparse(*_args: object, **_kwargs: object) -> object:
+        message = "expected kits.read disk cache hit without re-expanding PDK files"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(spice_library, "expanded", fail_on_reparse)
+    warm_sg13g2 = kits.read(sg13g2.KIT, settings=sg13g2_settings)
+    warm_sg13g2_hot = kits.read(
+        sg13g2.KIT, settings=sg13g2_settings, temperature=celsius(85).value
+    )
+    warm_sky130 = kits.read(sky130.KIT, settings=sky130_settings)
+
+    assert circuit(warm_sg13g2.component("npn13G2")) == circuit(
+        cold_sg13g2.component("npn13G2")
+    )
+    assert circuit(warm_sg13g2.component("pnpMPA")) == circuit(
+        cold_sg13g2.component("pnpMPA")
+    )
+    assert circuit(
+        warm_sky130.component("sky130_fd_pr__nfet_01v8", w=1.0, l=0.15)
+    ) == circuit(cold_sky130.component("sky130_fd_pr__nfet_01v8", w=1.0, l=0.15))
+    assert len(list((sg13g2_settings.cache / "spice").glob("*.zlib"))) == 1
+    assert (
+        _parameters(warm_sg13g2_hot.component("npn13G2"), "vbic")[
+            "forward_transit_time"
+        ]
+        != _parameters(warm_sg13g2.component("npn13G2"), "vbic")["forward_transit_time"]
+    )
+
+
+def test_kits_library_temperature_change_reuses_temper_free_devices(
+    kept: Settings,
+) -> None:
+    """Verifies `pnpMPA` stays cached across temperatures while `npn13G2` updates."""
+    loaded = kits.read(sg13g2.KIT, settings=kept)
+    pnp_at_27 = loaded.component("pnpMPA")
+    npn_at_27 = loaded.component("npn13G2")
+
+    hot_kelvins = celsius(85).value
+    loaded.temperature = hot_kelvins
+    fresh_hot = kits.read(sg13g2.KIT, settings=kept, temperature=hot_kelvins)
+
+    assert loaded.component("pnpMPA") is pnp_at_27
+    npn_at_85 = loaded.component("npn13G2")
+    assert npn_at_85 is not npn_at_27
+    assert circuit(npn_at_85) == circuit(fresh_hot.component("npn13G2"))

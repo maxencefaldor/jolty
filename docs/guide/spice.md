@@ -29,6 +29,7 @@ Subcircuits referencing SPICE global ground (node `0`) expose an additional `spi
 Each imported instance records the SPICE file and line number so diagnostics pinpoint the exact netlist statement.
 
 `spice.fetch(url, digest)` downloads a vendor model file, verifies its SHA-256 digest, and caches it under [`cache`](../reference/configuration.md) for reuse.
+`spice.load` and `kits.read` cache parsed SPICE libraries under [`cache`](../reference/configuration.md), validating the SHA-256 digest of every transitively included file before reuse.
 
 ## What jolty reads
 

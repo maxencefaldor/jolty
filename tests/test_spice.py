@@ -6,6 +6,7 @@ import math
 import re
 import struct
 import threading
+import zlib
 from collections.abc import Mapping, MutableMapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -44,7 +45,18 @@ from jolty import (
     vjp,
 )
 from jolty.plan import TIGHT, Mismatch
-from jolty.spice import download, export, models, ngspice, sky130, xyce
+from jolty.spice import (
+    _cache,
+    download,
+    export,
+    models,
+    ngspice,
+    sky130,
+    xyce,
+)
+from jolty.spice import (
+    library as spice_library,
+)
 from jolty.spice.export import netlist
 from jolty.spice.expressions import (
     Binary,
@@ -5237,3 +5249,462 @@ def test_nominal_temperature_conflicts_and_invalid_passive_values_are_rejected(
 def test_zero_capacitance_remains_accepted_in_spice() -> None:
     found = _devices(library(".subckt a x\nC1 x 0 0\n.ends").component("a"))
     assert found["C1"] == ("capacitor", {"capacitance": 0.0})
+
+
+def _write_cached_library_fixture(directory: Path) -> tuple[Path, Path, Path]:
+    """Creates a multi-file SPICE library exercising includes, sections, and cards."""
+    included = directory / "leaf.inc"
+    included.write_text(
+        ".param leaf_resistance = 1k\n"
+        ".func double(x) {2 * x}\n"
+        ".model base_diode D(IS=1e-14 RS=10)\n"
+        ".model derived_diode AKO:base_diode D(N=1.5)\n"
+        ".model nch.1 nmos(level=54 version=4.5 lmin=0.1u lmax=10u "
+        "wmin=0.1u wmax=1.2u vth0=0.4)\n"
+        ".model nch.2 nmos(level=54 version=4.5 lmin=0.1u lmax=10u "
+        "wmin=1.2u wmax=10u vth0=0.7)\n",
+        encoding="utf-8",
+    )
+    sections_file = directory / "corners.lib"
+    sections_file.write_text(
+        ".lib nominal\n"
+        ".param corner_scale = 1.0\n"
+        ".include 'leaf.inc'\n"
+        ".endl nominal\n"
+        ".lib fast\n"
+        ".param corner_scale = 0.8\n"
+        ".include 'leaf.inc'\n"
+        ".endl fast\n",
+        encoding="utf-8",
+    )
+    main = directory / "main.lib"
+    main.write_text(
+        ".option scale=1u\n"
+        ".lib 'corners.lib' nominal\n"
+        ".subckt inner a b\n"
+        ".func half(x) {x / 2}\n"
+        "R1 a b {half(double(leaf_resistance) * corner_scale)}\n"
+        ".ends\n"
+        ".subckt stage d g s b flag=1\n"
+        ".if (flag == 1)\n"
+        "X1 d s inner\n"
+        ".else\n"
+        "Ralt d s 500\n"
+        ".endif\n"
+        "D1 d s derived_diode\n"
+        "M1 d g s b nch l=1 w=2 nf=2\n"
+        "Vsense d sensed 0\n"
+        "Rsense sensed s 1k\n"
+        "B1 g 0 I={V(d, s) > 0 ? 1e-6 * (-V(d) + abs(I(Vsense))) : 0}\n"
+        ".ic V(d)=0.5\n"
+        ".nodeset V(g)=0.3\n"
+        ".ends\n",
+        encoding="utf-8",
+    )
+    return main, sections_file, included
+
+
+def test_disk_cache_hit_is_bit_identical_to_cold_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main, _, _ = _write_cached_library_fixture(tmp_path)
+    cache_directory = tmp_path / "cache"
+
+    cold = spice.load(main, compatibility="hsa", cache=cache_directory)
+    cache_entries = list((cache_directory / "spice").glob("*.zlib"))
+    assert len(cache_entries) == 1
+    assert not list((cache_directory / "spice").glob("*.tmp"))
+
+    def fail_on_reparse(*_args: object, **_kwargs: object) -> object:
+        message = "expected disk cache hit without re-expanding SPICE files"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(spice_library, "expanded", fail_on_reparse)
+    warm = spice.load(main, compatibility="hsa", cache=cache_directory)
+
+    assert warm.subcircuits == cold.subcircuits
+    assert warm.models == cold.models
+    assert warm.options == cold.options
+    assert warm.values() == cold.values()
+    assert circuit(warm.component("stage")) == circuit(cold.component("stage"))
+    assert circuit(warm.component("stage", flag=0)) == circuit(
+        cold.component("stage", flag=0)
+    )
+    assert warm.initial_conditions_of("stage") == cold.initial_conditions_of("stage")
+    assert warm.nodesets_of("stage") == cold.nodesets_of("stage")
+    for card_name in warm.models:
+        card = warm.card(card_name, {})
+        assert card is not None
+        assert isinstance(card.parameters, MappingProxyType)
+
+
+def test_disk_cache_invalidates_on_transitive_include_and_lib_edits(
+    tmp_path: Path,
+) -> None:
+    main, sections_file, included = _write_cached_library_fixture(tmp_path)
+    cache_directory = tmp_path / "cache"
+
+    initial = spice.load(main, cache=cache_directory)
+    assert _devices(initial.component("inner"))["R1"][1]["resistance"] == 1000.0
+
+    # Same byte length edit in a transitively included file (`1k` -> `2k`).
+    included.write_text(
+        included.read_text(encoding="utf-8").replace("1k", "2k", 1),
+        encoding="utf-8",
+    )
+    after_include_edit = spice.load(main, cache=cache_directory)
+    assert (
+        _devices(after_include_edit.component("inner"))["R1"][1]["resistance"] == 2000.0
+    )
+
+    # Edit inside the `.lib` section file (`1.0` -> `3.0`).
+    sections_file.write_text(
+        sections_file.read_text(encoding="utf-8").replace("1.0", "3.0", 1),
+        encoding="utf-8",
+    )
+    after_section_edit = spice.load(main, cache=cache_directory)
+    assert (
+        _devices(after_section_edit.component("inner"))["R1"][1]["resistance"] == 6000.0
+    )
+
+    # Deleting a transitively included file invalidates and raises SpiceError.
+    included.unlink()
+    with pytest.raises(SpiceError, match="cannot read"):
+        spice.load(main, cache=cache_directory)
+
+
+def test_disk_cache_invalidates_on_symlink_retarget(tmp_path: Path) -> None:
+    first_target = tmp_path / "first.inc"
+    second_target = tmp_path / "second.inc"
+    first_target.write_text(".param value = 100\n", encoding="utf-8")
+    second_target.write_text(".param value = 250\n", encoding="utf-8")
+    link = tmp_path / "active.inc"
+    link.symlink_to(first_target)
+    main = tmp_path / "main.lib"
+    main.write_text(
+        ".include 'active.inc'\n.subckt load a\nR1 a 0 {value}\n.ends\n",
+        encoding="utf-8",
+    )
+    cache_directory = tmp_path / "cache"
+
+    loaded_first = spice.load(main, cache=cache_directory)
+    assert _devices(loaded_first.component("load"))["R1"][1]["resistance"] == 100.0
+
+    link.unlink()
+    link.symlink_to(second_target)
+    loaded_second = spice.load(main, cache=cache_directory)
+    assert _devices(loaded_second.component("load"))["R1"][1]["resistance"] == 250.0
+
+
+def test_disk_cache_separates_sections_and_compatibility_modes(
+    tmp_path: Path,
+) -> None:
+    main, sections_file, _ = _write_cached_library_fixture(tmp_path)
+    cache_directory = tmp_path / "cache"
+
+    default_mode = spice.load(main, compatibility=None, cache=cache_directory)
+    hspice_mode = spice.load(main, compatibility="hsa", cache=cache_directory)
+    assert _devices(default_mode.component("stage"))["M1"][1]["vth0"] == 0.7
+    assert _devices(hspice_mode.component("stage"))["M1"][1]["vth0"] == 0.4
+
+    nominal_section = spice.Library.from_sources(
+        ((sections_file, "nominal"),), cache=cache_directory
+    )
+    fast_section = spice.Library.from_sources(
+        ((sections_file, "fast"),), cache=cache_directory
+    )
+    assert nominal_section.values()["corner_scale"] == 1.0
+    assert fast_section.values()["corner_scale"] == 0.8
+
+    entries = list((cache_directory / "spice").glob("*.zlib"))
+    assert len(entries) == 4
+
+
+@pytest.mark.parametrize(
+    "corrupt_bytes",
+    [
+        b"",
+        b"not a cache file at all",
+        b"JLTYSPC1truncated",
+        b"JLTYSPC1" + zlib.compress(b"{not valid json"),
+        b"JLTYSPC1" + zlib.compress(b"[]"),
+        b"JLTYSPC1" + zlib.compress(b'{"format": 999}'),
+        b"JLTYSPC1" + zlib.compress(b'{"format": 1, "manifest": [true]}'),
+        b"JLTYSPC1" + zlib.compress(b'{"format": 1, "evaluated_temperature": NaN}'),
+    ],
+)
+def test_disk_cache_recovers_from_corrupt_or_truncated_entries(
+    tmp_path: Path, corrupt_bytes: bytes
+) -> None:
+    main, _, _ = _write_cached_library_fixture(tmp_path)
+    cache_directory = tmp_path / "cache"
+    key = _cache.cache_key(((main, None),), None)
+    entry = _cache.cache_file(cache_directory, key)
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_bytes(corrupt_bytes)
+
+    recovered = spice.load(main, cache=cache_directory)
+    assert _devices(recovered.component("inner"))["R1"][1]["resistance"] == 1000.0
+
+    # Healing overwrite wrote a valid entry that now passes read_cached directly.
+    healed = _cache.read_cached(
+        cache_directory,
+        key,
+        compatibility=None,
+        temperature=_core.REFERENCE_TEMPERATURE,
+    )
+    assert healed is not None
+
+
+def test_disk_cache_handles_top_level_evaluated_directives_across_temperatures(
+    tmp_path: Path,
+) -> None:
+    deck = tmp_path / "top_ic.lib"
+    deck.write_text(
+        ".ic V(out)={temper / 100}\n"
+        ".nodeset V(bias)={0.1 + temper / 1000}\n"
+        ".pss {1e6 + 1e3 * temper} 1u\n"
+        ".subckt load out bias\n"
+        "R1 out 0 1k\n"
+        "R2 bias 0 1k\n"
+        ".ends\n",
+        encoding="utf-8",
+    )
+    cache_directory = tmp_path / "cache"
+
+    at_nominal = spice.load(deck, temperature=celsius(27).value, cache=cache_directory)
+    at_hot = spice.load(deck, temperature=celsius(85).value, cache=cache_directory)
+    at_hot_cached = spice.load(
+        deck, temperature=celsius(85).value, cache=cache_directory
+    )
+
+    # Celsius conversion (`celsius(T) - 273.15`) introduces <= 1e-12 floating rounding.
+    assert at_nominal.initial_conditions["out"] == pytest.approx(0.27, rel=1e-12)
+    assert at_hot.initial_conditions["out"] == pytest.approx(0.85, rel=1e-12)
+    assert at_hot_cached.initial_conditions == at_hot.initial_conditions
+    assert at_hot_cached.nodesets == at_hot.nodesets
+    assert at_hot_cached.periodic_steady_states == at_hot.periodic_steady_states
+
+
+def test_disk_cache_shares_entry_across_temperatures_without_top_level_directives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deck = tmp_path / "thermal.lib"
+    deck.write_text(
+        ".subckt warm a b\nR1 a b {1k * (1 + temper / 100)}\n.ends\n",
+        encoding="utf-8",
+    )
+    cache_directory = tmp_path / "cache"
+
+    cold = spice.load(deck, temperature=celsius(27).value, cache=cache_directory)
+    # Exact arithmetic `1000 * (1 + 27 / 100)`; rel=1e-12 covers Kelvin/Celsius offset.
+    assert _devices(cold.component("warm"))["R1"][1]["resistance"] == pytest.approx(
+        1270.0, rel=1e-12
+    )
+
+    def fail_on_reparse(*_args: object, **_kwargs: object) -> object:
+        message = "expected shared disk cache hit across temperatures"
+        raise AssertionError(message)
+
+    monkeypatch.setattr(spice_library, "expanded", fail_on_reparse)
+    hot = spice.load(deck, temperature=celsius(85).value, cache=cache_directory)
+    # Exact arithmetic `1000 * (1 + 85 / 100)`; rel=1e-12 covers Kelvin/Celsius offset.
+    assert _devices(hot.component("warm"))["R1"][1]["resistance"] == pytest.approx(
+        1850.0, rel=1e-12
+    )
+    assert len(list((cache_directory / "spice").glob("*.zlib"))) == 1
+
+
+def test_disk_cache_is_race_free_under_concurrent_loads(tmp_path: Path) -> None:
+    main, _, _ = _write_cached_library_fixture(tmp_path)
+    cache_directory = tmp_path / "cache"
+    expected = circuit(
+        spice.load(main, cache=tmp_path / "reference").component("stage")
+    )
+
+    workers = 8
+    barrier = threading.Barrier(workers)
+
+    def load_concurrent(_worker: int) -> ir.Circuit:
+        barrier.wait()
+        return circuit(spice.load(main, cache=cache_directory).component("stage"))
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        loaded = list(pool.map(load_concurrent, range(workers)))
+
+    assert all(built == expected for built in loaded)
+    assert not list((cache_directory / "spice").glob("*.tmp"))
+
+
+def test_disk_cache_uses_configured_jolty_cache_and_ignores_unwritable_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    main, _, _ = _write_cached_library_fixture(tmp_path)
+    configured = tmp_path / "configured_cache"
+    monkeypatch.setenv("JOLTY_CACHE", str(configured))
+
+    loaded = spice.load(main)
+    assert _devices(loaded.component("inner"))["R1"][1]["resistance"] == 1000.0
+    assert len(list((configured / "spice").glob("*.zlib"))) == 1
+
+    # Passing a regular file as the cache root forces OSError on write; load succeeds.
+    blocked = tmp_path / "not_a_directory"
+    blocked.write_text("file", encoding="utf-8")
+    fallback = spice.load(main, cache=blocked)
+    assert _devices(fallback.component("inner"))["R1"][1]["resistance"] == 1000.0
+
+
+def test_built_cache_keeps_temper_free_subcircuits_and_updates_temper_dependents() -> (
+    None
+):
+    """Verifies `_built` decouples library temperature from `temper`-free subcircuits.
+
+    Covers direct `temper`, transitive global parameters, subcircuit defaults,
+    nested children, `.if` conditions, `.model` expressions, `.ic` expressions,
+    voltage-dependent resistors with and without `TC1`, and dynamic MOSFET bin bounds.
+    `rel=1e-12` covers Celsius/Kelvin conversion rounding (`T - 273.15`).
+    """
+    source = (
+        ".param base = 1k\n"
+        ".param drifted = {base + 10 * temper}\n"
+        ".model d_fixed D(IS=1e-14 RS=5)\n"
+        ".model d_warm D(IS=1e-14 RS={5 + 0.1 * temper})\n"
+        ".model n_dyn.1 nmos(level=54 version=4.5 lmin=0.1u lmax=10u "
+        "wmin=0.1u wmax={1u + 1e-8 * temper} vth0=0.4)\n"
+        ".model n_dyn.2 nmos(level=54 version=4.5 lmin=0.1u lmax=10u "
+        "wmin={1u + 1e-8 * temper} wmax=10u vth0=0.8)\n"
+        ".subckt fixed_load a\n"
+        "R1 a 0 {base}\n"
+        "D1 a 0 d_fixed\n"
+        "Rbeh a 0 r='1k * (1 + 0.1 * V(a, 0))'\n"
+        ".ends\n"
+        ".subckt direct_warm a\n"
+        "R1 a 0 {1k * (1 + temper / 100)}\n"
+        ".ends\n"
+        ".subckt global_warm a\n"
+        "R1 a 0 {drifted}\n"
+        ".ends\n"
+        ".subckt default_warm a r={base + temper}\n"
+        "R1 a 0 {r}\n"
+        ".ends\n"
+        ".subckt parent_of_default_warm a\n"
+        "X1 a default_warm\n"
+        ".ends\n"
+        ".subckt parent_of_overridden_default a\n"
+        "X1 a default_warm r=750\n"
+        ".ends\n"
+        ".subckt branch_warm a\n"
+        ".if (temper > 50)\n"
+        "R1 a 0 2k\n"
+        ".else\n"
+        "R1 a 0 1k\n"
+        ".endif\n"
+        ".ends\n"
+        ".subckt card_warm a\n"
+        "D1 a 0 d_warm\n"
+        ".ends\n"
+        ".subckt ic_warm a\n"
+        "R1 a 0 1k\n"
+        ".ic V(a)={temper / 100}\n"
+        ".ends\n"
+        ".subckt vres_tc a\n"
+        "R1 a 0 r='1k * (1 + 0.1 * V(a, 0))' tc1=1m\n"
+        ".ends\n"
+        ".subckt binned_warm d g s b\n"
+        "M1 d g s b n_dyn l=1u w=1.5u\n"
+        ".ends\n"
+    )
+    loaded = library(source)
+
+    fixed_at_27 = loaded.component("fixed_load")
+    overridden_parent_at_27 = loaded.component("parent_of_overridden_default")
+    assert _devices(loaded.component("direct_warm"))["R1"][1][
+        "resistance"
+    ] == pytest.approx(1270.0, rel=1e-12)
+    assert _devices(loaded.component("global_warm"))["R1"][1][
+        "resistance"
+    ] == pytest.approx(1270.0, rel=1e-12)
+    parent_default_at_27 = loaded.component("parent_of_default_warm")
+    assert _devices(parent_default_at_27.children[0])["R1"][1][
+        "resistance"
+    ] == pytest.approx(1027.0, rel=1e-12)
+    assert _devices(loaded.component("branch_warm"))["R1"][1]["resistance"] == 1000.0
+    assert _devices(loaded.component("card_warm"))["D1"][1][
+        "series_resistance"
+    ] == pytest.approx(7.7, rel=1e-12)
+    assert loaded.initial_conditions_of("ic_warm")["a"] == pytest.approx(
+        0.27, rel=1e-12
+    )
+    vres_27 = circuit(loaded.component("vres_tc"))
+    assert _devices(loaded.component("binned_warm"))["M1"][1]["vth0"] == 0.8
+
+    # Raise temperature to 85 C (358.15 K) and compare every subcircuit against a fresh
+    # uncached Library constructed at 85 C.
+    hot_kelvins = celsius(85).value
+    loaded.temperature = hot_kelvins
+    fresh_hot = spice.Library(hot_kelvins)
+    fresh_hot.read(source, "parts.lib")
+
+    # Temperature-independent subcircuits stay cached (exact object identity).
+    assert loaded.component("fixed_load") is fixed_at_27
+    assert loaded.component("parent_of_overridden_default") is overridden_parent_at_27
+
+    # Every temperature-dependent subcircuit re-evaluates bit-identically to fresh.
+    for subcircuit_name in (
+        "fixed_load",
+        "direct_warm",
+        "global_warm",
+        "default_warm",
+        "parent_of_default_warm",
+        "parent_of_overridden_default",
+        "branch_warm",
+        "card_warm",
+        "ic_warm",
+        "vres_tc",
+        "binned_warm",
+    ):
+        assert circuit(loaded.component(subcircuit_name)) == circuit(
+            fresh_hot.component(subcircuit_name)
+        )
+
+    assert _devices(loaded.component("branch_warm"))["R1"][1]["resistance"] == 2000.0
+    assert _devices(loaded.component("parent_of_default_warm").children[0])["R1"][1][
+        "resistance"
+    ] == pytest.approx(1085.0, rel=1e-12)
+    assert _devices(loaded.component("binned_warm"))["M1"][1]["vth0"] == 0.4
+    assert loaded.initial_conditions_of("ic_warm")["a"] == pytest.approx(
+        0.85, rel=1e-12
+    )
+    assert circuit(loaded.component("vres_tc")) != vres_27
+
+    # Returning to 27 C reuses the cached 27 C temperature-dependent entries too.
+    loaded.temperature = celsius(27).value
+    assert _devices(loaded.component("branch_warm"))["R1"][1]["resistance"] == 1000.0
+    assert circuit(loaded.component("vres_tc")) == vres_27
+
+
+def test_global_plan_retargets_without_rebuild_when_no_param_uses_temper() -> None:
+    """Verifies switching library temperature keeps temper-free builds cached."""
+    loaded = library(
+        ".param r_base = 2k\n"
+        ".subckt load a\n"
+        "R1 a 0 {r_base}\n"
+        ".ends\n"
+        ".subckt sensor a\n"
+        "R1 a 0 {1k + temper}\n"
+        ".ends\n"
+    )
+    fixed_before = loaded.component("load")
+    # Exact arithmetic `1000 + 27`; rel=1e-12 covers Kelvin/Celsius offset rounding.
+    assert _devices(loaded.component("sensor"))["R1"][1]["resistance"] == pytest.approx(
+        1027.0, rel=1e-12
+    )
+
+    loaded.temperature = celsius(100).value
+    assert loaded.values()["r_base"] == 2000.0
+    # Celsius conversion (`celsius(100) - 273.15`) introduces <= 1e-12 float rounding.
+    assert loaded.values()["temper"] == pytest.approx(100.0, rel=1e-12)
+    assert loaded.component("load") is fixed_before
+    assert _devices(loaded.component("sensor"))["R1"][1]["resistance"] == pytest.approx(
+        1100.0, rel=1e-12
+    )
