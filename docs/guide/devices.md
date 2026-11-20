@@ -37,7 +37,7 @@ Passive values scale with temperature difference `ΔT = T - Tnom` as `1 + tc1 ·
 | `temperature_coefficient` | `TC1` | K⁻¹ | 0 |
 | `quadratic_temperature_coefficient` | `TC2` | K⁻² | 0 |
 | `exponential_temperature_coefficient` | `TCE` | percent per kelvin, a number | none: a resistor drifts by `1.01^(tce · ΔT)` instead |
-| `nominal_temperature` | `TNOM` | K | 27 °C |
+| `nominal_temperature` | `TNOM` (`TREF` on resistors) | K | 27 °C |
 
 Only resistors accept `exponential_temperature_coefficient`, and any coefficient combination scaling resistance to zero fails elaboration.
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Final
 
-from jolty import _core
+from jolty import _core, ir
 from jolty.errors import SpiceError
 from jolty.spice import models
 from jolty.spice.expressions import (
@@ -186,6 +186,24 @@ class Probe:
         return drawn
 
 
+def _encode_path(path: str) -> str:
+    """Encodes placement `path` for IR component names without collisions.
+
+    Percent-encodes path separators, percent signs, whitespace, and non-printable
+    characters as uppercase UTF-8 hex escapes so flat paths stay unchanged while
+    nested paths such as ``X1/X2`` become ``X1%2FX2`` without colliding with
+    ``X1_X2`` or literal ``X1%2FX2``.
+    """
+    return "".join(
+        "".join(f"%{byte:02X}" for byte in character.encode())
+        if character in {ir.SEPARATOR, "%"}
+        or character.isspace()
+        or not character.isprintable()
+        else character
+        for character in path
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Drawing:
     """Statistical sampling context pairing a `Sample` or `Probe` with a circuit path.
@@ -213,18 +231,21 @@ class Drawing:
     def named(self, name: str) -> str:
         """Qualifies component `name` with path and sample identity to avoid clashes.
 
+        Encodes `self.path` for IR component-name rules while leaving `self.path`
+        untouched for statistical draw keys.
+
         Args:
             name: Base component name before sample or probe qualification.
 
         Returns:
-            Component name suffixed with placement path and sample coordinates when
-            sampled.
+            Component name suffixed with encoded placement path and sample coordinates
+            when sampled or probed.
         """
         match self.sample:
             case Sample(seed=seed, index=index):
-                return f"{name}@{self.path}#{seed}:{index}"
+                return f"{name}@{_encode_path(self.path)}#{seed}:{index}"
             case Probe():
-                return f"{name}@{self.path}"
+                return f"{name}@{_encode_path(self.path)}"
         return name
 
     def within(self, instance: str) -> Drawing:
@@ -236,7 +257,7 @@ class Drawing:
         Returns:
             Nested `Drawing` preserving `self.sample` at the extended path.
         """
-        path = f"{self.path}/{instance}" if self.path else instance
+        path = f"{self.path}{ir.SEPARATOR}{instance}" if self.path else instance
         return Drawing(self.sample, path)
 
 

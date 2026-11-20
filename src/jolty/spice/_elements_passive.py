@@ -39,7 +39,6 @@ from jolty.spice.expressions import (
 )
 from jolty.spice.models import ModelCard
 from jolty.spice.netlist import Statement, tokens
-from jolty.units import celsius
 
 _CARDS: Final = frozenset({"res", "cap", "ind", *models.GEOMETRIC})
 """Supported passive model-card types: PSpice ``RES``, ``CAP``, ``IND`` and SPICE3
@@ -156,7 +155,12 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
         own |= {name: own[name] * scale for name in ("w", "l") if name in own}
         if values:
             own[element_letter] = translation.value(values[0])
-        read = models.NOMINAL_TEMPERATURES | models.OWN_TEMPERATURES | drifts | noisy
+        nominal_keys = (
+            models.NOMINAL_TEMPERATURES_WITH_TREF
+            if model == "resistor"
+            else models.NOMINAL_TEMPERATURES
+        )
+        read = nominal_keys | models.OWN_TEMPERATURES | drifts | noisy
         value, given = _valued(
             translation, statement, card, own, (element_letter, read)
         )
@@ -165,6 +169,7 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
             message = f"the element's copies `m` is positive and finite, not {copies!r}"
             raise statement.fail(message)
         value = value * copies if model == "capacitor" else value / copies
+        _check_passive_value(statement, model, parameter, value)
         given |= _coefficients(translation, statement, assigned, drifts)
         temperatures = {
             name: single_keyword(translation.value, statement, name, words)
@@ -172,7 +177,7 @@ def _passive(model: str, parameter: str, kind: str) -> ElementTranslator:
             if name in {"temp", "dtemp"}
         }
         parameters: dict[str, JsonValue] = {parameter: value}
-        parameters |= _temperatures(given)
+        parameters |= _temperatures(given, statement, allow_tref=model == "resistor")
         parameters |= models.own_temperature(given, temperatures, statement)
         parameters |= {
             models.PASSIVE_CURVATURE[name]: amount
@@ -547,13 +552,35 @@ def _valued(
     return value, given
 
 
-def _temperatures(given: Mapping[str, float]) -> dict[str, JsonValue]:
+def _check_passive_value(
+    statement: Statement, model: str, parameter: str, value: float
+) -> None:
+    """Validates passive element `value` against engine positivity requirements.
+
+    Raises:
+        SpiceError: When a resistor or inductor is non-positive, a capacitor is
+            negative, or any passive value is non-finite.
+    """
+    if model == "capacitor":
+        if not (value >= 0 and math.isfinite(value)):
+            message = f"{parameter} is at least 0, not {value!r}"
+            raise statement.fail(message)
+        return
+    if not (value > 0 and math.isfinite(value)):
+        message = f"{parameter} is positive, not {value!r}"
+        raise statement.fail(message)
+
+
+def _temperatures(
+    given: Mapping[str, float],
+    statement: Statement,
+    *,
+    allow_tref: bool = False,
+) -> dict[str, JsonValue]:
     """Maps passive nominal temperature and SPICE drift keys in `given` to jolty."""
-    parameters: dict[str, JsonValue] = {}
+    parameters = models.nominal_temperature(given, statement, allow_tref=allow_tref)
     for name, amount in given.items():
-        if name in models.NOMINAL_TEMPERATURES:
-            parameters["nominal_temperature"] = celsius(amount).value
-        elif name in models.PASSIVE_DRIFT:
+        if name in models.PASSIVE_DRIFT:
             parameters[models.PASSIVE_DRIFT[name]] = amount
     return parameters
 

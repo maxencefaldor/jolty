@@ -15,7 +15,17 @@ from typing import Final
 import numpy as np
 import pytest
 
-from jolty import Builder, Component, Role, Simulation, component, devices, ir, results
+from jolty import (
+    Builder,
+    Component,
+    Role,
+    Simulation,
+    circuit,
+    component,
+    devices,
+    ir,
+    results,
+)
 from jolty.plan import (
     Ac,
     DcSweep,
@@ -29,7 +39,21 @@ from jolty.plan import (
 from jolty.report import report
 from jolty.settings import Settings
 from jolty.spice import Library, Sample, kits, sg13g2, sky130, standard_deviation
-from jolty.units import A, F, GHz, H, MHz, V, format_si, kHz, kohm, nF, uA, um
+from jolty.units import (
+    A,
+    F,
+    GHz,
+    H,
+    MHz,
+    V,
+    celsius,
+    format_si,
+    kHz,
+    kohm,
+    nF,
+    uA,
+    um,
+)
 
 STANDARD_ERRORS: Final = 5
 """Number of Monte Carlo standard errors allowed between standard deviations."""
@@ -604,3 +628,110 @@ def test_sky130s_bsim4_mosfet_mismatch_spreads_as_monte_carlo_finds(
         ]
     )
     agrees(float(found.standard_deviation(output)), samples)
+
+
+XHIGH_PO: Final = "sky130_fd_pr__res_xhigh_po_0p69"
+"""SKY130 nested precision polysilicon resistor wrapping `res_xhigh_po__base`."""
+
+GENERIC_PO: Final = "sky130_fd_pr__res_generic_po"
+"""SKY130 generic polysilicon resistor whose local model card sets `TREF = 30.0`."""
+
+
+def sky130_xhigh_po_bench(part: Component) -> Component:
+    """Builds a 1 V operating-point bench for a SKY130 xhigh-poly resistor."""
+    builder = Builder("sky130_xhigh_po_bench")
+    ground = builder.port("ground", Role.GROUND)
+    source = builder.place(devices.voltage_source(1 * V), name="V1")
+    resistor = builder.place(part, name="R1")
+    builder.connect(source.positive, resistor.r0, name="drive")
+    builder.connect(resistor.r1, resistor.b, source.negative, ground)
+    return builder.finish()
+
+
+def test_sky130s_nested_resistor_draws_and_simulates(mim: Library) -> None:
+    """Verifies SKY130 nested `res_xhigh_po_0p69` draws and elaborates natively.
+
+    `sky130_fd_pr__res_xhigh_po_0p69` places `sky130_fd_pr__res_xhigh_po__base`,
+    whose inner `agauss` draws produce a child path containing `'/'`. Encoding `'/'`
+    in the qualified component name lets the circuit elaborate and simulate cleanly
+    while keeping statistical variate keys bit-identical.
+    """
+    sample = Sample(17, 0)
+    first = mim.drawn(XHIGH_PO, sample, "R1")
+    assert first.children
+    assert all(
+        "/" not in key for key in circuit(sky130_xhigh_po_bench(first)).components
+    )
+    nominal_current = (
+        Simulation(sky130_xhigh_po_bench(mim.component(XHIGH_PO)))
+        .run(OperatingPoint())
+        .current("V1")
+    )
+    first_current = (
+        Simulation(sky130_xhigh_po_bench(first)).run(OperatingPoint()).current("V1")
+    )
+    repeated_current = (
+        Simulation(sky130_xhigh_po_bench(mim.drawn(XHIGH_PO, sample, "R1")))
+        .run(OperatingPoint())
+        .current("V1")
+    )
+    sibling_current = (
+        Simulation(sky130_xhigh_po_bench(mim.drawn(XHIGH_PO, sample, "R2")))
+        .run(OperatingPoint())
+        .current("V1")
+    )
+    next_current = (
+        Simulation(sky130_xhigh_po_bench(mim.drawn(XHIGH_PO, Sample(17, 1), "R1")))
+        .run(OperatingPoint())
+        .current("V1")
+    )
+    assert first_current == repeated_current
+    assert first_current != nominal_current
+    assert first_current != sibling_current
+    assert first_current != next_current
+    assert isinstance(mim.random_variables(XHIGH_PO, "R1"), tuple)
+
+
+def sky130_generic_po_bench(part: Component) -> Component:
+    """Builds a 1 V operating-point bench for a SKY130 generic poly resistor."""
+    builder = Builder("sky130_generic_po_bench")
+    ground = builder.port("ground", Role.GROUND)
+    source = builder.place(devices.voltage_source(1 * V), name="V1")
+    resistor = builder.place(part, name="R1")
+    builder.connect(source.positive, resistor.r0, name="drive")
+    builder.connect(resistor.r1, source.negative, ground)
+    return builder.finish()
+
+
+def test_sky130s_generic_poly_resistor_reads_tref_and_draws_mismatch(
+    mim: Library,
+) -> None:
+    """Verifies SKY130 `res_generic_po` reads `TREF = 30` and draws mismatch natively.
+
+    Nominal-temperature assertion uses `rel=1e-12` for Celsius-to-Kelvin IEEE-754
+    addition rounding (`30 + 273.15`).
+    """
+    nominal = mim.component(GENERIC_PO, w=1, l=10)
+    (element,) = nominal.definition.instances
+    assert element.parameters["nominal_temperature"] == pytest.approx(
+        celsius(30).value, rel=1e-12
+    )
+    (variable,) = mim.random_variables(GENERIC_PO, "R1", w=1, l=10)
+    assert (variable.instance, variable.name) == ("R1", "rp1_mm#0")
+    spread = Simulation(sky130_generic_po_bench(nominal)).run(
+        Mismatch(["V1:current"], random_variables=[variable])
+    )
+    assert float(spread.standard_deviation("V1:current")) > 0
+    nominal_current = (
+        Simulation(sky130_generic_po_bench(nominal)).run(OperatingPoint()).current("V1")
+    )
+    drawn_current = (
+        Simulation(
+            sky130_generic_po_bench(
+                mim.drawn(GENERIC_PO, Sample(19, 0), "R1", w=1, l=10)
+            )
+        )
+        .run(OperatingPoint())
+        .current("V1")
+    )
+    assert drawn_current != nominal_current

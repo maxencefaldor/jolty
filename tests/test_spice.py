@@ -39,7 +39,7 @@ from jolty import (
     results,
     spice,
 )
-from jolty.plan import TIGHT
+from jolty.plan import TIGHT, Mismatch
 from jolty.spice import download, export, models, ngspice, sky130, xyce
 from jolty.spice.export import netlist
 from jolty.spice.expressions import (
@@ -4796,3 +4796,255 @@ def test_memristor_transient_export_emits_numeric_state_capacitance() -> None:
         and float(line.split()[-1]) == export.STATE_CAPACITANCE
         for line in lines
     )
+
+
+NESTED_MISMATCHED: Final = (
+    ".subckt inner a b\n"
+    ".param spread = agauss(1, 0.1, 1)\n"
+    "R1 a b {1k * spread}\n"
+    ".ends\n"
+    ".subckt outer a b\n"
+    "Xinner a b inner\n"
+    ".ends\n"
+)
+"""Nested subcircuit whose inner placement draws from `agauss`."""
+
+
+def test_nested_subcircuit_drawn_and_mismatch_encode_paths_without_collision() -> None:
+    """Verifies nested `.subckt` draws elaborate cleanly and match closed-form mismatch.
+
+    Inner placement paths contain `'/'` for statistical variate keying while component
+    names encode `'/'` so `jolty_ir::Name` validates every nested subcircuit under both
+    `Sample` and `Probe`. Linear divider tolerances cover LU and central-difference
+    rounding (`LU_ROUNDING_RTOL` and `rel=1e-9` for `O(eps^(2/3))` finite differences).
+    """
+
+    def bench(part: Component) -> Component:
+        builder = Builder("nested_bench")
+        ground = builder.port("ground", Role.GROUND)
+        source = builder.place(devices.voltage_source(1 * V), name="V1")
+        upper = builder.place(devices.resistor(1 * kohm), name="Rtop")
+        lower = builder.place(part, name="X1")
+        builder.connect(source.positive, upper.a, name="in")
+        builder.connect(upper.b, lower.a, name="out")
+        builder.connect(lower.b, source.negative, ground)
+        return builder.finish()
+
+    first, second = library(NESTED_MISMATCHED), library(NESTED_MISMATCHED)
+    sample = spice.Sample(seed=13, index=5)
+    placed = first.drawn("outer", sample, "X1")
+    (child,) = placed.children
+    assert "/" not in child.name
+    assert "X1%2FXinner" in child.name
+    assert all("/" not in key for key in circuit(bench(placed)).components)
+
+    # Statistical draws continue to key on the raw `'/'`-separated path bit-identically.
+    expected_normal = _core.variate("normal", 13, 5, "X1/Xinner", "spread#0")
+    expected_resistance = 1e3 * (1.0 + 0.1 * expected_normal)
+    (inner_resistor,) = child.definition.instances
+    assert inner_resistor.parameters["resistance"] == expected_resistance
+
+    point = Simulation(bench(placed)).run(OperatingPoint())
+    expected_voltage = expected_resistance / (1e3 + expected_resistance)
+    assert point.voltage("out") == pytest.approx(expected_voltage, rel=LU_ROUNDING_RTOL)
+    repeated = second.drawn("outer", sample, "X1")
+    assert Simulation(bench(repeated)).run(OperatingPoint()).voltage(
+        "out"
+    ) == point.voltage("out")
+    sibling = first.drawn("outer", sample, "X2")
+    assert Simulation(bench(sibling)).run(OperatingPoint()).voltage(
+        "out"
+    ) != point.voltage("out")
+    next_sample = first.drawn("outer", spice.Sample(seed=13, index=6), "X1")
+    assert Simulation(bench(next_sample)).run(OperatingPoint()).voltage(
+        "out"
+    ) != point.voltage("out")
+
+    deep = first.drawn("outer", sample, "stage1/X1")
+    assert all("/" not in key for key in circuit(bench(deep)).components)
+    assert math.isfinite(Simulation(bench(deep)).run(OperatingPoint()).voltage("out"))
+
+    (variable,) = first.random_variables("outer", "X1")
+    assert variable.instance == "X1/Xinner"
+    assert variable.name == "spread#0"
+    assert variable.mean == 1.0
+    assert variable.standard_deviation == 0.1
+    assert variable.derivatives == {
+        "X1/Xinner/R1": {"resistance": pytest.approx(1e3, rel=1e-9)}
+    }
+    mismatch = Simulation(bench(first.component("outer"))).run(
+        Mismatch(["out"], random_variables=[variable])
+    )
+    assert mismatch.standard_deviation("out") == pytest.approx(0.025, rel=1e-9)
+
+
+def test_drawn_component_names_never_collide_across_special_paths() -> None:
+    """Verifies percent-encoded `Drawing` paths stay distinct and valid IR names."""
+    deterministic = library(".subckt cell a b\nR1 a b 1k\n.ends\n")
+    sample = spice.Sample(seed=1, index=0)
+    special_paths = ("a/b", "a_b", "a.b", "a%2Fb", "a b", "a\tb")
+    drawn_cells = [deterministic.drawn("cell", sample, path) for path in special_paths]
+    names = [part.name for part in drawn_cells]
+    assert len(set(names)) == len(special_paths)
+    assert all(
+        "/" not in name and not any(c.isspace() or not c.isprintable() for c in name)
+        for name in names
+    )
+
+    builder = Builder("special_paths")
+    ground = builder.port("ground", Role.GROUND)
+    source = builder.place(devices.voltage_source(1 * V), name="V1")
+    for index, part in enumerate(drawn_cells):
+        placed = builder.place(part, name=f"U{index}")
+        builder.connect(source.positive, placed.a)
+        builder.connect(placed.b, source.negative, ground)
+    assert math.isfinite(
+        Simulation(builder.finish()).run(OperatingPoint()).current("V1")
+    )
+
+    # Nested path `X1/X2` and flat path `X1_X2` with different draws never collide.
+    nested = library(
+        ".subckt leaf a b\n.param k = agauss(1, 0.1, 1)\nR1 a b {1k * k}\n.ends\n"
+        ".subckt wrap a b\nX2 a b leaf\n.ends\n"
+    )
+    pair_builder = Builder("nested_vs_flat")
+    pair_ground = pair_builder.port("ground", Role.GROUND)
+    pair_source = pair_builder.place(devices.voltage_source(1 * V), name="V1")
+    wrapped = pair_builder.place(nested.drawn("wrap", sample, "X1"), name="X1")
+    flat = pair_builder.place(nested.drawn("leaf", sample, "X1_X2"), name="X1_X2")
+    pair_builder.connect(pair_source.positive, wrapped.a, flat.a)
+    pair_builder.connect(wrapped.b, flat.b, pair_source.negative, pair_ground)
+    built_pair = pair_builder.finish()
+    assert all("/" not in key for key in circuit(built_pair).components)
+    assert math.isfinite(Simulation(built_pair).run(OperatingPoint()).current("V1"))
+
+    # Probe path encoding works when caller supplies a `'/'`-separated placement path.
+    (probed,) = nested.random_variables("wrap", "stage/X1")
+    assert probed.instance == "stage/X1/X2"
+    assert set(probed.derivatives) == {"stage/X1/X2/R1"}
+
+
+def test_resistor_cards_accept_tref_as_tnom_alias_and_scale_temperature() -> None:
+    """Verifies SPICE3 `R` and PSpice `RES` cards map `TREF` identically to `TNOM`.
+
+    Temperature-scaling simulation uses `LU_ROUNDING_RTOL` (1e-12) for exact linear
+    conductance rounding and `KELVIN_ROUNDING_RTOL` for Celsius-to-Kelvin addition.
+    """
+    parts = library(
+        ".model rm_tref r rsh=100 tc1r=2e-3 tref=30\n"
+        ".model rm_tnom r rsh=100 tc1r=2e-3 tnom=30\n"
+        ".model rm_monte r tref=30.0\n"
+        ".model rx_tref RES(TC1=2e-3 TREF=30)\n"
+        ".model rx_tnom RES(TC1=2e-3 TNOM=30)\n"
+        ".subckt cards a\n"
+        "R1 a 0 rm_tref w=2u l=10u\n"
+        "R2 a 0 rm_tnom w=2u l=10u\n"
+        "R3 a 0 rm_monte r=1k tc1=2e-3\n"
+        "R4 a 0 rx_tref 1k\n"
+        "R5 a 0 rx_tnom 1k\n"
+        ".ends\n"
+        ".subckt single_tref a\nR1 a 0 rm_monte r=1k tc1=2e-3\n.ends\n"
+        ".subckt single_tnom a\nR1 a 0 rm_tnom r=1k tc1=2e-3\n.ends\n"
+    )
+    found = {
+        instance.name: instance.parameters
+        for instance in parts.component("cards").definition.instances
+    }
+    assert found["R1"] == found["R2"]
+    assert found["R1"]["nominal_temperature"] == pytest.approx(
+        celsius(30).value, rel=KELVIN_ROUNDING_RTOL
+    )
+    assert found["R3"] == {
+        "resistance": 1e3,
+        "temperature_coefficient": 2e-3,
+        "nominal_temperature": pytest.approx(
+            celsius(30).value, rel=KELVIN_ROUNDING_RTOL
+        ),
+    }
+    assert found["R4"] == found["R5"]
+
+    def drive_single(subcircuit_name: str) -> float:
+        builder = Builder(f"drive_{subcircuit_name}")
+        ground = builder.port("ground", Role.GROUND)
+        source = builder.place(devices.voltage_source(1 * V), name="V1")
+        placed = builder.place(parts.component(subcircuit_name), name="U1")
+        builder.connect(source.positive, placed.a, name="drive")
+        builder.connect(source.negative, placed[spice.GROUND], ground)
+        point = Simulation(builder.finish(), temperature=celsius(80)).run(
+            OperatingPoint()
+        )
+        return point.current("V1")
+
+    current_tref = drive_single("single_tref")
+    current_tnom = drive_single("single_tnom")
+    assert current_tref == current_tnom
+    # At 80 C with TREF = 30 C and tc1 = 2e-3 / K, R = 1000 * (1 + 0.1) = 1100 ohm.
+    assert -current_tref == pytest.approx(1.0 / 1100.0, rel=LU_ROUNDING_RTOL)
+
+
+@pytest.mark.parametrize(
+    ("deck", "match"),
+    [
+        (
+            ".model rmod r tnom=25 tref=30\n.subckt a x\nR1 x 0 rmod r=1k\n.ends",
+            "sets its nominal temperature twice: `TNOM`, `TREF`",
+        ),
+        (
+            ".model rmod r tref=30 tnom=25\n.subckt a x\nR1 x 0 rmod r=1k\n.ends",
+            "sets its nominal temperature twice: `TREF`, `TNOM`",
+        ),
+        (
+            ".model rmod RES(TNOM=25 TREF=30)\n.subckt a x\nR1 x 0 rmod 1k\n.ends",
+            "sets its nominal temperature twice: `TNOM`, `TREF`",
+        ),
+        (
+            (
+                ".model rmod RES(T_MEASURED=25 TREF=30)\n"
+                ".subckt a x\nR1 x 0 rmod 1k\n.ends"
+            ),
+            "sets its nominal temperature twice: `T_MEASURED`, `TREF`",
+        ),
+        (
+            ".model qmod npn tnom=25 tref=30\n.subckt a c\nQ1 c 0 0 qmod\n.ends",
+            "sets its nominal temperature twice: `TNOM`, `TREF`",
+        ),
+        (
+            ".model dmod d tnom=25 tref=30\n.subckt a x\nD1 x 0 dmod\n.ends",
+            "sets its nominal temperature twice: `TNOM`, `TREF`",
+        ),
+        (
+            ".model cmod c tref=30\n.subckt a x\nC1 x 0 cmod 1p\n.ends",
+            "counterpart to `TREF`",
+        ),
+        (
+            ".model cmod CAP(TREF=30)\n.subckt a x\nC1 x 0 cmod 1p\n.ends",
+            "counterpart to `TREF`",
+        ),
+        (
+            ".subckt a x\nR1 x 0 0\n.ends",
+            "resistance is positive, not 0.0",
+        ),
+        (
+            ".subckt a x\nR1 x 0 -10\n.ends",
+            "resistance is positive, not -10.0",
+        ),
+        (
+            ".subckt a x\nL1 x 0 0\n.ends",
+            "inductance is positive, not 0.0",
+        ),
+        (
+            ".subckt a x\nC1 x 0 -1p\n.ends",
+            "capacitance is at least 0",
+        ),
+    ],
+)
+def test_nominal_temperature_conflicts_and_invalid_passive_values_are_rejected(
+    deck: str, match: str
+) -> None:
+    with pytest.raises(SpiceError, match=match):
+        library(deck).component("a")
+
+
+def test_zero_capacitance_remains_accepted_in_spice() -> None:
+    found = _devices(library(".subckt a x\nC1 x 0 0\n.ends").component("a"))
+    assert found["C1"] == ("capacitor", {"capacitance": 0.0})

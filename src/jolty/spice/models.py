@@ -767,11 +767,49 @@ NOMINAL_TEMPERATURES: Final = frozenset({"tnom", "t_measured"})
 """Model-card measurement temperature keys in degrees Celsius (including PSpice
 ``T_MEASURED``)."""
 
+NOMINAL_TEMPERATURES_WITH_TREF: Final = NOMINAL_TEMPERATURES | frozenset({"tref"})
+"""Model-card measurement temperature keys including HSPICE ``TREF``."""
+
 OWN_TEMPERATURES: Final = frozenset(
     {"t_abs", "t_rel_global", "t_rel_local", "temp", "dtemp"}
 )
 """Card and instance parameters setting per-device temperature overrides (PSpice
 ``T_ABS``/``T_REL_*`` and ngspice ``TEMP``/``DTEMP``)."""
+
+
+def nominal_temperature(
+    card: Mapping[str, float],
+    statement: Statement,
+    *,
+    allow_tref: bool = False,
+) -> dict[str, JsonValue]:
+    """Extracts a single nominal measurement temperature in kelvins from `card`.
+
+    Accepts ``TNOM`` and PSpice ``T_MEASURED`` (plus HSPICE ``TREF`` when
+    `allow_tref` is true), converting from degrees Celsius to kelvins.
+
+    Args:
+        card: Evaluated model-card parameter values keyed by case-folded SPICE name.
+        statement: Statement used for error attribution.
+        allow_tref: Whether HSPICE ``TREF`` is accepted as an alias for ``TNOM``.
+
+    Returns:
+        Single-entry dictionary setting ``"nominal_temperature"`` in kelvins, or an
+        empty dictionary.
+
+    Raises:
+        SpiceError: When `card` specifies more than one nominal-temperature key.
+    """
+    keys = NOMINAL_TEMPERATURES_WITH_TREF if allow_tref else NOMINAL_TEMPERATURES
+    given = {name: value for name, value in card.items() if name in keys}
+    if len(given) > 1:
+        names = ", ".join(f"`{name.upper()}`" for name in given)
+        message = f"the model sets its nominal temperature twice: {names}"
+        raise statement.fail(message)
+    if given:
+        (value,) = given.values()
+        return {"nominal_temperature": celsius(value).value}
+    return {}
 
 
 def own_temperature(
@@ -829,12 +867,14 @@ RESISTOR_CARD: Final = {
     "dlr": "short",
     "tc1r": "tc1",
     "tc2r": "tc2",
+    "tref": "tnom",
     "res": "r",
     "w": "defw",
     "l": "defl",
     "noisy": "noise",
 }
-"""SPICE3 ``R`` model-card parameter aliases mapped to canonical names (``res.c``)."""
+"""SPICE3 ``R`` model-card parameter aliases mapped to canonical names (``res.c``;
+``TREF`` aliases ``TNOM`` per HSPICE and ngspice compatibility)."""
 
 CAPACITOR_CARD: Final = {
     **{name: name for name in ("cap", "cj", "cjsw", "narrow", "short", "del", "tc1")},
@@ -897,17 +937,22 @@ def geometric_values(
         Evaluated numeric card parameters keyed by canonical `GEOMETRIC` names.
 
     Raises:
-        SpiceError: When `card` specifies an unsupported parameter, attributed to
-            `statement` or `card.statement`.
+        SpiceError: When `card` specifies an unsupported parameter or sets its nominal
+            temperature twice, attributed to `statement` or `card.statement`.
     """
     table = GEOMETRIC[card.kind]
+    target = statement or card.statement
+    raw: dict[str, float] = {}
     values: dict[str, float] = {}
     for name, expression in card.parameters.items():
         if name not in table:
-            raise unmatched(card, name, statement or card.statement)
+            raise unmatched(card, name, target)
         if table[name] != "bv_max":
             resolved = inlined(expression, functions)
-            values[table[name]] = evaluate(resolved, scope, draws(name))
+            evaluated = evaluate(resolved, scope, draws(name))
+            raw[name] = evaluated
+            values[table[name]] = evaluated
+    nominal_temperature(raw, target, allow_tref=card.kind == "r")
     return values
 
 
@@ -1607,14 +1652,19 @@ def _mapped(  # noqa: PLR0913 - card, values, table, statement, skipped and TREF
     """Maps SPICE parameter `values` into jolty SI parameters via `table`.
 
     Raises:
-        SpiceError: When an unskipped parameter has no jolty counterpart.
+        SpiceError: When an unskipped parameter has no jolty counterpart or the card
+            sets its nominal temperature twice.
     """
-    parameters: dict[str, JsonValue] = {}
+    nominal_keys = (
+        NOMINAL_TEMPERATURES_WITH_TREF if allow_tref else NOMINAL_TEMPERATURES
+    )
+    parameters = nominal_temperature(
+        {name: value for name, value in values.items() if name not in skipped},
+        statement,
+        allow_tref=allow_tref,
+    )
     for name, value in values.items():
-        if name in skipped:
-            continue
-        if name in NOMINAL_TEMPERATURES or (allow_tref and name == "tref"):
-            parameters["nominal_temperature"] = celsius(value).value
+        if name in skipped or name in nominal_keys:
             continue
         if name not in table:
             raise unmatched(card, name, statement)
@@ -2016,14 +2066,19 @@ def _bsim_card(
     mobility = values.get("u0", 0.067 if card.kind[0] == "n" else 0.025)
     # ngspice reads a binned u0 above 1 in cm²/(V·s), as b3temp.c and b4v5temp.c do.
     centimeters = 1e-4 if mobility > 1 else 1.0
-    parameters: dict[str, JsonValue] = {}
+    parameters = nominal_temperature(
+        {
+            bsim.aliases.get(spice, spice): value
+            for spice, value in values.items()
+            if bsim.aliases.get(spice, spice) not in bsim.unread
+        },
+        statement,
+    )
     for spice, value in values.items():
         name = bsim.aliases.get(spice, spice)
-        if name in bsim.unread:
+        if name in bsim.unread or name in NOMINAL_TEMPERATURES:
             continue
-        if name in NOMINAL_TEMPERATURES:
-            parameters["nominal_temperature"] = celsius(value).value
-        elif name in bsim.selectors:
+        if name in bsim.selectors:
             parameters[bsim.selectors[name]] = _whole(card, name, value, statement)
         elif name in bsim.settings:
             parameters[bsim.settings[name]] = _bsim_setting(

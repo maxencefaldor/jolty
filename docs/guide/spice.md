@@ -69,7 +69,7 @@ Elements sensing a voltage-source current connect through series sense ports (`V
 Inductors linked by mutual inductances merge into a single [coupled inductors](devices.md#coupled-inductors) device preserving file winding order and taking the first `K` element's name and line (`K1 L1 L2 0.99` yields `K1` with currents `K1:current1` and `K1:current2`).
 Mutual inductances accept any number of inductors (as in PSpice), coupling every pair by the given coefficient; magnetic-core models raise an error.
 
-Temperature parameters map directly to device fields: `TNOM` (PSpice `T_MEASURED`) sets nominal temperature, and `TC=tc1,tc2`, `TC1`, `TC2`, and `TCE` set passive temperature drift.
+Temperature parameters map directly to device fields: `TNOM` (PSpice `T_MEASURED`, and HSPICE `TREF` on diodes, bipolar transistors, and resistors) sets nominal temperature, and `TC=tc1,tc2`, `TC1`, `TC2`, and `TCE` set passive temperature drift.
 Resistor and capacitor voltage coefficients (`VC1`, `VC2` from HSPICE and Spectre) export to ngspice as behavioral expressions because ngspice lacks those parameters.
 Per-device temperatures come from model cards (`T_ABS`, `T_REL_GLOBAL`) or elements (`TEMP`, `DTEMP`), mapping to [`held_at` and `warmer_by`](devices.md) (for example, `T_ABS=-273.15` holds macromodel resistors noiseless at 0 K).
 PSpice `T_REL_LOCAL` and duplicate per-device temperature declarations fail; ngspice exports emit `TEMP` or `DTEMP`.
