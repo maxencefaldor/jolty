@@ -3,7 +3,7 @@
 Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 18 November.
 The archival research report lives in `research/benchmarks.md`, kept whole.
 
-Plan: ✅ 9 done · 🚧 2 in progress · 📋 4 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 9 done · 🚧 2 in progress · 📋 3 planned · ⏸️ 1 parked (§4).
 
 ## 1. Goal and metric
 
@@ -115,7 +115,6 @@ Previous timings also lacked confidence intervals and accuracy metrics, now supp
 
 - Xyce has columns in speed views, precision, and coverage, but not yet in the robustness corpus, and is not installed on machine D (item 11); matched ngspice comparisons (`--view`) are done (item 4).
 - Second versions of the precision suite and robustness corpus remain planned (items 7b and 8b), while coverage matrix v2 is done (item 9b).
-- No machine runs the nightly suite yet (item 5), though CI now verifies deterministic counts, digits, and digests (item 5b).
 
 ## 4. Plan
 
@@ -182,13 +181,6 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Live `--view matched bjt_amp` against ngspice 47 dropped from `3.8e-3` to `5.9e-5` on both Sparse and KLU, with exact `0.0` overshoot on sharp switching steps and triangle corners.
     **Not done:** interleaving `--view` rounds like `--compare`, and adding `--scale` large fixtures to views.
 - **Source:** rows B2, B3, and B4; `research/speed.md` row R1.
-
-### 📋 5. Nightly speed suite on a fixed machine
-
-- **What:** run the speed suite nightly on machine A or machine B against the previous night's results.
-- **Done when:** each night's results are compared alongside the previous night's run.
-- **State** (`f61d0cd`, `4e5f0fc`, 16 November): `scripts/bench --nightly DIR` compares the checked-out build against the previous night and retains nightly comparisons via a documented crontab entry.
-    **Not done:** no host runs the nightly cron yet; machine D, the fixed baseline host, runs only on demand.
 
 ### ✅ 5b. Deterministic checks in CI
 
@@ -279,8 +271,8 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **What:** integrate serial and MPI Xyce 7.10 at optimal configuration as a third simulator across the speed suite, robustness corpus, and coverage matrix.
 - **State:** Xyce was built on machine B via Spack on 15 November; jolty's Xyce dialect, 67 agreement tests (`tests/test_xyce.py`), and the initial speed column are on `main` (§2).
     Coverage matrix Xyce probes share the same library.
-    **Not done:** robustness corpus Xyce runner, equal-accuracy chain and mesh timings, `inverter_chain_50000`, and diagnosing the buck stall.
-- **Buck handling** (owner, 15 November): retain the row marked stalled at 128.8 µs at Xyce defaults rather than dropping the fixture.
+    **Not done:** robustness corpus Xyce runner, equal-accuracy chain and mesh timings, and `inverter_chain_50000`.
+- **Buck handling** (owner, 15 and 20 November): retain the row marked stalled at 128.8 µs at Xyce defaults rather than dropping the fixture or debugging Xyce's internal stall.
 - **Done when:** Xyce columns populate every benchmark table.
     **Source:** row B13.
 
@@ -293,6 +285,8 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ## 5. Decided
 
+- 20 November (owner): dropped the nightly speed suite (former item 5) and its `--nightly` CLI mode, because CI already gates deterministic solver counts, digits, and digests (item 5b) and `--compare` settles timing changes on demand.
+- 20 November (owner): Xyce stays across all benchmark suites (item 11), while debugging Xyce's internal `buck` stall is dropped.
 - 15 November (owner): reference simulators are ngspice and Xyce exclusively, with no LTspice or commercial simulators.
 - **Rules for speed claims** (15 November, from `research/speed.md` §6): run every reference at its best configuration (ngspice with KLU and Sparse 1.3; Xyce with its native solver).
     Report both engine time and end-to-end time alongside reached accuracy for every simulator.

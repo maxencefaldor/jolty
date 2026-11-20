@@ -3,7 +3,7 @@
 Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 18 November.
 Full background research remains archived in `research/quality.md`.
 
-Plan: ✅ 22 done · 📋 3 planned · ⏸️ 1 parked (§4).
+Plan: ✅ 22 done · 📋 3 planned (§4).
 
 ## 1. Goal and metric
 
@@ -157,7 +157,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **Why:** each suite had accumulated duplicate helpers, including two simulator-runner modules both named `simulators`, two load readers, and two result-file naming conventions.
 - **Done when:** no helper is duplicated under `benchmarks/`, one runner serves each simulator, and one script runs every suite.
 - **Result** (`092e86f`, 15 November): all suites moved under `benchmarks/<suite>` (`perf/` and `scripts/precision` deleted), sharing `benchmarks/measuring.py` and `benchmarks/simulators.py`.
-    `scripts/bench` runs all five suites (`--precision`, `--robustness`, `--coverage`, `--scale`, `--view`, `--compare`, `--nightly`), and every suite calls a benchmark circuit a `fixture`.
+    `scripts/bench` runs all five suites (`--precision`, `--robustness`, `--coverage`, `--scale`, `--view`, `--compare`), and every suite calls a benchmark circuit a `fixture`.
 
 ### ✅ 14. The guide's code runs and its outputs are produced
 
@@ -173,12 +173,6 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **What:** report Rust and Python coverage on every CI run without gating.
 - **Approved** by the owner (15 November): `cargo-llvm-cov` and coverage.py, reported and never gated.
 - **Source:** row 19.
-
-### ⏸️ 16. API stability checked against the last release
-
-- **What:** detect public API changes in Rust crates and the Python package against the last tagged release.
-- **Waits for:** a first release; `cargo-semver-checks` and `griffe` received owner approval on 15 November.
-- **Source:** row 21.
 
 ### ✅ 17. Mutation testing
 
@@ -306,6 +300,7 @@ Guard tables count occurrences across `crates/jolty-models/src/testing/cases.rs`
 - 15 Nov, the owner: `mkdocstrings-python` stays as the Zensical API plugin; ported kernels retain reference local names inside each kernel, with functions citing upstream source lines.
 - `jolty.cli.CommandLine` and `jolty.cli.run` remain public so the jolty CLI and repository scripts share one configuration.
 - Guide claims unsupported by code were corrected (`7edbffa`), and the VBIC section links the generated models reference rather than repeating a manual table.
+- 20 November (owner): dropped automated API-stability diffing against prior releases (former item 16).
 - 20 November (owner): `jolty_engine::measure::Signal` keeps its name, matching the measures' `signal` parameter (item 12).
 - 15 Nov, the owner: adding any tool or dependency requires owner approval; ty is the sole type checker, Zensical with mkdocstrings is the sole docs tool, and mypy was removed (`5ba0fb2`).
 - 15 Nov, the owner: each concept has one uniform, consistent, symmetric, formal, and principled name (`AGENTS.md`, "Names").

@@ -10,7 +10,6 @@ Benchmarks stay outside `scripts/check`, which must remain fast and deterministi
 scripts/bench                      # full speed suite: several minutes, before and after a change
 scripts/bench bjt_amp buck         # selected fixtures only
 scripts/bench --compare main,HEAD  # interleaved comparison of main and HEAD with statistical verdicts
-scripts/bench --nightly DIR        # compare checked-out commit against the previous night's build in DIR
 scripts/bench --scale              # large fixtures, serial and multithreaded rounds, concurrent copies, and peak memory
 scripts/bench --scale --largest    # include the 50,000-inverter chain across every thread count
 scripts/bench --no-peak-memory     # skip isolated peak resident memory probes
@@ -116,18 +115,6 @@ The comparator detected every slowdown exceeding measurement resolution and repo
 The `buck` intervals (777.8 to 810.4 ms versus 834.1 to 862.2 ms) span a +2.9% to +10.9% shift, bracketing the injected +5.0% floor.
 Monte Carlo on all cores has the narrowest interval (0.8% resolution) and cleanly flagged the transient spin as slower.
 Both `bjt_amp` (+1.1%) and single-core Monte Carlo stayed below their resolutions, matching the reported verdicts.
-
-### The nightly
-
-`scripts/bench --nightly DIR` compares the checked-out commit against the previous night's build (the second build from the most recent prior entry in `DIR`) via `--compare`.
-Outputs go to `DIR/<date>/compare.json` and `DIR/<date>/compare.md` alongside earlier nightly results.
-On the first run in an empty directory, the script builds the commit twice as an A/A check that must report no change.
-Afterward, the script removes all older builds except tonight's build, keeping it ready as the next night's baseline.
-A dedicated checkout kept on `main` runs the nightly job from the user's crontab without requiring installations outside the home directory:
-
-```sh
-0 3 * * * cd CHECKOUT && git fetch -q origin && git checkout -q --detach origin/main && scripts/bench --nightly "$HOME/jolty-nightly"
-```
 
 ## What the times measure
 

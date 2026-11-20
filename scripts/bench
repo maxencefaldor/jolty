@@ -11,7 +11,6 @@
 #   scripts/bench                     the speed suite, a few minutes, before and after a change
 #                                     (with isolated peak resident memory per fixture)
 #   scripts/bench --compare A,B       the builds of revisions A and B, their runs alternating
-#   scripts/bench --nightly DIR       the checked-out commit against the previous night's
 #   scripts/bench --scale             the large fixtures, serially and spread, in rounds,
 #                                     plus N concurrent 1-thread copies for throughput efficiency
 #   scripts/bench --scale --largest   and the 50,000 inverters' chain spread too

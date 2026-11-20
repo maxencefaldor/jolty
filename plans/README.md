@@ -61,7 +61,7 @@ As of 18 November 2026, `main` includes the following completed capabilities:
 **The order of the work** (owner, 16 November):
 
 1. CI green and kept green: checked after every push; a red run stops all landing.
-1. The benchmarks that decide (`benchmarks.md` 2, 3, 5).
+1. The benchmarks that decide (`benchmarks.md` 2, 3).
 1. Accuracy and models together.
 1. Speed, each change judged at equal error.
 1. Agentic last, on the stable engine.

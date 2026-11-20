@@ -16,7 +16,6 @@ Usage:
 ```text
 scripts/bench [FIXTURE ...]       default speed fixtures, or named fixtures
 scripts/bench --compare A,B       alternating build comparison of revisions A and B
-scripts/bench --nightly DIR       HEAD compared against the previous night in DIR
 scripts/bench --scale             large fixtures serially and across thread counts
 scripts/bench --scale --largest   include the 50,000-inverter chain across thread counts
 scripts/bench --view matched      all simulators at matched tight tolerances
@@ -34,8 +33,7 @@ Without ``--baseline``, the suite selects the newest ancestor commit under
 is never selected as a baseline. For controlled A/B decisions, ``--compare`` builds each
 revision in a dedicated worktree under ``--builds`` and executes `afresh` worker
 processes (`benchmarks/speed/timing.py`) in `alternated` rounds. Comparison tables
-report wall and CPU times separately alongside JSON results. ``--nightly`` runs the same
-comparison against the previous night in a dedicated directory.
+report wall and CPU times separately alongside JSON results.
 
 ``--scale`` benchmarks large fixtures serially (one thread, no matrix dissection) and
 across 1, 2, 4, 8, and all cores under default ``Parallelism`` in `alternated` rounds.
@@ -95,7 +93,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from measuring import (
     BENCHMARKS,
     CONFIDENCE,
-    DIRTY,
     ROOT,
     Median,
     Provenance,
@@ -103,7 +100,6 @@ from measuring import (
     aligned_row,
     aligned_table,
     available_memory_bytes,
-    commit,
     duration,
     format_json,
     git,
@@ -2417,25 +2413,16 @@ class Bench(cli.CommandLine):
             "intervals, flagging changes only when intervals separate."
         ),
     )
-    nightly: Path | None = Field(
-        default=None,
-        description=(
-            "Directory for nightly build comparisons. Benchmarks HEAD against the "
-            "previous night and saves outputs under today's date."
-        ),
-    )
     builds: Path = Field(
         default=ROOT / "target" / "builds",
-        description=(
-            "Directory holding isolated git worktrees built by --compare and --nightly."
-        ),
+        description="Directory holding isolated git worktrees built by --compare.",
     )
     most_rounds: int = Field(
         default=MAX_ROUNDS,
         ge=MIN_ROUNDS,
         description=(
-            "Maximum alternating rounds for --compare, --nightly, --scale, and "
-            "--break-even before stopping undecided."
+            "Maximum alternating rounds for --compare, --scale, and --break-even "
+            "before stopping undecided."
         ),
     )
     peak_memory: bool = Field(
@@ -2763,34 +2750,6 @@ def comparison(
     return "\n".join(lines), named
 
 
-def nightly(arguments: Bench, directory: Path) -> None:
-    """Benchmarks HEAD against the previous night's build recorded under `directory`.
-
-    Selects the second build of the newest prior comparison (or compares HEAD against
-    itself on the first night). Saves JSON and Markdown outputs under
-    ``<directory>/<today>/``, then prunes older worktrees in ``--builds``.
-
-    Raises:
-        SystemExit: When tracked files in the working tree have uncommitted changes.
-    """
-    tonight = commit()
-    if tonight.endswith(DIRTY):
-        message = "--nightly times a commit, but the working tree has changes"
-        raise SystemExit(message)
-    today = time.strftime("%Y-%m-%d")
-    nights = sorted(
-        path for path in directory.glob("*/compare.json") if path.parent.name != today
-    )
-    last = load(nights[-1])["builds"][1]["commit"] if nights else tonight
-    output = directory / today / "compare.json"
-    compared(
-        (last, tonight), arguments.fixtures or SUITE, fixtures(), arguments, output
-    )
-    for path in arguments.builds.iterdir():
-        if path.name != tonight:
-            git("worktree", "remove", "--force", str(path))
-
-
 def robustness(arguments: Bench) -> None:
     """Runs the corpus of hard circuits, and writes its outcomes."""
     output = arguments.output or results_path(Suite.ROBUSTNESS)
@@ -2831,7 +2790,7 @@ def instead(arguments: Bench) -> bool:
     """Dispatches non-default benchmark sub-modes selected in `arguments`.
 
     Returns True when ``--robustness``, ``--coverage``, ``--precision``,
-    ``--view equal-error``, ``--break-even``, ``--compare``, or ``--nightly`` ran.
+    ``--view equal-error``, ``--break-even``, or ``--compare`` ran.
     """
     if arguments.robustness:
         robustness(arguments)
@@ -2845,8 +2804,6 @@ def instead(arguments: Bench) -> bool:
         break_evens(arguments, arguments.break_even)
     elif arguments.compare:
         builds_compared(arguments)
-    elif arguments.nightly is not None:
-        nightly(arguments, arguments.nightly)
     else:
         return False
     return True
