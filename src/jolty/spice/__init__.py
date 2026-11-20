@@ -17,6 +17,8 @@ Examples:
     ('buffer',)
 """
 
+__lazy_modules__ = ["jolty.spice.download", "jolty.spice.library"]
+
 from jolty.spice.download import fetch
 from jolty.spice.library import (
     GROUND,

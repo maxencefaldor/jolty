@@ -23,6 +23,8 @@ Examples:
     >>> plan = Plan({"step": Transient(stop=10 * us)})
 """
 
+__lazy_modules__ = ["decimal", "itertools", "jolty.spice._pss"]
+
 import decimal
 import itertools
 import json
@@ -48,7 +50,8 @@ from pydantic_core import InitErrorDetails, PydanticCustomError
 from jolty import _core, ir
 from jolty.devices import ParameterValue
 from jolty.errors import DimensionError, detail, fail, raise_if_errors
-from jolty.spice import PeriodicSteadyStateCard, ngspice
+from jolty.spice import ngspice
+from jolty.spice._pss import PeriodicSteadyStateCard
 from jolty.units import (
     CHARGE,
     CONDUCTANCE,

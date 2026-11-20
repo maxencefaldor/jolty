@@ -11,16 +11,24 @@ configured timeout, with stdout and stderr captured and returned.
 
 # jolty's modules load as each command first uses them, so that a command that draws
 # nothing never imports matplotlib and startup skips the simulation engine.
-__lazy_modules__ = ["jolty", "jolty.simulate"]
+__lazy_modules__ = [
+    "importlib.util",
+    "jolty",
+    "jolty.service._instructions",
+    "jolty.service._worker",
+    "jolty.simulate",
+    "secrets",
+    "shutil",
+]
 
 import asyncio
+import contextlib
 import importlib.util
 import secrets
 import shutil
-import sys
 import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import AsyncGenerator, Callable, Collection, Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, Self, override
@@ -87,6 +95,7 @@ from jolty.service._docs import (
 )
 from jolty.service._instructions import build_instructions
 from jolty.service._measure import MeasureKind, MeasureRequest
+from jolty.service._worker import close_standby, run_job, single_shot, warm_runner
 from jolty.settings import Level, Settings
 from jolty.simulate import Simulation
 from jolty.specs import ExtendedReal, Verdict
@@ -131,6 +140,7 @@ __all__ = [
     "build",
     "build_instructions",
     "check",
+    "close_standby",
     "cost",
     "document_summaries",
     "draw",
@@ -143,7 +153,9 @@ __all__ = [
     "read_document",
     "resolve_document",
     "simulate",
+    "single_shot",
     "view",
+    "warm_runner",
 ]
 
 _SCRIPT_DESCRIPTION = (
@@ -639,16 +651,24 @@ async def build(request: BuildRequest, settings: Settings) -> BuildResult:
     started = time.perf_counter()
     chosen = _levels(request, settings)
     script = await _existing(request.script)
-    job = runner.Job(script=script, max_unknowns=settings.max_unknowns)
+    job = runner.Job(
+        script=script,
+        max_unknowns=settings.max_unknowns,
+        runtime=runner.RuntimeSettings(
+            threads=settings.threads, analysis_log=settings.analysis_log
+        ),
+    )
     path = request.output or files.circuit_path(request.script)
-    built, output = await _run(job, settings, results=None)
+    draw_schematic = request.schematic and _plots_available()
+    async with _preloading_imaging(schematic_image=draw_schematic, plot_images=False):
+        built, output = await _run(job, settings, results=None)
     circuit = await asyncio.to_thread(_save, built, path)
     report = _report(built, request, chosen, settings)
     drawn = (
         await asyncio.to_thread(
             _draw, built.circuit, files.schematic_path(path), marked=_marked(report)
         )
-        if request.schematic and _plots_available()
+        if draw_schematic
         else None
     )
     return BuildResult(
@@ -699,6 +719,9 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
             max_unknowns_per_interior=request.max_unknowns_per_interior,
         ),
         samples=None if taken is None else (taken.start, taken.stop),
+        runtime=runner.RuntimeSettings(
+            threads=settings.threads, analysis_log=settings.analysis_log
+        ),
     )
     path = request.output or files.circuit_path(request.script)
     if taken is not None:
@@ -727,13 +750,16 @@ async def simulate(request: SimulateRequest, settings: Settings) -> SimulateResu
         )
     target = request.results or files.results_path(request.script)
     batched = files.batches_path(target)
-    built, output = await _run(job, settings, results=target, batches=batched)
+    can_plot = (request.schematic or request.plot) and _plots_available()
+    draw_schematic = request.schematic and can_plot
+    draw_plots = request.plot and can_plot
+    async with _preloading_imaging(
+        schematic_image=draw_schematic, plot_images=draw_plots
+    ):
+        built, output = await _run(job, settings, results=target, batches=batched)
     circuit = await asyncio.to_thread(_save, built, path)
     report = _report(built, request, chosen, settings)
     saved = await asyncio.to_thread(target.is_file)
-    can_plot = _plots_available()
-    draw_schematic = request.schematic and can_plot
-    draw_plots = request.plot and can_plot
     needs_results = request.raw is not None or draw_schematic or draw_plots
     loaded = await asyncio.to_thread(_load, target) if saved and needs_results else {}
     saved_raw: Path | None = None
@@ -1785,67 +1811,46 @@ async def _run(
     raise JoltyError(_with_output(message, output))
 
 
+def _preload_imaging(*, schematic_image: bool, plot_images: bool) -> None:
+    """Resolves lazy schematic and plotting imports while the runner executes."""
+    if schematic_image:
+        _ = schematic.draw
+    if plot_images:
+        _ = plots.plot
+
+
+@contextlib.asynccontextmanager
+async def _preloading_imaging(
+    *, schematic_image: bool, plot_images: bool
+) -> AsyncGenerator[None]:
+    """Overlaps optional schematic and plotting imports with the wrapped runner call."""
+    if not (schematic_image or plot_images):
+        yield
+        return
+    preload = asyncio.create_task(
+        asyncio.to_thread(
+            _preload_imaging,
+            schematic_image=schematic_image,
+            plot_images=plot_images,
+        )
+    )
+    try:
+        yield
+    except BaseException:
+        preload.cancel()
+        await asyncio.gather(preload, return_exceptions=True)
+        raise
+    await preload
+
+
 async def _child(directory: Path, limit: int) -> tuple[ScriptOutput, int]:
     """Runs the runner on `directory` and returns its output and exit code.
 
     When the caller stops waiting, through a timeout or a canceled request, the child
     is killed before the cancellation goes on, so no script outlives its command.
     """
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-P",
-        "-m",
-        "jolty.runner",
-        str(directory),
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout_pipe, stderr_pipe = _pipes(process)
-        (stdout, stdout_truncated), (stderr, stderr_truncated) = await asyncio.gather(
-            _read_capped(stdout_pipe, limit), _read_capped(stderr_pipe, limit)
-        )
-        code = await process.wait()
-    except BaseException:
-        if process.returncode is None:
-            process.kill()
-            await process.wait()
-        raise
-    output = ScriptOutput(
-        stdout=stdout, stderr=stderr, truncated=stdout_truncated or stderr_truncated
-    )
-    return output, code
-
-
-def _pipes(
-    process: asyncio.subprocess.Process,
-) -> tuple[asyncio.StreamReader, asyncio.StreamReader]:
-    """Returns stdout and stderr pipe readers for `process`.
-
-    Raises:
-        JoltyError: When `process` was started without stdout or stderr pipes.
-    """
-    if process.stdout is None or process.stderr is None:
-        message = "could not capture the runner's output"
-        raise JoltyError(message)
-    return process.stdout, process.stderr
-
-
-async def _read_capped(stream: asyncio.StreamReader, limit: int) -> tuple[str, bool]:
-    """Reads `stream` to EOF, keeping at most `limit` characters and a truncation flag.
-
-    Buffered bytes are bounded by the maximum UTF-8 width of `limit` characters
-    regardless of total stream volume.
-    """
-    kept = bytearray()
-    dropped = False
-    while chunk := await stream.read(1 << 16):
-        room = 4 * limit - len(kept)  # A character takes four bytes at most in UTF-8.
-        kept += chunk[:room]
-        dropped = dropped or len(chunk) > room
-    text = kept.decode("utf-8", errors="replace")
-    return text[:limit], dropped or len(text) > limit
+    stdout, stderr, truncated, code = await run_job(directory, limit)
+    return ScriptOutput(stdout=stdout, stderr=stderr, truncated=truncated), code
 
 
 def _read(path: Path) -> runner.JobResult | None:

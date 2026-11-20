@@ -14,16 +14,17 @@ numerical inputs (excluding build-script paths), and merging rejects mismatched
 digests, gaps, or overlapping sample ranges.
 """
 
+__lazy_modules__ = ["hashlib", "jolty", "jolty.results", "jolty.specs", "json", "numpy"]
+
 import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
 from pydantic import JsonValue
 
-from jolty import files, report
+from jolty import _core, files, report
 from jolty import specs as specs_module
 from jolty.errors import JoltyError
 from jolty.results import BatchResult
@@ -49,7 +50,7 @@ def digest(described: Mapping[str, JsonValue]) -> str:
     """
     document = {
         "described": described,
-        "jolty": version("jolty"),
+        "jolty": _core.__version__,
         "build": files.build(),
         "platform": files.platform(),
     }

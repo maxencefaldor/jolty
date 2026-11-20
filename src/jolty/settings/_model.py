@@ -1,15 +1,9 @@
 # Copyright 2026 Maxence Faldor
-"""Configuration shared by every front end.
-
-Each setting comes from the first source that sets it: explicit arguments, ``JOLTY_*``
-environment variables, or the ``[tool.jolty]`` table of ``pyproject.toml`` in the
-working directory.
-"""
+"""Pydantic settings model shared by every front end."""
 
 import os
-from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Final, Self, override
+from typing import Annotated, Self, override
 
 from pydantic import Field, StringConstraints, ValidationError
 from pydantic_settings import (
@@ -21,18 +15,7 @@ from pydantic_settings import (
 )
 
 from jolty.errors import JoltyError
-
-ALL: Final = "all"
-"""Wildcard key setting the severity level for every check rule at once."""
-
-
-class Level(StrEnum):
-    """Severity level assigned to check rule diagnostics (matching ty naming)."""
-
-    ERROR = "error"
-    WARN = "warn"
-    IGNORE = "ignore"
-
+from jolty.settings import Level
 
 type RuleKey = Annotated[str, StringConstraints(pattern=r"^[a-z]+(-[a-z]+)*$")]
 """Check rule name (such as ``no-dc-path``) or ``all`` for every rule."""

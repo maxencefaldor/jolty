@@ -41,6 +41,13 @@ Examples:
     2.5
 """
 
+__lazy_modules__ = [
+    "jolty.files._batches",
+    "jolty.files._raw",
+    "jolty.files._results",
+    "jolty.files._shards",
+]
+
 from pathlib import Path
 from typing import Final
 

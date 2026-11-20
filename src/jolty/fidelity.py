@@ -21,6 +21,14 @@ Any transition differing by more than the measured interpolation error plus the 
 relative delay tolerance violates the contract and is reported with details.
 """
 
+__lazy_modules__ = [
+    "itertools",
+    "jolty.devices",
+    "jolty.plan",
+    "jolty.simulate",
+    "numpy",
+]
+
 import itertools
 import math
 from collections import deque
@@ -32,8 +40,9 @@ from typing import Final
 import numpy as np
 from pydantic import Field, JsonValue
 
-from jolty import devices, ir, results
-from jolty.devices import ParameterValue
+from jolty import ir, results
+from jolty.devices import Device, ParameterValue, format_logic_level
+from jolty.devices import device as make_device
 from jolty.errors import CharacterizationError, JoltyError, PlanError, close_names
 from jolty.plan import Ac, Characterized, OperatingPoint, Plan, Transient
 from jolty.results import AnalysisResult, Excursion
@@ -114,7 +123,7 @@ class Characterization(ir.FrozenModel):
         "in seconds."
     )
 
-    def device(self) -> devices.Device:
+    def device(self) -> Device:
         """Builds a characterized ``logic_cell`` device matching the component ports.
 
         Returns:
@@ -139,7 +148,7 @@ class Characterization(ir.FrozenModel):
                 "ground": self.ground_port,
             },
         }
-        return devices.device("logic_cell", parameters)
+        return make_device("logic_cell", parameters)
 
     def mean_delay(self) -> float:
         """Computes the mean propagation delay across all timing arcs, in seconds.
@@ -681,6 +690,9 @@ type Cache = dict[tuple[str, Characterized, float], Characterization]
 """Cache of logic cell characterizations keyed by `(component, settings, kelvins)`."""
 
 
+type _ElaboratedCache = dict[str | None, Elaborated]
+
+
 @dataclass(frozen=True, slots=True)
 class Fidelity:
     """Resolved fidelity substitutions and cached elaborations for one circuit.
@@ -699,12 +711,12 @@ class Fidelity:
     process: str | None = None
     """Foundry process corner name, defaulting to the kit's typical corner when
     ``None``."""
-    elaborated: dict[str | None, Elaborated] = field(
+    elaborated: _ElaboratedCache = field(
         default_factory=dict, compare=False, repr=False
     )
     """Cache of elaborated circuits keyed by the instance path kept at full fidelity."""
 
-    def substitutes(self, opened: str | None = None) -> dict[str, devices.Device]:
+    def substitutes(self, opened: str | None = None) -> dict[str, Device]:
         """Returns logic-cell devices for every matched path except `opened`.
 
         Args:
@@ -1203,12 +1215,12 @@ def _differs(
 ) -> list[str]:
     """Finds the first logic-level mismatch between `modeled` and `circuit` outputs."""
     for index, (model, own) in enumerate(zip(modeled, circuit, strict=True)):
-        if devices.format_logic_level(model) != devices.format_logic_level(own):
+        if format_logic_level(model) != format_logic_level(own):
             at = "" if len(modeled) == 1 else f" at level {index + 1} of the sweep"
             return [
                 (
-                    f"{what} is {devices.format_logic_level(own)} in its circuit "
-                    f"and {devices.format_logic_level(model)} in its model{at}"
+                    f"{what} is {format_logic_level(own)} in its circuit "
+                    f"and {format_logic_level(model)} in its model{at}"
                 )
             ]
     return []
@@ -1228,11 +1240,11 @@ def _diverges(
     for (model_time, model_level), (circuit_time, circuit_level) in zip(
         modeled, circuit, strict=False
     ):
-        level = devices.format_logic_level(model_level)
-        if level != devices.format_logic_level(circuit_level):
+        level = format_logic_level(model_level)
+        if level != format_logic_level(circuit_level):
             at = format_si(min(model_time, circuit_time), "s")
             yield (
-                f"{what} is {devices.format_logic_level(circuit_level)} in its "
+                f"{what} is {format_logic_level(circuit_level)} in its "
                 f"circuit and {level} in its model at {at}"
             )
             return

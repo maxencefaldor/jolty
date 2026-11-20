@@ -16,6 +16,7 @@ from typing import Final, Literal, override
 from jolty import _core, checks, results, unknowns
 from jolty.errors import DimensionError
 from jolty.specs._requirements import (
+    Edge,
     Measure,
     MeasureError,
     Reading,
@@ -31,9 +32,6 @@ from jolty.units import (
     rtHz,
 )
 from jolty.unknowns import Unknown
-
-type Edge = Literal["rising", "falling", "either"]
-"""Direction in which a signal crosses a threshold."""
 
 type MeasureCategory = Literal[
     "plain", "noise", "transfer", "value", "statistic", "transient"

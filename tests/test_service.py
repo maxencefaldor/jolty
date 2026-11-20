@@ -510,3 +510,95 @@ def test_measure_factual_errors_for_empty_results_file(
         signal="out",
     )
     _assert_factual_error(request, ("contains no analyses",))
+
+
+def test_warm_standby_runner_matches_cold_bits_and_isolates_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    helper = tmp_path / "levels.py"
+    helper.write_text("VOLTAGE = 1.0\n", encoding="utf-8")
+    script = tmp_path / "rc.py"
+    script.write_text(
+        "from levels import VOLTAGE\n"
+        "from jolty import Builder, Plan, Role, Transient, component, devices\n"
+        "from jolty.units import V, kohm, nF, us\n\n"
+        "@component\n"
+        "def low_pass(c: Builder) -> None:\n"
+        "    ground = c.port('ground', Role.GROUND)\n"
+        "    source = c.place(devices.voltage_source(VOLTAGE * V), name='V1')\n"
+        "    resistor = c.place(devices.resistor(1 * kohm), name='R1')\n"
+        "    capacitor = c.place(devices.capacitor(1 * nF), name='C1')\n"
+        "    c.connect(source.positive, resistor.a, name='in')\n"
+        "    c.connect(resistor.b, capacitor.a, name='out')\n"
+        "    c.connect(capacitor.b, source.negative, ground)\n\n"
+        "def build():\n"
+        "    print(f'level={VOLTAGE}')\n"
+        "    return low_pass()\n\n"
+        "def plan():\n"
+        "    return Plan({'step': Transient(stop=5 * us)})\n",
+        encoding="utf-8",
+    )
+    cold_results = tmp_path / "cold.results.npz"
+    warm_results = tmp_path / "warm.results.npz"
+    updated_results = tmp_path / "updated.results.npz"
+
+    with service.single_shot():
+        cold = asyncio.run(
+            service.simulate(
+                service.SimulateRequest(
+                    script=script,
+                    results=cold_results,
+                    plot=False,
+                    schematic=False,
+                ),
+                Settings(),
+            )
+        )
+
+    try:
+        service.warm_runner()
+        log_path = tmp_path / "warm.jsonl"
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("JOLTY_ANALYSIS_LOG", str(log_path))
+        warm = asyncio.run(
+            service.simulate(
+                service.SimulateRequest(
+                    script=script,
+                    results=warm_results,
+                    plot=False,
+                    schematic=False,
+                ),
+                Settings.load(),
+            )
+        )
+        assert warm.output.stdout.strip() == "level=1.0"
+        assert log_path.is_file()
+        cold_step = files.load_results(cold_results)["step"]
+        warm_step = files.load_results(warm_results)["step"]
+        assert isinstance(cold_step, results.TransientResult)
+        assert isinstance(warm_step, results.TransientResult)
+        assert (warm_step.times.view("u8") == cold_step.times.view("u8")).all()
+        assert (warm_step.values.view("u8") == cold_step.values.view("u8")).all()
+        assert warm.analyses == cold.analyses
+
+        # Editing a sibling module must be visible on the next warm run (no leaked
+        # sys.modules state across scripts).
+        helper.write_text("VOLTAGE = 2.0\n", encoding="utf-8")
+        updated = asyncio.run(
+            service.simulate(
+                service.SimulateRequest(
+                    script=script,
+                    results=updated_results,
+                    plot=False,
+                    schematic=False,
+                ),
+                Settings(),
+            )
+        )
+        assert updated.output.stdout.strip() == "level=2.0"
+        updated_step = files.load_results(updated_results)["step"]
+        assert isinstance(updated_step, results.TransientResult)
+        # Steady DC 2 V source; abs=1e-3 matches default engine reltol=1e-3.
+        assert updated_step.voltage("out")[-1] == pytest.approx(2.0, abs=1e-3)
+    finally:
+        service.close_standby()

@@ -1,13 +1,17 @@
 # Copyright 2026 Maxence Faldor
 
+import importlib.metadata
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+import jolty
 from jolty import __version__, specs
-from jolty.cli import main
+from jolty.cli import COMMANDS, Jolty, main
 from jolty.files import load_raw, load_results
 from jolty.results import AcResult, OperatingPointResult, TransientResult
 
@@ -526,3 +530,110 @@ def test_measure_reads_saved_results_without_running_a_simulation(
 
     # Zero simulations executed during any measure command.
     assert not log_path.exists()
+
+
+def _newly_imported(snippet: str) -> set[str]:
+    """Runs `snippet` in a clean subprocess and returns modules added to sys.modules."""
+    probe = (
+        "import json, sys\n"
+        "before = set(sys.modules)\n"
+        f"{snippet}\n"
+        "print(json.dumps(sorted(set(sys.modules) - before)))\n"
+    )
+    completed = subprocess.run(  # noqa: S603 - fixed interpreter executing test probe
+        [sys.executable, "-P", "-c", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    loaded = json.loads(completed.stdout.splitlines()[-1])
+    assert isinstance(loaded, list)
+    return {str(name) for name in loaded}
+
+
+def test_lazy_imports_keep_startup_free_of_heavy_modules(script: Path) -> None:
+    root_added = _newly_imported("import jolty")
+    assert root_added.isdisjoint(
+        {
+            "PIL",
+            "importlib.metadata",
+            "jolty.devices",
+            "jolty.files",
+            "jolty.kicad",
+            "jolty.mcp",
+            "jolty.plots",
+            "jolty.schematic",
+            "jolty.simulate",
+            "jolty.spice",
+            "jolty.spice.download",
+            "matplotlib",
+            "numpy",
+            "pydantic",
+            "pydantic_settings",
+        }
+    )
+
+    version_added = _newly_imported("from jolty.cli import main\nmain(['--version'])")
+    assert version_added.isdisjoint(
+        {
+            "PIL",
+            "importlib.metadata",
+            "jolty.kicad",
+            "jolty.mcp",
+            "jolty.plots",
+            "jolty.runner",
+            "jolty.service",
+            "jolty.spice.download",
+            "matplotlib",
+            "numpy",
+            "pydantic",
+            "pydantic_settings",
+        }
+    )
+
+    service_added = _newly_imported("import jolty.runner, jolty.service")
+    assert service_added.isdisjoint(
+        {
+            "PIL",
+            "jolty.devices",
+            "jolty.files._results",
+            "jolty.mcp",
+            "jolty.plan",
+            "jolty.plots",
+            "jolty.schematic",
+            "jolty.simulate",
+            "jolty.spice",
+            "jolty.spice.download",
+            "matplotlib",
+            "numpy",
+        }
+    )
+
+    simulate_added = _newly_imported(
+        "from jolty.cli import main\n"
+        f"main(['simulate', {str(script)!r}, '--no-schematic', '--no-plot'])"
+    )
+    assert simulate_added.isdisjoint(
+        {
+            "PIL",
+            "jolty.devices",
+            "jolty.files._results",
+            "jolty.plan",
+            "jolty.plots",
+            "jolty.schematic",
+            "jolty.simulate",
+            "jolty.spice",
+            "jolty.spice.download",
+            "matplotlib",
+            "numpy",
+        }
+    )
+
+
+def test_public_exports_version_and_cli_model_stay_complete() -> None:
+    assert __version__ == importlib.metadata.version("jolty")
+    exported = set(jolty.__all__)
+    assert exported <= set(dir(jolty))
+    for name in jolty.__all__:
+        assert getattr(jolty, name) is not None
+    assert set(Jolty.model_fields) == {spec.name for spec in COMMANDS}

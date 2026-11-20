@@ -30,9 +30,10 @@ Examples:
     ['out in op ≥ 2 V', 'gain of out at 1 kHz in bode ≥ -3 dB']
 """
 
+__lazy_modules__ = ["jolty.specs._measures", "jolty.specs._requirements"]
+
 from jolty.specs._measures import (
     MEASURES,
-    Edge,
     MeasureCategory,
     MeasureDimension,
     MeasureSpec,
@@ -63,6 +64,7 @@ from jolty.specs._measures import (
 )
 from jolty.specs._requirements import (
     Bound,
+    Edge,
     ExtendedReal,
     Judged,
     Measure,

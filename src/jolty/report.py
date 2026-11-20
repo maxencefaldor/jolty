@@ -13,6 +13,8 @@ Carlo and variant batch reports summarize failed run counts, requirement spreads
 overall yield with its Wilson confidence interval.
 """
 
+__lazy_modules__ = ["jolty.devices", "numpy"]
+
 import math
 from dataclasses import replace
 from typing import Annotated, Final, Literal
@@ -21,12 +23,13 @@ import numpy as np
 from pydantic import ConfigDict, Field
 
 from jolty import ir, results, specs, unknowns
-from jolty.devices import LogicLevel, format_logic_level
+from jolty.devices import format_logic_level
 from jolty.specs import Spread, Verdict, Yield
 from jolty.units import format_si
+from jolty.unknowns import LogicLevel
 
 
-def _shown(value: float, nature: results.Nature) -> str:
+def _shown(value: float, nature: unknowns.Nature) -> str:
     """Formats an unknown `value` of `nature` with an SI unit prefix.
 
     Device state unknowns are dimensionless and are formatted as plain numbers.
@@ -71,7 +74,7 @@ class Value(ir.FrozenModel):
     """Scalar value of a single unknown, in SI base units."""
 
     unknown: str
-    nature: results.Nature
+    nature: unknowns.Nature
     value: float
 
 
@@ -79,7 +82,7 @@ class Extent(ir.FrozenModel):
     """Summary of values taken by a single unknown across an analysis."""
 
     unknown: str
-    nature: results.Nature
+    nature: unknowns.Nature
     first: float
     minimum: float
     maximum: float
@@ -186,7 +189,7 @@ class Solutions(ir.FrozenModel):
     """Values of a single unknown across multiple DC solutions, in SI base units."""
 
     unknown: str
-    nature: results.Nature
+    nature: unknowns.Nature
     values: tuple[float, ...] = Field(
         description="Value of the unknown at each DC solution."
     )
@@ -239,7 +242,7 @@ class DcSweepReport(ir.FrozenModel):
     kind: Literal["dc_sweep"] = "dc_sweep"
     name: str
     source: str = Field(description="Instance path of the swept source or device.")
-    nature: results.Nature | None = Field(
+    nature: unknowns.Nature | None = Field(
         description="Physical quantity of swept values (voltage or current), or null "
         "for parameter sweeps."
     )
@@ -567,7 +570,7 @@ class NoiseReport(_FrequencyReport):
         description="Reference net for a differential output voltage, or null for "
         "ground."
     )
-    nature: results.Nature = Field(
+    nature: unknowns.Nature = Field(
         description="Physical quantity of the output unknown."
     )
     first: float = Field(
@@ -589,7 +592,7 @@ class NoiseReport(_FrequencyReport):
         description="Integrated input-referred RMS noise across the band, or null "
         "without an input source or for a single frequency."
     )
-    referred_nature: results.Nature | None = Field(
+    referred_nature: unknowns.Nature | None = Field(
         description="Physical quantity of the input-referred source, or null if "
         "omitted."
     )
@@ -742,7 +745,7 @@ class OutputSensitivity(ir.FrozenModel):
     """Summary of parameter derivatives for a single output unknown."""
 
     output: str
-    nature: results.Nature
+    nature: unknowns.Nature
     value: float | None = Field(
         default=None,
         description="Nominal output value at the operating point in SI base units, "
@@ -902,7 +905,7 @@ class OutputMismatch(ir.FrozenModel):
     """First-order statistical spread summary for one output or phasor component."""
 
     output: str
-    nature: results.Nature
+    nature: unknowns.Nature
     part: results.PhasorPart | None = Field(
         default=None,
         description="Phasor component analyzed for AC responses (magnitude or phase), "

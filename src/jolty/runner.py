@@ -30,16 +30,35 @@ output channels. Subprocess isolation captures script print output, enforces tim
 on runaway scripts or analyses, and confines crashes to the worker process.
 """
 
-# Jolty modules load lazily on first use, keeping worker startup lean.
-__lazy_modules__ = ["jolty"]
+# Execution modules load lazily so callers serializing Job and reading JobResult
+# skip importing NumPy, devices, plans, and the simulation engine.
+__lazy_modules__ = [
+    "importlib",
+    "jolty",
+    "jolty.builder",
+    "jolty.devices",
+    "jolty.plan",
+    "jolty.results",
+    "jolty.simulate",
+    "jolty.simulate._decode",
+    "jolty.units",
+    "numpy",
+    "os",
+    "runpy",
+    "sysconfig",
+    "traceback",
+]
 
+import functools
+import importlib
 import json
+import os
 import runpy
 import sys
 import sysconfig
 import traceback
 from collections.abc import Generator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Annotated, Final, Literal, override
@@ -74,6 +93,7 @@ from jolty.plan import (
 )
 from jolty.results import AnalysisResult, BatchResult, Run
 from jolty.simulate import Simulation, kelvins, process_problems
+from jolty.simulate._decode import runtime_settings
 from jolty.specs import (
     Requirement,
     Specs,
@@ -106,16 +126,58 @@ MONTE_CARLO: Final = "monte-carlo"
 VARIANT_RUNS: Final = "variant-runs"
 """Batch archive key for a plan's variant runs (not a valid identifier)."""
 
-_LIBRARIES: Final = tuple(
-    {
-        Path(__file__).resolve().parent,
-        *(
-            Path(sysconfig.get_path(name)).resolve()
-            for name in ("stdlib", "platstdlib", "purelib", "platlib")
-        ),
-    }
+STANDBY_FLAG: Final = "--standby"
+"""CLI flag starting a single-use pre-warmed runner worker waiting on stdin."""
+
+_PREIMPORTED_MODULES: Final[tuple[str, ...]] = (
+    "numpy",
+    "jolty._core",
+    "jolty.builder",
+    "jolty.checks",
+    "jolty.devices",
+    "jolty.fidelity",
+    "jolty.files._results",
+    "jolty.ir",
+    "jolty.parts",
+    "jolty.plan",
+    "jolty.report",
+    "jolty.results",
+    "jolty.simulate",
+    "jolty.specs._measures",
+    "jolty.specs._requirements",
+    "jolty.units",
+    "jolty.unknowns",
+    "jolty.waveforms",
 )
-"""Directory roots excluded from script tracebacks: jolty, stdlib, and packages."""
+"""Core execution modules preloaded in a standby worker before receiving a job."""
+
+
+@functools.cache
+def _libraries() -> tuple[Path, ...]:
+    """Returns directory roots excluded from script tracebacks."""
+    return tuple(
+        {
+            Path(__file__).resolve().parent,
+            *(
+                Path(sysconfig.get_path(name)).resolve()
+                for name in ("stdlib", "platstdlib", "purelib", "platlib")
+            ),
+        }
+    )
+
+
+class RuntimeSettings(FrozenModel):
+    """Pre-resolved engine runtime settings forwarded from the caller to the runner."""
+
+    threads: int | None = Field(
+        default=None,
+        ge=1,
+        description="Worker thread count for batches and parallel analyses.",
+    )
+    analysis_log: Path | None = Field(
+        default=None,
+        description="Append-only JSONL file recording started analyses, or null.",
+    )
 
 
 class Thresholds(FrozenModel):
@@ -165,6 +227,11 @@ class Job(FrozenModel):
         default=None,
         description="Half-open Monte Carlo sample range for shard execution, or null "
         "for a full plan.",
+    )
+    runtime: RuntimeSettings | None = Field(
+        default=None,
+        description="Pre-resolved engine runtime settings from the caller, or null to "
+        "load Settings in the runner.",
     )
 
 
@@ -257,16 +324,22 @@ JOB_RESULTS: Final = TypeAdapter[JobResult](JobResult)
 """Pydantic `TypeAdapter` for serializing and deserializing `JobResult` JSON."""
 
 
+type _Quantity = Quantity
+type _AnalysisResult = AnalysisResult
+type _Plan = Plan
+type _Simulation = Simulation
+
+
 @dataclass(slots=True)
 class _Condition:
     """Nominal or corner condition paired with resolved fidelity and results."""
 
     corner: str | None
     """Corner name, or `None` for nominal plan conditions."""
-    temperature: Quantity
+    temperature: _Quantity
     chosen: fidelity.Fidelity | None
     """Resolved fidelity state at this condition, or `None` on elaboration failure."""
-    solved: Mapping[str, AnalysisResult] = field(default_factory=dict)
+    solved: Mapping[str, _AnalysisResult] = field(default_factory=dict)
     """Completed analysis results at this condition, keyed by analysis name."""
     failures: Mapping[str, str] = field(default_factory=dict)
     """Failure messages for analyses that errored at this condition, by name."""
@@ -279,10 +352,10 @@ class _RunContext:
     job: Job
     directory: Path
     built: ir.Circuit
-    plan: Plan
+    plan: _Plan
     specs: Specs | None
     chosen: fidelity.Fidelity
-    simulation: Simulation
+    simulation: _Simulation
     conditions: tuple[_Condition, ...] = ()
 
 
@@ -294,7 +367,7 @@ class _Structure:
     circuit once and pass each condition's temperature as a run parameter.
     """
 
-    simulation: Simulation
+    simulation: _Simulation
     members: list[int]
     """Indices of grouped conditions within the plan's condition list."""
 
@@ -313,7 +386,12 @@ def run(job: Job, directory: Path) -> JobResult:
         `Built` outcome on completion, or `Failure` recording any script exception.
     """
     try:
-        with _importable(job.script, job.plan):
+        runtime_context = (
+            runtime_settings(job.runtime.threads, job.runtime.analysis_log)
+            if job.runtime is not None
+            else nullcontext()
+        )
+        with _importable(job.script, job.plan), runtime_context:
             return _run(job, directory)
     except SystemExit as error:
         return _failure(error, f"the script exited with {error.code!r}")
@@ -1217,7 +1295,7 @@ def _is_script(filename: str) -> bool:
     if filename.startswith("<"):
         return False
     path = Path(filename).resolve()
-    return not any(path.is_relative_to(library) for library in _LIBRARIES)
+    return not any(path.is_relative_to(library) for library in _libraries())
 
 
 def _relative(filename: str) -> str:
@@ -1229,17 +1307,69 @@ def _relative(filename: str) -> str:
     )
 
 
+class _StandbyDispatch(FrozenModel):
+    """Single-job dispatch envelope sent to a pre-warmed standby runner over stdin."""
+
+    directory: Path
+    working_directory: Path
+    environment: dict[str, str]
+
+
+def _execute(directory: Path) -> None:
+    """Loads `job.json` from `directory`, executes it, and writes `outcome.json`."""
+    job = Job.model_validate_json((directory / JOB).read_bytes())
+    (directory / OUTCOME).write_bytes(JOB_RESULTS.dump_json(run(job, directory)))
+
+
+def _preimport_execution_modules() -> None:
+    """Preloads core simulation modules in a standby worker before receiving a job."""
+    for module_name in _PREIMPORTED_MODULES:
+        importlib.import_module(module_name)
+
+
+def _sync_environment(environment: Mapping[str, str]) -> None:
+    """Synchronizes the current process environment with `environment`."""
+    for key in list(os.environ):
+        if key not in environment:
+            del os.environ[key]
+    for key, value in environment.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+
+
+def _serve_standby() -> None:
+    """Preloads execution modules, executes at most one dispatched job, then exits.
+
+    Exiting immediately after a single job preserves complete per-script process
+    isolation and bit-identical behavior relative to a freshly spawned runner.
+    """
+    _preimport_execution_modules()
+    raw = sys.stdin.buffer.readline()
+    if not raw:
+        return
+    dispatch = _StandbyDispatch.model_validate_json(raw)
+    os.chdir(dispatch.working_directory)
+    _sync_environment(dispatch.environment)
+    _execute(dispatch.directory)
+
+
 def main(argv: list[str] | None = None) -> None:
     """Executes the runner job located in the directory passed as the CLI argument.
 
+    Passing ``--standby`` starts a single-use pre-warmed worker that preloads
+    execution modules, waits for one JSON dispatch line on standard input, executes
+    that job, and exits.
+
     Args:
-        argv: Single-element argument list naming the job directory, defaulting to
+        argv: Argument list naming the job directory or ``--standby``, defaulting to
             ``sys.argv[1:]`` when ``None``.
     """
-    (argument,) = sys.argv[1:] if argv is None else argv
-    directory = Path(argument)
-    job = Job.model_validate_json((directory / JOB).read_bytes())
-    (directory / OUTCOME).write_bytes(JOB_RESULTS.dump_json(run(job, directory)))
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments == [STANDBY_FLAG]:
+        _serve_standby()
+        return
+    (argument,) = arguments
+    _execute(Path(argument))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,15 @@ Each download is pinned by URL and SHA-256 digest and stored once in the cache
 configured by [`Settings`][jolty.settings.Settings].
 """
 
+__lazy_modules__ = [
+    "hashlib",
+    "jolty.settings",
+    "urllib.error",
+    "urllib.parse",
+    "urllib.request",
+    "uuid",
+]
+
 import hashlib
 import re
 import urllib.error

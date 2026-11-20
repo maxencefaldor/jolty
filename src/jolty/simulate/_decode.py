@@ -1,6 +1,8 @@
 # Copyright 2026 Maxence Faldor
 """Engine runtime helpers, analysis encoding, result decoding, and shapes."""
 
+__lazy_modules__ = ["jolty.settings"]
+
 import contextlib
 import contextvars
 import functools
@@ -8,6 +10,7 @@ import json
 import math
 import time
 from collections.abc import Collection, Generator, Iterable, Mapping
+from pathlib import Path
 from typing import Final
 
 import numpy as np
@@ -83,6 +86,35 @@ def pool(count: int | None = None) -> _core.Pool:
 _CHOSEN: Final = contextvars.ContextVar[_core.Pool | None]("pool", default=None)
 """Thread pool bound to the current execution context by `threads`, if any."""
 
+_RUNTIME_SETTINGS: Final = contextvars.ContextVar[
+    tuple[int | None, Path | None] | None
+]("runtime_settings", default=None)
+"""Resolved `(threads, analysis_log)` settings bound by the runner, if any."""
+
+
+@contextlib.contextmanager
+def runtime_settings(
+    thread_count: int | None, analysis_log: Path | None
+) -> Generator[None]:
+    """Binds pre-resolved `thread_count` and `analysis_log` for the active context.
+
+    Allows subprocess runners spawned by `jolty.service` to reuse settings already
+    validated by the caller without importing `pydantic_settings` or re-reading
+    `pyproject.toml`.
+
+    Args:
+        thread_count: Configured engine thread count, or ``None`` for one per CPU.
+        analysis_log: Configured JSONL analysis log path, or ``None`` when disabled.
+
+    Returns:
+        Context manager applying the pre-resolved runtime settings for the block.
+    """
+    token = _RUNTIME_SETTINGS.set((thread_count, analysis_log))
+    try:
+        yield
+    finally:
+        _RUNTIME_SETTINGS.reset(token)
+
 
 @contextlib.contextmanager
 def threads(count: int | None) -> Generator[None]:
@@ -127,7 +159,13 @@ def engine_pool() -> _core.Pool:
     Raises:
         JoltyError: When settings validation fails.
     """
-    return _CHOSEN.get() or pool(_settings().threads)
+    chosen = _CHOSEN.get()
+    if chosen is not None:
+        return chosen
+    runtime = _RUNTIME_SETTINGS.get()
+    if runtime is not None:
+        return pool(runtime[0])
+    return pool(_settings().threads)
 
 
 class Logged(ir.FrozenModel):
@@ -158,7 +196,8 @@ def log_analyses(analyses: Iterable[Analysis], runs: int) -> None:
     Raises:
         JoltyError: When settings are invalid or the log file cannot be written.
     """
-    log = _settings().analysis_log
+    runtime = _RUNTIME_SETTINGS.get()
+    log = _settings().analysis_log if runtime is None else runtime[1]
     if log is None or runs == 0:
         return
     started = time.time()

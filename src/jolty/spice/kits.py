@@ -15,6 +15,14 @@ expressions, ``.if`` blocks, binned models, ``temper``, and statistical function
 and native simulation readiness.
 """
 
+__lazy_modules__ = [
+    "jolty.settings",
+    "jolty.spice.download",
+    "shutil",
+    "tarfile",
+    "tempfile",
+]
+
 import shutil
 import tarfile
 import tempfile

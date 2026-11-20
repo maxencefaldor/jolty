@@ -10,6 +10,8 @@ temperature where ngspice's thermal voltage is jolty's,
 differ by their devices rather than their physical constants.
 """
 
+__lazy_modules__ = ["numpy", "numpy.typing"]
+
 import functools
 import re
 import shutil
@@ -52,6 +54,7 @@ _SPICE_THERMAL_VOLTAGE_PER_KELVIN: Final = 1.38064852e-23 / 1.6021766208e-19
 """ngspice's Boltzmann constant over the elementary charge, from CODATA 2014."""
 
 type Real = npt.NDArray[np.float64]
+type Complex = npt.NDArray[np.complex128]
 
 
 def option_temperature(temperature: float) -> float:
@@ -100,7 +103,7 @@ class Result:
     """
 
     plot: str
-    vectors: dict[str, npt.NDArray[np.complex128]]
+    vectors: dict[str, Complex]
     printed: str
     seconds: float | None = None
     """Wall-clock runtime of the ngspice process in seconds, or None for file reads."""
@@ -366,7 +369,7 @@ class RawPlot:
     plot: str
     variables: tuple[RawVariable, ...]
     complex_values: bool
-    values: npt.NDArray[np.float64] | npt.NDArray[np.complex128]
+    values: Real | Complex
 
 
 @dataclass(frozen=True, slots=True)

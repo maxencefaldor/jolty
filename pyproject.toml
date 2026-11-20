@@ -107,7 +107,7 @@ convention = "google"
 "benchmarks/precision/**/*.py" = ["INP001", "PLR2004", "T201"]
 "benchmarks/robustness/**/*.py" = ["INP001", "PLR2004", "T201"]
 "benchmarks/coverage/**/*.py" = ["INP001", "PLR2004", "T201"]
-"src/jolty/cli.py" = ["T201"]  # CLI prints directly to stdout
+"src/jolty/cli/**" = ["T201"]  # CLI prints directly to stdout
 "src/jolty/units.py" = ["N816"]  # unit names preserve SI case: kHz, mV, uF
 
 [tool.ruff.format]

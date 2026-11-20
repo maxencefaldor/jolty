@@ -1,6 +1,8 @@
 # Copyright 2026 Maxence Faldor
 """Batched simulation execution over parameter variants, in the engine or ngspice."""
 
+__lazy_modules__ = ["concurrent.futures", "jolty"]
+
 import functools
 import json
 import math

@@ -15,6 +15,8 @@ prefixes (R, C, L, T, D, Q, or U) numbered in bill order, with fields recording 
 instance path and manufacturer part number.
 """
 
+__lazy_modules__ = ["jolty.simulate"]
+
 import uuid
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
@@ -220,11 +222,14 @@ def _component_at(circuit: ir.Circuit, instance: str) -> str:
     return found.of.component
 
 
+type _Simulation = Simulation
+
+
 @dataclass(frozen=True, slots=True)
 class _Reached:
     """Elaborated net lookup helper for terminals inside a standalone component."""
 
-    simulation: Simulation
+    simulation: _Simulation
     """Standalone elaboration of the exported component."""
     ground: str
     """Name of the component ground net."""

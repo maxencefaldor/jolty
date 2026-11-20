@@ -1,6 +1,8 @@
 # Copyright 2026 Maxence Faldor
 """Results archive serialization, provenance, and shared `.npz` archive primitives."""
 
+__lazy_modules__ = ["jolty.plan", "platform", "sysconfig"]
+
 import contextlib
 import enum
 import functools
@@ -16,7 +18,6 @@ import zlib
 from collections.abc import Generator, Iterator, Mapping
 from dataclasses import fields, is_dataclass, replace
 from fractions import Fraction
-from importlib.metadata import version
 from pathlib import Path, PurePath
 from typing import Annotated, Final, Literal, Self, override
 
@@ -455,7 +456,7 @@ class Provenance(ir.FrozenModel):
             True
         """
         return cls(
-            jolty=version("jolty"),
+            jolty=_core.__version__,
             build=build(),
             platform=platform(),
             circuit=None if circuit is None else circuit_digest(circuit),

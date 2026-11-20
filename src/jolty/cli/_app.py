@@ -1,26 +1,23 @@
 # Copyright 2026 Maxence Faldor
-"""Command-line interface for ``jolty``.
-
-Each subcommand extends a request model from [`jolty.service`][jolty.service] with an
-output format, so CLI flags match the MCP tool parameters and print the same text.
-"""
+"""Pydantic-settings CLI application and subcommand builders for ``jolty``."""
 
 __lazy_modules__ = [
-    "importlib.metadata",
     "jolty.errors",
+    "jolty.service",
     "jolty.settings",
     "json",
     "os",
 ]
 
+import functools
 import json
 import os
 import sys
+import typing
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from importlib.metadata import version
 from operator import getitem
-from typing import Any, Final, Literal, NoReturn, cast, override
+from typing import Any, Literal, NoReturn, cast, override
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 from pydantic_settings import (
@@ -63,81 +60,83 @@ class CommandSpec[Request: BaseModel]:
     description: str
 
 
-COMMANDS: Final = (
-    CommandSpec(
-        "build",
-        service.BuildRequest,
-        service.build,
-        "Build a script's circuit and elaborate it.",
-    ),
-    CommandSpec(
-        "simulate",
-        service.SimulateRequest,
-        service.simulate,
-        "Build a script's circuit and run a plan's analyses on it.",
-    ),
-    CommandSpec(
-        "merge",
-        service.MergeRequest,
-        service.merge,
-        "Merge the shards of a plan's Monte Carlo analysis into one run.",
-    ),
-    CommandSpec(
-        "plot",
-        service.PlotRequest,
-        service.plot,
-        "Plot the analyses of a saved results file.",
-    ),
-    CommandSpec(
-        "measure",
-        service.MeasureRequest,
-        service.measure,
-        "Read a measure from a saved results file.",
-    ),
-    CommandSpec(
-        "draw",
-        service.DrawRequest,
-        service.draw,
-        "Draw a component of a saved circuit file.",
-    ),
-    CommandSpec(
-        "view",
-        service.ViewRequest,
-        service.view,
-        "Write a 3D viewer of a saved circuit and its results.",
-    ),
-    CommandSpec(
-        "check",
-        service.CheckRequest,
-        service.check,
-        "Check the structure of a saved circuit file.",
-    ),
-    CommandSpec(
-        "explain",
-        service.ExplainRequest,
-        service.explain,
-        "Explain rules and their levels.",
-    ),
-    CommandSpec(
-        "read_docs",
-        service.ReadDocsRequest,
-        service.read_docs,
-        "List or read the offline guide and examples.",
-    ),
-    CommandSpec(
-        "cost",
-        service.CostRequest,
-        service.cost,
-        "Price a component of a saved circuit file with a catalog.",
-    ),
-    CommandSpec(
-        "export_kicad",
-        service.ExportKicadRequest,
-        service.export_kicad,
-        "Write a component of a saved circuit file as a KiCad netlist.",
-    ),
-)
-"""Declarative specifications for every top-level ``jolty`` CLI subcommand."""
+@functools.cache
+def _commands() -> tuple[CommandSpec[Any], ...]:
+    """Builds the declarative specifications for every top-level ``jolty`` command."""
+    return (
+        CommandSpec(
+            "build",
+            service.BuildRequest,
+            service.build,
+            "Build a script's circuit and elaborate it.",
+        ),
+        CommandSpec(
+            "simulate",
+            service.SimulateRequest,
+            service.simulate,
+            "Build a script's circuit and run a plan's analyses on it.",
+        ),
+        CommandSpec(
+            "merge",
+            service.MergeRequest,
+            service.merge,
+            "Merge the shards of a plan's Monte Carlo analysis into one run.",
+        ),
+        CommandSpec(
+            "plot",
+            service.PlotRequest,
+            service.plot,
+            "Plot the analyses of a saved results file.",
+        ),
+        CommandSpec(
+            "measure",
+            service.MeasureRequest,
+            service.measure,
+            "Read a measure from a saved results file.",
+        ),
+        CommandSpec(
+            "draw",
+            service.DrawRequest,
+            service.draw,
+            "Draw a component of a saved circuit file.",
+        ),
+        CommandSpec(
+            "view",
+            service.ViewRequest,
+            service.view,
+            "Write a 3D viewer of a saved circuit and its results.",
+        ),
+        CommandSpec(
+            "check",
+            service.CheckRequest,
+            service.check,
+            "Check the structure of a saved circuit file.",
+        ),
+        CommandSpec(
+            "explain",
+            service.ExplainRequest,
+            service.explain,
+            "Explain rules and their levels.",
+        ),
+        CommandSpec(
+            "read_docs",
+            service.ReadDocsRequest,
+            service.read_docs,
+            "List or read the offline guide and examples.",
+        ),
+        CommandSpec(
+            "cost",
+            service.CostRequest,
+            service.cost,
+            "Price a component of a saved circuit file with a catalog.",
+        ),
+        CommandSpec(
+            "export_kicad",
+            service.ExportKicadRequest,
+            service.export_kicad,
+            "Write a component of a saved circuit file as a KiCad netlist.",
+        ),
+    )
 
 
 def _subcommand_model[Request: BaseModel](
@@ -149,7 +148,8 @@ def _subcommand_model[Request: BaseModel](
     class _Runner(_Output):
         async def cli_cmd(self) -> None:
             """Runs the command."""
-            self.emit(await handler(cast(Request, self), Settings.load()))
+            with service.single_shot():
+                self.emit(await handler(cast(Request, self), Settings.load()))
 
     model_name = f"{spec.request_type.__name__.removesuffix('Request')}Command"
     return create_model(
@@ -236,14 +236,15 @@ class _JoltyBase(CommandLine):
         CliApp.run_subcommand(self)
 
 
-def _build_jolty() -> type[_JoltyBase]:
-    """Builds the top-level ``Jolty`` CLI settings model from `COMMANDS`."""
+@functools.cache
+def _jolty() -> type[_JoltyBase]:
+    """Builds the top-level ``Jolty`` CLI settings model from `_commands()`."""
     fields: dict[str, Any] = {
         spec.name: (
             getitem(CliSubCommand, _subcommand_model(spec)),
             Field(description=spec.description),
         )
-        for spec in COMMANDS
+        for spec in _commands()
     }
     return create_model(
         "Jolty",
@@ -254,28 +255,77 @@ def _build_jolty() -> type[_JoltyBase]:
     )
 
 
-Jolty: Final = _build_jolty()
+@functools.cache
+def _command_by_cli_name() -> dict[str, CommandSpec[Any]]:
+    """Maps kebab-case CLI subcommand names to their `CommandSpec`."""
+    return {spec.name.replace("_", "-"): spec for spec in _commands()}
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    """Runs the ``jolty`` command-line entry point.
+@functools.cache
+def _single_command_model(cli_name: str) -> type[CommandLine]:
+    """Builds a standalone CLI settings model for one subcommand."""
+    spec = _command_by_cli_name()[cli_name]
+    handler = spec.handler
 
-    Passing ``--version`` alone prints the package version and exits with status 0.
-    Exit status 1 indicates a circuit or analysis failure: failed elaboration, check
-    errors, a failed simulation, missed Monte Carlo yield target, an unpriced device,
-    or a failed netlist export. Exit status 2 indicates invalid arguments or settings,
-    a missing subcommand, or an unhandled command failure such as a script exception.
+    class _SingleBase(CommandLine):
+        model_config = SettingsConfigDict(cli_prog_name=f"jolty {cli_name}")
 
-    Args:
-        argv: Command-line tokens to parse, defaulting to ``sys.argv[1:]`` when
-            ``None``.
-    """
-    arguments = sys.argv[1:] if argv is None else list(argv)
-    if arguments == ["--version"]:
-        print(f"jolty {version('jolty')}")
-        return
+    class _Runner(_Output):
+        async def cli_cmd(self) -> None:
+            """Runs the command."""
+            with service.single_shot():
+                self.emit(await handler(cast(Any, self), Settings.load()))
+
+    model_name = f"{spec.request_type.__name__.removesuffix('Request')}Command"
+    return cast(
+        "type[CommandLine]",
+        create_model(
+            model_name,
+            __base__=(spec.request_type, _Output, _SingleBase),
+            __doc__=spec.request_type.__doc__,
+            __module__=__name__,
+            __namespace__={"cli_cmd": _Runner.cli_cmd},
+        ),
+    )
+
+
+if typing.TYPE_CHECKING:
+    COMMANDS: tuple[CommandSpec[Any], ...]
+    """Declarative specifications for every top-level ``jolty`` CLI subcommand."""
+
+    Jolty: type[_JoltyBase]
+    """Generated top-level ``jolty`` CLI settings model."""
+
+
+def __getattr__(name: str) -> object:
+    """Resolves `COMMANDS` and `Jolty` lazily to avoid building unused CLI models."""
+    if name == "COMMANDS":
+        value: object = _commands()
+        globals()[name] = value
+        return value
+    if name == "Jolty":
+        value = _jolty()
+        globals()[name] = value
+        return value
+    message = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(message)
+
+
+def __dir__() -> list[str]:
+    """Lists module attributes including lazily built CLI models."""
+    return sorted({*globals(), "COMMANDS", "Jolty"})
+
+
+def run_cli(arguments: list[str]) -> None:
+    """Parses `arguments` and executes the selected ``jolty`` subcommand."""
     try:
-        CliApp.run(Jolty, cli_args=arguments)
+        if arguments and arguments[0] in _command_by_cli_name():
+            CliApp.run(
+                _single_command_model(arguments[0]),
+                cli_args=arguments[1:],
+            )
+        else:
+            CliApp.run(_jolty(), cli_args=arguments)
     except JoltyError as error:
         _fail(str(error), as_json=_wants_json(arguments))
     except ValidationError as error:

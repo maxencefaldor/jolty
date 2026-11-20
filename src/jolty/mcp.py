@@ -14,7 +14,7 @@ corrupt the protocol stream. Start the server with ``jolty-mcp`` or
 ``python -m jolty.mcp``.
 """
 
-__lazy_modules__ = ["base64", "importlib.metadata"]
+__lazy_modules__ = ["base64", "jolty._core"]
 
 import asyncio
 import base64
@@ -23,7 +23,6 @@ import inspect
 import sys
 import typing
 from collections.abc import Awaitable, Callable, Sequence
-from importlib.metadata import version
 from typing import Annotated, Final
 
 from mcp.server.mcpserver import MCPServer
@@ -39,6 +38,7 @@ from mcp.types import (
 from pydantic import BaseModel
 
 from jolty import service
+from jolty._core import __version__ as _version
 from jolty.errors import JoltyError
 from jolty.service import build_instructions
 from jolty.settings import Settings
@@ -213,9 +213,7 @@ def create_server(settings: Settings) -> MCPServer:
     Returns:
         Configured `MCPServer` ready to serve over stdio.
     """
-    server = MCPServer(
-        "jolty", version=version("jolty"), instructions=build_instructions()
-    )
+    server = MCPServer("jolty", version=_version, instructions=build_instructions())
 
     def register[Request: BaseModel, Result: service.CommandResult](
         name: str,
@@ -336,7 +334,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     """
     arguments = sys.argv[1:] if argv is None else list(argv)
     if arguments == ["--version"]:
-        sys.stdout.write(f"jolty-mcp {version('jolty')}\n")
+        sys.stdout.write(f"jolty-mcp {_version}\n")
         return
     if arguments in (["--help"], ["-h"]):
         sys.stdout.write(USAGE)
@@ -353,7 +351,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         sys.stderr.write(
             "jolty-mcp serves MCP on stdio for a harness to start; Ctrl-C stops it.\n"
         )
-    create_server(settings).run()
+    service.warm_runner()
+    try:
+        create_server(settings).run()
+    finally:
+        service.close_standby()
 
 
 if __name__ == "__main__":

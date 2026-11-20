@@ -11,10 +11,13 @@ Examples:
     {'resistance': 10000.0}
 """
 
+__lazy_modules__ = ["fractions", "inspect", "json"]
+
 import functools
 import inspect
 import json
 import math
+import typing
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from fractions import Fraction
@@ -41,6 +44,7 @@ from jolty.units import (
     Quantity,
     finite,
 )
+from jolty.unknowns import LogicLevel
 from jolty.waveforms import Dc, Waveform
 
 
@@ -2790,7 +2794,8 @@ def bsim3(  # noqa: PLR0913 - instance geometry and BSIM3 model selectors
     )
 
 
-def _bsim3_card() -> dict[str, Dimension | Literal["uc"] | None]:
+@functools.cache
+def _bsim3_card() -> Mapping[str, Dimension | Literal["uc"] | None]:
     """Derives BSIM3 card parameter names and SI dimensions from the engine."""
     excluded = inspect.signature(bsim3).parameters
     card: dict[str, Dimension | Literal["uc"] | None] = {}
@@ -2808,16 +2813,25 @@ def _bsim3_card() -> dict[str, Dimension | Literal["uc"] | None]:
     return card
 
 
-BSIM3_CARD: Final[Mapping[str, Dimension | Literal["uc"] | None]] = _bsim3_card()
-"""Mapping from BSIM3v3.3 card parameter names to expected SI dimensions.
+@functools.cache
+def _bsim3_binned() -> frozenset[str]:
+    """Returns BSIM3 parameters supporting ``l``, ``w``, and ``p`` binning prefixes."""
+    return frozenset(_core.binned_parameters("bsim3"))
 
-Plain numeric parameters map to ``None`` (such as ``ll``, whose unit depends on
-``lln``). Parameters ``uc`` and ``uc1`` map to ``"uc"`` because their dimension depends
-on ``mobility_model``."""
 
-BSIM3_BINNED: Final = frozenset(_core.binned_parameters("bsim3"))
-"""BSIM3 parameters supporting ``l``, ``w``, and ``p`` binning prefixes, scaled by
-meters or square meters."""
+if typing.TYPE_CHECKING:
+    BSIM3_CARD: Final[Mapping[str, Dimension | Literal["uc"] | None]] = dict[
+        str, Dimension | Literal["uc"] | None
+    ]()
+    """Mapping from BSIM3v3.3 card parameter names to expected SI dimensions.
+
+    Plain numeric parameters map to ``None`` (such as ``ll``, whose unit depends on
+    ``lln``). Parameters ``uc`` and ``uc1`` map to ``"uc"`` because their dimension
+    depends on ``mobility_model``."""
+
+    BSIM3_BINNED: Final[frozenset[str]] = frozenset()
+    """BSIM3 parameters supporting ``l``, ``w``, and ``p`` binning prefixes, scaled by
+    meters or square meters."""
 
 
 def bsim3_dimension(name: str, mobility_model: int | None = None) -> Dimension | None:
@@ -2841,7 +2855,7 @@ def bsim3_dimension(name: str, mobility_model: int | None = None) -> Dimension |
         >>> bsim3_dimension("lvth0") == VOLTAGE * LENGTH, bsim3_dimension("k2")
         (True, None)
     """
-    dimension, extent = _bsim_parameter("BSIM3", name, BSIM3_CARD, BSIM3_BINNED)
+    dimension, extent = _bsim_parameter("BSIM3", name, _bsim3_card(), _bsim3_binned())
     if dimension == "uc":
         dimension = PER_VOLT if mobility_model == 3 else LENGTH / VOLTAGE**2  # noqa: PLR2004 - mobmod 3's body effect
     return _extended(dimension, extent)
@@ -3001,7 +3015,8 @@ def bsim4(  # noqa: PLR0913 - instance geometry and BSIM4 model selectors
     return _device("bsim4", values, card=card, card_dimension=bsim4_dimension)
 
 
-def _bsim4_card() -> dict[str, Dimension | None]:
+@functools.cache
+def _bsim4_card() -> Mapping[str, Dimension | None]:
     """Derives BSIM4 card parameter names and SI dimensions from the engine."""
     excluded = inspect.signature(bsim4).parameters
     card: dict[str, Dimension | None] = {}
@@ -3017,15 +3032,46 @@ def _bsim4_card() -> dict[str, Dimension | None]:
     return card
 
 
-BSIM4_CARD: Final[Mapping[str, Dimension | None]] = _bsim4_card()
-"""Mapping from BSIM4.5 card parameter names to expected SI dimensions.
+@functools.cache
+def _bsim4_binned() -> frozenset[str]:
+    """Returns BSIM4 parameters supporting ``l``, ``w``, and ``p`` binning prefixes."""
+    return frozenset(_core.binned_parameters("bsim4"))
 
-Plain numeric parameters map to ``None``, including exponent-dependent parameters such
-as ``ll`` and manual-unit gate tunneling parameters such as ``aigc``."""
 
-BSIM4_BINNED: Final = frozenset(_core.binned_parameters("bsim4"))
-"""BSIM4 parameters supporting ``l``, ``w``, and ``p`` binning prefixes, scaled by
-meters or square meters."""
+if typing.TYPE_CHECKING:
+    BSIM4_CARD: Final[Mapping[str, Dimension | None]] = dict[str, Dimension | None]()
+    """Mapping from BSIM4.5 card parameter names to expected SI dimensions.
+
+    Plain numeric parameters map to ``None``, including exponent-dependent parameters
+    such as ``ll`` and manual-unit gate tunneling parameters such as ``aigc``."""
+
+    BSIM4_BINNED: Final[frozenset[str]] = frozenset()
+    """BSIM4 parameters supporting ``l``, ``w``, and ``p`` binning prefixes, scaled by
+    meters or square meters."""
+
+
+_LAZY_BSIM_TABLES: Final[Mapping[str, Callable[[], object]]] = {
+    "BSIM3_CARD": _bsim3_card,
+    "BSIM3_BINNED": _bsim3_binned,
+    "BSIM4_CARD": _bsim4_card,
+    "BSIM4_BINNED": _bsim4_binned,
+}
+
+
+def __getattr__(name: str) -> object:
+    """Computes BSIM3/BSIM4 parameter dimension tables lazily on first access."""
+    loader = _LAZY_BSIM_TABLES.get(name)
+    if loader is not None:
+        value = loader()
+        globals()[name] = value
+        return value
+    message = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(message)
+
+
+def __dir__() -> list[str]:
+    """Lists module attributes including lazily computed BSIM parameter tables."""
+    return sorted({*globals(), *_LAZY_BSIM_TABLES})
 
 
 def bsim4_dimension(name: str) -> Dimension | None:
@@ -3047,11 +3093,8 @@ def bsim4_dimension(name: str) -> Dimension | None:
         >>> bsim4_dimension("lvth0") == VOLTAGE * LENGTH, bsim4_dimension("k2")
         (True, None)
     """
-    return _extended(*_bsim_parameter("BSIM4", name, BSIM4_CARD, BSIM4_BINNED))
+    return _extended(*_bsim_parameter("BSIM4", name, _bsim4_card(), _bsim4_binned()))
 
-
-type LogicLevel = Literal[0, 1] | None
-"""Digital logic level: 0, 1, or ``None`` for an unknown state."""
 
 type Gate = Literal["and", "or", "nand", "nor", "xor", "xnor", "not", "buffer"]
 """Supported standard logic gate function names."""

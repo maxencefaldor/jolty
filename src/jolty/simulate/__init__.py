@@ -23,6 +23,15 @@ Examples:
     2.5
 """
 
+__lazy_modules__ = [
+    "jolty",
+    "jolty.simulate",
+    "jolty.simulate._batch",
+    "jolty.simulate._function",
+    "jolty.simulate._stress",
+    "jolty.specs",
+]
+
 import functools
 import json
 from collections.abc import Callable, Mapping, Sequence

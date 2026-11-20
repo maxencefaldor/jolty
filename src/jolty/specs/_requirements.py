@@ -7,6 +7,8 @@ runs, [`Judged`][jolty.specs.Judged] stores verdicts in columnar arrays with one
 per run matching single-run evaluation.
 """
 
+__lazy_modules__ = ["jolty.builder", "numpy", "numpy.typing"]
+
 import math
 from collections import Counter
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
@@ -47,6 +49,9 @@ from jolty.units import (
 
 type Bound = Quantity | float
 """A bound: a quantity, or a number for a measure in dB, degrees or percent."""
+
+type Edge = Literal["rising", "falling", "either"]
+"""Direction in which a signal crosses a threshold."""
 
 type Status = Literal["passed", "marginal", "failed", "unmeasured"]
 """Evaluation outcome for a specification requirement."""
@@ -119,12 +124,23 @@ class MeasureError(JoltyError):
     """A measure cannot be read from the result of its analysis."""
 
 
+type _Plain = results.Plain
+type _CoreMeasure = _core.Measure
+type _MeasureExplainer = Callable[[_core.MeasureError], str]
+type _MeasureReader = Callable[[results.AnalysisResult], Reading]
+type _MeasureResolver = Callable[[results.AnalysisResult], ResolvedMeasure]
+type _MeasureDiagnoser = Callable[[results.AnalysisResult], Sequence[str]]
+type _StatusArray = npt.NDArray[np.int8]
+type _RealArray = results.Real
+type _OriginArray = npt.NDArray[np.intp]
+
+
 @dataclass(frozen=True, slots=True)
 class Reading:
     """Single measured scalar value in SI base units paired with its unit."""
 
     value: float
-    unit: Dimension | results.Plain
+    unit: Dimension | _Plain
 
     @property
     def dimension(self) -> Dimension:
@@ -140,10 +156,10 @@ class ResolvedMeasure:
     evaluates the reading directly without Python callbacks.
     """
 
-    measure: _core.Measure
-    unit: Dimension | results.Plain
+    measure: _CoreMeasure
+    unit: Dimension | _Plain
     """Unit of the value computed by the engine."""
-    explain: Callable[[_core.MeasureError], str] = field(repr=False, compare=False)
+    explain: _MeasureExplainer = field(repr=False, compare=False)
     """Formatter converting an engine `MeasureError` into a human-readable message."""
 
     def read(self, result: results.AnalysisResult) -> Reading:
@@ -221,20 +237,16 @@ class Measure:
     analysis: str
     description: str
     """Human-readable label of the measured value, such as ``gain of out at 1 kHz``."""
-    plain: results.Plain | None
+    plain: _Plain | None
     """Display unit for plain measures (such as ``dB``), or None for quantities."""
-    read: Callable[[results.AnalysisResult], Reading] = field(repr=False, compare=False)
+    read: _MeasureReader = field(repr=False, compare=False)
     """Evaluator extracting a `Reading` from an analysis result (raises on failure)."""
-    resolved: Callable[[results.AnalysisResult], ResolvedMeasure] | None = field(
-        default=None, repr=False, compare=False
-    )
+    resolved: _MeasureResolver | None = field(default=None, repr=False, compare=False)
     """Optional resolver building an engine `ResolvedMeasure` from result metadata.
 
     None for Python-only custom measures defined by user scripts.
     """
-    diagnose: Callable[[results.AnalysisResult], Sequence[str]] | None = field(
-        default=None, repr=False, compare=False
-    )
+    diagnose: _MeasureDiagnoser | None = field(default=None, repr=False, compare=False)
     """Optional static validator collecting signal and dimension errors against a shape.
 
     None when validation relies solely on `resolved` or Python `read`.
@@ -707,10 +719,10 @@ class Judged:
     each came from, by `origin`.
     """
 
-    status: npt.NDArray[np.int8]
-    slack: results.Real
-    value: results.Real
-    origin: npt.NDArray[np.intp]
+    status: _StatusArray
+    slack: _RealArray
+    value: _RealArray
+    origin: _OriginArray
     units: tuple[str, ...]
 
 

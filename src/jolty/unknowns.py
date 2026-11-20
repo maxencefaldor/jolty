@@ -17,6 +17,9 @@ from jolty.units import CURRENT, DIMENSIONLESS, TEMPERATURE, VOLTAGE, Dimension
 type Nature = Literal["voltage", "current", "temperature", "state"]
 """Physical nature of an unknown: voltage, current, temperature rise, or state."""
 
+type LogicLevel = Literal[0, 1] | None
+"""Digital logic level: 0, 1, or ``None`` for an unknown state."""
+
 DIMENSIONS: Final[Mapping[Nature, Dimension]] = MappingProxyType(
     {
         "voltage": VOLTAGE,

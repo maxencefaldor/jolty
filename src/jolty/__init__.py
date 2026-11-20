@@ -10,6 +10,7 @@ and [`Builder`][jolty.builder.Builder], with physical values in
 
 __lazy_modules__ = [
     "jolty",
+    "jolty._core",
     "jolty.builder",
     "jolty.errors",
     "jolty.ir",
@@ -18,9 +19,8 @@ __lazy_modules__ = [
     "jolty.specs",
 ]
 
-from importlib.metadata import version
-
 from jolty import devices, files, parts, plan, specs, spice, units, waveforms
+from jolty._core import __version__
 from jolty.builder import (
     Builder,
     Component,
@@ -66,8 +66,6 @@ from jolty.plan import (
 )
 from jolty.simulate import Simulation, function, jvp, vjp
 from jolty.specs import Specs
-
-__version__ = version("jolty")
 
 __all__ = [
     "Ac",

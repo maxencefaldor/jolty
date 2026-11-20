@@ -22,6 +22,8 @@ of one circuit, with one row per run. Columns hold sampled parameter values, ana
 completion flags, evaluated measures, and optional per-point unknown traces.
 """
 
+__lazy_modules__ = ["numpy", "numpy.typing"]
+
 import functools
 import math
 from collections.abc import Iterable, Mapping, Sequence
@@ -40,6 +42,8 @@ from jolty.unknowns import Nature, Unknown
 
 type Real = npt.NDArray[np.float64]
 type Complex = npt.NDArray[np.complex128]
+type _Flags = npt.NDArray[np.bool_]
+type _Causes = npt.NDArray[np.int32]
 
 type Plain = Literal["dB", "°", "%", ""]
 """Unit string for a dimensionless measure, with an empty string for a plain ratio."""
@@ -1883,14 +1887,14 @@ class BatchResult:
     analyses: tuple[str, ...]
     parameters: tuple[str, ...]
     values: Real
-    ended: npt.NDArray[np.bool_]
+    ended: _Flags
     measures: tuple[str, ...]
     """Evaluated measure names as defined by requirements, such as ``out in op``."""
     units: tuple[Dimension | Plain | None, ...]
     """Unit for each measure column (``dB``, ``°``, ``%``, ``""`` for plain ratios, or
     None if never evaluated)."""
     measured: Real
-    causes: npt.NDArray[np.int32]
+    causes: _Causes
     reasons: tuple[str, ...]
     problems: dict[int, tuple[str, ...]] = field(default_factory=dict)
     """Elaboration problems per failed run, keyed by zero-based run index."""
