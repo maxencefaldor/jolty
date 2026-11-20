@@ -34,6 +34,13 @@ nav = [
     { "Fidelity" = "guide/fidelity.md" },
     { "Parts and costs" = "guide/parts.md" },
   ] },
+  { "How-to" = [
+    "how-to/index.md",
+    { "Corners and yield" = "how-to/corners-and-yield.md" },
+    { "Vendor SPICE models" = "how-to/vendor-models.md" },
+    { "Diagnose failures" = "how-to/debug-convergence.md" },
+    { "Gradients and JAX" = "how-to/differentiate-and-optimize.md" },
+  ] },
   { "Gallery" = "gallery.md" },
   { "Discovery" = "discovery.md" },
   { "Agents" = [

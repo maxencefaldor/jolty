@@ -167,7 +167,8 @@ kept = point.recording.devices[0].variables  # ("region", "overdrive_voltage", .
 
 Margins follow n-channel/NPN sign conventions regardless of polarity (reversing p-channel/PNP terminal voltages), so positive margins always signify on or saturated (`|vgs| - |vth|`, or `veb` for a PNP).
 When an FET's drain drops below its source, the equations swap drain and source and evaluate `vds` as `vs - vd`.
-A bipolar junction injects when ideal current `Is · (e^{v / (N · Vt)} - 1)` is positive (`v > 0`), so saturation begins when base-collector voltage turns positive (`vce < vbe`); Gummel-Poon and VBIC define no separate saturation voltage.
+A bipolar junction injects when ideal current `Is · (e^{v / (N · Vt)} - 1)` is positive (`v > 0`), so saturation begins when base-collector voltage turns positive (`vce < vbe`).
+Gummel-Poon and VBIC define no separate saturation voltage.
 BSIM3 smooths transitions through `Vgsteff` and `Vdseff` without hard region switches, so regions follow the manual's `Vth` and `Vdsat` boundaries.
 VDMOS uses softened overdrive that conducts continuously below threshold, so VDMOS distinguishes only `linear` and `saturated`.
 Devices lacking model-defined regions (such as resistors) raise `KeyError` instead of guessing, and ngspice-simulated foundry circuits record no regions.

@@ -5,7 +5,9 @@ Every build checks the circuit's structure before any analysis, and reports each
 ## What a check finds
 
 The checks read the flattened circuit as a graph: nodes joined by the branches of its devices.
-Each device declares its branches: a resistor or a diode conducts, a capacitor stores charge and is open at DC, an inductor is a short at DC, a voltage source fixes a voltage, and a current source fixes a current.
+Each device declares its branches.
+A resistor or diode conducts, a capacitor stores charge and is open at DC, and an inductor is a short at DC.
+A voltage source fixes a voltage, and a current source fixes a current.
 A controlled source's control inputs only sense their nodes.
 
 From that graph alone, checks identify issues that make circuit equations singular or meaningless: unconnected terminals, shorted sources, voltage-source loops, and node groups lacking a DC path to ground.

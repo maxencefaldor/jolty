@@ -83,7 +83,8 @@ Statistical functions (`agauss`, `gauss`, `aunif`, `unif`, `limit`) default to n
 Each drawn placement evaluates statistical calls from deterministic engine variates keyed by seed, sample index, placement path, and call order.
 Deterministic keying guarantees identical mismatch bits across arbitrary shard splits while drawing independent mismatch per placement.
 `library.random_variables(name, path)` exposes the same placement's statistical calls (including nested placements) for first-order [mismatch analysis](simulation.md#mismatch) via `Mismatch(outputs, random_variables=...)`.
-Each random variable pairs its nominal mean with its analytical standard deviation: `a / s` for `agauss(x, a, s)`, `|x| r / s` for `gauss(x, r, s)`, `|a| / √3` for `aunif(x, a)`, `|x r| / √3` for `unif(x, r)`, and `|a|` for `limit(x, a)`.
+Each random variable pairs its nominal mean with its analytical standard deviation.
+Standard deviations are `a / s` for `agauss(x, a, s)`, `|x| r / s` for `gauss(x, r, s)`, `|a| / √3` for `aunif(x, a)`, `|x r| / √3` for `unif(x, r)`, and `|a|` for `limit(x, a)`.
 Parameter derivatives use `ε^(1/3) σ` central differences, which are exact to floating-point rounding for the quadratic or linear parameter expressions used in open PDKs.
 Global library-level statistical calls represent process variation shared by every instance and are excluded from per-placement mismatch.
 Resistors and capacitors attached to a VBIC thermal node automatically map to thermal resistances and capacitances.
@@ -173,7 +174,8 @@ At typical corners, native coverage stands at 251 of 263 devices for SKY130, 65 
 
 Native devices agree with ngspice reading the same kit at the same corner across the verification suites below:
 
-- **Subcircuits across all three kits (typical corner, inventory sizes):** operating-point currents match ngspice (allowing `3.4e-7` Boltzmann-constant scaling on BJT junction exponents), excluding SG13G2 `pnpMPA` (double area scaling) and GF180MCU poly resistors (length misread as resistance; see [departures](departures.md)).
+- **Subcircuits across all three kits (typical corner, inventory sizes):** operating-point currents match ngspice within `3.4e-7` Boltzmann-constant scaling on BJT junction exponents.
+  Only SG13G2 `pnpMPA` (double area scaling) and GF180MCU poly resistors (length misread as resistance) are excluded; see [departures](departures.md).
   AC admittances from 1 kHz to 100 GHz (first pin at 0.5 V, remaining pins grounded) agree after applying ngspice's 1 fs capacitor lag, excluding inexact BSIM4 body capacitances and negative-base `POW` derivatives ([departures](departures.md)).
 - **Bare passive and diode model cards (default sizes):** SPICE3 resistor, capacitor, and diode cards match ngspice except where ngspice drops double-quoted values outside braces ([departures](departures.md)).
   Diode currents agree within the `6.9e-6` thermal-voltage difference at 27 °C and 85 °C from -6 V breakdown to 0.75 V forward bias.
@@ -181,9 +183,11 @@ Native devices agree with ngspice reading the same kit at the same corner across
 - **Varactors and voltage-dependent capacitors:** SKY130 varactors and GF180MCU MIM and MOS capacitors match 1 MHz admittances from -2 V to 2 V (spanning up to 173× capacitance variation) within twice relative tolerance.
 - **Gummel-Poon BJTs:** one transistor per kit and polarity (SKY130 HSPICE temperature terms, GF180MCU `TLEVC = 1` and `NKF`, SG13G2 `pnpMPA`) agrees across -40, 27, and 125 °C.
   Collector and base currents match across `Vbe` from 0.4 V to 0.9 V within twice relative tolerance plus `3.4e-7` Boltzmann scaling.
-- **SG13G2 heated VBIC (`npn13G2`):** self-heated through its fifth node (warming 60 to 130 K up to 1 V base drive), DC currents match within twice relative tolerance across all three corners and 85 °C gain matches to 10 GHz.
+- **SG13G2 heated VBIC (`npn13G2`):** self-heated through its fifth node, warming 60 to 130 K up to 1 V base drive.
+  DC currents match within twice relative tolerance across all three corners, and 85 °C gain matches to 10 GHz.
 - **SKY130 MIM capacitor:** 85 °C admittance agrees up to 100 GHz across `tt`, `ll`, and `hh` corners.
-- **SKY130 core [BSIM4](devices.md#bsim4) (`nfet_01v8`, `pfet_01v8`):** across 81 individually binned sizes at `tt`, `ff`, and `ss`, drain- and gate-swept currents agree within twice relative tolerance, `tt` admittances agree to 10 GHz, and an inverter switches within `1e-3` of supply.
+- **SKY130 core [BSIM4](devices.md#bsim4) (`nfet_01v8`, `pfet_01v8`):** across 81 binned sizes at `tt`, `ff`, and `ss`, drain- and gate-swept currents agree within twice relative tolerance.
+  Typical-corner admittances agree to 10 GHz, and an inverter switches within `1e-3` of supply.
 - **SKY130 RF BSIM4 transistors:** four models (`rgatemod = 3`, `rdsmod = 1`, `rbodymod = 1`: 1.8 V NMOS/PMOS, LVT NMOS, 5 V NMOS) match `tt` operating-point currents and admittances to 10 GHz within twice relative tolerance.
   Amplifier stages whose ngspice `gds` matches exact current derivatives also agree in output noise to 100 MHz.
 

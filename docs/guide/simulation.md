@@ -57,7 +57,8 @@ If only tolerances or `max_dc_iterations` change, Newton iteration resumes from 
 
 Transient `initial_conditions` specify starting net voltages by path (SPICE `.ic`), clamping each net with an ideal source during the initial operating-point solve before releasing it at `t = 0`.
 Setting `operating_point=False` (SPICE `UIC`) skips the operating point, initializes all remaining unknowns (including inductor currents) to zero, and starts from the stated voltages using backward Euler on the first step (reporting no operating-point strategy).
-Option `nodesets` (SPICE `.nodeset`) temporarily clamps nets during an initial solve from zero and then releases them for a final unconstrained solve, guiding multistable circuits like latches toward a desired branch (falling back to zero if the clamped solve fails).
+Option `nodesets` (SPICE `.nodeset`) temporarily clamps nets during an initial solve from zero and then releases them for a final unconstrained solve.
+This guides multistable circuits like latches toward a desired branch, falling back to zero if the clamped solve fails.
 Nets already constrained by voltage sources or inductors (or by an earlier named net) are not double-clamped; conflicting initial conditions fail while reporting both values.
 
 ```python
@@ -100,7 +101,8 @@ Omitting `period` configures autonomous shooting for free-running oscillators (r
 Plan({"ring": PeriodicSteadyState()})
 ```
 
-Any phase shift along the orbit satisfies `φ(x₀, T) = x₀`, so an orthogonal phase condition `ẋᵀ Δx = 0` (scaled by unknown tolerances) constrains state updates perpendicular to the orbit (Seydel, *Practical Bifurcation and Stability Analysis*, 3rd ed., 2010, §7.1).
+Any phase shift along the orbit satisfies `φ(x₀, T) = x₀`.
+An orthogonal phase condition `ẋᵀ Δx = 0` (scaled by unknown tolerances) constrains state updates perpendicular to the orbit (Seydel, *Practical Bifurcation and Stability Analysis*, 3rd ed., 2010, §7.1).
 Each period propagates `∂φ/∂T` alongside `Φ` by scaling step charges by `1/T` at fixed period fractions, keeping step derivatives exact.
 Newton solves the bordered system `[[Φ - I, ∂φ/∂T], [∂φ/∂Tᵀ, 0]] [Δx, ΔT] = [x₀ - φ(x₀, T), 0]` in tolerance-scaled coordinates while preserving any neutral directions.
 
@@ -112,7 +114,8 @@ Shooting launches from that converged return and typically finishes in three or 
 Autonomous shooting fails explicitly if no growing mode exists (such as an ideal lossless tank), if shooting collapses onto the DC equilibrium, or if 40 stretches fail to stabilize (such as a latch).
 Sources must stay constant throughout an autonomous period; pulsed kick sources belong only in transient startups.
 On an exact-period `2π√(LC)` nonlinear tank, shooting matches the exact period within trapezoidal phase error `(ωh)²/12` and amplitude within backward-Euler startup damping (`crates/jolty-engine/tests/periodic.rs`).
-On the five-stage ring oscillator example, shooting matches a long settled transient within `2.8e-8` at `reltol = 1e-9` and `max_step = 1` ps (within transient scatter of `5.9e-8`), and within `2.9e-5` at default tolerances and `5` ps steps (`tests/test_periodic.py`, Apple M2 Max).
+On the five-stage ring oscillator example, shooting matches a settled transient within `2.8e-8` at `reltol = 1e-9` and `max_step = 1` ps (within transient scatter of `5.9e-8`).
+At default tolerances and `5` ps steps, agreement stays within `2.9e-5` (`tests/test_periodic.py`, Apple M2 Max).
 
 ## Several DC solutions
 

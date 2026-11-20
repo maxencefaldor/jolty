@@ -59,7 +59,8 @@ Functions may call other functions, while direct or mutual recursion fails with 
 Expressions translate PSpice functions with ngspice semantics into [jolty's expression language](../reference/expressions.md): `PWR(x, y)` evaluates `|x|^y`, and `POW(x, y)` and `x ** y` preserve sign for odd integer powers of negative bases.
 Inline `TABLE` expressions extrapolate beyond endpoints, whereas `TABLE` sources clamp at endpoints with rounded corners matching ngspice XSPICE `pwl`.
 Switches follow ngspice's log-cubic transition law between on and off thresholds.
-Waveforms must specify parameters SPICE otherwise borrows from the transient step: positive `PULSE` rise/fall/width, `SIN` frequency, and positive `EXP` delays and time constants (`EXP(0 1 0 1n 6n 2n)` holds 0 V until the 0.5 ns step under `tran 0.5n 12n`).
+Waveforms must specify parameters SPICE otherwise borrows from the transient step: positive `PULSE` rise/fall/width, `SIN` frequency, and positive `EXP` delays and time constants.
+For example, `EXP(0 1 0 1n 6n 2n)` holds 0 V until the 0.5 ns step under `tran 0.5n 12n`.
 A source specifying both a DC value and a waveform must match the waveform's time-zero value, and unsupported `SFFM` and `AM` waveforms raise errors.
 Element or node names containing `/` are rejected because jolty uses `/` as its hierarchy separator.
 Bipolar transistors connect their substrate to ground unless a fourth instance node is given, attaching to collector (NPN) or base (PNP) unless overridden by `SUBS`.

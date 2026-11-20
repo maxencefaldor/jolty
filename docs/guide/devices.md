@@ -48,7 +48,8 @@ Resistor and capacitor values also vary with terminal voltage `v = v(a) - v(b)` 
 | `voltage_coefficient` | `VC1` | V⁻¹ | 0 |
 | `quadratic_voltage_coefficient` | `VC2` | V⁻² | 0 |
 
-A voltage-dependent resistor conducts `v / (r · (1 + vc1 · v + vc2 · v²))`, while a voltage-dependent capacitor stores charge `c · (v + vc1 · v² / 2 + vc2 · v³ / 3)` whose derivative equals the voltage-modulated capacitance.
+A voltage-dependent resistor conducts `v / (r · (1 + vc1 · v + vc2 · v²))`.
+A voltage-dependent capacitor stores charge `c · (v + vc1 · v² / 2 + vc2 · v³ / 3)`, whose derivative equals the voltage-modulated capacitance.
 Both formulas apply at all voltages as in ngspice, allowing negative values if coefficients drive the polynomial below zero.
 
 In [noise analysis](simulation.md#noise), resistors generate thermal noise `4kT/R` A²/Hz (or series voltage noise `4kT·R` V²/Hz below 1 Ω), matching switches, photocells, and memristors, whereas capacitors and inductors are noiseless.
@@ -229,7 +230,8 @@ Transients begin from initial `state`.
 In [periodic steady state](simulation.md#periodic-steady-state), a symmetrically driven memristor can repeat from any initial state, so shooting preserves the starting state along neutral directions.
 
 `voltage_controlled_memristor(...)` implements the VTEAM model (Kvatinsky, Ramadan, Friedman, and Kolodny, 2015), where state moves only when voltage exceeds switching thresholds.
-Voltage `v = v(positive) - v(negative)` above `off_voltage` drives state toward off at `off_rate · (v/v_off - 1)^α_off`, voltage below negative `on_voltage` drives state toward on at `on_rate · (v/v_on - 1)^α_on`, and voltages between thresholds hold state constant.
+Voltage `v = v(positive) - v(negative)` above `off_voltage` drives state toward off at `off_rate · (v/v_off - 1)^α_off`.
+Voltage below negative `on_voltage` drives state toward on at `on_rate · (v/v_on - 1)^α_on`, while voltages between thresholds hold state constant.
 Rates specify state velocity at twice threshold voltage in full ranges per second (`k_off / (w_off - w_on)` and `-k_on / (w_off - w_on)`).
 
 | Parameter | VTEAM | Unit | Default |
@@ -440,8 +442,10 @@ ngspice AC instead applies a pure delay `exp(-jω·td)`, causing AC gain at `1 /
 Setting `substrate` to `"vertical"` or `"lateral"` adds a fourth `substrate` terminal connected via a junction to the internal collector (vertical) or internal base (lateral).
 The substrate junction conducts `gmin` plus diode current when `substrate_saturation_current` is set, with linear forward depletion capacitance; substrate parameters require an active substrate.
 
-Temperature scaling matches ngspice 47 `bjttemp.c`: saturation and leakage currents scale with band gap, betas scale as `(T/Tn)^XTB` (`TLEV = 0`) or `1 + XTB·ΔT` (`TLEV = 1`, also dividing leakage currents), and junctions use band-gap (`TLEVC = 0`) or linear (`TLEVC = 1`) scaling.
-HSPICE quadratic polynomials `1 + c1·ΔT + c2·ΔT²` scale Early voltages (`TVAF*`, `TVAR*`), knee currents (`TIKF*`, `TIKR*`), resistances (`TRB*`, `TRM*`, `TRC*`, `TRE*`, `TIRB*`), emission coefficients (`TN*`), transit times (`TTF*`, `TTR*`, `TITF*`), and grading coefficients (`TMJ*`, capped at 0.999).
+Temperature scaling matches ngspice 47 `bjttemp.c`: saturation and leakage currents scale with band gap, and betas scale as `(T/Tn)^XTB` (`TLEV = 0`) or `1 + XTB·ΔT` (`TLEV = 1`, also dividing leakage currents).
+Junctions use band-gap (`TLEVC = 0`) or linear (`TLEVC = 1`) scaling.
+HSPICE quadratic polynomials `1 + c1·ΔT + c2·ΔT²` scale Early voltages (`TVAF*`, `TVAR*`), knee currents (`TIKF*`, `TIKR*`), and resistances (`TRB*`, `TRM*`, `TRC*`, `TRE*`, `TIRB*`).
+They also scale emission coefficients (`TN*`), transit times (`TTF*`, `TTR*`, `TITF*`), and grading coefficients (`TMJ*`, capped at 0.999).
 Explicit `TBF1`/`TBF2` or `TBR1`/`TBR2` coefficients override `XTB` on beta while leaving `XTB` active on leakage currents; excess phase always uses nominal `TF`.
 `TLEV = 2` and `TLEV = 3` are rejected by name (while unused `TIS1` to `TISS2` coefficients are ignored at `TLEV` 0 or 1).
 `high_injection_exponent` (`NKF`, clamped at 1) sets `qb = q1 · (1 + (1 + 4·q2)^NKF) / 2`.
@@ -571,7 +575,8 @@ Channel flicker noise uses SPICE2 (`kf·|Id|^af/(f^ef·Leff²·Cox)` at `noise_m
 ## BSIM4
 
 `bsim4(...)` models a sub-130 nm CMOS MOSFET (`drain`, `gate`, `source`, `bulk`, SPICE levels 14 and 54, version 4.5) matching ngspice 47 `bsim4v5` per Xi, Dunga, et al. (UC Berkeley, 2005).
-Supported modes cover all SKY130 and GF180MCU version 4.5 cards: ngspice defaults (`mobmod=0`, `capmod=2`, `diomod=1`, `tempmod=0`, `geomod=0`, `rgeomod=0`, `igcmod=0`, `igbmod=0`, `trnqsmod=0`, `acnqsmod=0`, `wpemod=0`), `rgatemod` 0 to 3, and 0 or 1 for `rbodymod`, `rdsmod`, `permod`, `fnoimod`, and `tnoimod`.
+Supported modes cover all SKY130 and GF180MCU version 4.5 cards, including ngspice defaults (`mobmod=0`, `capmod=2`, `diomod=1`, `tempmod=0`, `geomod=0`, `rgeomod=0`, `igcmod=0`, `igbmod=0`, `trnqsmod=0`, `acnqsmod=0`, `wpemod=0`).
+They also include `rgatemod` 0 to 3 and values 0 or 1 for `rbodymod`, `rdsmod`, `permod`, `fnoimod`, and `tnoimod`.
 Cards selecting any other mode fail elaboration by name.
 Drain current models short-channel, narrow-width, pocket, and DIBL thresholds, poly depletion, gate-field/Coulomb/length mobility degradation, velocity saturation and overshoot, source velocity limit, output resistance, `rdsw`, substrate impact ionization, and GIDL/GISL currents.
 Gate charges implement `capmod = 2` with charge thickness, `charge_partition`, and bias-dependent overlaps alongside body-drain and body-source diodes with trap-assisted tunneling.
@@ -602,9 +607,11 @@ Each card parameter expects a quantity matching `devices.bsim4_dimension(name)` 
 Binnable parameters accept `l`, `w`, and `p` prefixes in reciprocal meters (`lvth0` scales by `1e-6` at `BINUNIT = 1` and directly at `BINUNIT = 2`).
 `NDEP`, `NSD`, `NGATE`, `NSUB`, and `U0` take strict SI units (unlike SPICE centimeter conventions), while `rdsw` and `prt` stay in ohms per 1 µm channel width.
 Geometry terms `ll`, `lw`, `lwl`, `wl`, `ww`, `wwl` (and charge counterparts) are plain numbers scaled by exponents, and tunneling/flicker coefficients follow manual units.
-Sheet resistance `rsh` creates internal drain/source nodes (`M1:drain`, `M1:source`) when `NRD`/`NRS` is positive (`rdsmod = 0`), whereas `rdsmod = 1` always adds bias-dependent external `rdw`/`rsw` plus `rsh` (flooring missing `nrd`/`nrs` at 1 mΩ) and removes `rdsw` from channel current.
+Sheet resistance `rsh` creates internal drain/source nodes (`M1:drain`, `M1:source`) when `NRD`/`NRS` is positive (`rdsmod = 0`).
+Mode `rdsmod = 1` adds bias-dependent external `rdw`/`rsw` plus `rsh` (flooring missing `nrd`/`nrs` at 1 mΩ) and removes `rdsw` from channel current.
 Setting `body_resistance_model = 1` adds three substrate nodes (`M1:body`, `M1:drain_body`, `M1:source_body`) linked via `rbpb`, `rbpd`, `rbps`, `rbdb`, and `rbsb`.
-`gate_resistance_model` (`RGATEMOD`) inserts internal node `M1:gate` using electrode resistance `rshg·(xgw + Weffcj/(3·ngcon))/(ngcon·nf·(l + xl - xgl))` (floored at 1 mΩ) at mode 1, series intrinsic-input conductance `xrcrg1·(xrcrg2·kT/q·β + Ids/Vdseff)·nf` at mode 2, and split overlap node `M1:middle_gate` at mode 3.
+`gate_resistance_model` (`RGATEMOD`) inserts internal node `M1:gate` using electrode resistance `rshg·(xgw + Weffcj/(3·ngcon))/(ngcon·nf·(l + xl - xgl))` (floored at 1 mΩ) at mode 1.
+Mode 2 adds series intrinsic-input conductance `xrcrg1·(xrcrg2·kT/q·β + Ids/Vdseff)·nf`, and mode 3 splits overlap capacitance onto `M1:middle_gate`.
 Instance `XGW` and `NGCON` override card defaults; `ngcon < 1` and `xgl >= l + xl` fail elaboration identically to ngspice.
 
 Temperature scaling follows `tempmod = 0`: mobility as `(T/Tn)^ute`, `ua`/`ub`/`uc`/`ud`/`vsat`/`rdsw`/`voff` linearly, threshold via `kt1`/`kt1l`/`kt2`, and junctions via `xtis`/`xtid`, `xtss*`, `tcj`, and `tpb`.
@@ -626,7 +633,8 @@ On a SKY130 `nfet_01v8` stage, output noise agrees within `4.2e-7` without serie
 
 ngspice 47 computes gate-electrode resistance from the last prepared bin's `Lnew` (`b4v5temp.c`, lines 382 and 1562) and clamps non-1/2 `ngcon` only after first preparation (`b4v5check.c`, line 262; `b4v5temp.c`, line 1825).
 jolty always uses each instance's true drawn length and specified `ngcon`.
-On SKY130 RF PMOS `rf_pfet_01v8_bM04W3p00L0p18` at `tt` (`Vgs = Vds = -0.9` V), ngspice output conductance misses central differences by `2.1e-4` whereas jolty matches within `1.4e-9`; setting `eta0 = 0` or `drout = 0` restores agreement, and RF NMOS matches within `2.2e-7`.
+On SKY130 RF PMOS `rf_pfet_01v8_bM04W3p00L0p18` at `tt` (`Vgs = Vds = -0.9` V), ngspice output conductance misses central differences by `2.1e-4` whereas jolty matches within `1.4e-9`.
+Setting `eta0 = 0` or `drout = 0` restores agreement, and RF NMOS matches within `2.2e-7`.
 
 ## VBIC
 
@@ -691,12 +699,14 @@ Every parameter is optional:
 | `flicker_coefficient`, `flicker_exponent` | `KF`, `AF` | none | 0: no flicker noise, 1 |
 
 Default threshold, transconductance, and capacitance values match ngspice (IRF540 and IRF9540).
-With `vgst = vgs - vto` and subthreshold slope `k`, softened overdrive is `vgst' = k · ln(1 + exp((vgst - SUBSHIFT) / k))` and `β' = KP · M · (1 + λ · vds) / (1 + θ · max(vgst, 0))`.
+With `vgst = vgs - vto` and subthreshold slope `k`, softened overdrive is `vgst' = k · ln(1 + exp((vgst - SUBSHIFT) / k))`.
+Effective transconductance is `β' = KP · M · (1 + λ · vds) / (1 + θ · max(vgst, 0))`.
 Drain current equals `β' · vgst'² / 2` in saturation (`vgst' ≤ vdss`) and `β' · vdss · (vgst' - vdss / 2)` in triode, where `vdss = vds · MTRIODE`.
 When `vds < 0`, drain and source swap while channel-length modulation retains signed `1 + λ · vds` as in ngspice.
 When both `RQ` and `VQ` are set alongside `RD`, forward drain resistance increases to `RD + RQ · vds / (vds + VQ)` for quasi-saturation; setting only one has no effect.
 
-Gate-drain capacitance follows `s · atan(A · vgd) + y` for `vgd < 0` and `s · tanh(A · vgd) + y` for `vgd ≥ 0`, with `s = (CGDMAX - CGDMIN) / (1 + π/2)` and `y = CGDMAX - s`.
+Gate-drain capacitance follows `s · atan(A · vgd) + y` for `vgd < 0` and `s · tanh(A · vgd) + y` for `vgd ≥ 0`.
+Here `s = (CGDMAX - CGDMIN) / (1 + π/2)` and `y = CGDMAX - s`.
 jolty integrates this capacitance analytically into a conserved gate charge, whereas ngspice applies step-by-step trapezoidal integration; both converge as time steps shrink.
 The body diode connects source (behind `RB`) to drain, scaling saturation current and capacitances by multiplier `M` while keeping breakdown current unscaled as in ngspice.
 Depletion thresholds `FC · VJ > 2.5` V at operating temperature are rejected to prevent ngspice's discontinuous charge jump.

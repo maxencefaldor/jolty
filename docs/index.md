@@ -34,7 +34,7 @@ jolty checks every device and connection, reports each problem with the script l
 
 -   📘 **[Guide](guide/index.md)**
 
-    One page per concept: components, units, devices, checks, schematics, simulation and results.
+    One page per concept: components, units, devices, checks, schematics, simulation, and results, paired with task-oriented [how-to guides](how-to/index.md).
 
 -   🤖 **[Agents](agents/index.md)**
 

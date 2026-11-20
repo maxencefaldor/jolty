@@ -43,8 +43,12 @@ from jolty.cli import main
 ROOT = Path(__file__).parents[1]
 """The repository's root."""
 
-PAGES = (ROOT / "README.md", *sorted((ROOT / "docs" / "guide").glob("*.md")))
-"""The README and the guide's pages, whose blocks run."""
+PAGES = (
+    ROOT / "README.md",
+    *sorted((ROOT / "docs" / "guide").glob("*.md")),
+    *sorted((ROOT / "docs" / "how-to").glob("*.md")),
+)
+"""The README, guide pages, and how-to pages whose blocks run."""
 
 SCRIPTS = (ROOT / "examples", ROOT / "tests" / "guide")
 """The directories whose scripts the commands of quoted outputs run."""

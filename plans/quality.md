@@ -1,9 +1,9 @@
 # Quality
 
-Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 18 November.
+Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 20 November.
 Full background research remains archived in `research/quality.md`.
 
-Plan: ✅ 23 done · 📋 2 planned (§4).
+Plan: ✅ 24 done · 📋 1 planned (§4).
 
 ## 1. Goal and metric
 
@@ -35,13 +35,12 @@ Three copies of ngspice-tight options collapsed into `jolty.plan.TIGHT`, restate
 Upfront validation of plans, analyses, options, and specs resolves every name and checks every parameter dimension before simulation starts (items 7 to 9, done).
 
 **The guide:** technical prose is precise, and all 84 keyword calls counted on 15 November match the API.
-`tests/test_guide.py` executes 38 of 48 Python code blocks (10 marked `not run`) and checks all 18 quoted outputs (item 14, done).
-Guide sentences remain long, with a median of 27 words measured on 15 November (item 20).
+`tests/test_guide.py` executes the Python code blocks across the guide and how-to pages and checks quoted outputs (items 14 and 20, done).
+Guide prose sentences now have a median of 20 words, paired with Diátaxis how-to guides (median 14 words).
 
 ## 3. Gaps
 
-- Duplicated model metadata: each model's facts remain spread across several files, while benchmark helpers are now unified (item 13).
-- Missing how-to pages and long guide sentences; executable guide blocks, output verification, upfront validation, and unit checking are complete (items 7 to 11, 14).
+- Duplicated model metadata: each model's facts remain spread across several files, while benchmark helpers are now unified (item 13), leaving only the contributor guide once `models.md` 4 lands (item 19).
 
 ## 4. Plan
 
@@ -203,10 +202,11 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     **Done when:** a contributor adds a model by following the guide alone.
 - **Source:** row 25.
 
-### 📋 20. Shorter sentences in the guide, and how-to pages
+### ✅ 20. Shorter sentences in the guide, and how-to pages
 
 - **Done when:** median guide sentence length drops under 25 words, and how-to pages cover common tasks.
-    **Source:** row 26.
+- **Result** (20 November): tightened the longest sentences across `docs/guide/` (bringing prose median sentence length to 20 words, p90 30) and added five Diátaxis how-to pages under `docs/how-to/` (`index.md`, `corners-and-yield.md`, `vendor-models.md`, `debug-convergence.md`, and `differentiate-and-optimize.md`, median 14 words, max 25) wired into `zensical.toml`, `docs/index.md`, `docs/guide/index.md`, and `tests/test_guide.py`.
+- **Source:** row 26.
 
 ### ✅ 21. The cost of a model measured
 

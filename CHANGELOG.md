@@ -9,6 +9,7 @@ The first release, 0.1.0.
 
 ### Added
 
+- Diátaxis how-to guides under `docs/how-to/` covering corners and yield, vendor SPICE macromodels, convergence debugging, and differentiation/optimization, verified as executable code blocks by `tests/test_guide.py` and linked from the site navigation alongside tightened guide prose.
 - `NOTICE` file recording copyright notices and terms for external device-model sources: BSIM3v3.3.0 and BSIM4.5.0 (UC Berkeley BSIM Research Group), plus ngspice (diode, JFET, BJT, level 1 and 3 MOSFETs, and VDMOS).
   Each model's documentation carries its source notice, and both the wheels and the `jolty-models` crate bundle `NOTICE`.
 - Transfer function analysis `TransferFunction(source, output, reference=None)`, matching SPICE `.tf`, computing DC gain plus input and output resistances (reporting infinity when no current can flow).
