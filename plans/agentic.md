@@ -1,6 +1,6 @@
 # Agentic design
 
-Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 20 November.
+Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 21 November.
 The archival research report lives in `research/agentic.md`, kept whole.
 
 Plan: ✅ 16 done · 📋 7 planned · ⏸️ 2 parked (§4).
@@ -8,7 +8,7 @@ Plan: ✅ 16 done · 📋 7 planned · ⏸️ 2 parked (§4).
 ## 1. Goal and metric
 
 An agent should design better circuits in fewer tries with jolty than with any other simulator.
-Progress is measured by old roadmap item 8: the same agent runs identical tasks with jolty and with ngspice, compared by success rate and simulation count (item 14).
+Progress is measured by running the same agent on identical tasks with jolty and with ngspice, compared by success rate and simulation count (item 14).
 
 ## 2. Where we stand
 
@@ -43,7 +43,7 @@ No published study evaluates the same agent across two toolchains, which item 8 
 
 - Agent productivity gains with jolty have not yet been measured on a real agent.
 - Feedback has no numerical error bounds on transient measurements (item 10; transistor regions/margins, spec derivatives, linear worst-case bounds, and Stability/Noise/PDK-geometry VJP are done in items 4, 4b, 9, and 23; built-in optimization is parked in item 11).
-- CLI startup latency was cut with PEP 810 lazy imports and a standby service runner (`speed.md` 8), while cold CLI subprocess wall time still exceeds `ngspice -b`.
+- CLI import latency was cut over 33× with PEP 810 lazy imports (`speed.md` 8, closed on 21 November with cold subprocess startup accepted by the owner).
 - An agent can still bypass analysis counting by invoking an external binary directly, and the harness sandbox remains untested on Linux.
 
 ## 4. Plan
@@ -272,7 +272,6 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ### ✅ 23. Differentiable `Stability`, `Noise`, and PDK subcircuit geometry
 
-- **Priority:** P0 (Wave 2).
 - **What:** extend `Simulator::jvp`, `Simulator::vjp`, and `jolty.jax.function` to `Stability` (loop gain) and `Noise` (output noise spectral density and input-referred noise), lifting `NoiseSource` in `jolty-models` to `NoiseSource<R: Real>` for exact operating-point and parameter coupling via `device-derivatives.md` step 2b.
     Add dual-number PDK subcircuit geometry VJP mapping design variables `(w, l, nf, m)` to leaf device parameters within bins and reporting bin boundaries as box constraints, closing `models.md` 17's central-difference follow-up on kit parameter derivatives.
 - **Result** (20 November):
@@ -280,10 +279,10 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     - `Noise` JVP and VJP lift `NoiseSource<R: Real>` across `jolty-models` and `jolty-veriloga`, differentiating both `NOISE_DENSITY` and `REFERRED_NOISE` (including self-heated circuits) through `Simulator`, `Sensitivity`, `Mismatch`, `jolty.function`, `jolty.jax.function`, and `measure_derivatives` / `requirement_derivatives` (`noise_density`, `integrated_noise`).
     - Dual-number SPICE/PDK differentiation (`Library.placement`, `Library.derivatives`, `SubcircuitDerivatives`, `BinBounds`, and `subcircuits=...` on `jolty.function` and `jolty.jax.function`) propagates exact first-order derivatives through `.param` expressions, `.func` calls, `.model` cards, geometry transforms, and nested placements in one pass, replacing central differences in `Library.random_variables` and composing seamlessly with JAX `jit`/`grad`/`vmap`/`jacrev` and `measure_derivatives`/`slack_derivatives` on real SKY130 BSIM4 stages.
 - **Lead.**
-    **Source:** owner approval, 20 November (roadmap N3); closes `models.md` 17's central-difference follow-up.
+    **Source:** owner approval, 20 November; closes `models.md` 17's central-difference follow-up.
 
-**Elsewhere:** end-to-end agent command timing and a warm runner live in `speed.md` 8, and exact result caching lives in `speed.md` 16.
-Transient noise (`trnoise`, `models.md` 25, roadmap N4) will pair with seeded pathwise SDE adjoints extending item 13's discrete transient VJP through bias-dependent noise amplitudes along fixed noise realizations at O(1) parameter cost, matching fixed-seed central differences within 1e-7.
+**Elsewhere:** end-to-end agent command timing and lazy imports live in `speed.md` 8, and result caching (parked) lives in `speed.md` 16.
+Transient noise (`trnoise`, `models.md` 25) will pair with seeded pathwise SDE adjoints extending item 13's discrete transient VJP through bias-dependent noise amplitudes along fixed noise realizations at O(1) parameter cost, matching fixed-seed central differences within 1e-7.
 
 ## 5. Decided
 
@@ -292,7 +291,7 @@ Transient noise (`trnoise`, `models.md` 25, roadmap N4) will pair with seeded pa
 - Run limits (time, turns, and budget) have no defaults; the owner specifies limits for each paid run.
 - Item 8 waited for item 1 because undercounting one arm's tries would invalidate the comparison.
 - PyTorch support (`jolty.torch`) was explicitly rejected by the owner on 19 November 2026, standardizing ML differentiation solely on JAX (`jolty[jax]`).
-- On 20 November the owner adopted differentiable `Stability`, `Noise`, and PDK subcircuit geometry VJP (item 23, roadmap N3) and parked built-in optimization (item 11) in favor of composable differentiable bricks (items 9 and 23, parallel batched VJP, per-run batch failure reporting, and a Diátaxis how-to recipe).
+- On 20 November the owner adopted differentiable `Stability`, `Noise`, and PDK subcircuit geometry VJP (item 23) and parked built-in optimization (item 11) in favor of composable differentiable bricks (items 9 and 23, parallel batched VJP, per-run batch failure reporting, and a Diátaxis how-to recipe).
 
 ## 6. Open principles
 

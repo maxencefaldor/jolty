@@ -148,8 +148,7 @@ def _subcommand_model[Request: BaseModel](
     class _Runner(_Output):
         async def cli_cmd(self) -> None:
             """Runs the command."""
-            with service.single_shot():
-                self.emit(await handler(cast(Request, self), Settings.load()))
+            self.emit(await handler(cast(Request, self), Settings.load()))
 
     model_name = f"{spec.request_type.__name__.removesuffix('Request')}Command"
     return create_model(
@@ -273,8 +272,7 @@ def _single_command_model(cli_name: str) -> type[CommandLine]:
     class _Runner(_Output):
         async def cli_cmd(self) -> None:
             """Runs the command."""
-            with service.single_shot():
-                self.emit(await handler(cast(Any, self), Settings.load()))
+            self.emit(await handler(cast(Any, self), Settings.load()))
 
     model_name = f"{spec.request_type.__name__.removesuffix('Request')}Command"
     return cast(

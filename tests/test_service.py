@@ -3,6 +3,7 @@
 import asyncio
 import json
 import math
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -512,93 +513,96 @@ def test_measure_factual_errors_for_empty_results_file(
     _assert_factual_error(request, ("contains no analyses",))
 
 
-def test_warm_standby_runner_matches_cold_bits_and_isolates_state(
+_LOUD_SCRIPT = """
+import sys
+
+from jolty import Builder, Role, component, devices
+from jolty.units import V, kohm
+
+
+@component
+def load(c: Builder) -> None:
+    ground = c.port("ground", Role.GROUND)
+    source = c.place(devices.voltage_source(1 * V), name="V1")
+    resistor = c.place(devices.resistor(1 * kohm), name="R1")
+    c.connect(source.positive, resistor.a, name="out")
+    c.connect(resistor.b, source.negative, ground)
+
+
+def build():
+    sys.stdout.write("é" * 100_000)
+    sys.stderr.write("€" * 100_000)
+    return load()
+"""
+
+_FLOODING_SCRIPT = """
+import os
+import sys
+from pathlib import Path
+
+
+def build():
+    Path("runner.pid.part").write_text(str(os.getpid()), encoding="utf-8")
+    Path("runner.pid.part").replace("runner.pid")
+    while True:
+        sys.stdout.write("x" * 65536)
+"""
+
+_CRASHING_SCRIPT = """
+import os
+
+
+def build():
+    print("halfway", flush=True)
+    os._exit(3)
+"""
+
+
+@pytest.mark.parametrize(("limit", "truncated"), [(10, True), (100_000, False)])
+def test_script_output_keeps_up_to_the_limit_in_characters_on_each_stream(
+    tmp_path: Path, limit: int, *, truncated: bool
+) -> None:
+    # 100,000 multibyte characters per stream overflow a 64 KiB pipe several times.
+    script = tmp_path / "loud.py"
+    script.write_text(_LOUD_SCRIPT, encoding="utf-8")
+    request = service.BuildRequest(script=script, schematic=False)
+    built = asyncio.run(service.build(request, Settings(max_output=limit)))
+    assert built.output == service.ScriptOutput(
+        stdout="é" * limit, stderr="€" * limit, truncated=truncated
+    )
+
+
+def test_a_canceled_command_kills_and_reaps_its_flooding_runner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    helper = tmp_path / "levels.py"
-    helper.write_text("VOLTAGE = 1.0\n", encoding="utf-8")
-    script = tmp_path / "rc.py"
-    script.write_text(
-        "from levels import VOLTAGE\n"
-        "from jolty import Builder, Plan, Role, Transient, component, devices\n"
-        "from jolty.units import V, kohm, nF, us\n\n"
-        "@component\n"
-        "def low_pass(c: Builder) -> None:\n"
-        "    ground = c.port('ground', Role.GROUND)\n"
-        "    source = c.place(devices.voltage_source(VOLTAGE * V), name='V1')\n"
-        "    resistor = c.place(devices.resistor(1 * kohm), name='R1')\n"
-        "    capacitor = c.place(devices.capacitor(1 * nF), name='C1')\n"
-        "    c.connect(source.positive, resistor.a, name='in')\n"
-        "    c.connect(resistor.b, capacitor.a, name='out')\n"
-        "    c.connect(capacitor.b, source.negative, ground)\n\n"
-        "def build():\n"
-        "    print(f'level={VOLTAGE}')\n"
-        "    return low_pass()\n\n"
-        "def plan():\n"
-        "    return Plan({'step': Transient(stop=5 * us)})\n",
-        encoding="utf-8",
+    monkeypatch.chdir(tmp_path)
+    script = tmp_path / "flooding.py"
+    script.write_text(_FLOODING_SCRIPT, encoding="utf-8")
+    pid_file = tmp_path / "runner.pid"
+    request = service.BuildRequest(script=script, schematic=False)
+
+    async def cancel_once_started() -> asyncio.Task[service.BuildResult]:
+        command = asyncio.create_task(service.build(request, Settings()))
+        async with asyncio.timeout(60):
+            while not pid_file.exists():
+                assert not command.done()
+                await asyncio.sleep(0.005)
+            command.cancel()
+            await asyncio.wait([command])
+        return command
+
+    command = asyncio.run(cancel_once_started())
+    assert command.cancelled()
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text(encoding="utf-8")), 0)
+
+
+def test_a_crashed_runner_reports_its_exit_code_and_output(tmp_path: Path) -> None:
+    script = tmp_path / "crashing.py"
+    script.write_text(_CRASHING_SCRIPT, encoding="utf-8")
+    request = service.BuildRequest(script=script, schematic=False)
+    with pytest.raises(JoltyError) as raised:
+        asyncio.run(service.build(request, Settings()))
+    assert str(raised.value) == (
+        "the runner exited with code 3 before reporting\n\nscript output:\n  halfway"
     )
-    cold_results = tmp_path / "cold.results.npz"
-    warm_results = tmp_path / "warm.results.npz"
-    updated_results = tmp_path / "updated.results.npz"
-
-    with service.single_shot():
-        cold = asyncio.run(
-            service.simulate(
-                service.SimulateRequest(
-                    script=script,
-                    results=cold_results,
-                    plot=False,
-                    schematic=False,
-                ),
-                Settings(),
-            )
-        )
-
-    try:
-        service.warm_runner()
-        log_path = tmp_path / "warm.jsonl"
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("JOLTY_ANALYSIS_LOG", str(log_path))
-        warm = asyncio.run(
-            service.simulate(
-                service.SimulateRequest(
-                    script=script,
-                    results=warm_results,
-                    plot=False,
-                    schematic=False,
-                ),
-                Settings.load(),
-            )
-        )
-        assert warm.output.stdout.strip() == "level=1.0"
-        assert log_path.is_file()
-        cold_step = files.load_results(cold_results)["step"]
-        warm_step = files.load_results(warm_results)["step"]
-        assert isinstance(cold_step, results.TransientResult)
-        assert isinstance(warm_step, results.TransientResult)
-        assert (warm_step.times.view("u8") == cold_step.times.view("u8")).all()
-        assert (warm_step.values.view("u8") == cold_step.values.view("u8")).all()
-        assert warm.analyses == cold.analyses
-
-        # Editing a sibling module must be visible on the next warm run (no leaked
-        # sys.modules state across scripts).
-        helper.write_text("VOLTAGE = 2.0\n", encoding="utf-8")
-        updated = asyncio.run(
-            service.simulate(
-                service.SimulateRequest(
-                    script=script,
-                    results=updated_results,
-                    plot=False,
-                    schematic=False,
-                ),
-                Settings(),
-            )
-        )
-        assert updated.output.stdout.strip() == "level=2.0"
-        updated_step = files.load_results(updated_results)["step"]
-        assert isinstance(updated_step, results.TransientResult)
-        # Steady DC 2 V source; abs=1e-3 matches default engine reltol=1e-3.
-        assert updated_step.voltage("out")[-1] == pytest.approx(2.0, abs=1e-3)
-    finally:
-        service.close_standby()

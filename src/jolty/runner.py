@@ -27,13 +27,12 @@ Corners with custom build arguments elaborate and simulate on a separate circuit
 
 Running scripts in an isolated subprocess protects the CLI and MCP server standard
 output channels. Subprocess isolation captures script print output, enforces timeouts
-on runaway scripts or analyses, and confines crashes to the worker process.
+on runaway scripts or analyses, and confines crashes to the runner process.
 """
 
 # Execution modules load lazily so callers serializing Job and reading JobResult
 # skip importing NumPy, devices, plans, and the simulation engine.
 __lazy_modules__ = [
-    "importlib",
     "jolty",
     "jolty.builder",
     "jolty.devices",
@@ -43,16 +42,13 @@ __lazy_modules__ = [
     "jolty.simulate._decode",
     "jolty.units",
     "numpy",
-    "os",
     "runpy",
     "sysconfig",
     "traceback",
 ]
 
 import functools
-import importlib
 import json
-import os
 import runpy
 import sys
 import sysconfig
@@ -125,31 +121,6 @@ MONTE_CARLO: Final = "monte-carlo"
 
 VARIANT_RUNS: Final = "variant-runs"
 """Batch archive key for a plan's variant runs (not a valid identifier)."""
-
-STANDBY_FLAG: Final = "--standby"
-"""CLI flag starting a single-use pre-warmed runner worker waiting on stdin."""
-
-_PREIMPORTED_MODULES: Final[tuple[str, ...]] = (
-    "numpy",
-    "jolty._core",
-    "jolty.builder",
-    "jolty.checks",
-    "jolty.devices",
-    "jolty.fidelity",
-    "jolty.files._results",
-    "jolty.ir",
-    "jolty.parts",
-    "jolty.plan",
-    "jolty.report",
-    "jolty.results",
-    "jolty.simulate",
-    "jolty.specs._measures",
-    "jolty.specs._requirements",
-    "jolty.units",
-    "jolty.unknowns",
-    "jolty.waveforms",
-)
-"""Core execution modules preloaded in a standby worker before receiving a job."""
 
 
 @functools.cache
@@ -1312,69 +1283,17 @@ def _relative(filename: str) -> str:
     )
 
 
-class _StandbyDispatch(FrozenModel):
-    """Single-job dispatch envelope sent to a pre-warmed standby runner over stdin."""
-
-    directory: Path
-    working_directory: Path
-    environment: dict[str, str]
-
-
-def _execute(directory: Path) -> None:
-    """Loads `job.json` from `directory`, executes it, and writes `outcome.json`."""
-    job = Job.model_validate_json((directory / JOB).read_bytes())
-    (directory / OUTCOME).write_bytes(JOB_RESULTS.dump_json(run(job, directory)))
-
-
-def _preimport_execution_modules() -> None:
-    """Preloads core simulation modules in a standby worker before receiving a job."""
-    for module_name in _PREIMPORTED_MODULES:
-        importlib.import_module(module_name)
-
-
-def _sync_environment(environment: Mapping[str, str]) -> None:
-    """Synchronizes the current process environment with `environment`."""
-    for key in list(os.environ):
-        if key not in environment:
-            del os.environ[key]
-    for key, value in environment.items():
-        if os.environ.get(key) != value:
-            os.environ[key] = value
-
-
-def _serve_standby() -> None:
-    """Preloads execution modules, executes at most one dispatched job, then exits.
-
-    Exiting immediately after a single job preserves complete per-script process
-    isolation and bit-identical behavior relative to a freshly spawned runner.
-    """
-    _preimport_execution_modules()
-    raw = sys.stdin.buffer.readline()
-    if not raw:
-        return
-    dispatch = _StandbyDispatch.model_validate_json(raw)
-    os.chdir(dispatch.working_directory)
-    _sync_environment(dispatch.environment)
-    _execute(dispatch.directory)
-
-
 def main(argv: list[str] | None = None) -> None:
     """Executes the runner job located in the directory passed as the CLI argument.
 
-    Passing ``--standby`` starts a single-use pre-warmed worker that preloads
-    execution modules, waits for one JSON dispatch line on standard input, executes
-    that job, and exits.
-
     Args:
-        argv: Argument list naming the job directory or ``--standby``, defaulting to
+        argv: Single-element argument list naming the job directory, defaulting to
             ``sys.argv[1:]`` when ``None``.
     """
-    arguments = sys.argv[1:] if argv is None else argv
-    if arguments == [STANDBY_FLAG]:
-        _serve_standby()
-        return
-    (argument,) = arguments
-    _execute(Path(argument))
+    (argument,) = sys.argv[1:] if argv is None else argv
+    directory = Path(argument)
+    job = Job.model_validate_json((directory / JOB).read_bytes())
+    (directory / OUTCOME).write_bytes(JOB_RESULTS.dump_json(run(job, directory)))
 
 
 if __name__ == "__main__":

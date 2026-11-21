@@ -1,9 +1,9 @@
 # Speed
 
-Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 20 November.
+Status: rewritten in plain language on 15 November 2026, checked against source documents and current code, and updated on 21 November.
 Full background research remains archived in `research/speed.md`.
 
-Plan: ✅ 6 done · 🚧 4 in progress · 📋 13 planned · ⏸️ 2 parked (§4).
+Plan: ✅ 7 done · 🚧 3 in progress · 📋 12 planned · ⏸️ 3 parked (§4).
 
 ## 1. Goal and metric
 
@@ -20,12 +20,12 @@ Progress is measured by the speed suite in `benchmarks.md`, fixture by fixture, 
     Monte Carlo through Python reaches 8.9× on 12 threads of this Mac, about 96% of the estimated capacity of 8 performance and 4 efficiency cores.
     Frequency sweeps parallelize across frequencies: `ac_wide` takes 22 ms versus 117 ms for ngspice on machine A.
 - **One large run: jolty leads on meshes and trails on transistor chains.**
-    On machine A, `rc_mesh_100` takes 1.14 s versus 18.2 s for ngspice.
-    The 500-inverter chain takes 3.81 s versus 1.76 s (measured before item 3 condensation cut 11%).
-- **One small run: jolty is about 3× slower than ngspice.**
-    At defaults on machine B (16 November, `benchmarks.md` item 4 views), the buck converter takes 770 ms versus 227 ms for ngspice, and 795 ms versus 277 ms on this Mac.
+    On machine A, `rc_mesh_100` takes 1.14 s versus 18.2 s for ngspice; on machine D (18 November, `430c75d`), `rc_mesh_100` takes 1.50 s versus 51.4 s for ngspice Sparse and 5.07 s for ngspice KLU.
+    The 500-inverter chain takes 3.81 s versus 1.76 s on machine A (before item 3 condensation cut 11%), and 9.91 s versus 2.43 s (4.1×) on machine D at defaults where jolty bounds full oxide charge under SPICE `chgtol` (`accuracy.md` 4).
+- **One small run: jolty is 3 to 4.4× slower than ngspice on switching transients.**
+    At defaults on machine B (16 November, `benchmarks.md` item 4 views), the buck converter takes 770 ms versus 227 ms for ngspice, and 795 ms versus 277 ms on this Mac; on machine D (18 November, `430c75d`), it takes 1.59 s versus 0.36 s for ngspice Sparse (4.4×).
     Machine A's 2.17 s ngspice timing from 15 November appears mismeasured.
-    The gap lies in per-iteration Newton cost rather than iteration count.
+    The gap combines per-iteration cost (2.6× on the buck) and iteration count (1.7×; item 7).
 
 **Why a small run costs more** (this Mac, 14 November, unarchived raw logs):
 
@@ -40,10 +40,9 @@ Progress is measured by the speed suite in `benchmarks.md`, fixture by fixture, 
 On machine A, the dissected 300 × 300 mesh ran 2.80× faster on 32 threads than on 1 thread, and 3.7× faster than undissected serial execution.
 On machine D (18 November), the mesh ran 7.07× faster on 24 threads than serially, and the 5,000-inverter chain reached 2.18× on 16 threads (item 1).
 
-**End-to-end agent command** (machine D, 20 November, item 8): after PEP 810 lazy imports and a standby service runner, cold `import jolty` dropped from 440.0 ms to 13.2 ms and `import jolty.cli` from 522.4 ms to 15.5 ms, over 33× faster.
+**End-to-end agent command** (machine D, 20 to 21 November, item 8): after PEP 810 lazy imports, cold `import jolty` dropped from 440.0 ms to 13.2 ms and `import jolty.cli` from 522.4 ms to 15.5 ms, over 33× faster.
 Cold `jolty simulate bjt_amp.py` takes 687.4 ms without images, 987.0 ms with schematic only, and 1,322.4 ms with schematic and plots, down from 951.7 ms, 1,336.9 ms, and 2,101.0 ms previously.
-Warm `service.simulate` (MCP path) dropped from 504.7 ms to 149.9 ms without images (139.4 ms on standby hit), 266.9 ms with schematic only, and 647.7 ms with schematic and plots.
-Against 3.8 ms for `ngspice -b`, cold CLI execution remains dominated by spawning the isolated `jolty.runner` child process and matplotlib plotting rather than the 1.24 ms engine run.
+Against 3.8 ms for `ngspice -b`, cold CLI execution is bounded by spawning the isolated `jolty.runner` child process and matplotlib plotting rather than the 1.24 ms engine run, which the owner accepted on 21 November while removing the standby runner (item 8).
 
 **Not measured yet:** circuits above 350,004 unknowns.
 
@@ -53,9 +52,9 @@ Recording every unknown at every time point takes 2.1 GiB for the 50,000-inverte
 
 ## 3. Gaps
 
-- Small runs cost roughly three times ngspice per Newton iteration.
+- Switching transients cost 3 to 4.4× ngspice at defaults: about 2.6× per Newton iteration and 1.7× more iterations (items 5 and 7).
 - Large runs reach 2.8× on 16 cores instead of the 6× target.
-- A cold agent CLI command still takes 687 ms without images (1,322 ms with schematic and plots; 150 ms warm via `service.simulate`) versus 3.8 ms for `ngspice -b`, dominated by subprocess isolation and matplotlib plotting rather than the 1.24 ms engine run (item 8).
+- A cold agent CLI command takes 687 ms without images (1,322 ms with schematic and plots) versus 3.8 ms for `ngspice -b` (13.1 ms bare Python interpreter), accepted by owner decision on 21 November after PEP 810 lazy imports (item 8).
 - Memory and recording hit limits first at ten million devices, and nothing is measured above 350,004 unknowns.
 - PDK cache deserialization still takes 0.592 s across six SKY130 corners in a cold process (down from 4.35 s cold parse; item 22 target is under 0.5 s), while native parallel Monte Carlo already runs 100 SKY130 `tt_mm` draws on 25 transistors in 42.0 ms.
 
@@ -206,69 +205,32 @@ Any optimization that speeds up one fixture while slowing another requires inves
     Iteration cost stays at 2.4× ngspice rather than 1.5×, leaving evaluation (item 5) and error-filter factorization to address.
 - **Source:** row S4.
 
-### 🚧 8. An agent's command timed from start to finish, then cut
+### ✅ 8. An agent's command timed from start to finish, then cut
 
-- **What:** agents wait on `jolty simulate`, which launches a fresh Python process, imports jolty, builds and elaborates the circuit, and runs analyses.
-    Measure end-to-end latency through both CLI and MCP, then cut overhead with a warm runner between commands while keeping each script in a separate process.
-- **Why:** on machine D, `bjt_amp` takes 1.24 ms in the engine and 3.8 ms in `ngspice -b`, but agents experience full CLI wall time.
-- **Measured** (18 November, `a3c1d6c`, machine D, AMD EPYC 9B14, ngspice 47 with KLU, host load 93.11 to 112.51 over 96 cores for cold runs and 64.87 to 89.22 for warm `service.simulate`):
+- **What:** agents wait on `jolty simulate`, which starts Python, imports jolty, runs the script in an isolated `jolty.runner` process, and runs its analyses.
+    Measure end-to-end latency through the CLI and MCP, then cut what standard practice allows while keeping each script in its own process.
+- **Why:** on machine D, `bjt_amp` takes 1.24 ms in the engine and 3.8 ms in `ngspice -b`, but agents experience the full command wall time.
+- **Measured** (18 November, `a3c1d6c`, machine D, ngspice 47 with KLU, host load 93 to 113 over 96 cores): engine work for `bjt_amp` (build, elaborate, `op`, `ac` and `tran`) took 1.242 ms, 0.13% of the 951.7 ms command without images.
+    Cold `import jolty` took 440 ms and ran twice, once in the CLI and once in the runner, led by `jolty.files` (209 ms, NumPy 82 ms of it), `jolty.devices` (81 ms), and `jolty.service` (41 ms, mostly `pydantic_settings`).
+- **Result** (20 November, machine D, host load 61 to 78 over 96 cores): PEP 810 lazy imports (`__lazy_modules__` in 30 modules) defer every submodule and heavy dependency to its first use.
+    Cold commands, median and interquartile range over 7 runs:
 
-    Cold subprocess wall times (median and IQR over 7 runs):
-
-    | Command | Median | IQR | Share / notes |
-    | --- | ---: | --- | --- |
-    | `ngspice -b bjt_amp.cir` (`op`+`ac`+`tran`) | 3.8 ms | 3.7 to 4.0 ms | Reference batch run |
-    | `python -c pass` | 13.5 ms | 13.2 to 14.4 ms | Bare interpreter |
-    | `import jolty._core` | 447.6 ms | 415.7 to 460.1 ms | Executes `jolty/__init__.py` first (`_core` itself is 0.018 ms in `-X importtime`) |
-    | `import jolty` | 440.0 ms | 406.8 to 535.8 ms | `jolty` eager import |
-    | `import jolty.cli` | 522.4 ms | 474.0 to 565.1 ms | CLI entry point |
-    | `import jolty.plots` | 791.5 ms | 650.0 to 838.0 ms | Pulls in `matplotlib` |
-    | `jolty simulate bjt_amp.py --no-schematic --no-plot` | 951.7 ms | 926.3 to 975.3 ms | Spawns 2 Python processes: CLI plus `jolty.runner` child (250× `ngspice -b`) |
-    | `jolty simulate bjt_amp.py --no-check --no-schematic --no-plot` | 988.5 ms | 928.5 to 1,046.9 ms | Checks cost noise-level time on `bjt_amp` |
-    | `jolty simulate bjt_amp.py --no-plot` | 1,336.9 ms | 1,306.4 to 1,412.7 ms | Schematic only (+385 ms over no-images) |
-    | `jolty simulate bjt_amp.py` (default: schematic + plots) | 2,101.0 ms | 2,035.7 to 2,203.0 ms | 553× `ngspice -b` (+764 ms plotting over schematic only) |
-
-    Warm `service.simulate` (same path as an already-running MCP server, median of 5 runs):
-
-    | Call | Median | Samples (ms) | Delta |
-    | --- | ---: | --- | --- |
-    | `service.simulate` (`schematic=False, plot=False`) | 504.7 ms | `478.7, 487.4, 504.7, 509.7, 521.9` | Fresh `jolty.runner` child spawned per call |
-    | `service.simulate` (`schematic=True, plot=False`) | 631.7 ms | `582.5, 625.6, 631.7, 642.1, 841.3` | +127 ms warm schematic draw |
-    | `service.simulate` (`schematic=True, plot=True`) | 1,294.2 ms | `1,235.2, 1,252.5, 1,294.2, 1,339.0, 1,346.5` | +663 ms warm matplotlib plotting |
-
-    Warm in-process engine phases (median of 11 runs):
-
-    | Phase | Median | Min |
-    | --- | ---: | ---: |
-    | `build()` + `circuit()` | 0.006 ms | 0.004 ms |
-    | Elaborate + `Simulation()` | 0.212 ms | 0.204 ms |
-    | `run_plan` (`op`+`ac`+`tran`) | 1.024 ms | 1.009 ms |
-    | **Total engine work** | **1.242 ms** | 0.13% of `--no-schematic --no-plot` CLI time |
-
-    Top cumulative import times from `python -X importtime -c "import jolty.cli"` totaled 371.8 ms (`jolty` 322.1 ms, `jolty._core` 0.018 ms).
-    Major import contributors were `jolty.files` (209.0 ms: `numpy` 81.8 ms, `jolty.plan` 72.8 ms, `jolty.spice` 60.0 ms, `jolty.spice.download` 43.3 ms) and `jolty.devices` (80.9 ms).
-    Remaining contributors were `jolty.service` (41.1 ms: `jolty.settings` 30.6 ms via `pydantic_settings` 28.8 ms), `pydantic` (23.4 ms), `jolty.results` (23.1 ms), and `jolty.ir` (19.4 ms).
-- **Result, in part** (20 November, machine D, AMD EPYC 9B14, host load 60.8 to 78.2 over 96 cores): adopted PEP 810 lazy imports across `jolty/__init__.py`, `jolty.cli`, `jolty.files`, and `jolty.service`, plus a prewarmed standby `jolty.runner` worker for `service` calls.
-
-    Updated machine D timings (median and IQR over 7 cold subprocess runs; median over 5 warm `service.simulate` runs):
-
-    | Command / call | 18 Nov | 20 Nov | Speedup / notes |
+    | Command | 18 Nov | 20 Nov | Change |
     | --- | ---: | ---: | --- |
-    | `python -c pass` | 13.5 ms | 13.1 ms | IQR 11.8 to 14.4 ms (bare interpreter) |
-    | `import jolty._core` | 447.6 ms | 13.8 ms | 32× faster (IQR 12.9 to 16.5 ms) |
-    | `import jolty` | 440.0 ms | 13.2 ms | 33× faster (IQR 12.5 to 13.9 ms; 0.20 ms in `-X importtime`) |
-    | `import jolty.cli` | 522.4 ms | 15.5 ms | 34× faster (IQR 14.3 to 18.1 ms; 1.46 ms in `-X importtime`) |
-    | `import jolty.plots` | 791.5 ms | 497.2 ms | 1.6× faster (IQR 494.8 to 502.1 ms) |
+    | `python -c pass` | 13.5 ms | 13.1 ms | bare interpreter (IQR 11.8 to 14.4 ms) |
+    | `import jolty` | 440.0 ms | 13.2 ms | 33× faster (0.20 ms in `-X importtime`) |
+    | `import jolty.cli` | 522.4 ms | 15.5 ms | 34× faster (1.46 ms in `-X importtime`) |
+    | `import jolty.plots` | 791.5 ms | 497.2 ms | 1.6× faster (Matplotlib dominates) |
     | `jolty simulate bjt_amp.py --no-schematic --no-plot` | 951.7 ms | 687.4 ms | -28% (IQR 684.7 to 688.0 ms) |
     | `jolty simulate bjt_amp.py --no-check --no-schematic --no-plot` | 988.5 ms | 666.8 ms | -33% (IQR 663.7 to 669.6 ms) |
     | `jolty simulate bjt_amp.py --no-plot` | 1,336.9 ms | 987.0 ms | -26% (IQR 875.4 to 994.2 ms) |
-    | `jolty simulate bjt_amp.py` (default: schematic + plots) | 2,101.0 ms | 1,322.4 ms | -37% (IQR 1,305.7 to 1,473.1 ms) |
-    | Warm `service.simulate` (`schematic=False, plot=False`) | 504.7 ms | 149.9 ms | 3.4× faster (139.4 ms on standby hit) |
-    | Warm `service.simulate` (`schematic=True, plot=False`) | 631.7 ms | 266.9 ms | 2.4× faster (257.5 to 367.1 ms) |
-    | Warm `service.simulate` (`schematic=True, plot=True`) | 1,294.2 ms | 647.7 ms | 2.0× faster (642.1 to 681.5 ms) |
+    | `jolty simulate bjt_amp.py` (schematic and plots) | 2,101.0 ms | 1,322.4 ms | -37% (IQR 1,305.7 to 1,473.1 ms) |
 
-- **Not done:** persistent CLI runner or lightweight CLI launcher to cut remaining cold subprocess overhead, and faster or non-matplotlib plotting to approach `ngspice -b`.
-- **Done when:** the speed suite reports `jolty simulate` wall time on `bjt_amp`, with and without images, below `ngspice -b`.
+    The remaining time is the isolated runner importing NumPy and the engine, plus image rendering, rather than the engine run.
+    A prewarmed standby runner briefly cut warm `service.simulate` calls from 504.7 ms to 150 ms and was removed on 21 November, restoring the plain fresh-subprocess path (measured at 0.83 to 0.99 s warm versus 1.28 to 1.36 s cold on a heavily loaded machine D at load 2,827 to 2,955).
+- **Decided** (owner, 21 November): command latency is bounded by Python startup, 13.1 ms for a bare interpreter, and by the isolated runner's imports, and is not a goal beyond standard lazy imports.
+    The standby runner, daemons, fork servers, and background image pipelines are out of scope: their complexity buys little next to an agent's model latency, and heavy workloads run in-process through the Python API.
+    The former criterion of beating `ngspice -b` end to end is dropped.
 - **Source:** row S5; `research/agentic.md` row 6; `research/benchmarks.md` row B15.
     Item 8 replaces the duplicate entries previously in `agentic.md` and `benchmarks.md`.
 
@@ -327,8 +289,9 @@ Any optimization that speeds up one fixture while slowing another requires inves
 - **Lead.**
     **Source:** row M2; blueprint §3.3; owner prioritization, 20 November.
 
-### 📋 16. An exact cache of results
+### ⏸️ 16. An exact cache of results
 
+- **Parked** (owner, 21 November): `jolty measure` (`agentic.md` 15) already re-measures saved results without re-simulating, and a general result cache adds invalidation complexity without evidence that agents repeat identical runs; revisit with such evidence.
 - **What:** key simulation results by a digest of all inputs so repeated runs return cached bits directly.
     jolty's strict determinism makes result caching exact.
 - **Done when:** repeated runs return cached bits and any modified input triggers a cache miss.
@@ -347,7 +310,7 @@ Any optimization that speeds up one fixture while slowing another requires inves
 
 - **What:** pole-zero and periodic steady-state analyses currently use dense matrices (0.77 s at 500 unknowns).
 - **Parked until:** target circuits outgrow dense matrix limits.
-- **Source:** legacy roadmap item 14.
+- **Source:** carried over from the plan before 15 November.
 
 ### ⏸️ 20. Meyer's capacitances integrated as ngspice does, an option
 
@@ -361,19 +324,19 @@ Any optimization that speeds up one fixture while slowing another requires inves
 
 ### 🚧 22. Fast cached PDK subcircuit translation and multi-corner reuse
 
-- **Priority:** P1 (Wave 2).
+- **Priority:** P1.
 - **What:** cache parsed subcircuit definitions, pre-indexed MOSFET bin tables, and deterministic global parameter plans on disk per `(kit_digest, section)` keyed by kit digest and jolty version.
     Separate temperature sweeps from structural translation so sweeping `Simulation` temperature does not invalidate `Library._built` once `models.md` 24 moves resistor `TC1`/`TC2` into the engine (for devices without static `temper` `.param` references).
     Move hot `Library.component` and `Library.drawn` bin selection and `.param` evaluation into Rust via `jolty-expressions` for sub-second SKY130 Monte Carlo builds.
 - **Why:** `kits.read` on SKY130 previously took 2.0 to 3.1 s per corner (12 to 18 s for six corners `tt`, `ff`, `ss`, `sf`, `fs`, `tt_mm`), changing `Library.temperature` cleared `self._built`, and building a 25-device SKY130 circuit across corners and Monte Carlo samples spent over 95% of wall time in Python AST and parameter translation while each Rust operating point took ~3 ms.
-- **Needs:** `models.md` 24 (roadmap N2) to decouple temperature sweeps from structural translation (done).
+- **Needs:** `models.md` 24 to decouple temperature sweeps from structural translation (done).
 - **Result, in part** (20 November, machine D, AMD EPYC 9B14, host load 46.0 to 56.6 over 96 cores):
     - Added persistent zlib-compressed typed JSON disk caching (`jolty.spice._cache`, `LibrarySnapshot`) keyed by source manifest digests, parser fingerprint, and compatibility mode, plus temperature-decoupled `Library._built` caching (`Library.temperature` preserves `temper`-free subcircuits, including `behavioral_resistor` elements with `TC1`/`TC2`).
     - Cold-process loading of all six SKY130 corners (`tt`, `ff`, `ss`, `sf`, `fs`, `tt_mm`) from a warm disk cache measured **0.592 s** median across 5 runs (0.591 to 0.595 s) versus **4.349 s** cold parse on machine D (7.3× faster, and ~25× faster than the ~15 s baseline), with circuit IR bit-identical to uncached translation.
     - Native parallel PDK draws in `MonteCarlo` (`models.md` 23b) run 100 SKY130 `tt_mm` mismatch draws and operating points across 25 transistors (`13 nfet_01v8 + 12 pfet_01v8`) in **42.0 ms** median (37.5 to 52.2 ms, 12× under the 0.5 s budget) versus **6.827 s** to build 100 × 25 devices via Python `Library.drawn` alone.
 - **Left:** moving disk-cache decoding and hot `Library.component` bin/parameter evaluation into Rust to bring warm six-corner cold-process loading under 0.5 s.
 - **Done when:** cold-process loading of all six SKY130 corners from a warm cache drops from ~15 s to under 0.5 s, and building 100 SKY130 `tt_mm` Monte Carlo draws of a 25-device bandgap takes under 0.5 s with circuit IR bit-identical to uncached translation.
-- **Source:** owner approval, 20 November (roadmap N5).
+- **Source:** owner approval, 20 November.
 
 **Elsewhere:** stamping BSIM3, VDMOS, and VBIC via summed derivatives is `quality.md` 5 (with speed measurements there).
 Transient adjoint sensitivities are `agentic.md` 13, and built-in correctly rounded elementary functions for cross-platform bit identity are `accuracy.md` 13.
@@ -405,7 +368,8 @@ Schematic and viewer instancing (§3.6) maps to item 21, and differentiable simu
 - One scheduler: a single caller-owned rayon pool runs all parallelism levels to prevent oversubscription, and device kernels have no dependency on threads (archived note).
 - mimalloc serves as the Python extension allocator, keeping Monte Carlo at 95.9% of linear scaling on 8 threads versus 64 to 68% previously.
 - Speed claims follow `benchmarks.md`: references at best configuration, both engine and end-to-end timings, and efficiency relative to attainable throughput.
-- 20 November (owner): adopted cached PDK translation and Rust-side bin/expression evaluation (item 22, roadmap N5) and staged SIMD sample lanes (item 15) as the CPU AVX-512 precursor to batched H100 GPU execution (`gpu.md`).
+- 20 November (owner): adopted cached PDK translation and Rust-side bin/expression evaluation (item 22) and staged SIMD sample lanes (item 15) as the CPU AVX-512 precursor to batched H100 GPU execution (`gpu.md`).
+- 21 November (owner): end-to-end command latency is bounded by Python startup and is not a goal beyond standard lazy imports; the standby runner was removed and item 16 parked (item 8).
 
 ## 6. Open principles
 

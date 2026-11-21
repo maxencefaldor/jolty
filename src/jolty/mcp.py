@@ -351,11 +351,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         sys.stderr.write(
             "jolty-mcp serves MCP on stdio for a harness to start; Ctrl-C stops it.\n"
         )
-    service.warm_runner()
-    try:
-        create_server(settings).run()
-    finally:
-        service.close_standby()
+    create_server(settings).run()
 
 
 if __name__ == "__main__":

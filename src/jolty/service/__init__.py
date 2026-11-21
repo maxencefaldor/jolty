@@ -15,7 +15,6 @@ __lazy_modules__ = [
     "importlib.util",
     "jolty",
     "jolty.service._instructions",
-    "jolty.service._worker",
     "jolty.simulate",
     "secrets",
     "shutil",
@@ -26,6 +25,7 @@ import contextlib
 import importlib.util
 import secrets
 import shutil
+import sys
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Callable, Collection, Mapping
@@ -95,7 +95,6 @@ from jolty.service._docs import (
 )
 from jolty.service._instructions import build_instructions
 from jolty.service._measure import MeasureKind, MeasureRequest
-from jolty.service._worker import close_standby, run_job, single_shot, warm_runner
 from jolty.settings import Level, Settings
 from jolty.simulate import Simulation
 from jolty.specs import ExtendedReal, Verdict
@@ -140,7 +139,6 @@ __all__ = [
     "build",
     "build_instructions",
     "check",
-    "close_standby",
     "cost",
     "document_summaries",
     "draw",
@@ -153,9 +151,7 @@ __all__ = [
     "read_document",
     "resolve_document",
     "simulate",
-    "single_shot",
     "view",
-    "warm_runner",
 ]
 
 _SCRIPT_DESCRIPTION = (
@@ -1847,10 +1843,65 @@ async def _child(directory: Path, limit: int) -> tuple[ScriptOutput, int]:
     """Runs the runner on `directory` and returns its output and exit code.
 
     When the caller stops waiting, through a timeout or a canceled request, the child
-    is killed before the cancellation goes on, so no script outlives its command.
+    is killed, its pipes are read to the end, and it is reaped before the cancellation
+    goes on, so no script outlives its command and no pipe stays open.
     """
-    stdout, stderr, truncated, code = await run_job(directory, limit)
-    return ScriptOutput(stdout=stdout, stderr=stderr, truncated=truncated), code
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-P",
+        "-m",
+        "jolty.runner",
+        str(directory),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_pipe, stderr_pipe = _pipes(process)
+        (stdout, stdout_truncated), (stderr, stderr_truncated) = await asyncio.gather(
+            _read_capped(stdout_pipe, limit), _read_capped(stderr_pipe, limit)
+        )
+        code = await process.wait()
+    except BaseException:
+        if process.returncode is None:
+            process.kill()
+            await process.communicate()
+        raise
+    output = ScriptOutput(
+        stdout=stdout, stderr=stderr, truncated=stdout_truncated or stderr_truncated
+    )
+    return output, code
+
+
+def _pipes(
+    process: asyncio.subprocess.Process,
+) -> tuple[asyncio.StreamReader, asyncio.StreamReader]:
+    """Returns stdout and stderr pipe readers for `process`.
+
+    Raises:
+        JoltyError: When `process` was started without stdout or stderr pipes.
+    """
+    if process.stdout is None or process.stderr is None:
+        message = "could not capture the runner's output"
+        raise JoltyError(message)
+    return process.stdout, process.stderr
+
+
+async def _read_capped(stream: asyncio.StreamReader, limit: int) -> tuple[str, bool]:
+    """Reads `stream` to EOF, keeping at most `limit` characters and a truncation flag.
+
+    Buffered bytes are bounded by the maximum UTF-8 width of `limit` characters
+    regardless of total stream volume.
+    """
+    kept = bytearray()
+    dropped = False
+    while chunk := await stream.read(1 << 16):
+        # A character takes four bytes at most in UTF-8.
+        room = 4 * limit - len(kept)
+        kept += chunk[:room]
+        dropped = dropped or len(chunk) > room
+    text = kept.decode("utf-8", errors="replace")
+    return text[:limit], dropped or len(text) > limit
 
 
 def _read(path: Path) -> runner.JobResult | None:

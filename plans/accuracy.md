@@ -40,7 +40,7 @@ Progress is measured by the precision suite against exact answers and by the fai
 1. ngspice 47 grants each time step 100 Newton iterations rather than 10, raising any lower limit to 100 (`niiter.c`, lines 37-39; measured in item 1).
 1. Gear2's error estimate used the equal-step constant after a step-size change, underestimating error by up to 7.6 times (item 2, fixed).
 
-**Buck failed iterations at gate edges** (old roadmap item 18, diagnosed on 14 November; archived note not kept): roughly one time step per gate edge exhausts Newton iterations, whereas ngspice has none across 2 ms of simulation.
+**Buck failed iterations at gate edges** (diagnosed on 14 November; archived note not kept): roughly one time step per gate edge exhausts Newton iterations, whereas ngspice has none across 2 ms of simulation.
 The first iteration starts with a body diode around 3 V forward, and SPICE3's junction limiter then climbs by `vt·ln(1 + Δ/vt)` per iteration, converging linearly at rate 0.68.
 Node voltage prediction, ngspice's halving of the gap to a breakpoint, and the convergence test were ruled out.
 Item 1 measured ngspice's iteration limit; items 6 and 7 address the root cause.
@@ -234,7 +234,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 - **What:** dense output interpolating the solution at user-requested times rather than forcing steps onto output points, which the comparison harness also requires.
     TR-BDF2 will be added as an option and measured on the boost converter's stiff phases, while variable-order BDF will be pursued only if a circuit shows a clear gain (Xyce dropped variable-order BDF in 6.8).
 - **Done when:** the comparison harness stops forcing steps onto ngspice's time points, and TR-BDF2's impact on the boost converter is measured.
-- **Source:** row 16; narrowed from old roadmap item 7.
+- **Source:** row 16.
 
 ### 📋 15. Newton tolerance tied to step truncation tolerance
 
@@ -332,7 +332,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Record before-and-after accepted, rejected, and landed steps plus Newton iterations at defaults on the buck, boost, ring, relaxation, 555 timer, astable, and Colpitts examples alongside ngspice on identical netlists.
     Keep accuracy unchanged with `test_ngspice.py`, `test_random_circuits.py`, `test_metamorphic.py`, and analytic tests passing without loosened tolerances.
     Update the guide's methods table to specify each change and its source.
-- Old roadmap item 7 was measured and set aside because bounding repeated rejections at a single time point saves too little.
+- Bounding repeated rejections at a single time point was measured and set aside because it saves too little.
     A damped formula for the boost converter's stiff mode would affect only 36% of steps, so item 14 evaluates TR-BDF2 there first.
 - 20 November (owner): Newton omits both early cuts (item 6), because 91% of the buck's candidate cut iterations converged within ten iterations anyway.
 - `max_transient_iterations` (formerly `transient_iterations`) keeps SPICE's `ITL4` of 10, although ngspice 47 raises lower limits to 100 (documented as a departure).

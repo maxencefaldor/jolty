@@ -1,6 +1,6 @@
 # Benchmarks
 
-Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 18 November.
+Status: rewritten in plain prose on 15 November 2026 with every item checked against source and code, and updated on 21 November.
 The archival research report lives in `research/benchmarks.md`, kept whole.
 
 Plan: ✅ 9 done · 🚧 2 in progress · 📋 3 planned · ⏸️ 1 parked (§4).
@@ -32,6 +32,8 @@ Differential tests verify cross-simulator agreement rather than absolute accurac
     Machine A is an AMD Threadripper 3970X (32 cores, 64 threads), machine B is a Ryzen 9 7950X (32 threads, hosting Xyce 7.10.0), and machine C is a Ryzen 9 7950X3D (32 threads).
 - **Machine D:** AMD EPYC 9B14 (24 cores on a shared 96-core server), serving as the fixed baseline host since 18 November with ngspice 47 built locally.
 - **Institutional HPC clusters:** available only through the owner's personal login.
+
+**Fixed baseline host:** since 18 November machine D is the fixed baseline host, with its committed baseline and summary in item 2; the machine A tables below are the first full run, kept for history.
 
 **Final benchmark on machine A** (`444535f`, 15 November 15:02 to 16:27, raw logs not kept; host loads recorded alongside each run as other lab users shared the machine):
 
@@ -179,7 +181,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
     Measured sag reached `7.794e-3 V` at `t = 124.518 µs` (`3.916e-3` of swing, reported as `3.8e-3` in `--view matched`).
     Replacing `np.interp` in `benchmarks/speed/bench.py` (`deviations()`) with vectorized Huynh (1993) non-oscillatory fourth-order cubic Hermite interpolation (`interpolate_transient`) cut `bjt_amp` deviation from `3.916e-3` to `1.813e-5` against fine jolty (`0.1 µs`).
     Live `--view matched bjt_amp` against ngspice 47 dropped from `3.8e-3` to `5.9e-5` on both Sparse and KLU, with exact `0.0` overshoot on sharp switching steps and triangle corners.
-    **Not done:** interleaving `--view` rounds like `--compare`, and adding `--scale` large fixtures to views.
+    Remaining view ergonomics (interleaving `--view` rounds like `--compare`, and adding `--scale` large fixtures to views) are tracked under item 10.
 - **Source:** rows B2, B3, and B4; `research/speed.md` row R1.
 
 ### ✅ 5b. Deterministic checks in CI
@@ -214,7 +216,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 - **What:** add nonlinear manufactured solutions using behavioral expressions with injected sources `b(t)` (after behavioral `q(v)` lands) plus IVP test-set circuits (ring modulator, transistor amplifier, NAND gate, and charge pump).
     Expand to at least 20 fixtures reporting each simulator's fastest runtime per accuracy level on a quiet host, plus a sweep lifting the maximum step cap.
-- **Done when:** at least 20 fixtures, including the IVP test-set circuits, are timed on machine A.
+- **Done when:** at least 20 fixtures, including the IVP test-set circuits, are timed on machine D.
 - **Source:** rows B5 and B6; precision suite report.
 
 ### ✅ 8. Hard-circuit corpus
@@ -262,8 +264,8 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 ### 📋 10. Widened speed suite fixtures
 
-- **What:** add a ring oscillator, transistor-level ISCAS'85 circuits, IBM power grids, and CircuitSim90 level-3 decks alongside existing fixtures, fetched via pinned manifest without committing third-party files.
-- **Done when:** every new fixture is timed in jolty and ngspice on quiet machines.
+- **What:** add a ring oscillator, transistor-level ISCAS'85 circuits, IBM power grids, and CircuitSim90 level-3 decks alongside existing fixtures, fetched via pinned manifest without committing third-party files, and finish view ergonomics from item 4 (interleaving `--view` rounds like `--compare`, and including `--scale` large fixtures in views).
+- **Done when:** every new fixture is timed in jolty and ngspice on machine D with the alternating protocol (item 3).
 - **Source:** rows B9 and B17.
 
 ### 🚧 11. Xyce in the suites

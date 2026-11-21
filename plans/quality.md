@@ -137,7 +137,7 @@ Status: ✅ done, on `main` · 🚧 in progress · 📋 planned · ⏳ waits for
 
 - **What:** every test tolerance states its justification, and an automated guard rejects any uncited literal tolerance.
 - **Done when:** none of the 428 baseline sites remains uncited.
-- **Result** (18 November): cited all 520 Python test tolerance sites (447 pre-existing plus 73 Wave 2 sites) across `tests/**/*.py`, enforced by an AST guard in `tests/test_tolerances.py`.
+- **Result** (18 November): cited all 520 Python test tolerance sites (447 pre-existing plus 73 added on 18 November) across `tests/**/*.py`, enforced by an AST guard in `tests/test_tolerances.py`.
     The audit exposed two masked-assertion bugs, both fixed.
     In `tests/test_specs.py`, `pytest.approx` default `abs=1e-12` masked a `9.616e-5` relative discrepancy in `noise_density`/`integrated_noise` at `1.5 kHz` under `rel=1e-12` (fixed with `abs=0` across all 5 assertions).
     In `tests/test_spice.py`, tiny sub-pA and sub-pF `pytest.approx` assertions also lacked explicit `abs=0` and were tightened.

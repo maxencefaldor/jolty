@@ -1,6 +1,6 @@
 # GPU: any circuit on any device
 
-Status: ⏸️ later, staged behind Waves 1 to 2 and `speed.md` 15 (owner decision, 15 November 2026; hardware update, 20 November 2026).
+Status: ⏸️ later, staged behind CPU groundwork and `speed.md` 15 (owner decision, 15 November 2026; hardware update, 20 November 2026).
 The design below reflects decisions by the owner and the lead, retained for when GPU work begins.
 
 ## Goal
@@ -52,13 +52,13 @@ The CPU serves as the first device backend by moving existing code behind that i
 **Order:**
 
 1. The Verilog-A compiler emitting `Kernel` code (`models.md` 12; resistor and diode on `main` at `5b0063b`, four CMC models compiling whole pending `qaSpec` QA).
-1. Waves 1 and 2 on CPU: PDK correctness and native kit completion (`models.md` 8, 11 to 15, 23, 23b, 24), cached PDK translation and agent latency (`speed.md` 8, 16, 22), and differentiable analog design (`agentic.md` 9, 11, 23).
+1. CPU groundwork: PDK correctness and native kit completion (`models.md` 8, 11 to 15, 23, 23b, 24), cached PDK translation (`speed.md` 22), and differentiable analog design (`agentic.md` 9, 23).
 1. CPU SIMD sample-lane structure-of-arrays layout (`speed.md` 15), delivering immediate AVX-512 batch throughput while validating the shared SoA layout GPUs require.
 1. The numeric core moved behind the device interface, with the CPU as the first backend.
 1. The GPU device backend targeting batched ensembles first (Monte Carlo, PVT corners, `jax.vmap`, and `trnoise` trajectories) on data-center H100s, followed by single-circuit solves and full analysis parity.
 
 ## Blocker
 
-**Hardware blocker lifted (20 November 2026):** data-center H100 GPUs on internal Borg and XManager provide full-rate native 64-bit throughput (~34 TFLOPS vector FP64, ~67 TFLOPS FP64 Tensor Core), lifting the hardware blocker for batched GPU ensembles.
+**Hardware blocker lifted (20 November 2026):** data-center H100 GPUs provide full-rate native 64-bit throughput (~34 TFLOPS vector FP64, ~67 TFLOPS FP64 Tensor Core), lifting the hardware blocker for batched GPU ensembles.
 The lab workstations still carry workstation GPUs whose 64-bit throughput is 1/64 of the 32-bit rate, about 0.5 to 1.4 TFLOPS each, comparable to the machine A CPU (machine A has an RTX 3090 and an RTX 6000 Ada, machine B has two RTX A6000 cards, and machine C has two RTX 6000 Ada cards), sufficing only for correctness verification.
-GPU implementation stays staged behind Waves 1 to 2 and `speed.md` 15 (CPU SIMD sample-lane SoA layout) so core PDK physics, differentiable analog design, and the shared SoA batch layout settle before GPU kernel work starts.
+GPU implementation stays staged behind `speed.md` 15 (CPU SIMD sample-lane SoA layout) so core PDK physics, differentiable analog design, and the shared SoA batch layout settle before GPU kernel work starts.
